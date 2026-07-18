@@ -78,6 +78,13 @@ export function applyRailPath(state: ConstructionState, path: Pos[]): Constructi
 
 export function applyStation(state: ConstructionState, pos: Pos): ConstructionState {
   const key = toKey(pos.x, pos.z);
+  const existingBeforeUpdate = state.railMap.get(key);
+
+  // バグ1/2対策: すでに駅・車庫があるセルへの再設置は no-op
+  if (existingBeforeUpdate && (existingBeforeUpdate.type === 'station' || existingBeforeUpdate.type === 'depot')) {
+    return state;
+  }
+
   const railMap = new Map(state.railMap);
   const stations = new Map(state.stations);
 
@@ -121,6 +128,13 @@ export function applyStation(state: ConstructionState, pos: Pos): ConstructionSt
 
 export function applyDepot(state: ConstructionState, pos: Pos): ConstructionState {
   const key = toKey(pos.x, pos.z);
+  const existing = state.railMap.get(key);
+
+  // バグ1対策: 空セル以外への設置は no-op（駅の上に車庫を置いて駅を消してしまわないように）
+  if (existing) {
+    return state;
+  }
+
   const railMap = new Map(state.railMap);
   railMap.set(key, { type: 'depot', connections: DIR.N | DIR.E | DIR.S | DIR.W, rotation: 0 });
   updateDepotRotation(railMap, pos.x, pos.z);
