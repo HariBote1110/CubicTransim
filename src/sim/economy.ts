@@ -1,6 +1,6 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
-import type { PlatformDoorType } from '../types';
+import type { PlatformDoorType, TownData } from '../types';
 
 export const STARTING_MONEY = 50_000;
 
@@ -10,10 +10,28 @@ export const DEPOT_COST = 2_000;
 export const SIGNAL_COST = 200;
 export const TRAIN_COST = 5_000;
 
-export const PASSENGER_SPAWN_RATE = 0.5; // 人/秒/駅
+export const PASSENGER_SPAWN_RATE = 0.5; // 人/秒/駅(demandFactor=1のときの基準値)
 export const STATION_WAITING_CAP = 200;
 export const TRAIN_CAPACITY = 100;
 export const FARE_PER_TILE = 2;
+
+// 街の旅客需要が駅に及ぶ最大距離(タイル)。これを超えると影響0になる。
+export const TOWN_INFLUENCE_RADIUS = 10;
+
+// 駅の立地需要係数。周辺の街の人口と距離から算出する。
+// 各街ごとに (population / 1000) × max(0, 1 - distance / TOWN_INFLUENCE_RADIUS) を合算する。
+export function demandFactor(
+  stationCentre: { x: number; z: number },
+  towns: TownData[]
+): number {
+  let total = 0;
+  for (const town of towns) {
+    const dist = Math.hypot(stationCentre.x - town.centre.x, stationCentre.z - town.centre.z);
+    const proximity = Math.max(0, 1 - dist / TOWN_INFLUENCE_RADIUS);
+    total += (town.population / 1000) * proximity;
+  }
+  return total;
+}
 
 // ホームドア(駅単位・一括払い)
 export const PLATFORM_DOOR_STANDARD_COST = 3_000;

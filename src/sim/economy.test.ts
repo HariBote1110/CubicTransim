@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { TownData } from '../types';
 import {
   costOfPath,
   calculateAccidentChance,
+  demandFactor,
   STARTING_MONEY,
   RAIL_COST,
   STATION_COST,
@@ -12,6 +14,7 @@ import {
   STATION_WAITING_CAP,
   TRAIN_CAPACITY,
   FARE_PER_TILE,
+  TOWN_INFLUENCE_RADIUS,
   PLATFORM_DOOR_STANDARD_COST,
   PLATFORM_DOOR_FULLSCREEN_COST,
   ACCIDENT_BASE_CHANCE,
@@ -58,6 +61,40 @@ describe('economy: calculateAccidentChance', () => {
   it('fullscreen: waiting=0でも常に確率0', () => {
     expect(calculateAccidentChance('fullscreen', 0)).toBe(0);
     expect(calculateAccidentChance('fullscreen', STATION_WAITING_CAP)).toBe(0);
+  });
+});
+
+describe('economy: demandFactor', () => {
+  const town = (overrides: Partial<TownData>): TownData => ({
+    id: 't1', centre: { x: 0, z: 0 }, population: 1000, ...overrides,
+  });
+
+  it('街の真上(distance=0)ではpopulation/1000になる', () => {
+    const towns = [town({ centre: { x: 5, z: 5 }, population: 3000 })];
+    expect(demandFactor({ x: 5, z: 5 }, towns)).toBeCloseTo(3, 10);
+  });
+
+  it('距離がTOWN_INFLUENCE_RADIUSちょうどでは0になる', () => {
+    const towns = [town({ centre: { x: 0, z: 0 }, population: 2000 })];
+    expect(demandFactor({ x: TOWN_INFLUENCE_RADIUS, z: 0 }, towns)).toBeCloseTo(0, 10);
+  });
+
+  it('影響半径を超えた街は寄与しない(負値にならない)', () => {
+    const towns = [town({ centre: { x: 0, z: 0 }, population: 2000 })];
+    expect(demandFactor({ x: TOWN_INFLUENCE_RADIUS + 5, z: 0 }, towns)).toBe(0);
+  });
+
+  it('複数の街の寄与は合算される', () => {
+    const towns = [
+      town({ id: 'a', centre: { x: 0, z: 0 }, population: 1000 }), // distance 0 → 1.0
+      town({ id: 'b', centre: { x: 5, z: 0 }, population: 1000 }), // distance 5 → 0.5
+    ];
+    // stationCentre = (0,0): townA=1.0, townB: dist=5 → (1-5/10)=0.5 → 0.5
+    expect(demandFactor({ x: 0, z: 0 }, towns)).toBeCloseTo(1.5, 10);
+  });
+
+  it('街が無ければ0になる', () => {
+    expect(demandFactor({ x: 0, z: 0 }, [])).toBe(0);
   });
 });
 
