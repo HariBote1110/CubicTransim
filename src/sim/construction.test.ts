@@ -55,14 +55,49 @@ describe('applyStation（特性テスト）', () => {
     expect(st.cells).toHaveLength(2);
     expect(st.center).toEqual({ x: 0.5, z: 0 });
   });
+
+  // バグ1/2: 上書き防止
+  it('すでに駅があるセルへ再設置しても重複した駅は生成されない', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 0, z: 0 });
+    const before = state.stations.size;
+    state = applyStation(state, { x: 0, z: 0 });
+
+    expect(state.stations.size).toBe(before);
+    const cell = state.railMap.get(toKey(0, 0))!;
+    expect(cell.type).toBe('station');
+  });
+
+  it('車庫セルへ駅を設置しても no-op（車庫は消えない）', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 0, z: 0 });
+    const result = applyStation(state, { x: 0, z: 0 });
+
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.type).toBe('depot');
+    expect(result.stations.size).toBe(0);
+  });
 });
 
-describe('applyDepot（特性テスト）', () => {
+describe('applyDepot（特性テスト・バグ修正）', () => {
   it('空セルには車庫を設置できる', () => {
     const state = emptyState();
     const result = applyDepot(state, { x: 0, z: 0 });
     const cell = result.railMap.get(toKey(0, 0))!;
     expect(cell.type).toBe('depot');
+  });
+
+  // バグ1: 駅の上に車庫を置いても駅は消えない
+  it('駅セルの上に車庫を設置しても no-op（駅は消えない）', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 0, z: 0 });
+    const stationCountBefore = state.stations.size;
+
+    const result = applyDepot(state, { x: 0, z: 0 });
+
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.type).toBe('station');
+    expect(result.stations.size).toBe(stationCountBefore);
   });
 });
 
