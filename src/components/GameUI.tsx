@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellType, TrainData, StationData } from '../types';
-import { RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TRAIN_CAPACITY } from '../sim/economy';
+import type { CellType, TrainData, StationData, PlatformDoorType } from '../types';
+import {
+  RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TRAIN_CAPACITY,
+  PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
+} from '../sim/economy';
 import type { SimWorld } from '../sim/simulation';
+import type { AccidentNotice } from '../hooks/useGameLogic';
 
 const REMOVE_COLOUR = '#ff3333';
 
@@ -32,6 +36,10 @@ interface GameUIProps {
   // ★追加: 経済システム
   money: number;
   world: React.RefObject<SimWorld>;
+  // ★追加: 人身事故とホームドア
+  selectedStationId: string | null;
+  onUpgradeDoors: (stationId: string, doorType: PlatformDoorType) => void;
+  accidents: AccidentNotice[];
 }
 
 export const GameUI: React.FC<GameUIProps> = ({
@@ -42,7 +50,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   scheduleClipboard, onCopySchedule, onPasteSchedule,
   simSpeed, setSimSpeed,
   onSave, onLoad,
-  money, world
+  money, world,
+  selectedStationId, onUpgradeDoors, accidents
 }) => {
   // 選択中列車の乗客数(sim層所有のTrainRuntimeから低頻度でポーリングする)
   const [passengers, setPassengers] = useState(0);
@@ -58,6 +67,22 @@ export const GameUI: React.FC<GameUIProps> = ({
     }, PASSENGERS_POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [selectedTrainId, world]);
+
+  // 選択中駅の待ち人数(StationLabelと同様、低頻度でポーリングする)
+  const [stationWaiting, setStationWaiting] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!selectedStationId) {
+        setStationWaiting(0);
+        return;
+      }
+      const waiting = world.current?.waiting.get(selectedStationId) ?? 0;
+      setStationWaiting(Math.floor(waiting));
+    }, PASSENGERS_POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [selectedStationId, world]);
+
   const speedBtnStyle = (speed: 0 | 1 | 2 | 4) => ({
     padding: '8px 14px', fontSize: '14px', fontWeight: 'bold' as const, cursor: 'pointer',
     background: simSpeed === speed ? '#00aaff' : 'white',
@@ -72,9 +97,30 @@ export const GameUI: React.FC<GameUIProps> = ({
   });
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
+  const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
 
   return (
     <>
+      {/* ★追加: 人身事故バナー */}
+      {accidents.length > 0 && (
+        <div style={{
+          position: 'absolute', top: 70, left: '50%', transform: 'translateX(-50%)',
+          display: 'flex', flexDirection: 'column', gap: '6px', pointerEvents: 'none', zIndex: 20
+        }}>
+          {accidents.map((a, i) => {
+            const st = stations.get(a.stationId);
+            return (
+              <div key={`${a.trainId}-${i}`} style={{
+                background: '#cc0000', color: 'white', padding: '8px 16px', borderRadius: '6px',
+                fontWeight: 'bold', fontSize: '0.9rem', boxShadow: '0 2px 6px rgba(0,0,0,0.3)'
+              }}>
+                ⚠ {st ? st.name : a.stationId} で人身事故が発生 — 運転見合わせ中
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{ position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>
         <button onClick={() => setSimSpeed(0)} style={speedBtnStyle(0)} title="Pause">⏸</button>
         <button onClick={() => setSimSpeed(1)} style={speedBtnStyle(1)}>1x</button>
@@ -199,6 +245,48 @@ export const GameUI: React.FC<GameUIProps> = ({
                  Click stations to add stops
                </div>
              )}
+          </div>
+        ) : selectedStation ? (
+          <div>
+            <div style={{ borderBottom: '1px solid #ccc', paddingBottom: '5px', marginBottom: '10px' }}>
+              <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: STATION_COLOUR }}>
+                {selectedStation.name}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                Waiting: <span style={{ fontWeight: 'bold' }}>{stationWaiting}</span>
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                Platform doors: <span style={{ fontWeight: 'bold' }}>{selectedStation.platformDoors}</span>
+              </div>
+            </div>
+
+            <button
+              onClick={() => onUpgradeDoors(selectedStation.id, 'standard')}
+              disabled={selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST}
+              style={{
+                width: '100%', padding: '8px', marginBottom: '5px',
+                background: selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST ? '#eee' : '#00aaff',
+                color: selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST ? '#999' : 'white',
+                border: '1px solid #ccc', borderRadius: '4px', fontWeight: 'bold',
+                cursor: selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST ? 'not-allowed' : 'pointer'
+              }}
+            >
+              標準ホームドア ¥{PLATFORM_DOOR_STANDARD_COST.toLocaleString()}
+            </button>
+
+            <button
+              onClick={() => onUpgradeDoors(selectedStation.id, 'fullscreen')}
+              disabled={selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST}
+              style={{
+                width: '100%', padding: '8px',
+                background: selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST ? '#eee' : '#00cc66',
+                color: selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST ? '#999' : 'white',
+                border: '1px solid #ccc', borderRadius: '4px', fontWeight: 'bold',
+                cursor: selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST ? 'not-allowed' : 'pointer'
+              }}
+            >
+              フルスクリーン ¥{PLATFORM_DOOR_FULLSCREEN_COST.toLocaleString()}
+            </button>
           </div>
         ) : (
            <div style={{ color: '#666', fontSize: '0.9rem' }}>

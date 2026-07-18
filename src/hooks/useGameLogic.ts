@@ -1,21 +1,33 @@
 import { useState, useRef, useEffect } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, StationData } from '../types';
-import type { SimWorld } from '../sim/simulation';
+import type { CellData, CellType, TrainData, StationData, PlatformDoorType } from '../types';
+import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import { applyRailPath, applyStation, applyDepot, applySignal, removePath } from '../sim/construction';
 import type { ConstructionState } from '../sim/construction';
-import { STARTING_MONEY, TRAIN_COST, costOfPath } from '../sim/economy';
+import { STARTING_MONEY, TRAIN_COST, costOfPath, PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST } from '../sim/economy';
 
 const SAVE_KEY = 'cubictransim-save-v1';
+
+// 事故バナー表示用の通知の生存確認間隔(ms)。該当列車のhaltRemainingが0になったら消す。
+const ACCIDENT_POLL_INTERVAL_MS = 500;
+
+export interface AccidentNotice {
+  trainId: string;
+  stationId: string;
+}
 
 export const useGameLogic = () => {
   const [railMap, setRailMap] = useState<Map<string, CellData>>(new Map());
   const [stations, setStations] = useState<Map<string, StationData>>(new Map());
   const [trains, setTrains] = useState<TrainData[]>([]);
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
+  const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
+
+  // ★追加: 人身事故の通知(バナー表示用)。列車のhaltRemainingが尽きたら自動的に消える。
+  const [activeAccidents, setActiveAccidents] = useState<AccidentNotice[]>([]);
 
   // ★追加: スケジュール用クリップボード
   const [scheduleClipboard, setScheduleClipboard] = useState<string[] | null>(null);
@@ -51,6 +63,19 @@ export const useGameLogic = () => {
   useEffect(() => {
     worldRef.current.economyMirror = { money };
   }, [money]);
+
+  // ★追加: 事故バナーの自動消去。該当列車のhaltRemainingが尽きたら通知を取り除く。
+  useEffect(() => {
+    const id = setInterval(() => {
+      setActiveAccidents(prev =>
+        prev.filter(a => {
+          const rt = worldRef.current.runtimes.get(a.trainId);
+          return rt ? rt.haltRemaining > 0 : false;
+        })
+      );
+    }, ACCIDENT_POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, []);
 
   // --- Commit Path ---
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
@@ -160,6 +185,41 @@ export const useGameLogic = () => {
   const selectTrain = (id: string | null) => {
     setSelectedTrainId(id);
     setIsEditingSchedule(false);
+    setSelectedStationId(null);
+  };
+
+  // ★追加: 駅選択(列車選択とは排他)。列車未選択かつスケジュール編集中でない場合のみ
+  // GameScene側から呼ばれる。
+  const selectStation = (id: string | null) => {
+    setSelectedStationId(id);
+    setSelectedTrainId(null);
+    setIsEditingSchedule(false);
+  };
+
+  // ★追加: ホームドアのアップグレード。ダウングレードは不可。
+  const upgradeStationDoors = (stationId: string, doorType: PlatformDoorType) => {
+    const target = stations.get(stationId);
+    if (!target) return;
+    if (doorType === 'standard' && target.platformDoors !== 'none') return;
+    if (doorType === 'fullscreen' && target.platformDoors === 'fullscreen') return;
+
+    const cost = doorType === 'fullscreen' ? PLATFORM_DOOR_FULLSCREEN_COST : PLATFORM_DOOR_STANDARD_COST;
+    if (money < cost) return;
+
+    setStations(prev => {
+      const next = new Map(prev);
+      const st = next.get(stationId);
+      if (!st) return prev;
+      next.set(stationId, { ...st, platformDoors: doorType });
+      return next;
+    });
+    setMoney(m => m - cost);
+  };
+
+  // ★追加: 人身事故イベントの反映(賠償金の減算 + バナー通知の追加)
+  const handleAccident = (event: Extract<SimEvent, { type: 'accident' }>) => {
+    setMoney(m => m - event.penalty);
+    setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId }]);
   };
 
   // ★追加: スケジュールコピー機能
@@ -229,5 +289,11 @@ export const useGameLogic = () => {
     // ★追加: 経済システム
     money,
     addIncome,
+    // ★追加: 人身事故とホームドア
+    selectedStationId,
+    selectStation,
+    upgradeStationDoors,
+    activeAccidents,
+    handleAccident,
   };
 };

@@ -45,12 +45,15 @@ export const StationLabel: React.FC<Props> = ({ station, orderIndices, world }) 
           </div>
         )}
 
-        {/* 駅名 + 待ち人数 */}
+        {/* 駅名 + ホームドア印 + 待ち人数 */}
         <div style={{
           background: 'rgba(0,0,0,0.6)', color: 'white', padding: '2px 6px',
           borderRadius: '4px', fontSize: '10px', backdropFilter: 'blur(2px)'
         }}>
-          {station.name} ({waitingCount})
+          {station.name}
+          {station.platformDoors === 'standard' && ' ▣'}
+          {station.platformDoors === 'fullscreen' && ' ◼'}
+          {' '}({waitingCount})
         </div>
       </div>
     </Html>

@@ -32,11 +32,13 @@ interface GameSceneProps {
   onSelectTrain: (id: string | null) => void;
   onBuyTrain: (x: number, z: number) => void;
   onAddSchedule: (trainId: string, stationId: string) => void;
+  // ★追加: 駅選択(人身事故とホームドア)
+  onSelectStation: (id: string | null) => void;
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
-  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule
+  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
@@ -90,6 +92,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const cell = railMap.get(key);
         if (cell && cell.type === 'station' && cell.stationId && selectedTrainId) {
             if (isEditingSchedule) onAddSchedule(selectedTrainId, cell.stationId);
+            return;
+        }
+        // 列車未選択かつスケジュール編集中でなければ駅を選択する(人身事故とホームドア)
+        if (cell && cell.type === 'station' && cell.stationId && !selectedTrainId && !isEditingSchedule) {
+            onSelectStation(cell.stationId);
             return;
         }
         if (cell && cell.type === 'depot') {

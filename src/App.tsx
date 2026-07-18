@@ -17,7 +17,9 @@ export default function App() {
     addSchedule, worldRef,
     scheduleClipboard, copySchedule, pasteSchedule,
     saveGame, loadGame,
-    money, addIncome
+    money, addIncome,
+    selectedStationId, selectStation, upgradeStationDoors,
+    activeAccidents, handleAccident
   } = useGameLogic();
 
   return (
@@ -37,10 +39,12 @@ export default function App() {
           onSimEvent={(event) => {
             if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
             if (event.type === 'income') addIncome(event.amount);
+            if (event.type === 'accident') handleAccident(event);
           }}
           onSelectTrain={setSelectedTrainId}
           onBuyTrain={buyTrain}
           onAddSchedule={addSchedule}
+          onSelectStation={selectStation}
         />
       </Canvas>
       
@@ -62,6 +66,9 @@ export default function App() {
         onLoad={loadGame}
         money={money}
         world={worldRef}
+        selectedStationId={selectedStationId}
+        onUpgradeDoors={upgradeStationDoors}
+        accidents={activeAccidents}
       />
     </div>
   );
