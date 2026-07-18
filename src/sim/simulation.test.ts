@@ -49,8 +49,8 @@ const buildTwoStationLine = (length: number, stationAId: string, stationBId: str
   railMap.set(aKey, { ...railMap.get(aKey)!, type: 'station', stationId: stationAId });
   railMap.set(bKey, { ...railMap.get(bKey)!, type: 'station', stationId: stationBId });
   const stations = new Map<string, StationData>([
-    [stationAId, { id: stationAId, name: 'A', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 } }],
-    [stationBId, { id: stationBId, name: 'B', cells: [{ x: length - 1, z: 0 }], center: { x: length - 1, z: 0 } }],
+    [stationAId, { id: stationAId, name: 'A', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+    [stationBId, { id: stationBId, name: 'B', cells: [{ x: length - 1, z: 0 }], center: { x: length - 1, z: 0 }, platformDoors: 'none' }],
   ]);
   return { railMap, stations };
 };
@@ -79,7 +79,7 @@ const buildStraightLine = (length: number, stationId: string) => {
   const lastKey = toKey(length - 1, 0);
   railMap.set(lastKey, { ...railMap.get(lastKey)!, type: 'station', stationId });
   const stations = new Map<string, StationData>([
-    [stationId, { id: stationId, name: 'A', cells: [{ x: length - 1, z: 0 }], center: { x: length - 1, z: 0 } }],
+    [stationId, { id: stationId, name: 'A', cells: [{ x: length - 1, z: 0 }], center: { x: length - 1, z: 0 }, platformDoors: 'none' }],
   ]);
   return { railMap, stations };
 };

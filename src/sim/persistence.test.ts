@@ -11,7 +11,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
     ]);
     const stations = new Map<string, StationData>([
-      ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 } }],
+      ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
     ]);
     const trains: TrainData[] = [
       { id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' },

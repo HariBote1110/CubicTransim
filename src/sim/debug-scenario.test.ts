@@ -17,8 +17,8 @@ describe('車庫→駅の経路探索(実機シナリオ再現)', () => {
   // 車庫 (11,0)
   railMap.set(toKey(11, 0), { type: 'depot', connections: DIR.N | DIR.E | DIR.S | DIR.W, rotation: 0 });
 
-  stations.set('stC', { id: 'stC', name: 'Station C', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 } });
-  stations.set('stA', { id: 'stA', name: 'Station A', cells: [{ x: 10, z: 0 }], center: { x: 10, z: 0 } });
+  stations.set('stC', { id: 'stC', name: 'Station C', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' });
+  stations.set('stA', { id: 'stA', name: 'Station A', cells: [{ x: 10, z: 0 }], center: { x: 10, z: 0 }, platformDoors: 'none' });
 
   it('車庫(11,0)から Station C(0,0) への経路が見つかる', () => {
     const path = calculateRoute(railMap, stations, new Set(), new Set(), {

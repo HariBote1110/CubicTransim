@@ -124,7 +124,7 @@ export function applyStation(state: ConstructionState, pos: Pos): ConstructionSt
   if (!targetId) {
     targetId = Math.random().toString(36).substr(2, 9);
     const newName = nextStationName(stations);
-    stations.set(targetId, { id: targetId, name: newName, cells: [{ x: pos.x, z: pos.z }], center: { x: pos.x, z: pos.z } });
+    stations.set(targetId, { id: targetId, name: newName, cells: [{ x: pos.x, z: pos.z }], center: { x: pos.x, z: pos.z }, platformDoors: 'none' });
   } else {
     const sid = targetId;
     const st = stations.get(sid);

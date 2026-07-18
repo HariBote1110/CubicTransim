@@ -36,7 +36,7 @@ describe('calculateRoute', () => {
     railMap.set(toKey(4, 0), { ...railMap.get(toKey(4, 0))!, type: 'station', stationId: 'stA' });
 
     const stations = new Map<string, StationData>([
-      ['stA', { id: 'stA', name: 'A', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 } }],
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 }, platformDoors: 'none' }],
     ]);
 
     const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
@@ -80,7 +80,7 @@ describe('calculateRoute', () => {
     railMap.set(toKey(3, 2), { ...railMap.get(toKey(3, 2))!, type: 'station', stationId: 'stB' });
 
     const stations = new Map<string, StationData>([
-      ['stB', { id: 'stB', name: 'B', cells: [{ x: 3, z: 2 }], center: { x: 3, z: 2 } }],
+      ['stB', { id: 'stB', name: 'B', cells: [{ x: 3, z: 2 }], center: { x: 3, z: 2 }, platformDoors: 'none' }],
     ]);
 
     const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
@@ -111,7 +111,7 @@ describe('calculateRoute', () => {
     railMap.set(toKey(4, 0), { ...railMap.get(toKey(4, 0))!, type: 'station', stationId: 'stC' });
 
     const stations = new Map<string, StationData>([
-      ['stC', { id: 'stC', name: 'C', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 } }],
+      ['stC', { id: 'stC', name: 'C', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 }, platformDoors: 'none' }],
     ]);
 
     const occupied = new Set<string>([toKey(2, 0)]);
@@ -133,7 +133,7 @@ describe('calculateRoute', () => {
     railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stD' });
 
     const stations = new Map<string, StationData>([
-      ['stD', { id: 'stD', name: 'D', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 } }],
+      ['stD', { id: 'stD', name: 'D', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
     ]);
 
     const occupied = new Set<string>([toKey(1, 0)]);
@@ -156,7 +156,7 @@ describe('calculateRoute', () => {
     railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stE' });
 
     const stations = new Map<string, StationData>([
-      ['stE', { id: 'stE', name: 'E', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 } }],
+      ['stE', { id: 'stE', name: 'E', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
     ]);
 
     // 東向き (0,0)->(2,0) は信号の向きと同じなので通過できる
@@ -171,7 +171,7 @@ describe('calculateRoute', () => {
     // 信号 (東向き) に逆らう進入になり、迂回路がないため経路が見つからない
     railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, type: 'station', stationId: 'stF' });
     const stations2 = new Map<string, StationData>([
-      ['stF', { id: 'stF', name: 'F', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 } }],
+      ['stF', { id: 'stF', name: 'F', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
     ]);
 
     const blockedResult = calculateRoute(railMap, stations2, noOccupied, noReserved, {
@@ -199,7 +199,7 @@ describe('calculateRoute', () => {
     railMap.set(toKey(1, -1), { ...railMap.get(toKey(1, -1))!, type: 'station', stationId: 'stG' });
 
     const stations = new Map<string, StationData>([
-      ['stG', { id: 'stG', name: 'G', cells: [{ x: 1, z: -1 }], center: { x: 1, z: -1 } }],
+      ['stG', { id: 'stG', name: 'G', cells: [{ x: 1, z: -1 }], center: { x: 1, z: -1 }, platformDoors: 'none' }],
     ]);
 
     // start=(0,0), prev=null なので方向制約はかからず一旦 (1,0) までは進める。

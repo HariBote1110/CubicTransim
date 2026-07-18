@@ -103,7 +103,7 @@ describe('nextStationName（バグ5: 採番）', () => {
 
   it('既存駅の名前を走査し未使用の文字を使う（孤児駅で飛ばない）', () => {
     const stations = new Map<string, StationData>([
-      ['id1', { id: 'id1', name: 'Station A', cells: [], center: { x: 0, z: 0 } }],
+      ['id1', { id: 'id1', name: 'Station A', cells: [], center: { x: 0, z: 0 }, platformDoors: 'none' }],
       // Station B は孤児として消えている想定 → 次は B が再利用されるべき
     ]);
     expect(nextStationName(stations)).toBe('Station B');
@@ -113,7 +113,7 @@ describe('nextStationName（バグ5: 採番）', () => {
     const stations = new Map<string, StationData>();
     for (let i = 0; i < 26; i++) {
       const name = `Station ${String.fromCharCode(65 + i)}`;
-      stations.set(`id${i}`, { id: `id${i}`, name, cells: [], center: { x: 0, z: 0 } });
+      stations.set(`id${i}`, { id: `id${i}`, name, cells: [], center: { x: 0, z: 0 }, platformDoors: 'none' });
     }
     expect(nextStationName(stations)).toBe('Station A2');
   });

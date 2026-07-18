@@ -9,11 +9,14 @@ export interface CellData {
   signalDir?: number;
 }
 
+export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
+
 export interface StationData {
   id: string;
   name: string;
   cells: { x: number, z: number }[];
   center: { x: number, z: number };
+  platformDoors: PlatformDoorType;
 }
 
 export interface TrainData {

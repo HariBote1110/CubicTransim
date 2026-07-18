@@ -1,5 +1,6 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
+import type { PlatformDoorType } from '../types';
 
 export const STARTING_MONEY = 50_000;
 
@@ -29,7 +30,6 @@ export const ACCIDENT_HALT_DURATION = 60; // シミュレーション秒
 export const ACCIDENT_PENALTY = 5_000;
 
 export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal';
-export type PlatformDoorType = keyof typeof ACCIDENT_DOOR_MODIFIER;
 
 // 事故発生確率 = 基本確率 × ドア種別による係数 × 混雑係数(待ち0で0.5倍、満杯で1.5倍)
 export function calculateAccidentChance(doorType: PlatformDoorType, waiting: number): number {
