@@ -1,7 +1,15 @@
 import { toKey, getVectorFromDir } from '../utils';
 import type { CellData, StationData, TrainData } from '../types';
 import { calculateRoute } from './pathfinding';
-import { PASSENGER_SPAWN_RATE, STATION_WAITING_CAP, TRAIN_CAPACITY, FARE_PER_TILE } from './economy';
+import {
+  PASSENGER_SPAWN_RATE,
+  STATION_WAITING_CAP,
+  TRAIN_CAPACITY,
+  FARE_PER_TILE,
+  ACCIDENT_HALT_DURATION,
+  ACCIDENT_PENALTY,
+  calculateAccidentChance,
+} from './economy';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
 export const TRAIN_LENGTH_TILES = 2;
@@ -28,6 +36,7 @@ export interface TrainRuntime {
   renderTarget: { x: number; y: number; z: number } | null;
   passengers: number;
   lastStopStationId: string | null;
+  haltRemaining: number;
 }
 
 export interface SimWorld {
@@ -36,12 +45,14 @@ export interface SimWorld {
   trains: TrainData[];
   runtimes: Map<string, TrainRuntime>;
   waiting: Map<string, number>;
+  rng: () => number;
   economyMirror?: { money: number };
 }
 
 export type SimEvent =
   | { type: 'arrive'; trainId: string; scheduleIndex: number }
-  | { type: 'income'; trainId: string; amount: number; passengers: number };
+  | { type: 'income'; trainId: string; amount: number; passengers: number }
+  | { type: 'accident'; trainId: string; stationId: string; penalty: number };
 
 const normalize = (x: number, z: number) => {
   const len = Math.sqrt(x * x + z * z) || 1;
@@ -68,6 +79,7 @@ const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
       renderTarget: null,
       passengers: 0,
       lastStopStationId: null,
+      haltRemaining: 0,
     };
     world.runtimes.set(train.id, rt);
   }
@@ -191,6 +203,14 @@ const computeObstacleDistance = (world: SimWorld, train: TrainData, rt: TrainRun
 
 const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: number, events: SimEvent[]) => {
   const targetStationId = train.schedule.length > 0 ? train.schedule[train.scheduleIndex] : null;
+
+  // 人身事故による運転見合わせ中: stopRemainingより優先して完全停止する
+  if (rt.haltRemaining > 0) {
+    rt.haltRemaining = Math.max(0, rt.haltRemaining - dt);
+    rt.speedKmh = 0;
+    rt.debugStatus = 'Service suspended (accident)';
+    return;
+  }
 
   // 駅停車中
   if (rt.stopRemaining > 0) {
@@ -336,6 +356,14 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       rt.passengers = boarding;
       world.waiting.set(targetStationId!, waitingCount - boarding);
       rt.lastStopStationId = targetStationId!;
+
+      // 人身事故判定: 停車の瞬間、ホーム混雑度とドア種別に応じた確率で発生する
+      const doorType = st?.platformDoors ?? 'none';
+      const accidentChance = calculateAccidentChance(doorType, waitingCount);
+      if (world.rng() < accidentChance) {
+        rt.haltRemaining = ACCIDENT_HALT_DURATION;
+        events.push({ type: 'accident', trainId: train.id, stationId: targetStationId!, penalty: ACCIDENT_PENALTY });
+      }
 
       rt.stopRemaining = STOP_DURATION;
       rt.speedKmh = 0;

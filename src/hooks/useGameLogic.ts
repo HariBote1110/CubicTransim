@@ -31,6 +31,7 @@ export const useGameLogic = () => {
     trains: [],
     runtimes: new Map(),
     waiting: new Map(),
+    rng: Math.random,
     economyMirror: { money: STARTING_MONEY },
   });
 

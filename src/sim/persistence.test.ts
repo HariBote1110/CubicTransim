@@ -32,6 +32,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
         renderTarget: { x: 1, y: 0.5, z: 0 },
         passengers: 12,
         lastStopStationId: 'stA',
+        haltRemaining: 0,
       }],
     ]);
     const waiting = new Map<string, number>([['stA', 34]]);

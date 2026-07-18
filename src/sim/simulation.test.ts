@@ -3,7 +3,14 @@ import { toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, TrainData } from '../types';
 import { stepWorld, STOP_DURATION, ACCEL_KMH_S, TRAIN_LENGTH_TILES } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
-import { PASSENGER_SPAWN_RATE, STATION_WAITING_CAP, TRAIN_CAPACITY, FARE_PER_TILE } from './economy';
+import {
+  PASSENGER_SPAWN_RATE,
+  STATION_WAITING_CAP,
+  TRAIN_CAPACITY,
+  FARE_PER_TILE,
+  ACCIDENT_HALT_DURATION,
+  ACCIDENT_PENALTY,
+} from './economy';
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
   const map = new Map<string, CellData>();
@@ -36,8 +43,14 @@ const makeTrain = (overrides: Partial<TrainData>): TrainData => ({
   ...overrides,
 });
 
-const makeWorld = (railMap: Map<string, CellData>, stations: Map<string, StationData>, trains: TrainData[]): SimWorld => ({
-  railMap, stations, trains, runtimes: new Map(), waiting: new Map(),
+// rng省略時は常に1を返す(=事故が発生しない)ことで既存テストの決定性を保つ。
+const makeWorld = (
+  railMap: Map<string, CellData>,
+  stations: Map<string, StationData>,
+  trains: TrainData[],
+  rng: () => number = () => 1
+): SimWorld => ({
+  railMap, stations, trains, runtimes: new Map(), waiting: new Map(), rng,
 });
 
 // 直線上に2駅(両端)を置く。列車が往復してincome/lastStopStationIdを検証するために使う。
@@ -171,7 +184,7 @@ describe('stepWorld', () => {
       id: 'B', grid: { x: 1, z: 0 }, prevGrid: null, progress: 0, speedKmh: 0,
       route: [], trail: [{ x: 1, z: 0 }], stopRemaining: 0, waitTimer: 0, debugStatus: '',
       renderPos: { x: 1, y: 0.5, z: 0 }, renderTarget: null,
-      passengers: 0, lastStopStationId: null,
+      passengers: 0, lastStopStationId: null, haltRemaining: 0,
     });
 
     stepWorld(world, 0.1);
@@ -271,5 +284,87 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     expect(incomeEvent.passengers).toBe(boardedAtA);
     expect(incomeEvent.amount).toBeCloseTo((length - 1) * FARE_PER_TILE * boardedAtA, 5);
     expect(rt.lastStopStationId).toBe('stB');
+  });
+});
+
+describe('stepWorld: 人身事故とホームドア', () => {
+  const buildStraightLineWithDoors = (length: number, stationId: string, doors: StationData['platformDoors']) => {
+    const { railMap, stations } = buildStraightLine(length, stationId);
+    stations.set(stationId, { ...stations.get(stationId)!, platformDoors: doors });
+    return { railMap, stations };
+  };
+
+  it('rng=0(必ず発生): 停車時にaccidentイベントが発行されhaltRemaining=60になり、halt中は動かず、halt終了後に通常停車→発車する', () => {
+    const { railMap, stations } = buildStraightLineWithDoors(6, 'stA', 'none');
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train], () => 0);
+
+    const events = runUntilStopped(world, 0.1, 5000);
+    const rt = world.runtimes.get('t1')!;
+
+    const accidentEvents = events.filter(e => e.type === 'accident');
+    expect(accidentEvents.length).toBe(1);
+    const accidentEvent = accidentEvents[0] as Extract<SimEvent, { type: 'accident' }>;
+    expect(accidentEvent.stationId).toBe('stA');
+    expect(accidentEvent.penalty).toBe(ACCIDENT_PENALTY);
+    expect(rt.haltRemaining).toBe(ACCIDENT_HALT_DURATION);
+
+    // halt中は完全停止し続ける
+    stepWorld(world, 10);
+    expect(rt.haltRemaining).toBeCloseTo(ACCIDENT_HALT_DURATION - 10, 5);
+    expect(rt.speedKmh).toBe(0);
+    expect(rt.debugStatus).toBe('Service suspended (accident)');
+    expect(rt.stopRemaining).toBe(STOP_DURATION);
+
+    // halt完了まで進める
+    stepWorld(world, ACCIDENT_HALT_DURATION - 10);
+    expect(rt.haltRemaining).toBe(0);
+
+    // haltが尽きたら通常のstopRemaining消化に入る
+    stepWorld(world, STOP_DURATION);
+    expect(rt.stopRemaining).toBe(0);
+  });
+
+  it('rng=0.999: 事故イベントは発行されない', () => {
+    const { railMap, stations } = buildStraightLineWithDoors(6, 'stA', 'none');
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train], () => 0.999);
+
+    const events = runUntilStopped(world, 0.1, 5000);
+    const rt = world.runtimes.get('t1')!;
+
+    expect(events.some(e => e.type === 'accident')).toBe(false);
+    expect(rt.haltRemaining).toBe(0);
+  });
+
+  it('standardドア: 確率が0.05倍になる(混雑度によらない上限0.05*1.5*BASEを超えるrngでは発生しない)', () => {
+    // standardの確率は 0.05 * (0.5〜1.5) * ACCIDENT_BASE_CHANCE = 0.00025〜0.00075 の範囲に収まる。
+    // 下限より小さいrngなら混雑度に関わらず必ず発生し、上限より大きいrngなら絶対に発生しない。
+    const belowMin = 0.0002; // < 0.00025
+    const aboveMax = 0.0008; // > 0.00075
+
+    const { railMap: railMap1, stations: stations1 } = buildStraightLineWithDoors(6, 'stA', 'standard');
+    const train1 = makeTrain({ schedule: ['stA'] });
+    const world1 = makeWorld(railMap1, stations1, [train1], () => belowMin);
+    runUntilStopped(world1, 0.1, 5000);
+    expect(world1.runtimes.get('t1')!.haltRemaining).toBeGreaterThan(0);
+
+    const { railMap: railMap2, stations: stations2 } = buildStraightLineWithDoors(6, 'stA', 'standard');
+    const train2 = makeTrain({ schedule: ['stA'] });
+    const world2 = makeWorld(railMap2, stations2, [train2], () => aboveMax);
+    runUntilStopped(world2, 0.1, 5000);
+    expect(world2.runtimes.get('t1')!.haltRemaining).toBe(0);
+  });
+
+  it('fullscreenドア: rng=0でも事故は発生しない', () => {
+    const { railMap, stations } = buildStraightLineWithDoors(6, 'stA', 'fullscreen');
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train], () => 0);
+
+    const events = runUntilStopped(world, 0.1, 5000);
+    const rt = world.runtimes.get('t1')!;
+
+    expect(events.some(e => e.type === 'accident')).toBe(false);
+    expect(rt.haltRemaining).toBe(0);
   });
 });
