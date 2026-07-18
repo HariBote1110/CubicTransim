@@ -19,6 +19,12 @@ export interface StationData {
   platformDoors: PlatformDoorType;
 }
 
+export interface TownData {
+  id: string;
+  centre: { x: number, z: number };
+  population: number;
+}
+
 export interface TrainData {
   id: string;
   x: number;
