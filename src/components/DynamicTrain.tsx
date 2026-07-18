@@ -4,7 +4,8 @@ import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { TRAIN_COLOUR, SELECTED_TRAIN_COLOUR } from '../types';
 import type { TrainType, CellData, TrainData, StationData } from '../types';
-import { toKey, DIR, getVectorFromDir } from '../utils';
+import { toKey, getVectorFromDir } from '../utils';
+import { calculateRoute } from '../sim/pathfinding';
 
 const STOP_DURATION = 3000;
 const TRAIN_LENGTH_TILES = 2; 
@@ -48,102 +49,10 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
 
   const targetStationId = data.schedule.length > 0 ? data.schedule[data.scheduleIndex] : null;
 
-  // --- 経路探索 (BFS) ---
-  const calculateRoute = (start: { x: number, z: number }, targetId: string) => {
-    const targetSt = stations.get(targetId);
-    if (!targetSt) return [];
-
-    const reservedMap = new Set<string>();
-    const occupiedMap = new Set<string>();
-
-    allTrains.forEach(t => {
-      if (t.id === data.id) return;
-      if (t.occupiedCells) {
-        t.occupiedCells.forEach(c => occupiedMap.add(toKey(c.x, c.z)));
-      } else {
-        occupiedMap.add(toKey(t.x, t.z));
-      }
-      if (t.status === 'running' && t.reservedPath) {
-        t.reservedPath.forEach(p => reservedMap.add(toKey(p.x, p.z)));
-      }
-    });
-
-    const runSearch = (ignoreOccupied: boolean) => {
-        const queue = [{ curr: start, path: [] as { x: number; z: number }[], prev: prevGrid }];
-        const visited = new Set<string>();
-        visited.add(toKey(start.x, start.z));
-        const MAX_DEPTH = 300;
-
-        while (queue.length > 0) {
-            const { curr, path, prev } = queue.shift()!;
-            const currKey = toKey(curr.x, curr.z);
-            const cell = railMap.get(currKey);
-
-            if (cell && cell.stationId === targetId) return path;
-            if (path.length >= MAX_DEPTH) continue;
-
-            const myConnections = cell?.connections || 0;
-            const directions = [
-                { x: 0, z: -1, dir: DIR.N }, { x: 1, z: -1, dir: DIR.NE },
-                { x: 1, z: 0, dir: DIR.E }, { x: 1, z: 1, dir: DIR.SE },
-                { x: 0, z: 1, dir: DIR.S }, { x: -1, z: 1, dir: DIR.SW },
-                { x: -1, z: 0, dir: DIR.W }, { x: -1, z: -1, dir: DIR.NW }
-            ];
-
-            const validMoves = [];
-            for (const d of directions) {
-                if ((myConnections & d.dir) === 0) continue;
-                const tx = curr.x + d.x;
-                const tz = curr.z + d.z;
-                if (prev && tx === prev.x && tz === prev.z) continue;
-
-                if (prev) {
-                    const cv = new THREE.Vector3(curr.x - prev.x, 0, curr.z - prev.z).normalize();
-                    const nv = new THREE.Vector3(d.x, 0, d.z).normalize();
-                    if (cv.dot(nv) < 0.5) continue;
-                }
-
-                const targetKey = toKey(tx, tz);
-                const targetCell = railMap.get(targetKey);
-                if (targetCell && targetCell.signalDir) {
-                    const sv = getVectorFromDir(targetCell.signalDir);
-                    const dv = { x: d.x, z: d.z };
-                    if ((sv.x * dv.x + sv.z * dv.z) < -0.1) continue;
-                }
-
-                if (!ignoreOccupied) {
-                    if (reservedMap.has(targetKey)) continue;
-                    if (occupiedMap.has(targetKey)) continue;
-                }
-
-                validMoves.push({ x: tx, z: tz });
-            }
-
-            if (validMoves.length === 0 && prev) {
-                 queue.push({ curr: prev, path: [...path, prev], prev: curr });
-            }
-
-            for (const move of validMoves) {
-                const key = toKey(move.x, move.z);
-                if (!visited.has(key)) {
-                    visited.add(key);
-                    queue.push({ curr: move, path: [...path, move], prev: curr });
-                }
-            }
-        }
-        return null;
-    };
-
-    const smartPath = runSearch(false);
-    if (smartPath) return smartPath;
-    const fallbackPath = runSearch(true);
-    return fallbackPath || [];
-  };
-
   useEffect(() => {
     if (data.status === 'running' && targetStationId) {
       if (localRoute.length === 0 && !isStopped) {
-        const newPath = calculateRoute(currentGrid, targetStationId);
+        const newPath = calculateRoute(railMap, stations, allTrains, { start: currentGrid, prev: prevGrid, targetStationId, selfId: data.id });
         if (newPath.length > 0) {
           setLocalRoute(newPath);
           onUpdatePath(data.id, newPath);
@@ -178,7 +87,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
         onUpdatePath(data.id, []);
         setWaitTimer(prev => prev + delta);
         if (waitTimer > 1.0) {
-             const newPath = calculateRoute(currentGrid, targetStationId!);
+             const newPath = calculateRoute(railMap, stations, allTrains, { start: currentGrid, prev: prevGrid, targetStationId: targetStationId!, selfId: data.id });
              if (newPath.length > 0) setLocalRoute(newPath);
              setWaitTimer(0);
         }
