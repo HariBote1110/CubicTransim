@@ -15,7 +15,8 @@ export default function App() {
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
     addSchedule, worldRef,
-    scheduleClipboard, copySchedule, pasteSchedule
+    scheduleClipboard, copySchedule, pasteSchedule,
+    saveGame, loadGame
   } = useGameLogic();
 
   return (
@@ -55,6 +56,8 @@ export default function App() {
         onPasteSchedule={pasteSchedule}
         simSpeed={simSpeed}
         setSimSpeed={setSimSpeed}
+        onSave={saveGame}
+        onLoad={loadGame}
       />
     </div>
   );

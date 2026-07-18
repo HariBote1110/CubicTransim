@@ -20,6 +20,9 @@ interface GameUIProps {
   // ★追加: ゲーム内時計
   simSpeed: 0 | 1 | 2 | 4;
   setSimSpeed: (speed: 0 | 1 | 2 | 4) => void;
+  // ★追加: セーブ／ロード
+  onSave: () => void;
+  onLoad: () => void;
 }
 
 export const GameUI: React.FC<GameUIProps> = ({
@@ -28,7 +31,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   isEditingSchedule, setIsEditingSchedule,
   onDeploy,
   scheduleClipboard, onCopySchedule, onPasteSchedule,
-  simSpeed, setSimSpeed
+  simSpeed, setSimSpeed,
+  onSave, onLoad
 }) => {
   const speedBtnStyle = (speed: 0 | 1 | 2 | 4) => ({
     padding: '8px 14px', fontSize: '14px', fontWeight: 'bold' as const, cursor: 'pointer',
@@ -52,6 +56,9 @@ export const GameUI: React.FC<GameUIProps> = ({
         <button onClick={() => setSimSpeed(1)} style={speedBtnStyle(1)}>1x</button>
         <button onClick={() => setSimSpeed(2)} style={speedBtnStyle(2)}>2x</button>
         <button onClick={() => setSimSpeed(4)} style={speedBtnStyle(4)}>4x</button>
+        <div style={{ width: '1px', background: '#ccc', margin: '0 4px' }} />
+        <button onClick={onSave} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #00cc66', borderRadius: '8px' }}>Save</button>
+        <button onClick={onLoad} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #ffaa00', borderRadius: '8px' }}>Load</button>
       </div>
 
       <div style={{ position: 'absolute', bottom: 30, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>

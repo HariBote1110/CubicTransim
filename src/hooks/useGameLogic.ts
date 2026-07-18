@@ -2,6 +2,10 @@ import { useState, useRef, useEffect } from 'react';
 import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
 import type { CellData, CellType, TrainData, StationData } from '../types';
 import type { SimWorld } from '../sim/simulation';
+import { serialiseWorld, deserialiseWorld } from '../sim/persistence';
+import type { SaveData } from '../sim/persistence';
+
+const SAVE_KEY = 'cubictransim-save-v1';
 
 export const useGameLogic = () => {
   const [railMap, setRailMap] = useState<Map<string, CellData>>(new Map());
@@ -303,6 +307,31 @@ export const useGameLogic = () => {
     }));
   };
 
+  // ★追加: セーブ／ロード
+  const saveGame = () => {
+    const saveData = serialiseWorld(railMap, stations, trains, worldRef.current.runtimes);
+    localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
+  };
+
+  const loadGame = () => {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) {
+      console.warn('No save data found.');
+      return;
+    }
+    const saveData = JSON.parse(raw) as SaveData;
+    const restored = deserialiseWorld(saveData);
+
+    setRailMap(restored.railMap);
+    setStations(restored.stations);
+    setTrains(restored.trains);
+
+    // runtimes は DynamicTrain が Map インスタンスを参照し続けているため、
+    // 差し替えず中身だけ入れ替える。
+    worldRef.current.runtimes.clear();
+    restored.runtimes.forEach((rt, id) => worldRef.current.runtimes.set(id, rt));
+  };
+
   return {
     railMap, setRailMap,
     stations, setStations,
@@ -317,6 +346,8 @@ export const useGameLogic = () => {
     // 公開
     scheduleClipboard,
     copySchedule,
-    pasteSchedule
+    pasteSchedule,
+    saveGame,
+    loadGame
   };
 };
