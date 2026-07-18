@@ -3,6 +3,7 @@ import { toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, TrainData } from '../types';
 import { stepWorld, STOP_DURATION, ACCEL_KMH_S, TRAIN_LENGTH_TILES } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
+import { PASSENGER_SPAWN_RATE, STATION_WAITING_CAP, TRAIN_CAPACITY, FARE_PER_TILE } from './economy';
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
   const map = new Map<string, CellData>();
@@ -36,8 +37,33 @@ const makeTrain = (overrides: Partial<TrainData>): TrainData => ({
 });
 
 const makeWorld = (railMap: Map<string, CellData>, stations: Map<string, StationData>, trains: TrainData[]): SimWorld => ({
-  railMap, stations, trains, runtimes: new Map(),
+  railMap, stations, trains, runtimes: new Map(), waiting: new Map(),
 });
+
+// 直線上に2駅(両端)を置く。列車が往復してincome/lastStopStationIdを検証するために使う。
+const buildTwoStationLine = (length: number, stationAId: string, stationBId: string) => {
+  const cells = Array.from({ length }, (_, i) => ({ x: i, z: 0 }));
+  const railMap = buildRailMap(cells);
+  const aKey = toKey(0, 0);
+  const bKey = toKey(length - 1, 0);
+  railMap.set(aKey, { ...railMap.get(aKey)!, type: 'station', stationId: stationAId });
+  railMap.set(bKey, { ...railMap.get(bKey)!, type: 'station', stationId: stationBId });
+  const stations = new Map<string, StationData>([
+    [stationAId, { id: stationAId, name: 'A', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 } }],
+    [stationBId, { id: stationBId, name: 'B', cells: [{ x: length - 1, z: 0 }], center: { x: length - 1, z: 0 } }],
+  ]);
+  return { railMap, stations };
+};
+
+const runUntilStopped = (world: SimWorld, dt: number, maxTicks: number): SimEvent[] => {
+  const events: SimEvent[] = [];
+  for (let i = 0; i < maxTicks; i++) {
+    events.push(...stepWorld(world, dt));
+    const rt = world.runtimes.get(world.trains[0].id);
+    if (rt && rt.stopRemaining > 0) break;
+  }
+  return events;
+};
 
 const runTicks = (world: SimWorld, dt: number, count: number): SimEvent[] => {
   const events: SimEvent[] = [];
@@ -145,6 +171,7 @@ describe('stepWorld', () => {
       id: 'B', grid: { x: 1, z: 0 }, prevGrid: null, progress: 0, speedKmh: 0,
       route: [], trail: [{ x: 1, z: 0 }], stopRemaining: 0, waitTimer: 0, debugStatus: '',
       renderPos: { x: 1, y: 0.5, z: 0 }, renderTarget: null,
+      passengers: 0, lastStopStationId: null,
     });
 
     stepWorld(world, 0.1);
@@ -161,5 +188,70 @@ describe('stepWorld', () => {
     runTicks(world, 0.1, 10);
 
     expect(world.runtimes.get('t1')).toBeUndefined();
+  });
+});
+
+describe('stepWorld: 旅客需要と運賃収入', () => {
+  it('waitingは毎tick PASSENGER_SPAWN_RATE×dt ずつ増え、STATION_WAITING_CAPで頭打ちになる', () => {
+    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+    const world = makeWorld(railMap, stations, []);
+
+    stepWorld(world, 1.0);
+    expect(world.waiting.get('stA')).toBeCloseTo(PASSENGER_SPAWN_RATE, 5);
+    expect(world.waiting.get('stB')).toBeCloseTo(PASSENGER_SPAWN_RATE, 5);
+
+    // 大きなdtで一気に上限を超えさせる
+    stepWorld(world, 100000);
+    expect(world.waiting.get('stA')).toBe(STATION_WAITING_CAP);
+  });
+
+  it('停車時にwaitingから最大TRAIN_CAPACITYまで乗車し、waitingが減る', () => {
+    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+    const train = makeTrain({ schedule: ['stB', 'stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    // stBに大量の待ち客がいる状態を用意(capacityを超える)
+    world.waiting.set('stB', TRAIN_CAPACITY + 50);
+
+    runUntilStopped(world, 0.1, 5000);
+
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.passengers).toBe(TRAIN_CAPACITY);
+    expect(world.waiting.get('stB')).toBe(50);
+  });
+
+  it('2駅目到着時にincomeイベントが発行される(金額=距離×FARE_PER_TILE×人数)', () => {
+    const length = 6;
+    const { railMap, stations } = buildTwoStationLine(length, 'stA', 'stB');
+    const train = makeTrain({ schedule: ['stA', 'stB'] });
+    const world = makeWorld(railMap, stations, [train]);
+    world.waiting.set('stA', 10);
+
+    // 1駅目(stA)到着: 乗車のみ、income無し
+    const eventsAtA = runUntilStopped(world, 0.1, 5000);
+    expect(eventsAtA.some(e => e.type === 'income')).toBe(false);
+    const rtAfterA = world.runtimes.get('t1')!;
+    expect(rtAfterA.passengers).toBe(10);
+    expect(rtAfterA.lastStopStationId).toBe('stA');
+
+    // 停車完了までtickを進めてから次の駅へ向かわせる
+    let events: SimEvent[] = [];
+    for (let i = 0; i < 50; i++) {
+      events.push(...stepWorld(world, 0.1));
+    }
+    // 2駅目(stB)到着まで進める
+    let ticks = 0;
+    let rt = world.runtimes.get('t1')!;
+    while (ticks < 5000 && rt.grid.x !== length - 1) {
+      events.push(...stepWorld(world, 0.1));
+      rt = world.runtimes.get('t1')!;
+      ticks++;
+    }
+
+    const incomeEvents = events.filter(e => e.type === 'income');
+    expect(incomeEvents.length).toBe(1);
+    const incomeEvent = incomeEvents[0] as Extract<SimEvent, { type: 'income' }>;
+    expect(incomeEvent.passengers).toBe(10);
+    expect(incomeEvent.amount).toBeCloseTo((length - 1) * FARE_PER_TILE * 10, 5);
+    expect(rt.lastStopStationId).toBe('stB');
   });
 });
