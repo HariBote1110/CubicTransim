@@ -8,6 +8,9 @@ export const useGameLogic = () => {
   const [trains, setTrains] = useState<TrainData[]>([]);
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
+  
+  // ★追加: スケジュール用クリップボード
+  const [scheduleClipboard, setScheduleClipboard] = useState<string[] | null>(null);
 
   // --- ヘルパー ---
   const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
@@ -232,15 +235,14 @@ export const useGameLogic = () => {
         id: Math.random().toString(36).substr(0, 4),
         x, z,
         schedule: [], scheduleIndex: 0, status: 'stored',
-        reservedPath: []
+        reservedPath: [],
+        occupiedCells: [{ x, z }]
     };
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);
     setIsEditingSchedule(false);
   };
 
-  // ★修正: 出庫時の安全確認を完全撤廃
-  // ボタンを押したら問答無用でRunningにする
   const deployTrain = (trainId: string) => {
     setTrains(prev => prev.map(t => {
       if (t.id === trainId) return { ...t, status: 'running' };
@@ -283,6 +285,34 @@ export const useGameLogic = () => {
     });
   }, []);
 
+  const updateTrainOccupancy = useCallback((trainId: string, x: number, z: number, occupied: { x: number, z: number }[]) => {
+     setTrains(prev => prev.map(t => {
+         if (t.id === trainId) {
+             return { ...t, x, z, occupiedCells: occupied };
+         }
+         return t;
+     }));
+  }, []);
+
+  // ★追加: スケジュールコピー機能
+  const copySchedule = (trainId: string) => {
+    const target = trains.find(t => t.id === trainId);
+    if (target) {
+      setScheduleClipboard([...target.schedule]);
+    }
+  };
+
+  // ★追加: スケジュールペースト機能
+  const pasteSchedule = (trainId: string) => {
+    if (!scheduleClipboard) return;
+    setTrains(prev => prev.map(t => {
+      if (t.id === trainId) {
+        return { ...t, schedule: [...scheduleClipboard], scheduleIndex: 0 };
+      }
+      return t;
+    }));
+  };
+
   return {
     railMap, setRailMap,
     stations, setStations,
@@ -293,6 +323,11 @@ export const useGameLogic = () => {
     handleTrainArrive, 
     buyTrain, deployTrain, 
     addSchedule,
-    updateTrainPath
+    updateTrainPath,
+    updateTrainOccupancy,
+    // 公開
+    scheduleClipboard, 
+    copySchedule, 
+    pasteSchedule
   };
 };

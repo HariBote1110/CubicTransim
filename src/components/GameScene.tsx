@@ -28,13 +28,14 @@ interface GameSceneProps {
   onSelectTrain: (id: string | null) => void;
   onBuyTrain: (x: number, z: number) => void;
   onAddSchedule: (trainId: string, stationId: string) => void;
-  // ★追加
   onUpdateTrainPath: (trainId: string, path: { x: number; z: number }[]) => void;
+  // ★追加
+  onUpdateTrainOccupancy: (trainId: string, x: number, z: number, occupied: { x: number, z: number }[]) => void;
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, buildMode, selectedTrainId, isEditingSchedule,
-  onCommitPath, removeSignal, onTrainArrive, onSelectTrain, onBuyTrain, onAddSchedule, onUpdateTrainPath
+  onCommitPath, removeSignal, onTrainArrive, onSelectTrain, onBuyTrain, onAddSchedule, onUpdateTrainPath, onUpdateTrainOccupancy
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
@@ -161,7 +162,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
           key={train.id} data={train} type="commuter" railMap={railMap} stations={stations} allTrains={trains}
           isSelected={train.id === selectedTrainId} onArriveStation={onTrainArrive}
           onClick={() => buildMode === 'none' && onSelectTrain(train.id)}
-          onUpdatePath={onUpdateTrainPath} // 追加
+          onUpdatePath={onUpdateTrainPath}
+          onUpdateOccupancy={onUpdateTrainOccupancy} // 追加
         />
       ))}
     </>

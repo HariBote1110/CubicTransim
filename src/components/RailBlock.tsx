@@ -50,7 +50,7 @@ const HalfRailPart: React.FC<{ length: number, rotation: number, offset: [number
  * カーブレール
  */
 const CurveRailPart: React.FC<{ startAngle: number, endAngle: number, centerOffset: [number, number, number] }> = ({ startAngle, endAngle, centerOffset }) => {
-  const segments: JSX.Element[] = [];
+  const segments: React.JSX.Element[] = [];
   const angleStep = (endAngle - startAngle) / CURVE_SEGMENTS;
   // 隙間を埋めるため、長さをわずかに伸ばす (1.05 -> 1.1)
   const segLength = (0.5 * Math.abs(endAngle - startAngle) / CURVE_SEGMENTS) * 1.1;
@@ -94,7 +94,7 @@ export const RailBlock: React.FC<RailBlockProps> = ({ position, connections = 0,
       return <StraightRailPart length={1.0} rotation={0} />;
     }
 
-    const parts: JSX.Element[] = [];
+    const parts: React.JSX.Element[] = [];
     // 処理済みの方向を記録するビットマスク
     let processed = 0;
 
@@ -160,7 +160,6 @@ export const RailBlock: React.FC<RailBlockProps> = ({ position, connections = 0,
         
         // 斜めのハーフ（中心から角へ）
         const diagLen = Math.sqrt(2) / 2; // 約0.707
-        const diagOff = 0.25 * Math.sqrt(2); // 約0.35
         if (remaining & DIR.NE) parts.push(<HalfRailPart key="h_ne" length={diagLen} rotation={-Math.PI/4} offset={[0.25, 0, -0.25]} />); // 位置調整が必要だが簡易的に
         if (remaining & DIR.SE) parts.push(<HalfRailPart key="h_se" length={diagLen} rotation={Math.PI/4} offset={[0.25, 0, 0.25]} />);
         if (remaining & DIR.SW) parts.push(<HalfRailPart key="h_sw" length={diagLen} rotation={-Math.PI/4} offset={[-0.25, 0, 0.25]} />);

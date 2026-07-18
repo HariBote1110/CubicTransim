@@ -12,15 +12,19 @@ interface GameUIProps {
   stations: Map<string, StationData>;
   isEditingSchedule: boolean;
   setIsEditingSchedule: (v: boolean) => void;
-  // ★追加
   onDeploy: (trainId: string) => void;
+  // ★追加
+  scheduleClipboard: string[] | null;
+  onCopySchedule: (trainId: string) => void;
+  onPasteSchedule: (trainId: string) => void;
 }
 
 export const GameUI: React.FC<GameUIProps> = ({ 
   buildMode, setBuildMode, 
   selectedTrainId, trains, stations, 
   isEditingSchedule, setIsEditingSchedule,
-  onDeploy
+  onDeploy,
+  scheduleClipboard, onCopySchedule, onPasteSchedule
 }) => {
   const btnStyle = (mode: string, color: string) => ({
     padding: '10px 20px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer',
@@ -62,11 +66,21 @@ export const GameUI: React.FC<GameUIProps> = ({
              
              {/* スケジュール表示 */}
              <div style={{ marginBottom: '10px' }}>
-               <div style={{ fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '5px' }}>Schedule:</div>
+               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                 <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>Schedule:</div>
+                 {/* コピー＆ペーストボタン */}
+                 <div style={{ display:'flex', gap:'5px' }}>
+                   <button onClick={() => onCopySchedule(selectedTrain.id)} style={{ fontSize:'0.8rem', cursor:'pointer' }} title="Copy">📋</button>
+                   {scheduleClipboard && (
+                     <button onClick={() => onPasteSchedule(selectedTrain.id)} style={{ fontSize:'0.8rem', cursor:'pointer' }} title="Paste">📝</button>
+                   )}
+                 </div>
+               </div>
+
                {selectedTrain.schedule.length === 0 ? (
-                 <div style={{ fontSize: '0.8rem', color: '#999', fontStyle: 'italic' }}>No stops</div>
+                 <div style={{ fontSize: '0.8rem', color: '#999', fontStyle: 'italic', marginTop:'5px' }}>No stops</div>
                ) : (
-                 <div style={{ maxHeight: '100px', overflowY: 'auto', fontSize: '0.85rem' }}>
+                 <div style={{ maxHeight: '100px', overflowY: 'auto', fontSize: '0.85rem', marginTop:'5px' }}>
                    {selectedTrain.schedule.map((sid, idx) => {
                      const st = stations.get(sid);
                      const isNext = idx === selectedTrain.scheduleIndex;
@@ -84,7 +98,6 @@ export const GameUI: React.FC<GameUIProps> = ({
                )}
              </div>
 
-             {/* 編集・出庫ボタン */}
              {selectedTrain.status === 'stored' && (
                  <button 
                    onClick={() => onDeploy(selectedTrain.id)}

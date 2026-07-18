@@ -35,13 +35,13 @@ export const SignalBlock: React.FC<Props> = ({ position, dir }) => {
       </mesh>
       
       {/* ライト (緑) - 進行方向を向いている */}
-      <mesh position={[0.3, 0.42, -0.06]}>
-        <cylinderGeometry args={[0.03, 0.03, 0.02]} rotation={[Math.PI/2, 0, 0]} />
+      <mesh position={[0.3, 0.42, -0.06]} rotation={[Math.PI/2, 0, 0]}>
+        <cylinderGeometry args={[0.03, 0.03, 0.02]} />
         <meshBasicMaterial color="#00ff00" />
       </mesh>
       {/* ライト (赤) - 裏側は進入禁止イメージ */}
-      <mesh position={[0.3, 0.35, 0.06]}>
-        <cylinderGeometry args={[0.03, 0.03, 0.02]} rotation={[Math.PI/2, 0, 0]} />
+      <mesh position={[0.3, 0.35, 0.06]} rotation={[Math.PI/2, 0, 0]}>
+        <cylinderGeometry args={[0.03, 0.03, 0.02]} />
         <meshBasicMaterial color="#ff0000" />
       </mesh>
 

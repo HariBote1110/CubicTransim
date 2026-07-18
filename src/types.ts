@@ -1,5 +1,3 @@
-import * as THREE from 'three';
-
 export type TrainType = 'commuter' | 'express';
 export type CellType = 'rail' | 'station' | 'depot';
 
@@ -25,8 +23,9 @@ export interface TrainData {
   schedule: string[]; 
   scheduleIndex: number;
   status: 'stored' | 'running';
-  // ★追加: この電車が確保している未来の経路（予約）
   reservedPath: { x: number, z: number }[];
+  // ★追加: 電車が物理的にまたがっているマスのリスト (尻尾情報)
+  occupiedCells: { x: number, z: number }[];
 }
 
 export const RAIL_COLOUR = '#555555';

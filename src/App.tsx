@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGameLogic } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
@@ -13,7 +13,8 @@ export default function App() {
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive, 
     buyTrain, deployTrain, 
-    addSchedule, updateTrainPath // 追加
+    addSchedule, updateTrainPath, updateTrainOccupancy,
+    scheduleClipboard, copySchedule, pasteSchedule
   } = useGameLogic();
 
   return (
@@ -32,7 +33,8 @@ export default function App() {
           onSelectTrain={setSelectedTrainId}
           onBuyTrain={buyTrain}
           onAddSchedule={addSchedule}
-          onUpdateTrainPath={updateTrainPath} // 追加
+          onUpdateTrainPath={updateTrainPath}
+          onUpdateTrainOccupancy={updateTrainOccupancy}
         />
       </Canvas>
       
@@ -45,6 +47,9 @@ export default function App() {
         isEditingSchedule={isEditingSchedule}
         setIsEditingSchedule={setIsEditingSchedule}
         onDeploy={deployTrain}
+        scheduleClipboard={scheduleClipboard}
+        onCopySchedule={copySchedule}
+        onPasteSchedule={pasteSchedule}
       />
     </div>
   );
