@@ -8,33 +8,34 @@ import type { CellType } from './types';
 export default function App() {
   const [buildMode, setBuildMode] = useState<CellType | 'none' | 'remove' | 'signal'>('rail');
   
-  const { 
+  const {
     railMap, stations, trains, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
-    commitPath, removeSignal, handleTrainArrive, 
-    buyTrain, deployTrain, 
-    addSchedule, updateTrainPath, updateTrainOccupancy,
+    commitPath, removeSignal, handleTrainArrive,
+    buyTrain, deployTrain,
+    addSchedule, worldRef,
     scheduleClipboard, copySchedule, pasteSchedule
   } = useGameLogic();
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#f0f0f0', position: 'relative' }}>
       <Canvas shadows>
-        <GameScene 
+        <GameScene
           railMap={railMap}
           stations={stations}
           trains={trains}
+          world={worldRef}
           buildMode={buildMode}
           selectedTrainId={selectedTrainId}
           isEditingSchedule={isEditingSchedule}
           onCommitPath={commitPath}
           removeSignal={removeSignal}
-          onTrainArrive={handleTrainArrive}
+          onSimEvent={(event) => {
+            if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
+          }}
           onSelectTrain={setSelectedTrainId}
           onBuyTrain={buyTrain}
           onAddSchedule={addSchedule}
-          onUpdateTrainPath={updateTrainPath}
-          onUpdateTrainOccupancy={updateTrainOccupancy}
         />
       </Canvas>
       

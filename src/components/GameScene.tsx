@@ -4,6 +4,7 @@ import { OrbitControls, OrthographicCamera, Environment } from '@react-three/dre
 import * as THREE from 'three';
 
 import { DynamicTrain } from './DynamicTrain';
+import { SimulationDriver } from './SimulationDriver';
 import { RailBlock } from './RailBlock';
 import { DepotBlock } from './DepotBlock';
 import { SignalBlock } from './SignalBlock';
@@ -11,6 +12,7 @@ import { StationLabel } from './StationLabel';
 import { GROUND_COLOUR, STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
 import type { CellData, CellType, TrainData, StationData } from '../types';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
+import type { SimWorld, SimEvent } from '../sim/simulation';
 
 const REMOVE_COLOUR = '#ff3333';
 
@@ -18,24 +20,22 @@ interface GameSceneProps {
   railMap: Map<string, CellData>;
   stations: Map<string, StationData>;
   trains: TrainData[];
+  world: React.RefObject<SimWorld>;
   buildMode: CellType | 'none' | 'remove' | 'signal';
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
-  
+
   onCommitPath: (path: { x: number; z: number }[], mode: CellType | 'none' | 'remove' | 'signal') => void;
   removeSignal: (x: number, z: number) => void;
-  onTrainArrive: (trainId: string, idx: number) => void;
+  onSimEvent: (event: SimEvent) => void;
   onSelectTrain: (id: string | null) => void;
   onBuyTrain: (x: number, z: number) => void;
   onAddSchedule: (trainId: string, stationId: string) => void;
-  onUpdateTrainPath: (trainId: string, path: { x: number; z: number }[]) => void;
-  // ★追加
-  onUpdateTrainOccupancy: (trainId: string, x: number, z: number, occupied: { x: number, z: number }[]) => void;
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, buildMode, selectedTrainId, isEditingSchedule,
-  onCommitPath, removeSignal, onTrainArrive, onSelectTrain, onBuyTrain, onAddSchedule, onUpdateTrainPath, onUpdateTrainOccupancy
+  railMap, stations, trains, world, buildMode, selectedTrainId, isEditingSchedule,
+  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
@@ -157,13 +157,13 @@ export const GameScene: React.FC<GameSceneProps> = ({
       </mesh>
       <gridHelper args={[100, 100, 0x888888, 0xcccccc]} position={[0, 0.01, 0]} />
 
+      <SimulationDriver world={world} onSimEvent={onSimEvent} />
+
       {trains.map(train => (
-        <DynamicTrain 
-          key={train.id} data={train} type="commuter" railMap={railMap} stations={stations} allTrains={trains}
-          isSelected={train.id === selectedTrainId} onArriveStation={onTrainArrive}
+        <DynamicTrain
+          key={train.id} data={train} runtimes={world.current.runtimes} type="commuter"
+          isSelected={train.id === selectedTrainId}
           onClick={() => buildMode === 'none' && onSelectTrain(train.id)}
-          onUpdatePath={onUpdateTrainPath}
-          onUpdateOccupancy={onUpdateTrainOccupancy} // 追加
         />
       ))}
     </>

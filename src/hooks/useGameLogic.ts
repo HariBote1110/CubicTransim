@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
 import type { CellData, CellType, TrainData, StationData } from '../types';
+import type { SimWorld } from '../sim/simulation';
 
 export const useGameLogic = () => {
   const [railMap, setRailMap] = useState<Map<string, CellData>>(new Map());
@@ -8,9 +9,30 @@ export const useGameLogic = () => {
   const [trains, setTrains] = useState<TrainData[]>([]);
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
-  
+
   // ★追加: スケジュール用クリップボード
   const [scheduleClipboard, setScheduleClipboard] = useState<string[] | null>(null);
+
+  // シミュレーション世界の実体。runtimesは列車IDごとに保持し続け、
+  // railMap/stations/trainsはReact stateが更新されるたびに差し替える。
+  const worldRef = useRef<SimWorld>({
+    railMap: new Map(),
+    stations: new Map(),
+    trains: [],
+    runtimes: new Map(),
+  });
+
+  useEffect(() => {
+    worldRef.current.railMap = railMap;
+  }, [railMap]);
+
+  useEffect(() => {
+    worldRef.current.stations = stations;
+  }, [stations]);
+
+  useEffect(() => {
+    worldRef.current.trains = trains;
+  }, [trains]);
 
   // --- ヘルパー ---
   const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
@@ -235,8 +257,6 @@ export const useGameLogic = () => {
         id: Math.random().toString(36).substr(0, 4),
         x, z,
         schedule: [], scheduleIndex: 0, status: 'stored',
-        reservedPath: [],
-        occupiedCells: [{ x, z }]
     };
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);
@@ -264,36 +284,6 @@ export const useGameLogic = () => {
     setIsEditingSchedule(false);
   };
 
-  const updateTrainPath = useCallback((trainId: string, path: { x: number, z: number }[]) => {
-    setTrains(prev => {
-      const target = prev.find(t => t.id === trainId);
-      if (!target) return prev;
-      
-      if (target.reservedPath && target.reservedPath.length === path.length) {
-         if (path.length === 0) return prev;
-         if (path[0].x === target.reservedPath[0].x && path[path.length-1].x === target.reservedPath[path.length-1].x) {
-             return prev;
-         }
-      }
-
-      return prev.map(t => {
-        if (t.id === trainId) {
-          return { ...t, reservedPath: path };
-        }
-        return t;
-      });
-    });
-  }, []);
-
-  const updateTrainOccupancy = useCallback((trainId: string, x: number, z: number, occupied: { x: number, z: number }[]) => {
-     setTrains(prev => prev.map(t => {
-         if (t.id === trainId) {
-             return { ...t, x, z, occupiedCells: occupied };
-         }
-         return t;
-     }));
-  }, []);
-
   // ★追加: スケジュールコピー機能
   const copySchedule = (trainId: string) => {
     const target = trains.find(t => t.id === trainId);
@@ -320,14 +310,13 @@ export const useGameLogic = () => {
     selectedTrainId, setSelectedTrainId: selectTrain,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal,
-    handleTrainArrive, 
-    buyTrain, deployTrain, 
+    handleTrainArrive,
+    buyTrain, deployTrain,
     addSchedule,
-    updateTrainPath,
-    updateTrainOccupancy,
+    worldRef,
     // 公開
-    scheduleClipboard, 
-    copySchedule, 
+    scheduleClipboard,
+    copySchedule,
     pasteSchedule
   };
 };

@@ -20,12 +20,9 @@ export interface TrainData {
   id: string;
   x: number;
   z: number;
-  schedule: string[]; 
+  schedule: string[];
   scheduleIndex: number;
   status: 'stored' | 'running';
-  reservedPath: { x: number, z: number }[];
-  // ★追加: 電車が物理的にまたがっているマスのリスト (尻尾情報)
-  occupiedCells: { x: number, z: number }[];
 }
 
 export const RAIL_COLOUR = '#555555';
