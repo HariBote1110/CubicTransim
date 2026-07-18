@@ -38,6 +38,22 @@ const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) =
   }
 };
 
+// バグ5対策: 既存駅名を走査し、A から順に未使用の文字を割り当てる。
+// 孤児駅（隣接がなくなった駅）を消しても採番が飛ばない。
+export const nextStationName = (stations: Map<string, StationData>): string => {
+  const used = new Set(Array.from(stations.values()).map(s => s.name));
+  let suffix = 1;
+  // まずは A〜Z の単純な名前を試し、尽きたら数字サフィックス付きに進む
+  while (true) {
+    for (let i = 0; i < 26; i++) {
+      const letter = String.fromCharCode(65 + i);
+      const name = suffix === 1 ? `Station ${letter}` : `Station ${letter}${suffix}`;
+      if (!used.has(name)) return name;
+    }
+    suffix++;
+  }
+};
+
 export function applyRailPath(state: ConstructionState, path: Pos[]): ConstructionState {
   const railMap = new Map(state.railMap);
 
@@ -107,7 +123,7 @@ export function applyStation(state: ConstructionState, pos: Pos): ConstructionSt
   let targetId = foundStationId;
   if (!targetId) {
     targetId = Math.random().toString(36).substr(2, 9);
-    const newName = `Station ${String.fromCharCode(65 + stations.size % 26)}${stations.size >= 26 ? Math.floor(stations.size / 26) + 1 : ''}`;
+    const newName = nextStationName(stations);
     stations.set(targetId, { id: targetId, name: newName, cells: [{ x: pos.x, z: pos.z }], center: { x: pos.x, z: pos.z } });
   } else {
     const sid = targetId;
