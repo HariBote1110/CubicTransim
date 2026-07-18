@@ -162,7 +162,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
             }
           });
         }
-        return <StationLabel key={station.id} station={station} orderIndices={orderIndices} />;
+        return <StationLabel key={station.id} station={station} orderIndices={orderIndices} world={world} />;
       })}
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} onPointerMove={handlePointerMove} onPointerDown={handlePointerDown} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp} onClick={handleClick}>

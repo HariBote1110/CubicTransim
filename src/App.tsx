@@ -16,7 +16,8 @@ export default function App() {
     buyTrain, deployTrain,
     addSchedule, worldRef,
     scheduleClipboard, copySchedule, pasteSchedule,
-    saveGame, loadGame
+    saveGame, loadGame,
+    money, addIncome
   } = useGameLogic();
 
   return (
@@ -35,6 +36,7 @@ export default function App() {
           removeSignal={removeSignal}
           onSimEvent={(event) => {
             if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
+            if (event.type === 'income') addIncome(event.amount);
           }}
           onSelectTrain={setSelectedTrainId}
           onBuyTrain={buyTrain}
@@ -58,6 +60,8 @@ export default function App() {
         setSimSpeed={setSimSpeed}
         onSave={saveGame}
         onLoad={loadGame}
+        money={money}
+        world={worldRef}
       />
     </div>
   );

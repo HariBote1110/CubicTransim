@@ -1,8 +1,14 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
 import type { CellType, TrainData, StationData } from '../types';
+import { RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TRAIN_CAPACITY } from '../sim/economy';
+import type { SimWorld } from '../sim/simulation';
 
 const REMOVE_COLOUR = '#ff3333';
+
+// 選択中列車の乗客数表示の更新間隔(ms)。sim層のpassengersは毎tick変化するが、
+// Canvas外のDOM(GameUI)からは低頻度ポーリングで十分。
+const PASSENGERS_POLL_INTERVAL_MS = 500;
 
 interface GameUIProps {
   buildMode: CellType | 'none' | 'remove' | 'signal';
@@ -23,6 +29,9 @@ interface GameUIProps {
   // ★追加: セーブ／ロード
   onSave: () => void;
   onLoad: () => void;
+  // ★追加: 経済システム
+  money: number;
+  world: React.RefObject<SimWorld>;
 }
 
 export const GameUI: React.FC<GameUIProps> = ({
@@ -32,8 +41,23 @@ export const GameUI: React.FC<GameUIProps> = ({
   onDeploy,
   scheduleClipboard, onCopySchedule, onPasteSchedule,
   simSpeed, setSimSpeed,
-  onSave, onLoad
+  onSave, onLoad,
+  money, world
 }) => {
+  // 選択中列車の乗客数(sim層所有のTrainRuntimeから低頻度でポーリングする)
+  const [passengers, setPassengers] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!selectedTrainId) {
+        setPassengers(0);
+        return;
+      }
+      const rt = world.current?.runtimes.get(selectedTrainId);
+      setPassengers(rt ? rt.passengers : 0);
+    }, PASSENGERS_POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [selectedTrainId, world]);
   const speedBtnStyle = (speed: 0 | 1 | 2 | 4) => ({
     padding: '8px 14px', fontSize: '14px', fontWeight: 'bold' as const, cursor: 'pointer',
     background: simSpeed === speed ? '#00aaff' : 'white',
@@ -62,21 +86,40 @@ export const GameUI: React.FC<GameUIProps> = ({
       </div>
 
       <div style={{ position: 'absolute', bottom: 30, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>
-        <button onClick={() => setBuildMode('none')} style={btnStyle('none', '#666')}>Select</button>
-        <button onClick={() => setBuildMode('rail')} style={btnStyle('rail', '#00aaff')}>Rail</button>
-        <button onClick={() => setBuildMode('station')} style={btnStyle('station', STATION_COLOUR)}>Station</button>
-        <button onClick={() => setBuildMode('depot')} style={btnStyle('depot', DEPOT_COLOUR)}>Depot</button>
-        <button onClick={() => setBuildMode('signal')} style={btnStyle('signal', SIGNAL_COLOUR)}>Signal</button>
-        <button onClick={() => setBuildMode('remove')} style={btnStyle('remove', REMOVE_COLOUR)}>Remove</button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <button onClick={() => setBuildMode('none')} style={btnStyle('none', '#666')}>Select</button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <button onClick={() => setBuildMode('rail')} style={btnStyle('rail', '#00aaff')}>Rail</button>
+          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>{RAIL_COST}/cell</div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <button onClick={() => setBuildMode('station')} style={btnStyle('station', STATION_COLOUR)}>Station</button>
+          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>¥{STATION_COST.toLocaleString()}</div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <button onClick={() => setBuildMode('depot')} style={btnStyle('depot', DEPOT_COLOUR)}>Depot</button>
+          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>¥{DEPOT_COST.toLocaleString()}</div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <button onClick={() => setBuildMode('signal')} style={btnStyle('signal', SIGNAL_COLOUR)}>Signal</button>
+          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>¥{SIGNAL_COST.toLocaleString()}</div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <button onClick={() => setBuildMode('remove')} style={btnStyle('remove', REMOVE_COLOUR)}>Remove</button>
+        </div>
       </div>
 
-      <div style={{ 
-        position: 'absolute', top: 20, left: 20, padding: '1rem', 
-        background: 'rgba(255,255,255,0.95)', borderRadius: '8px', 
-        fontFamily: 'sans-serif', pointerEvents: 'auto', userSelect: 'none', 
+      <div style={{
+        position: 'absolute', top: 20, left: 20, padding: '1rem',
+        background: 'rgba(255,255,255,0.95)', borderRadius: '8px',
+        fontFamily: 'sans-serif', pointerEvents: 'auto', userSelect: 'none',
         zIndex: 10, minWidth: '220px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
       }}>
-        <h2 style={{ margin: '0 0 10px 0', fontSize: '1.2rem', color: '#333' }}>CubicTransim</h2>
+        <h2 style={{ margin: '0 0 4px 0', fontSize: '1.2rem', color: '#333' }}>CubicTransim</h2>
+        <div style={{ margin: '0 0 10px 0', fontSize: '1.1rem', fontWeight: 'bold', color: '#00994d' }}>
+          ¥{Math.floor(money).toLocaleString()}
+        </div>
         {selectedTrain ? (
           <div>
              <div style={{ borderBottom: '1px solid #ccc', paddingBottom: '5px', marginBottom: '10px' }}>
@@ -86,8 +129,11 @@ export const GameUI: React.FC<GameUIProps> = ({
                <div style={{ fontSize: '0.8rem', color: '#666' }}>
                  Status: <span style={{ fontWeight: 'bold', color: selectedTrain.status === 'running' ? '#00aaff' : '#999' }}>{selectedTrain.status.toUpperCase()}</span>
                </div>
+               <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                 Passengers: <span style={{ fontWeight: 'bold' }}>{passengers}/{TRAIN_CAPACITY}</span>
+               </div>
              </div>
-             
+
              {/* スケジュール表示 */}
              <div style={{ marginBottom: '10px' }}>
                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>

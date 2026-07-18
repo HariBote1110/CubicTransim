@@ -1,13 +1,31 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import type { StationData } from '../types';
+import type { SimWorld } from '../sim/simulation';
 
 interface Props {
   station: StationData;
   orderIndices: number[]; // 変更: 複数の番号を受け取る配列
+  world: React.RefObject<SimWorld>;
 }
 
-export const StationLabel: React.FC<Props> = ({ station, orderIndices }) => {
+// 待ち人数の更新頻度(秒)。sim層のwaitingは毎tick更新されるが、
+// 表示はDynamicTrainの速度表示と同様に低頻度のsetStateで十分。
+const WAITING_DISPLAY_INTERVAL = 0.5;
+
+export const StationLabel: React.FC<Props> = ({ station, orderIndices, world }) => {
+  const [waitingCount, setWaitingCount] = useState(0);
+  const elapsedRef = useRef(0);
+
+  useFrame((_state, delta) => {
+    elapsedRef.current += delta;
+    if (elapsedRef.current < WAITING_DISPLAY_INTERVAL) return;
+    elapsedRef.current = 0;
+    const waiting = world.current?.waiting.get(station.id) ?? 0;
+    setWaitingCount(Math.floor(waiting));
+  });
+
   return (
     <Html position={[station.center.x, 1.5, station.center.z]} center style={{ pointerEvents: 'none' }}>
       <div style={{ textAlign: 'center', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -27,12 +45,12 @@ export const StationLabel: React.FC<Props> = ({ station, orderIndices }) => {
           </div>
         )}
 
-        {/* 駅名 */}
-        <div style={{ 
-          background: 'rgba(0,0,0,0.6)', color: 'white', padding: '2px 6px', 
+        {/* 駅名 + 待ち人数 */}
+        <div style={{
+          background: 'rgba(0,0,0,0.6)', color: 'white', padding: '2px 6px',
           borderRadius: '4px', fontSize: '10px', backdropFilter: 'blur(2px)'
         }}>
-          {station.name}
+          {station.name} ({waitingCount})
         </div>
       </div>
     </Html>
