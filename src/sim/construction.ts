@@ -120,7 +120,13 @@ export function applyStation(state: ConstructionState, pos: Pos): ConstructionSt
     }
   }
 
-  railMap.set(key, { type: 'station', connections: DIR.N | DIR.E | DIR.S | DIR.W, stationId: targetId });
+  // バグ3対策: 既存の rail セルを駅化する場合は connections を維持する。
+  // 空セルに新規設置する場合のみ N|E|S|W で初期化する。
+  const connections = existingBeforeUpdate && existingBeforeUpdate.type === 'rail'
+    ? (existingBeforeUpdate.connections || 0)
+    : (DIR.N | DIR.E | DIR.S | DIR.W);
+
+  railMap.set(key, { type: 'station', connections, stationId: targetId });
   neighbours.forEach(n => updateDepotRotation(railMap, n.x, n.z));
 
   return { railMap, stations };
