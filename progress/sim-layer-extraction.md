@@ -18,7 +18,7 @@
 - **非表示タブでは rAF が止まり、シミュレーションも止まる**。ブラウザ自動化での検証には `window.__dbgStep(dt, n)`（SimulationDriver が公開するデバッグフック）で手動 tick すること。`window.__debugWorld` で SimWorld を覗ける。意図的に残している。
 - `__dbgStep` を同期ループで大量に回すと、arrive イベント→React の scheduleIndex 更新が**次の JS 実行まで反映されない**（React バッチング）。実フレーム駆動では問題ない。
 - worldRef の railMap/stations/trains は React state の immutable 差し替えを useEffect で代入同期。`runtimes` の Map インスタンスだけは維持する（描画側が参照を保持）。
-- 既知バグ（今回のスコープ外、未修正）:
+- 既知バグ（今回のスコープ外、未修正） → **2026-07-19 に全て修正済み。詳細は [construction-layer-and-bugfixes.md](construction-layer-and-bugfixes.md) を参照**:
   1. 駅・車庫の設置が既存セルを**無条件上書き**する（駅の上に車庫を置くと駅セルが消え、StationData が孤児として残る）
   2. 同一セルへ駅を再設置すると別 ID の駅が重複生成される（隣接マージは NESW 隣接のみで自セルを見ていない）
   3. 駅設置はセルの connections を N|E|S|W で上書きするため、**斜め線路上の駅は列車が進入不可**になる
