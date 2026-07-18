@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { DIR, toKey, getDirFromVector, getOppositeDir } from '../utils';
-import type { CellData, StationData, TrainData } from '../types';
+import type { CellData, StationData } from '../types';
 import { calculateRoute } from './pathfinding';
+
+const noOccupied = new Set<string>();
+const noReserved = new Set<string>();
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
   const map = new Map<string, CellData>();
@@ -24,18 +27,6 @@ const buildRailMap = (cells: { x: number; z: number }[]) => {
   return map;
 };
 
-const makeTrain = (overrides: Partial<TrainData>): TrainData => ({
-  id: 't-default',
-  x: 0,
-  z: 0,
-  schedule: [],
-  scheduleIndex: 0,
-  status: 'running',
-  reservedPath: [],
-  occupiedCells: [],
-  ...overrides,
-});
-
 describe('calculateRoute', () => {
   it('直線線路で目標駅までの最短経路を返す', () => {
     const cells = [
@@ -48,11 +39,10 @@ describe('calculateRoute', () => {
       ['stA', { id: 'stA', name: 'A', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 } }],
     ]);
 
-    const result = calculateRoute(railMap, stations, [], {
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stA',
-      selfId: 'self',
     });
 
     expect(result).toEqual([
@@ -65,11 +55,10 @@ describe('calculateRoute', () => {
     const railMap = buildRailMap(cells);
     const stations = new Map<string, StationData>();
 
-    const result = calculateRoute(railMap, stations, [], {
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'nope',
-      selfId: 'self',
     });
 
     expect(result).toEqual([]);
@@ -94,11 +83,10 @@ describe('calculateRoute', () => {
       ['stB', { id: 'stB', name: 'B', cells: [{ x: 3, z: 2 }], center: { x: 3, z: 2 } }],
     ]);
 
-    const result = calculateRoute(railMap, stations, [], {
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stB',
-      selfId: 'self',
     });
 
     expect(result).toEqual([
@@ -126,13 +114,12 @@ describe('calculateRoute', () => {
       ['stC', { id: 'stC', name: 'C', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 } }],
     ]);
 
-    const blockingTrain = makeTrain({ id: 'blocker', occupiedCells: [{ x: 2, z: 0 }] });
+    const occupied = new Set<string>([toKey(2, 0)]);
 
-    const result = calculateRoute(railMap, stations, [blockingTrain], {
+    const result = calculateRoute(railMap, stations, occupied, noReserved, {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stC',
-      selfId: 'self',
     });
 
     expect(result).toEqual([
@@ -149,13 +136,12 @@ describe('calculateRoute', () => {
       ['stD', { id: 'stD', name: 'D', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 } }],
     ]);
 
-    const blockingTrain = makeTrain({ id: 'blocker', occupiedCells: [{ x: 1, z: 0 }] });
+    const occupied = new Set<string>([toKey(1, 0)]);
 
-    const result = calculateRoute(railMap, stations, [blockingTrain], {
+    const result = calculateRoute(railMap, stations, occupied, noReserved, {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stD',
-      selfId: 'self',
     });
 
     expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
@@ -174,11 +160,10 @@ describe('calculateRoute', () => {
     ]);
 
     // 東向き (0,0)->(2,0) は信号の向きと同じなので通過できる
-    const okResult = calculateRoute(railMap, stations, [], {
+    const okResult = calculateRoute(railMap, stations, noOccupied, noReserved, {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stE',
-      selfId: 'self',
     });
     expect(okResult).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
 
@@ -189,11 +174,10 @@ describe('calculateRoute', () => {
       ['stF', { id: 'stF', name: 'F', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 } }],
     ]);
 
-    const blockedResult = calculateRoute(railMap, stations2, [], {
+    const blockedResult = calculateRoute(railMap, stations2, noOccupied, noReserved, {
       start: { x: 2, z: 0 },
       prev: null,
       targetStationId: 'stF',
-      selfId: 'self',
     });
     expect(blockedResult).toEqual([]);
   });
@@ -221,11 +205,10 @@ describe('calculateRoute', () => {
     // start=(0,0), prev=null なので方向制約はかからず一旦 (1,0) までは進める。
     // (1,0) から (1,-1) は直前移動 (0,0)->(1,0) との内積が 0 (< 0.5) のため除外され、
     // 行き止まりとして (0,0) へ戻る経路になり、目的地には到達できない。
-    const result = calculateRoute(railMap, stations, [], {
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stG',
-      selfId: 'self',
     });
 
     expect(result).toEqual([]);

@@ -1,11 +1,10 @@
 import { toKey, DIR, getVectorFromDir } from '../utils';
-import type { CellData, StationData, TrainData } from '../types';
+import type { CellData, StationData } from '../types';
 
 export interface RouteQuery {
   start: { x: number; z: number };
   prev: { x: number; z: number } | null;
   targetStationId: string;
-  selfId: string;
 }
 
 const normalize = (x: number, z: number) => {
@@ -19,28 +18,14 @@ const dot = (a: { x: number; z: number }, b: { x: number; z: number }) => a.x * 
 export function calculateRoute(
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>,
-  trains: TrainData[],
+  occupied: Set<string>,
+  reserved: Set<string>,
   query: RouteQuery
 ): { x: number; z: number }[] {
-  const { start, prev: prevGrid, targetStationId: targetId, selfId } = query;
+  const { start, prev: prevGrid, targetStationId: targetId } = query;
 
   const targetSt = stations.get(targetId);
   if (!targetSt) return [];
-
-  const reservedMap = new Set<string>();
-  const occupiedMap = new Set<string>();
-
-  trains.forEach(t => {
-    if (t.id === selfId) return;
-    if (t.occupiedCells) {
-      t.occupiedCells.forEach(c => occupiedMap.add(toKey(c.x, c.z)));
-    } else {
-      occupiedMap.add(toKey(t.x, t.z));
-    }
-    if (t.status === 'running' && t.reservedPath) {
-      t.reservedPath.forEach(p => reservedMap.add(toKey(p.x, p.z)));
-    }
-  });
 
   const runSearch = (ignoreOccupied: boolean) => {
       const queue = [{ curr: start, path: [] as { x: number; z: number }[], prev: prevGrid }];
@@ -86,8 +71,8 @@ export function calculateRoute(
               }
 
               if (!ignoreOccupied) {
-                  if (reservedMap.has(targetKey)) continue;
-                  if (occupiedMap.has(targetKey)) continue;
+                  if (reserved.has(targetKey)) continue;
+                  if (occupied.has(targetKey)) continue;
               }
 
               validMoves.push({ x: tx, z: tz });
