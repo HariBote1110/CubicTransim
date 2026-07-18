@@ -4,8 +4,8 @@ import type { TrainRuntime } from './simulation';
 import { serialiseWorld, deserialiseWorld } from './persistence';
 import { STARTING_MONEY } from './economy';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v2)', () => {
-  it('railMap/stations/trains/runtimes/waiting/money が JSON 経由でも復元できる', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v3)', () => {
+  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
@@ -39,7 +39,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const money = 42_300;
 
     const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money);
-    expect(saveData.version).toBe(2);
+    expect(saveData.version).toBe(3);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -85,5 +85,46 @@ describe('persistence: v1→v2 移行', () => {
     const rt = restored.runtimes.get('t1')!;
     expect(rt.passengers).toBe(0);
     expect(rt.lastStopStationId).toBeNull();
+    // v1→v3も既存の移行チェーンで安全な既定値になる
+    expect(rt.haltRemaining).toBe(0);
+  });
+});
+
+describe('persistence: v2→v3 移行', () => {
+  it('v2データ(platformDoors/haltRemainingが無い)を読み込むと安全な既定値(none/0)で補われる', () => {
+    const v2Data = {
+      version: 2,
+      railMap: [['1,0', { type: 'station', connections: 15, stationId: 'stA' }]] as [string, CellData][],
+      stations: [
+        ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 } }],
+      ] as unknown as [string, StationData][],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as TrainData[],
+      runtimes: [['t1', {
+        id: 't1',
+        grid: { x: 0, z: 0 },
+        prevGrid: null,
+        progress: 0,
+        speedKmh: 0,
+        route: [],
+        trail: [{ x: 0, z: 0 }],
+        stopRemaining: 0,
+        waitTimer: 0,
+        debugStatus: '',
+        renderPos: { x: 0, y: 0.5, z: 0 },
+        renderTarget: null,
+        passengers: 0,
+        lastStopStationId: null,
+        // haltRemaining が存在しない旧データを想定
+      }]] as unknown as [string, TrainRuntime][],
+      waiting: [['stA', 12]] as [string, number][],
+      money: 12_345,
+    };
+
+    const restored = deserialiseWorld(v2Data as never);
+
+    expect(restored.money).toBe(12_345);
+    expect(restored.waiting.get('stA')).toBe(12);
+    expect(restored.stations.get('stA')!.platformDoors).toBe('none');
+    expect(restored.runtimes.get('t1')!.haltRemaining).toBe(0);
   });
 });

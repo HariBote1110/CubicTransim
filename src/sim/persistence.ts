@@ -20,7 +20,17 @@ export interface SaveDataV2 {
   money: number;
 }
 
-export type SaveData = SaveDataV1 | SaveDataV2;
+export interface SaveDataV3 {
+  version: 3;
+  railMap: [string, CellData][];
+  stations: [string, StationData][];
+  trains: TrainData[];
+  runtimes: [string, TrainRuntime][];
+  waiting: [string, number][];
+  money: number;
+}
+
+export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3;
 
 export function serialiseWorld(
   railMap: Map<string, CellData>,
@@ -29,9 +39,9 @@ export function serialiseWorld(
   runtimes: Map<string, TrainRuntime>,
   waiting: Map<string, number>,
   money: number
-): SaveDataV2 {
+): SaveDataV3 {
   return {
-    version: 2,
+    version: 3,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -49,7 +59,8 @@ export function deserialiseWorld(data: SaveData): {
   waiting: Map<string, number>;
   money: number;
 } {
-  // v1データにはpassengers/lastStopStationIdが存在しないため、既定値で補う。
+  // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが
+  // 存在しないため、既定値で補う。
   const runtimes = new Map(
     data.runtimes.map(([id, rt]) => [
       id,
@@ -57,14 +68,21 @@ export function deserialiseWorld(data: SaveData): {
         ...rt,
         passengers: rt.passengers ?? 0,
         lastStopStationId: rt.lastStopStationId ?? null,
+        haltRemaining: rt.haltRemaining ?? 0,
       },
     ])
   );
 
-  if (data.version === 2) {
+  // v1/v2データにはplatformDoorsが存在しないため、既定値'none'で補う。
+  const migrateStations = (stations: [string, StationData][]) =>
+    new Map(
+      stations.map(([id, st]) => [id, { ...st, platformDoors: st.platformDoors ?? 'none' }])
+    );
+
+  if (data.version === 3) {
     return {
       railMap: new Map(data.railMap),
-      stations: new Map(data.stations),
+      stations: migrateStations(data.stations),
       trains: data.trains,
       runtimes,
       waiting: new Map(data.waiting),
@@ -72,10 +90,21 @@ export function deserialiseWorld(data: SaveData): {
     };
   }
 
-  // v1→v2移行: waitingは空、moneyはSTARTING_MONEYから開始する。
+  if (data.version === 2) {
+    return {
+      railMap: new Map(data.railMap),
+      stations: migrateStations(data.stations),
+      trains: data.trains,
+      runtimes,
+      waiting: new Map(data.waiting),
+      money: data.money,
+    };
+  }
+
+  // v1→v3移行: waitingは空、moneyはSTARTING_MONEYから開始する。
   return {
     railMap: new Map(data.railMap),
-    stations: new Map(data.stations),
+    stations: migrateStations(data.stations),
     trains: data.trains,
     runtimes,
     waiting: new Map(),
