@@ -9,8 +9,9 @@ import { RailBlock } from './RailBlock';
 import { DepotBlock } from './DepotBlock';
 import { SignalBlock } from './SignalBlock';
 import { StationLabel } from './StationLabel';
+import { TownBlocks } from './TownBlocks';
 import { GROUND_COLOUR, STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, CellType, TrainData, StationData } from '../types';
+import type { CellData, CellType, TrainData, StationData, TownData } from '../types';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 
@@ -20,6 +21,7 @@ interface GameSceneProps {
   railMap: Map<string, CellData>;
   stations: Map<string, StationData>;
   trains: TrainData[];
+  towns: TownData[];
   world: React.RefObject<SimWorld>;
   buildMode: CellType | 'none' | 'remove' | 'signal';
   selectedTrainId: string | null;
@@ -37,7 +39,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
@@ -159,6 +161,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
         }
         return <group key={key}>{elements}</group>;
       })}
+
+      <TownBlocks towns={towns} />
 
       {Array.from(stations.values()).map(station => {
         const orderIndices: number[] = [];

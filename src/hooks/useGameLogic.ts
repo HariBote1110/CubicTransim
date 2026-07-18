@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, StationData, PlatformDoorType } from '../types';
+import type { CellData, CellType, TrainData, StationData, PlatformDoorType, TownData } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import { applyRailPath, applyStation, applyDepot, applySignal, removePath } from '../sim/construction';
 import type { ConstructionState } from '../sim/construction';
 import { STARTING_MONEY, TRAIN_COST, costOfPath, PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST } from '../sim/economy';
+import { mulberry32, generateTowns } from '../sim/towns';
 
 const SAVE_KEY = 'cubictransim-save-v1';
 
@@ -22,6 +23,12 @@ export const useGameLogic = () => {
   const [railMap, setRailMap] = useState<Map<string, CellData>>(new Map());
   const [stations, setStations] = useState<Map<string, StationData>>(new Map());
   const [trains, setTrains] = useState<TrainData[]>([]);
+
+  // ★追加: 街(town)。初回起動(セーブなしの新規状態)ではシード付き乱数で自動生成する。
+  // ロード時はセーブデータ(v4以降)のtownsで置き換わる(v3以前は towns=[] になる)。
+  const [towns, setTowns] = useState<TownData[]>(() =>
+    generateTowns(mulberry32(Date.now() % 2 ** 31), 8)
+  );
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
@@ -45,6 +52,7 @@ export const useGameLogic = () => {
     waiting: new Map(),
     rng: Math.random,
     economyMirror: { money: STARTING_MONEY },
+    towns,
   });
 
   useEffect(() => {
@@ -58,6 +66,10 @@ export const useGameLogic = () => {
   useEffect(() => {
     worldRef.current.trains = trains;
   }, [trains]);
+
+  useEffect(() => {
+    worldRef.current.towns = towns;
+  }, [towns]);
 
   // economyMirrorはデバッグ/表示用のReact state鏡写しで、simロジックからは参照されない。
   useEffect(() => {
@@ -243,7 +255,7 @@ export const useGameLogic = () => {
 
   // ★追加: セーブ／ロード
   const saveGame = () => {
-    const saveData = serialiseWorld(railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money);
+    const saveData = serialiseWorld(railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns);
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
 
@@ -260,6 +272,7 @@ export const useGameLogic = () => {
     setStations(restored.stations);
     setTrains(restored.trains);
     setMoney(restored.money);
+    setTowns(restored.towns);
 
     // runtimes/waiting は DynamicTrain/StationLabel が Map インスタンスを参照し続けているため、
     // 差し替えず中身だけ入れ替える。
@@ -273,6 +286,7 @@ export const useGameLogic = () => {
     railMap, setRailMap,
     stations, setStations,
     trains, setTrains,
+    towns,
     selectedTrainId, setSelectedTrainId: selectTrain,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal,

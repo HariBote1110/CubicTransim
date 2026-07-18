@@ -4,6 +4,7 @@ import type { CellType, TrainData, StationData, PlatformDoorType } from '../type
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TRAIN_CAPACITY,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
+  demandFactor,
 } from '../sim/economy';
 import type { SimWorld } from '../sim/simulation';
 import type { AccidentNotice } from '../hooks/useGameLogic';
@@ -70,18 +71,25 @@ export const GameUI: React.FC<GameUIProps> = ({
 
   // 選択中駅の待ち人数(StationLabelと同様、低頻度でポーリングする)
   const [stationWaiting, setStationWaiting] = useState(0);
+  // 選択中駅の立地需要係数(周辺の街から算出。waitingと同様に低頻度でポーリングする)
+  const [stationDemand, setStationDemand] = useState(0);
 
   useEffect(() => {
     const id = setInterval(() => {
       if (!selectedStationId) {
         setStationWaiting(0);
+        setStationDemand(0);
         return;
       }
       const waiting = world.current?.waiting.get(selectedStationId) ?? 0;
       setStationWaiting(Math.floor(waiting));
+
+      const station = stations.get(selectedStationId);
+      const towns = world.current?.towns ?? [];
+      setStationDemand(station ? demandFactor(station.center, towns) : 0);
     }, PASSENGERS_POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [selectedStationId, world]);
+  }, [selectedStationId, world, stations]);
 
   const speedBtnStyle = (speed: 0 | 1 | 2 | 4) => ({
     padding: '8px 14px', fontSize: '14px', fontWeight: 'bold' as const, cursor: 'pointer',
@@ -254,6 +262,9 @@ export const GameUI: React.FC<GameUIProps> = ({
               </div>
               <div style={{ fontSize: '0.8rem', color: '#666' }}>
                 Waiting: <span style={{ fontWeight: 'bold' }}>{stationWaiting}</span>
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                Demand: <span style={{ fontWeight: 'bold' }}>{stationDemand.toFixed(1)}x</span>
               </div>
               <div style={{ fontSize: '0.8rem', color: '#666' }}>
                 Platform doors: <span style={{ fontWeight: 'bold' }}>{selectedStation.platformDoors}</span>

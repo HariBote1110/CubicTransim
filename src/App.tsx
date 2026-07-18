@@ -10,7 +10,7 @@ export default function App() {
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
 
   const {
-    railMap, stations, trains, selectedTrainId, setSelectedTrainId,
+    railMap, stations, trains, towns, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
@@ -29,6 +29,7 @@ export default function App() {
           railMap={railMap}
           stations={stations}
           trains={trains}
+          towns={towns}
           world={worldRef}
           buildMode={buildMode}
           selectedTrainId={selectedTrainId}
