@@ -77,6 +77,21 @@ describe('applyStation（特性テスト）', () => {
     expect(cell.type).toBe('depot');
     expect(result.stations.size).toBe(0);
   });
+
+  // バグ3: 斜め線路上の駅
+  it('斜め線路のセルを駅化すると既存の connections が維持される', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 1 }]);
+    const before = state.railMap.get(toKey(0, 0))!;
+    expect(before.connections! & DIR.SE).toBe(DIR.SE);
+
+    const result = applyStation(state, { x: 0, z: 0 });
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.type).toBe('station');
+    // 既存の斜め connections が維持されている（N|E|S|Wで上書きされていない）
+    expect(cell.connections! & DIR.SE).toBe(DIR.SE);
+    expect(cell.connections! & DIR.N).toBe(0);
+  });
 });
 
 describe('applyDepot（特性テスト・バグ修正）', () => {
