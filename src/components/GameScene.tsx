@@ -47,40 +47,53 @@ export const GameScene: React.FC<GameSceneProps> = ({
     return getConstrainedPath(dragStartPos, cursorPos);
   }, [dragStartPos, cursorPos, buildMode]);
 
-  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => setCursorPos({ x: Math.round(e.point.x), z: Math.round(e.point.z) });
-  
+  // e.point から直接グリッド座標を求める。cursorPos（React state）は
+  // pointermove でしか更新されないため、モード切替直後の1回目のクリックなど
+  // pointermove が発火する前に押下/クリックされた場合に古い位置を参照してしまう
+  // 不具合（バグ4）があった。hover プレビュー用の cursorPos はそのまま残す。
+  const getGridPosFromEvent = (e: ThreeEvent<PointerEvent> | ThreeEvent<MouseEvent>) => ({
+    x: Math.round(e.point.x),
+    z: Math.round(e.point.z),
+  });
+
+  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => setCursorPos(getGridPosFromEvent(e));
+
   const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
     if (buildMode === 'none') return;
-    if (e.button === 0 && !e.shiftKey && cursorPos) setDragStartPos(cursorPos);
+    if (e.button === 0 && !e.shiftKey) setDragStartPos(getGridPosFromEvent(e));
   };
 
   const handlePointerUp = (e: ThreeEvent<PointerEvent>) => {
     if (buildMode === 'none') return;
     if (e.button === 0 && dragStartPos) {
-      onCommitPath(previewPath, buildMode);
+      const pos = getGridPosFromEvent(e);
+      const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
+        ? [pos]
+        : getConstrainedPath(dragStartPos, pos);
+      onCommitPath(path, buildMode);
       setDragStartPos(null);
     }
   };
 
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
-    if (!cursorPos) return;
+    const pos = getGridPosFromEvent(e);
 
     if (buildMode === 'signal' && e.shiftKey) {
-       removeSignal(cursorPos.x, cursorPos.z);
+       removeSignal(pos.x, pos.z);
        return;
     }
-    
+
     if (buildMode === 'none') {
-        const key = toKey(cursorPos.x, cursorPos.z);
+        const key = toKey(pos.x, pos.z);
         const cell = railMap.get(key);
         if (cell && cell.type === 'station' && cell.stationId && selectedTrainId) {
             if (isEditingSchedule) onAddSchedule(selectedTrainId, cell.stationId);
             return;
         }
         if (cell && cell.type === 'depot') {
-            onBuyTrain(cursorPos.x, cursorPos.z);
+            onBuyTrain(pos.x, pos.z);
             return;
         }
         onSelectTrain(null);
