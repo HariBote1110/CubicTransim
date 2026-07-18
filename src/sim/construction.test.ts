@@ -7,6 +7,7 @@ import {
   applyDepot,
   applySignal,
   removePath,
+  nextStationName,
   type ConstructionState,
 } from './construction';
 
@@ -91,6 +92,30 @@ describe('applyStation（特性テスト）', () => {
     // 既存の斜め connections が維持されている（N|E|S|Wで上書きされていない）
     expect(cell.connections! & DIR.SE).toBe(DIR.SE);
     expect(cell.connections! & DIR.N).toBe(0);
+  });
+});
+
+describe('nextStationName（バグ5: 採番）', () => {
+  it('駅がなければ Station A になる', () => {
+    const stations = new Map<string, StationData>();
+    expect(nextStationName(stations)).toBe('Station A');
+  });
+
+  it('既存駅の名前を走査し未使用の文字を使う（孤児駅で飛ばない）', () => {
+    const stations = new Map<string, StationData>([
+      ['id1', { id: 'id1', name: 'Station A', cells: [], center: { x: 0, z: 0 } }],
+      // Station B は孤児として消えている想定 → 次は B が再利用されるべき
+    ]);
+    expect(nextStationName(stations)).toBe('Station B');
+  });
+
+  it('A〜Z が全て使われていたら数字サフィックス付きに進む', () => {
+    const stations = new Map<string, StationData>();
+    for (let i = 0; i < 26; i++) {
+      const name = `Station ${String.fromCharCode(65 + i)}`;
+      stations.set(`id${i}`, { id: `id${i}`, name, cells: [], center: { x: 0, z: 0 } });
+    }
+    expect(nextStationName(stations)).toBe('Station A2');
   });
 });
 
