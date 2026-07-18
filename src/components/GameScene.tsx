@@ -24,6 +24,7 @@ interface GameSceneProps {
   buildMode: CellType | 'none' | 'remove' | 'signal';
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
+  simSpeed: number;
 
   onCommitPath: (path: { x: number; z: number }[], mode: CellType | 'none' | 'remove' | 'signal') => void;
   removeSignal: (x: number, z: number) => void;
@@ -34,7 +35,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, world, buildMode, selectedTrainId, isEditingSchedule,
+  railMap, stations, trains, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
@@ -157,7 +158,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       </mesh>
       <gridHelper args={[100, 100, 0x888888, 0xcccccc]} position={[0, 0.01, 0]} />
 
-      <SimulationDriver world={world} onSimEvent={onSimEvent} />
+      <SimulationDriver world={world} onSimEvent={onSimEvent} speed={simSpeed} />
 
       {trains.map(train => (
         <DynamicTrain

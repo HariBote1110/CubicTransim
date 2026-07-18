@@ -6,13 +6,15 @@ import type { SimWorld, SimEvent } from '../sim/simulation';
 interface SimulationDriverProps {
   world: React.RefObject<SimWorld>;
   onSimEvent: (event: SimEvent) => void;
+  speed: number;
 }
 
-export const SimulationDriver: React.FC<SimulationDriverProps> = ({ world, onSimEvent }) => {
+export const SimulationDriver: React.FC<SimulationDriverProps> = ({ world, onSimEvent, speed }) => {
   useFrame((_state, delta) => {
     const current = world.current;
     if (!current) return;
-    const events = stepWorld(current, delta);
+    if (speed === 0) return;
+    const events = stepWorld(current, delta * speed);
     events.forEach(onSimEvent);
     const dbg = window as unknown as { __debugWorld?: SimWorld; __dbgFrames?: number };
     dbg.__debugWorld = current;

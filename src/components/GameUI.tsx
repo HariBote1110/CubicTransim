@@ -17,15 +17,25 @@ interface GameUIProps {
   scheduleClipboard: string[] | null;
   onCopySchedule: (trainId: string) => void;
   onPasteSchedule: (trainId: string) => void;
+  // ★追加: ゲーム内時計
+  simSpeed: 0 | 1 | 2 | 4;
+  setSimSpeed: (speed: 0 | 1 | 2 | 4) => void;
 }
 
-export const GameUI: React.FC<GameUIProps> = ({ 
-  buildMode, setBuildMode, 
-  selectedTrainId, trains, stations, 
+export const GameUI: React.FC<GameUIProps> = ({
+  buildMode, setBuildMode,
+  selectedTrainId, trains, stations,
   isEditingSchedule, setIsEditingSchedule,
   onDeploy,
-  scheduleClipboard, onCopySchedule, onPasteSchedule
+  scheduleClipboard, onCopySchedule, onPasteSchedule,
+  simSpeed, setSimSpeed
 }) => {
+  const speedBtnStyle = (speed: 0 | 1 | 2 | 4) => ({
+    padding: '8px 14px', fontSize: '14px', fontWeight: 'bold' as const, cursor: 'pointer',
+    background: simSpeed === speed ? '#00aaff' : 'white',
+    color: simSpeed === speed ? 'white' : 'black',
+    border: '2px solid #00aaff', borderRadius: '8px'
+  });
   const btnStyle = (mode: string, color: string) => ({
     padding: '10px 20px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer',
     background: buildMode === mode ? color : 'white',
@@ -37,6 +47,13 @@ export const GameUI: React.FC<GameUIProps> = ({
 
   return (
     <>
+      <div style={{ position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>
+        <button onClick={() => setSimSpeed(0)} style={speedBtnStyle(0)} title="Pause">⏸</button>
+        <button onClick={() => setSimSpeed(1)} style={speedBtnStyle(1)}>1x</button>
+        <button onClick={() => setSimSpeed(2)} style={speedBtnStyle(2)}>2x</button>
+        <button onClick={() => setSimSpeed(4)} style={speedBtnStyle(4)}>4x</button>
+      </div>
+
       <div style={{ position: 'absolute', bottom: 30, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>
         <button onClick={() => setBuildMode('none')} style={btnStyle('none', '#666')}>Select</button>
         <button onClick={() => setBuildMode('rail')} style={btnStyle('rail', '#00aaff')}>Rail</button>

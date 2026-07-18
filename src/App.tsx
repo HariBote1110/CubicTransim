@@ -7,7 +7,8 @@ import type { CellType } from './types';
 
 export default function App() {
   const [buildMode, setBuildMode] = useState<CellType | 'none' | 'remove' | 'signal'>('rail');
-  
+  const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
+
   const {
     railMap, stations, trains, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
@@ -28,6 +29,7 @@ export default function App() {
           buildMode={buildMode}
           selectedTrainId={selectedTrainId}
           isEditingSchedule={isEditingSchedule}
+          simSpeed={simSpeed}
           onCommitPath={commitPath}
           removeSignal={removeSignal}
           onSimEvent={(event) => {
@@ -39,9 +41,9 @@ export default function App() {
         />
       </Canvas>
       
-      <GameUI 
-        buildMode={buildMode} 
-        setBuildMode={setBuildMode} 
+      <GameUI
+        buildMode={buildMode}
+        setBuildMode={setBuildMode}
         selectedTrainId={selectedTrainId}
         trains={trains}
         stations={stations}
@@ -51,6 +53,8 @@ export default function App() {
         scheduleClipboard={scheduleClipboard}
         onCopySchedule={copySchedule}
         onPasteSchedule={pasteSchedule}
+        simSpeed={simSpeed}
+        setSimSpeed={setSimSpeed}
       />
     </div>
   );
