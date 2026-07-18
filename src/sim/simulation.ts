@@ -1,5 +1,5 @@
 import { toKey, getVectorFromDir } from '../utils';
-import type { CellData, StationData, TrainData } from '../types';
+import type { CellData, StationData, TrainData, TownData } from '../types';
 import { calculateRoute } from './pathfinding';
 import {
   PASSENGER_SPAWN_RATE,
@@ -9,6 +9,7 @@ import {
   ACCIDENT_HALT_DURATION,
   ACCIDENT_PENALTY,
   calculateAccidentChance,
+  demandFactor,
 } from './economy';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
@@ -47,6 +48,8 @@ export interface SimWorld {
   waiting: Map<string, number>;
   rng: () => number;
   economyMirror?: { money: number };
+  // 立地需要のもとになる街一覧。旧セーブ(v3以前)には存在しないため任意とする。
+  towns?: TownData[];
 }
 
 export type SimEvent =
@@ -388,10 +391,13 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
   const events: SimEvent[] = [];
 
-  // 旅客需要: 全駅の待ち人数をPASSENGER_SPAWN_RATE×dtずつ増やす(上限STATION_WAITING_CAP)
+  // 旅客需要: 各駅の待ち人数を PASSENGER_SPAWN_RATE×demandFactor×dt ずつ増やす(上限STATION_WAITING_CAP)。
+  // demandFactorは周辺の街の人口と距離から決まり、街から離れた駅にはほぼ客が来ない。
+  const towns = world.towns ?? [];
   for (const station of world.stations.values()) {
     const current = world.waiting.get(station.id) ?? 0;
-    world.waiting.set(station.id, Math.min(STATION_WAITING_CAP, current + PASSENGER_SPAWN_RATE * dt));
+    const factor = demandFactor(station.center, towns);
+    world.waiting.set(station.id, Math.min(STATION_WAITING_CAP, current + PASSENGER_SPAWN_RATE * factor * dt));
   }
 
   for (const train of world.trains) {

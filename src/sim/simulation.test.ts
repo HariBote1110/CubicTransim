@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir } from '../utils';
-import type { CellData, StationData, TrainData } from '../types';
+import type { CellData, StationData, TrainData, TownData } from '../types';
 import { stepWorld, STOP_DURATION, ACCEL_KMH_S, TRAIN_LENGTH_TILES } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
 import {
@@ -10,6 +10,7 @@ import {
   FARE_PER_TILE,
   ACCIDENT_HALT_DURATION,
   ACCIDENT_PENALTY,
+  demandFactor,
 } from './economy';
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
@@ -44,14 +45,21 @@ const makeTrain = (overrides: Partial<TrainData>): TrainData => ({
 });
 
 // rng省略時は常に1を返す(=事故が発生しない)ことで既存テストの決定性を保つ。
+// towns省略時は空(=旅客需要が発生しない、旧仕様のテストとの互換用)。
 const makeWorld = (
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>,
   trains: TrainData[],
-  rng: () => number = () => 1
+  rng: () => number = () => 1,
+  towns: TownData[] = []
 ): SimWorld => ({
-  railMap, stations, trains, runtimes: new Map(), waiting: new Map(), rng,
+  railMap, stations, trains, runtimes: new Map(), waiting: new Map(), rng, towns,
 });
+
+// 各駅の真上(distance=0)にpopulation=1000の街を置き、demandFactor=1として
+// 従来のPASSENGER_SPAWN_RATE固定の旅客需要テストと同じ挙動を再現するためのヘルパー。
+const townsAtStations = (stations: StationData[]): TownData[] =>
+  stations.map(st => ({ id: `town-${st.id}`, centre: { ...st.center }, population: 1000 }));
 
 // 直線上に2駅(両端)を置く。列車が往復してincome/lastStopStationIdを検証するために使う。
 const buildTwoStationLine = (length: number, stationAId: string, stationBId: string) => {
@@ -204,14 +212,41 @@ describe('stepWorld', () => {
   });
 });
 
-describe('stepWorld: 旅客需要と運賃収入', () => {
-  it('waitingは毎tick PASSENGER_SPAWN_RATE×dt ずつ増え、STATION_WAITING_CAPで頭打ちになる', () => {
-    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
-    const world = makeWorld(railMap, stations, []);
+describe('stepWorld: 立地需要(街との距離)', () => {
+  it('街が近い駅は waiting が増え、街が無い/遠い駅は増えない', () => {
+    // stA(x=0)の真上に街を置き、stB(x=19、影響半径10の外)には街の影響が届かない
+    const { railMap, stations } = buildTwoStationLine(20, 'stA', 'stB');
+    const towns: TownData[] = [{ id: 'town-near', centre: { x: 0, z: 0 }, population: 2000 }];
+    const world = makeWorld(railMap, stations, [], () => 1, towns);
 
     stepWorld(world, 1.0);
-    expect(world.waiting.get('stA')).toBeCloseTo(PASSENGER_SPAWN_RATE, 5);
-    expect(world.waiting.get('stB')).toBeCloseTo(PASSENGER_SPAWN_RATE, 5);
+
+    expect(world.waiting.get('stA')).toBeGreaterThan(0);
+    expect(world.waiting.get('stB')).toBe(0);
+  });
+
+  it('街が全く無ければどの駅も waiting は増えない', () => {
+    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+    const world = makeWorld(railMap, stations, [], () => 1, []);
+
+    stepWorld(world, 10.0);
+
+    expect(world.waiting.get('stA')).toBe(0);
+    expect(world.waiting.get('stB')).toBe(0);
+  });
+});
+
+describe('stepWorld: 旅客需要と運賃収入', () => {
+  it('waitingは毎tick PASSENGER_SPAWN_RATE×demandFactor×dt ずつ増え、STATION_WAITING_CAPで頭打ちになる', () => {
+    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+    const towns = townsAtStations(Array.from(stations.values()));
+    const world = makeWorld(railMap, stations, [], () => 1, towns);
+    const factorA = demandFactor(stations.get('stA')!.center, towns);
+    const factorB = demandFactor(stations.get('stB')!.center, towns);
+
+    stepWorld(world, 1.0);
+    expect(world.waiting.get('stA')).toBeCloseTo(PASSENGER_SPAWN_RATE * factorA, 5);
+    expect(world.waiting.get('stB')).toBeCloseTo(PASSENGER_SPAWN_RATE * factorB, 5);
 
     // 大きなdtで一気に上限を超えさせる
     stepWorld(world, 100000);
@@ -220,8 +255,10 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
 
   it('停車時にwaitingから最大TRAIN_CAPACITYまで乗車し、waitingが減る', () => {
     const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+    const towns = townsAtStations(Array.from(stations.values()));
     const train = makeTrain({ schedule: ['stB', 'stA'] });
-    const world = makeWorld(railMap, stations, [train]);
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
+    const factorB = demandFactor(stations.get('stB')!.center, towns);
     // stBに大量の待ち客がいる状態を用意(capacityを超える)
     world.waiting.set('stB', TRAIN_CAPACITY + 50);
 
@@ -237,7 +274,7 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
 
     const rt = world.runtimes.get('t1')!;
     expect(rt.passengers).toBe(TRAIN_CAPACITY);
-    const waitingAfterGrowth = Math.min(STATION_WAITING_CAP, waitingJustBeforeStop + PASSENGER_SPAWN_RATE * 0.1);
+    const waitingAfterGrowth = Math.min(STATION_WAITING_CAP, waitingJustBeforeStop + PASSENGER_SPAWN_RATE * factorB * 0.1);
     expect(world.waiting.get('stB')).toBeCloseTo(waitingAfterGrowth - TRAIN_CAPACITY, 5);
   });
 
@@ -246,8 +283,9 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     const { railMap, stations } = buildTwoStationLine(length, 'stA', 'stB');
     // 列車はどちらの駅上にも置かず、中間セルから出発させる
     // (駅上から出発すると同一駅への経路長0でrouteが見つからず、到着イベントが発生しない)
+    const towns = townsAtStations(Array.from(stations.values()));
     const train = makeTrain({ x: Math.floor(length / 2), z: 0, schedule: ['stA', 'stB'] });
-    const world = makeWorld(railMap, stations, [train]);
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
     world.waiting.set('stA', 10);
 
     // 1駅目(stA)到着: 乗車のみ、income無し
