@@ -1,4 +1,4 @@
-import type { CellData, StationData, TrainData } from '../types';
+import type { CellData, StationData, TrainData, TownData } from '../types';
 import type { TrainRuntime } from './simulation';
 import { STARTING_MONEY } from './economy';
 
@@ -30,7 +30,18 @@ export interface SaveDataV3 {
   money: number;
 }
 
-export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3;
+export interface SaveDataV4 {
+  version: 4;
+  railMap: [string, CellData][];
+  stations: [string, StationData][];
+  trains: TrainData[];
+  runtimes: [string, TrainRuntime][];
+  waiting: [string, number][];
+  money: number;
+  towns: TownData[];
+}
+
+export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4;
 
 export function serialiseWorld(
   railMap: Map<string, CellData>,
@@ -38,16 +49,18 @@ export function serialiseWorld(
   trains: TrainData[],
   runtimes: Map<string, TrainRuntime>,
   waiting: Map<string, number>,
-  money: number
-): SaveDataV3 {
+  money: number,
+  towns: TownData[]
+): SaveDataV4 {
   return {
-    version: 3,
+    version: 4,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
     runtimes: Array.from(runtimes.entries()),
     waiting: Array.from(waiting.entries()),
     money,
+    towns,
   };
 }
 
@@ -58,6 +71,7 @@ export function deserialiseWorld(data: SaveData): {
   runtimes: Map<string, TrainRuntime>;
   waiting: Map<string, number>;
   money: number;
+  towns: TownData[];
 } {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが
   // 存在しないため、既定値で補う。
@@ -79,6 +93,18 @@ export function deserialiseWorld(data: SaveData): {
       stations.map(([id, st]) => [id, { ...st, platformDoors: st.platformDoors ?? 'none' }])
     );
 
+  if (data.version === 4) {
+    return {
+      railMap: new Map(data.railMap),
+      stations: migrateStations(data.stations),
+      trains: data.trains,
+      runtimes,
+      waiting: new Map(data.waiting),
+      money: data.money,
+      towns: data.towns,
+    };
+  }
+
   if (data.version === 3) {
     return {
       railMap: new Map(data.railMap),
@@ -87,6 +113,8 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
+      // v3以前にはtownsが存在しないため、街なし(旅客需要0)で開始する。
+      towns: [],
     };
   }
 
@@ -98,10 +126,11 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
+      towns: [],
     };
   }
 
-  // v1→v3移行: waitingは空、moneyはSTARTING_MONEYから開始する。
+  // v1→v4移行: waitingは空、moneyはSTARTING_MONEYから開始し、townsも空にする。
   return {
     railMap: new Map(data.railMap),
     stations: migrateStations(data.stations),
@@ -109,5 +138,6 @@ export function deserialiseWorld(data: SaveData): {
     runtimes,
     waiting: new Map(),
     money: STARTING_MONEY,
+    towns: [],
   };
 }
