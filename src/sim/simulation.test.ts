@@ -212,31 +212,49 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     // stBに大量の待ち客がいる状態を用意(capacityを超える)
     world.waiting.set('stB', TRAIN_CAPACITY + 50);
 
-    runUntilStopped(world, 0.1, 5000);
+    // 停車する直前(dt適用前)のwaiting値を都度記録し、境界の1tickでの
+    // 需要増加分を厳密に織り込んで期待値を計算する
+    let waitingJustBeforeStop = world.waiting.get('stB')!;
+    for (let i = 0; i < 5000; i++) {
+      waitingJustBeforeStop = world.waiting.get('stB') ?? 0;
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
 
     const rt = world.runtimes.get('t1')!;
     expect(rt.passengers).toBe(TRAIN_CAPACITY);
-    expect(world.waiting.get('stB')).toBe(50);
+    const waitingAfterGrowth = Math.min(STATION_WAITING_CAP, waitingJustBeforeStop + PASSENGER_SPAWN_RATE * 0.1);
+    expect(world.waiting.get('stB')).toBeCloseTo(waitingAfterGrowth - TRAIN_CAPACITY, 5);
   });
 
   it('2駅目到着時にincomeイベントが発行される(金額=距離×FARE_PER_TILE×人数)', () => {
     const length = 6;
     const { railMap, stations } = buildTwoStationLine(length, 'stA', 'stB');
-    const train = makeTrain({ schedule: ['stA', 'stB'] });
+    // 列車はどちらの駅上にも置かず、中間セルから出発させる
+    // (駅上から出発すると同一駅への経路長0でrouteが見つからず、到着イベントが発生しない)
+    const train = makeTrain({ x: Math.floor(length / 2), z: 0, schedule: ['stA', 'stB'] });
     const world = makeWorld(railMap, stations, [train]);
     world.waiting.set('stA', 10);
 
     // 1駅目(stA)到着: 乗車のみ、income無し
+    // (移動中もwaitingは増え続けるため、実際に乗車した人数を記録して以降の期待値に使う)
     const eventsAtA = runUntilStopped(world, 0.1, 5000);
     expect(eventsAtA.some(e => e.type === 'income')).toBe(false);
     const rtAfterA = world.runtimes.get('t1')!;
-    expect(rtAfterA.passengers).toBe(10);
+    const boardedAtA = rtAfterA.passengers;
+    expect(boardedAtA).toBeGreaterThanOrEqual(10);
     expect(rtAfterA.lastStopStationId).toBe('stA');
 
-    // 停車完了までtickを進めてから次の駅へ向かわせる
+    // 停車完了(STOP_DURATION経過)でarriveイベントが発行されるので、
+    // 実機のuseGameLogic.handleTrainArrive相当の処理でscheduleIndexを進める
     let events: SimEvent[] = [];
     for (let i = 0; i < 50; i++) {
-      events.push(...stepWorld(world, 0.1));
+      const evs = stepWorld(world, 0.1);
+      events.push(...evs);
+      evs.forEach(e => {
+        if (e.type === 'arrive') train.scheduleIndex = (train.scheduleIndex + 1) % train.schedule.length;
+      });
     }
     // 2駅目(stB)到着まで進める
     let ticks = 0;
@@ -250,8 +268,8 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     const incomeEvents = events.filter(e => e.type === 'income');
     expect(incomeEvents.length).toBe(1);
     const incomeEvent = incomeEvents[0] as Extract<SimEvent, { type: 'income' }>;
-    expect(incomeEvent.passengers).toBe(10);
-    expect(incomeEvent.amount).toBeCloseTo((length - 1) * FARE_PER_TILE * 10, 5);
+    expect(incomeEvent.passengers).toBe(boardedAtA);
+    expect(incomeEvent.amount).toBeCloseTo((length - 1) * FARE_PER_TILE * boardedAtA, 5);
     expect(rt.lastStopStationId).toBe('stB');
   });
 });

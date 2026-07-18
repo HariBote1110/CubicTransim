@@ -1,6 +1,7 @@
 import { toKey, getVectorFromDir } from '../utils';
 import type { CellData, StationData, TrainData } from '../types';
 import { calculateRoute } from './pathfinding';
+import { PASSENGER_SPAWN_RATE, STATION_WAITING_CAP, TRAIN_CAPACITY, FARE_PER_TILE } from './economy';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
 export const TRAIN_LENGTH_TILES = 2;
@@ -25,6 +26,8 @@ export interface TrainRuntime {
   debugStatus: string;
   renderPos: { x: number; y: number; z: number };
   renderTarget: { x: number; y: number; z: number } | null;
+  passengers: number;
+  lastStopStationId: string | null;
 }
 
 export interface SimWorld {
@@ -32,9 +35,13 @@ export interface SimWorld {
   stations: Map<string, StationData>;
   trains: TrainData[];
   runtimes: Map<string, TrainRuntime>;
+  waiting: Map<string, number>;
+  economyMirror?: { money: number };
 }
 
-export type SimEvent = { type: 'arrive'; trainId: string; scheduleIndex: number };
+export type SimEvent =
+  | { type: 'arrive'; trainId: string; scheduleIndex: number }
+  | { type: 'income'; trainId: string; amount: number; passengers: number };
 
 const normalize = (x: number, z: number) => {
   const len = Math.sqrt(x * x + z * z) || 1;
@@ -59,6 +66,8 @@ const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
       debugStatus: '',
       renderPos: { x: train.x, y: 0.5, z: train.z },
       renderTarget: null,
+      passengers: 0,
+      lastStopStationId: null,
     };
     world.runtimes.set(train.id, rt);
   }
@@ -308,6 +317,26 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     }
 
     if (shouldStop) {
+      const st = world.stations.get(targetStationId!);
+
+      // 降車: 乗客がいれば直前駅からの距離×運賃で収入イベントを発行する
+      if (rt.passengers > 0 && rt.lastStopStationId) {
+        const prevSt = world.stations.get(rt.lastStopStationId);
+        if (prevSt && st) {
+          const dist = Math.sqrt((prevSt.center.x - st.center.x) ** 2 + (prevSt.center.z - st.center.z) ** 2);
+          const amount = dist * FARE_PER_TILE * rt.passengers;
+          events.push({ type: 'income', trainId: train.id, amount, passengers: rt.passengers });
+        }
+        rt.passengers = 0;
+      }
+
+      // 乗車: waitingからTRAIN_CAPACITYまで乗せる
+      const waitingCount = world.waiting.get(targetStationId!) ?? 0;
+      const boarding = Math.min(waitingCount, TRAIN_CAPACITY);
+      rt.passengers = boarding;
+      world.waiting.set(targetStationId!, waitingCount - boarding);
+      rt.lastStopStationId = targetStationId!;
+
       rt.stopRemaining = STOP_DURATION;
       rt.speedKmh = 0;
       rt.route = [];
@@ -330,6 +359,12 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 
 export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
   const events: SimEvent[] = [];
+
+  // 旅客需要: 全駅の待ち人数をPASSENGER_SPAWN_RATE×dtずつ増やす(上限STATION_WAITING_CAP)
+  for (const station of world.stations.values()) {
+    const current = world.waiting.get(station.id) ?? 0;
+    world.waiting.set(station.id, Math.min(STATION_WAITING_CAP, current + PASSENGER_SPAWN_RATE * dt));
+  }
 
   for (const train of world.trains) {
     if (train.status !== 'running') {
