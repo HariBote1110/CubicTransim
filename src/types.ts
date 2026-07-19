@@ -39,6 +39,8 @@ export interface TrainData {
   schedule: string[];
   scheduleIndex: number;
   status: 'stored' | 'running';
+  // 編成両数(1〜8)。旧セーブ(v6以前)には存在しないため、persistenceの移行処理でcars=2を補う。
+  cars: number;
 }
 
 export const RAIL_COLOUR = '#555555';

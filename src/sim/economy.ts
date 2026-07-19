@@ -41,12 +41,12 @@ export function yearMonthOfIndex(monthIndex: number): { year: number; month: num
 }
 
 // 維持費(月額)
-export const TRAIN_UPKEEP = 500; // /編成/月
+export const UPKEEP_PER_CAR = 250; // /両/月
 export const RAIL_UPKEEP = 2; // /セル/月(橋・トンネルも同額)
 export const STATION_UPKEEP = 100; // /駅/月
 export const DEPOT_UPKEEP = 100; // /棟/月
 
-// 月次の維持費合計を計算する(純粋関数)。
+// 月次の維持費合計を計算する(純粋関数)。列車の維持費は編成両数に比例する。
 export function calculateUpkeep(world: SimWorld): number {
   let railCells = 0;
   let depotCount = 0;
@@ -54,8 +54,9 @@ export function calculateUpkeep(world: SimWorld): number {
     if (cell.type === 'rail') railCells += 1;
     else if (cell.type === 'depot') depotCount += 1;
   }
+  const trainUpkeep = world.trains.reduce((sum, t) => sum + (t.cars ?? 2) * UPKEEP_PER_CAR, 0);
   return (
-    world.trains.length * TRAIN_UPKEEP +
+    trainUpkeep +
     railCells * RAIL_UPKEEP +
     world.stations.size * STATION_UPKEEP +
     depotCount * DEPOT_UPKEEP
@@ -76,7 +77,9 @@ export const RAIL_COST = 100; // 1セルあたり(平地)
 export const STATION_COST = 1_000;
 export const DEPOT_COST = 2_000;
 export const SIGNAL_COST = 200;
-export const TRAIN_COST = 5_000;
+export const TRAIN_COST = 5_000; // 新造時(2両編成)の価格
+export const CAR_COST = 2_000; // 増結1両あたり
+export const CAR_REFUND = 1_000; // 解結1両あたりの払い戻し
 
 // 水上は「橋」、山岳は「トンネル」としてRAIL_COSTに乗算する倍率
 export const BRIDGE_COST_MULTIPLIER = 5;
@@ -84,7 +87,7 @@ export const TUNNEL_COST_MULTIPLIER = 8;
 
 export const PASSENGER_SPAWN_RATE = 0.5; // 人/秒/駅(demandFactor=1のときの基準値)
 export const STATION_WAITING_CAP = 200;
-export const TRAIN_CAPACITY = 100;
+export const CAPACITY_PER_CAR = 50; // 定員=cars×CAPACITY_PER_CAR
 export const FARE_PER_TILE = 2;
 
 // 街の旅客需要が駅に及ぶ最大距離(タイル)。これを超えると影響0になる。

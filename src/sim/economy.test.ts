@@ -15,7 +15,6 @@ import {
   TUNNEL_COST_MULTIPLIER,
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
-  TRAIN_CAPACITY,
   FARE_PER_TILE,
   TOWN_INFLUENCE_RADIUS,
   PLATFORM_DOOR_STANDARD_COST,
@@ -27,10 +26,13 @@ import {
   SECONDS_PER_DAY,
   DAYS_PER_MONTH,
   clockToDate,
-  TRAIN_UPKEEP,
   RAIL_UPKEEP,
   STATION_UPKEEP,
   DEPOT_UPKEEP,
+  UPKEEP_PER_CAR,
+  CAPACITY_PER_CAR,
+  CAR_COST,
+  CAR_REFUND,
   calculateUpkeep,
 } from './economy';
 
@@ -44,7 +46,9 @@ describe('economy: 定数', () => {
     expect(TRAIN_COST).toBe(5_000);
     expect(PASSENGER_SPAWN_RATE).toBe(0.5);
     expect(STATION_WAITING_CAP).toBe(200);
-    expect(TRAIN_CAPACITY).toBe(100);
+    expect(CAPACITY_PER_CAR).toBe(50);
+    expect(CAR_COST).toBe(2_000);
+    expect(CAR_REFUND).toBe(1_000);
     expect(FARE_PER_TILE).toBe(2);
     expect(PLATFORM_DOOR_STANDARD_COST).toBe(3_000);
     expect(PLATFORM_DOOR_FULLSCREEN_COST).toBe(8_000);
@@ -154,7 +158,7 @@ describe('economy: 定数(暦・維持費)', () => {
   it('暦・維持費の定数が仕様通り定義されている', () => {
     expect(SECONDS_PER_DAY).toBe(10);
     expect(DAYS_PER_MONTH).toBe(30);
-    expect(TRAIN_UPKEEP).toBe(500);
+    expect(UPKEEP_PER_CAR).toBe(250);
     expect(RAIL_UPKEEP).toBe(2);
     expect(STATION_UPKEEP).toBe(100);
     expect(DEPOT_UPKEEP).toBe(100);
@@ -201,15 +205,15 @@ describe('economy: calculateUpkeep', () => {
     ]);
 
     const trains: TrainData[] = [
-      { id: 't1', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running' },
-      { id: 't2', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running' },
+      { id: 't1', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running', cars: 2 },
+      { id: 't2', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running', cars: 4 },
     ];
 
     const world: SimWorld = {
       railMap, stations, trains, runtimes: new Map(), waiting: new Map(), rng: () => 1,
     };
 
-    expect(calculateUpkeep(world)).toBe(2 * TRAIN_UPKEEP + 10 * RAIL_UPKEEP + 2 * STATION_UPKEEP + 1 * DEPOT_UPKEEP);
-    expect(calculateUpkeep(world)).toBe(1320);
+    expect(calculateUpkeep(world)).toBe((2 + 4) * UPKEEP_PER_CAR + 10 * RAIL_UPKEEP + 2 * STATION_UPKEEP + 1 * DEPOT_UPKEEP);
+    expect(calculateUpkeep(world)).toBe(1820);
   });
 });
