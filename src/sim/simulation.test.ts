@@ -202,7 +202,7 @@ describe('stepWorld', () => {
 
     world.runtimes.set('B', {
       id: 'B', grid: { x: 1, z: 0 }, prevGrid: null, progress: 0, speedKmh: 0,
-      route: [], trail: [{ x: 1, z: 0 }], stopRemaining: 0, waitTimer: 0, debugStatus: '',
+      route: [], trail: [{ x: 1, z: 0 }], pathHistory: [{ x: 1, z: 0 }], stopRemaining: 0, waitTimer: 0, debugStatus: '',
       renderPos: { x: 1, y: 0.5, z: 0 }, renderTarget: null,
       passengers: 0, lastStopStationId: null, haltRemaining: 0,
     });

@@ -130,8 +130,8 @@ export function deserialiseWorld(data: SaveData): {
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
 } {
-  // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが
-  // 存在しないため、既定値で補う。
+  // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
+  // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
   const runtimes = new Map(
     data.runtimes.map(([id, rt]) => [
       id,
@@ -140,6 +140,7 @@ export function deserialiseWorld(data: SaveData): {
         passengers: rt.passengers ?? 0,
         lastStopStationId: rt.lastStopStationId ?? null,
         haltRemaining: rt.haltRemaining ?? 0,
+        pathHistory: (rt as TrainRuntime).pathHistory ?? [...rt.trail],
       },
     ])
   );
