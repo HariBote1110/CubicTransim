@@ -10,6 +10,8 @@ import {
   DEPOT_COST,
   SIGNAL_COST,
   TRAIN_COST,
+  BRIDGE_COST_MULTIPLIER,
+  TUNNEL_COST_MULTIPLIER,
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
   TRAIN_CAPACITY,
@@ -110,5 +112,31 @@ describe('economy: costOfPath', () => {
     expect(costOfPath('signal', 1)).toBe(SIGNAL_COST);
     // cellCountが変でも固定単価（signal/stationは常に1セル操作のため）
     expect(costOfPath('station', 3)).toBe(STATION_COST);
+  });
+
+  it('BRIDGE_COST_MULTIPLIER/TUNNEL_COST_MULTIPLIERが仕様通り', () => {
+    expect(BRIDGE_COST_MULTIPLIER).toBe(5);
+    expect(TUNNEL_COST_MULTIPLIER).toBe(8);
+  });
+
+  it('pathとterrainを渡すと地形ごとの倍率(水=橋5倍/山=トンネル8倍)を合算する', () => {
+    const path = [
+      { x: 0, z: 0 }, // 平地
+      { x: 1, z: 0 }, // 平地
+      { x: 2, z: 0 }, // 水
+      { x: 3, z: 0 }, // 山
+    ];
+    const terrain = new Map<string, 'water' | 'mountain'>([
+      ['2,0', 'water'],
+      ['3,0', 'mountain'],
+    ]);
+
+    const cost = costOfPath('rail', path.length, path, terrain);
+    expect(cost).toBe(RAIL_COST * 2 + RAIL_COST * BRIDGE_COST_MULTIPLIER + RAIL_COST * TUNNEL_COST_MULTIPLIER);
+    expect(cost).toBe(100 * 2 + 500 + 800);
+  });
+
+  it('pathを渡さない場合は従来通りcellCount×RAIL_COSTのまま', () => {
+    expect(costOfPath('rail', 5)).toBe(5 * RAIL_COST);
   });
 });
