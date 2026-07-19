@@ -1,7 +1,7 @@
 {
   "name": "cubictransim",
   "private": true,
-  "version": "0.1.0-Alpha-8a",
+  "version": "0.1.0-Alpha-8b",
   "type": "module",
   "scripts": {
     "dev": "vite",
