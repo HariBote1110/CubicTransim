@@ -71,6 +71,28 @@ const normalize = (x: number, z: number) => {
 
 const dot = (a: Grid, b: Grid) => a.x * b.x + a.z * b.z;
 
+// connectionsビットマスクの立っているビット数(接続方向の数)を数える。
+const popcount = (n: number) => {
+  let c = 0;
+  let v = n;
+  while (v) {
+    c += v & 1;
+    v >>= 1;
+  }
+  return c;
+};
+
+// 分岐点(connectionsが3方向以上)または信号セルを「区間の境界」とみなす。
+// すれ違い設備では分岐点そのものは両列車が一時的に立ち寄る共有地点であり、
+// そこに対向列車が留まっているだけで単線区間への進入を諦めるべきではないため、
+// 信号コンフリクト判定の見通し距離はこの境界の手前までに限定する。
+const isSectionBoundary = (cell: CellData | undefined) => {
+  if (!cell) return false;
+  if (cell.signalDir) return true;
+  if (popcount(cell.connections ?? 0) >= 3) return true;
+  return false;
+};
+
 const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
   let rt = world.runtimes.get(train.id);
   if (!rt) {
@@ -173,7 +195,16 @@ const computeObstacleDistance = (world: SimWorld, train: TrainData, rt: TrainRun
 
         if (dot(moveVec, signalVec) > 0.1) {
           const lookAheadStart = i + 1;
-          const lookAheadEnd = Math.min(rt.route.length, i + 10);
+          // 固定10マスではなく「次の分岐点または信号セルの手前まで」を見通し区間とする。
+          // 分岐点セル自体は境界外(対向列車がそこに留まっていても衝突判定しない)。
+          let lookAheadEnd = rt.route.length;
+          for (let j = lookAheadStart; j < rt.route.length; j++) {
+            const boundaryCell = world.railMap.get(toKey(rt.route[j].x, rt.route[j].z));
+            if (isSectionBoundary(boundaryCell)) {
+              lookAheadEnd = j;
+              break;
+            }
+          }
           const blockSegment = rt.route.slice(lookAheadStart, lookAheadEnd);
 
           const conflict = world.trains.some(other => {
