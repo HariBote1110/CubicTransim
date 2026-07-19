@@ -33,6 +33,9 @@ export interface TrainRuntime {
   speedKmh: number;
   route: Grid[];
   trail: Grid[];
+  // 描画用の走行履歴。占有判定に使う trail(cars長)とは別に、連結器の滑らか描画のため
+  // trail より長め(cars+2程度)に保持する。先頭は常に trail[0](= rt.grid)と一致する。
+  pathHistory: Grid[];
   stopRemaining: number;
   waitTimer: number;
   debugStatus: string;
@@ -105,6 +108,7 @@ const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
       speedKmh: 0,
       route: [],
       trail: [{ x: train.x, z: train.z }],
+      pathHistory: [{ x: train.x, z: train.z }],
       stopRemaining: 0,
       waitTimer: 0,
       debugStatus: '',
@@ -243,6 +247,76 @@ const computeObstacleDistance = (world: SimWorld, train: TrainData, rt: TrainRun
   return { limitDistance: foundObstacle ? distAccumulator : 9999, obstacleType };
 };
 
+// trail(占有判定用、cars長)とpathHistory(描画用、cars+2長)を同時に更新する。
+// pathHistory[0]は常にtrail[0](= arrivedGrid = rt.grid)と一致させる。
+const pushArrivedGrid = (rt: TrainRuntime, arrivedGrid: Grid, carCount: number) => {
+  rt.trail = [arrivedGrid, ...rt.trail];
+  if (rt.trail.length > carCount) rt.trail.pop();
+
+  rt.pathHistory = [arrivedGrid, ...rt.pathHistory];
+  const historyCap = carCount + 2;
+  if (rt.pathHistory.length > historyCap) rt.pathHistory.length = historyCap;
+};
+
+// 駅への到着処理(停車・乗降・事故判定・停車時間の決定)。
+// 通常の1マス進行後の到着と、「経路探索した結果すでに目的駅上にいた」場合の即到着の
+// 両方から呼ばれる。
+const stopAtStation = (
+  world: SimWorld,
+  train: TrainData,
+  rt: TrainRuntime,
+  targetStationId: string,
+  arrivedGrid: Grid,
+  oldCurrent: Grid,
+  events: SimEvent[]
+) => {
+  const st = world.stations.get(targetStationId);
+
+  // 降車: 乗客がいれば直前駅からの距離×運賃で収入イベントを発行する
+  if (rt.passengers > 0 && rt.lastStopStationId) {
+    const prevSt = world.stations.get(rt.lastStopStationId);
+    if (prevSt && st) {
+      const dist = Math.sqrt((prevSt.center.x - st.center.x) ** 2 + (prevSt.center.z - st.center.z) ** 2);
+      const amount = dist * FARE_PER_TILE * rt.passengers;
+      events.push({ type: 'income', trainId: train.id, amount, passengers: rt.passengers });
+    }
+    rt.passengers = 0;
+  }
+
+  // 乗車: waitingから編成定員(cars×CAPACITY_PER_CAR)まで乗せる。waitingは小数で蓄積されるため、
+  // 乗車人数は整数に切り捨て、端数は駅に残す(passengersが常に整数であることを保証する)。
+  const carCount = train.cars ?? 2;
+  const trainCapacity = carCount * CAPACITY_PER_CAR;
+  const waitingCount = world.waiting.get(targetStationId) ?? 0;
+  const boarding = Math.max(0, Math.min(Math.floor(waitingCount), trainCapacity - rt.passengers));
+  rt.passengers += boarding;
+  world.waiting.set(targetStationId, waitingCount - boarding);
+  rt.lastStopStationId = targetStationId;
+
+  // 人身事故判定: 停車の瞬間、ホーム混雑度とドア種別に応じた確率で発生する
+  const doorType = st?.platformDoors ?? 'none';
+  const accidentChance = calculateAccidentChance(doorType, waitingCount);
+  if (world.rng() < accidentChance) {
+    rt.haltRemaining = ACCIDENT_HALT_DURATION;
+    events.push({ type: 'accident', trainId: train.id, stationId: targetStationId, penalty: ACCIDENT_PENALTY });
+  }
+
+  // ホーム長ペナルティ: 編成両数がホーム(停車したセルのstationId一致セル数)を超えると
+  // 乗降に余分な時間がかかるものとして停車時間を延長する。
+  const platformLen = st?.cells.length ?? 1;
+  const stopMultiplier = carCount > platformLen ? 1 + 0.5 * (carCount - platformLen) : 1;
+  rt.stopRemaining = STOP_DURATION * stopMultiplier;
+  rt.speedKmh = 0;
+  rt.route = [];
+  rt.prevGrid = null;
+  rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
+  // renderTargetをリセットせず、進入方向の延長線上の点に維持する。
+  // こうしないとDynamicTrain側のlookAtが働かず、停車の瞬間に列車の向きが初期値へ戻ってしまう。
+  const enterVec = normalize(arrivedGrid.x - oldCurrent.x, arrivedGrid.z - oldCurrent.z);
+  rt.renderTarget = { x: arrivedGrid.x + enterVec.x, y: 0.5, z: arrivedGrid.z + enterVec.z };
+  rt.debugStatus = 'Arrived';
+};
+
 const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: number, events: SimEvent[]) => {
   const targetStationId = train.schedule.length > 0 ? train.schedule[train.scheduleIndex] : null;
 
@@ -285,6 +359,15 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       rt.debugStatus = 'Route Found';
       rt.waitTimer = 0;
     } else {
+      // 目的駅のセル上に既にいる場合(例: 車庫の隣駅が単独スケジュールでscheduleIndexが
+      // ループして再び同じ駅を目指すケース)、経路探索は空を返す(BFSが開始セルで即座に
+      // 目的駅ヒットと判定し空経路を返すため)。これを「経路なし=永久待機」として扱うと
+      // 二度と発車できずWaitingし続けるバグになるため、既に目的駅にいるなら即到着扱いにする。
+      const currentCell = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
+      if (currentCell && currentCell.stationId === targetStationId) {
+        stopAtStation(world, train, rt, targetStationId, rt.grid, rt.prevGrid ?? rt.grid, events);
+        return;
+      }
       rt.speedKmh = Math.max(0, rt.speedKmh - DECEL_KMH_S * dt);
       rt.debugStatus = 'Waiting for Path...';
       rt.waitTimer += dt;
@@ -358,9 +441,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     rt.progress = 0;
     rt.route = rt.route.slice(1);
 
-    rt.trail = [arrivedGrid, ...rt.trail];
-    const carCount = train.cars ?? 2;
-    if (rt.trail.length > carCount) rt.trail.pop();
+    pushArrivedGrid(rt, arrivedGrid, train.cars ?? 2);
 
     // 駅到着判定
     let shouldStop = false;
@@ -383,51 +464,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     }
 
     if (shouldStop) {
-      const st = world.stations.get(targetStationId!);
-
-      // 降車: 乗客がいれば直前駅からの距離×運賃で収入イベントを発行する
-      if (rt.passengers > 0 && rt.lastStopStationId) {
-        const prevSt = world.stations.get(rt.lastStopStationId);
-        if (prevSt && st) {
-          const dist = Math.sqrt((prevSt.center.x - st.center.x) ** 2 + (prevSt.center.z - st.center.z) ** 2);
-          const amount = dist * FARE_PER_TILE * rt.passengers;
-          events.push({ type: 'income', trainId: train.id, amount, passengers: rt.passengers });
-        }
-        rt.passengers = 0;
-      }
-
-      // 乗車: waitingから編成定員(cars×CAPACITY_PER_CAR)まで乗せる。waitingは小数で蓄積されるため、
-      // 乗車人数は整数に切り捨て、端数は駅に残す(passengersが常に整数であることを保証する)。
-      const carCount = train.cars ?? 2;
-      const trainCapacity = carCount * CAPACITY_PER_CAR;
-      const waitingCount = world.waiting.get(targetStationId!) ?? 0;
-      const boarding = Math.max(0, Math.min(Math.floor(waitingCount), trainCapacity - rt.passengers));
-      rt.passengers += boarding;
-      world.waiting.set(targetStationId!, waitingCount - boarding);
-      rt.lastStopStationId = targetStationId!;
-
-      // 人身事故判定: 停車の瞬間、ホーム混雑度とドア種別に応じた確率で発生する
-      const doorType = st?.platformDoors ?? 'none';
-      const accidentChance = calculateAccidentChance(doorType, waitingCount);
-      if (world.rng() < accidentChance) {
-        rt.haltRemaining = ACCIDENT_HALT_DURATION;
-        events.push({ type: 'accident', trainId: train.id, stationId: targetStationId!, penalty: ACCIDENT_PENALTY });
-      }
-
-      // ホーム長ペナルティ: 編成両数がホーム(停車したセルのstationId一致セル数)を超えると
-      // 乗降に余分な時間がかかるものとして停車時間を延長する。
-      const platformLen = st?.cells.length ?? 1;
-      const stopMultiplier = carCount > platformLen ? 1 + 0.5 * (carCount - platformLen) : 1;
-      rt.stopRemaining = STOP_DURATION * stopMultiplier;
-      rt.speedKmh = 0;
-      rt.route = [];
-      rt.prevGrid = null;
-      rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
-      // renderTargetをリセットせず、進入方向の延長線上の点に維持する。
-      // こうしないとDynamicTrain側のlookAtが働かず、停車の瞬間に列車の向きが初期値へ戻ってしまう。
-      const enterVec = normalize(arrivedGrid.x - oldCurrent.x, arrivedGrid.z - oldCurrent.z);
-      rt.renderTarget = { x: arrivedGrid.x + enterVec.x, y: 0.5, z: arrivedGrid.z + enterVec.z };
-      rt.debugStatus = 'Arrived';
+      stopAtStation(world, train, rt, targetStationId!, arrivedGrid, oldCurrent, events);
     } else {
       rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
     }

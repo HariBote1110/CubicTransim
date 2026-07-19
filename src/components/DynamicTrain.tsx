@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { TRAIN_COLOUR, SELECTED_TRAIN_COLOUR } from '../types';
 import type { TrainType, TrainData } from '../types';
 import type { TrainRuntime } from '../sim/simulation';
+import { carPositions } from '../sim/consist';
 
 interface DynamicTrainProps {
   data: TrainData;
@@ -34,16 +35,16 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       groupRef.current.lookAt(runtime.renderTarget.x, runtime.renderTarget.y, runtime.renderTarget.z);
     }
 
-    // 2両目以降: runtime.trail(先頭が現在セル)に沿って1タイル間隔で後方配置する。
-    // 発車直後などtrail長がcarsに満たない間は先頭セルに重ねて描画する(仕様どおり)。
+    // 2両目以降: 先頭からの弧長ベースで連続的に後方配置する(carPositions)。
+    // trailのようなセル単位の配置ではなくポリライン補間なので、セル境界を跨いでもカクつかない。
+    const positions = carPositions(runtime, data.cars, 1.0);
     for (let i = 1; i < carRefs.current.length; i++) {
       const carGroup = carRefs.current[i];
       if (!carGroup) continue;
-      const trailCell = runtime.trail[i] ?? runtime.trail[runtime.trail.length - 1] ?? runtime.grid;
-      const prevCell = runtime.trail[i - 1] ?? runtime.grid;
-      carGroup.position.set(trailCell.x, 0.5, trailCell.z);
-      const lookAtTarget = prevCell;
-      carGroup.lookAt(lookAtTarget.x, 0.5, lookAtTarget.z);
+      const pos = positions[i];
+      if (!pos) continue;
+      carGroup.position.set(pos.x, 0.5, pos.z);
+      carGroup.lookAt(pos.x + pos.heading.x, 0.5, pos.z + pos.heading.z);
     }
 
     if (isSelected) {
