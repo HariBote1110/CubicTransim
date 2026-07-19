@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [terrain-and-construction-constraints.md](terrain-and-construction-constraints.md) — 地形(水域・山岳)の決定的生成(generateTerrain/terrainAt)、駅・車庫・信号の水域/山岳no-op、線路の橋(5倍)/トンネル(8倍)コスト、街生成の地形除外、SaveData v5移行、地形描画(TerrainBlocks)とworld座標→screen座標のアフィン変換(ブラウザ検証用)
 - [economy-and-passenger-demand.md](economy-and-passenger-demand.md) — 所持金/建設コスト/列車購入の課金ロジック(no-op判定の使い方と限界)、旅客需要(waiting)・乗降・運賃収入(income)のsim層実装、セーブデータv2移行
 - [construction-layer-and-bugfixes.md](construction-layer-and-bugfixes.md) — 建設ロジックを sim/construction.ts へ純粋関数化し、既知バグ5件（上書き防止・斜め線路駅・駅名採番・モード切替直後クリック）をTDDで修正
 - [clock-and-persistence.md](clock-and-persistence.md) — ゲーム内時計(0/1/2/4x)とlocalStorageセーブ/ロードの設計。runtimes Mapはインスタンス維持で入れ替えること
