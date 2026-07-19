@@ -18,6 +18,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   data, runtimes, type, isSelected, onClick
 }) => {
   const groupRef = useRef<THREE.Group>(null);
+  const carRefs = useRef<(THREE.Group | null)[]>([]);
   const speedTextRef = useRef<HTMLDivElement>(null);
   const statusTextRef = useRef<HTMLDivElement>(null);
 
@@ -33,6 +34,18 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       groupRef.current.lookAt(runtime.renderTarget.x, runtime.renderTarget.y, runtime.renderTarget.z);
     }
 
+    // 2両目以降: runtime.trail(先頭が現在セル)に沿って1タイル間隔で後方配置する。
+    // 発車直後などtrail長がcarsに満たない間は先頭セルに重ねて描画する(仕様どおり)。
+    for (let i = 1; i < carRefs.current.length; i++) {
+      const carGroup = carRefs.current[i];
+      if (!carGroup) continue;
+      const trailCell = runtime.trail[i] ?? runtime.trail[runtime.trail.length - 1] ?? runtime.grid;
+      const prevCell = runtime.trail[i - 1] ?? runtime.grid;
+      carGroup.position.set(trailCell.x, 0.5, trailCell.z);
+      const lookAtTarget = prevCell;
+      carGroup.lookAt(lookAtTarget.x, 0.5, lookAtTarget.z);
+    }
+
     if (isSelected) {
       if (speedTextRef.current) speedTextRef.current.textContent = `${Math.round(runtime.speedKmh)} km/h`;
       if (statusTextRef.current) statusTextRef.current.textContent = runtime.debugStatus;
@@ -43,27 +56,44 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   if (data.status === 'stored') return null;
 
   const color = isSelected ? SELECTED_TRAIN_COLOUR : TRAIN_COLOUR;
+  const trailingCars = Math.max(0, data.cars - 1);
+
+  const carBody = (
+    <>
+      {type === 'commuter' ? (
+        <mesh>
+          <boxGeometry args={[0.8, 0.8, 1.6]} />
+          <meshStandardMaterial color={color} />
+        </mesh>
+      ) : (
+        <group>
+          <mesh position={[0, 0, 0.2]}>
+            <boxGeometry args={[0.7, 0.7, 1.8]} />
+            <meshStandardMaterial color={color} />
+          </mesh>
+          <mesh position={[0, 0, 1.3]} rotation={[Math.PI / 2, 0, 0]}>
+            <coneGeometry args={[0.35, 0.8, 4]} />
+            <meshStandardMaterial color={color} />
+          </mesh>
+        </group>
+      )}
+    </>
+  );
 
   return (
     <group>
-      <group ref={groupRef} position={[data.x, 0.5, data.z]} onClick={(e) => { e.stopPropagation(); onClick(e); }}>
-        {type === 'commuter' ? (
+      {/* 2両目以降(後続車両)。先頭より落ち着いた色にして見分けが付くようにする。 */}
+      {Array.from({ length: trailingCars }).map((_, idx) => (
+        <group key={`car-${idx}`} ref={el => { carRefs.current[idx + 1] = el; }}>
           <mesh>
             <boxGeometry args={[0.8, 0.8, 1.6]} />
-            <meshStandardMaterial color={color} />
+            <meshStandardMaterial color="#8899aa" />
           </mesh>
-        ) : (
-          <group>
-            <mesh position={[0, 0, 0.2]}>
-              <boxGeometry args={[0.7, 0.7, 1.8]} />
-              <meshStandardMaterial color={color} />
-            </mesh>
-            <mesh position={[0, 0, 1.3]} rotation={[Math.PI / 2, 0, 0]}>
-              <coneGeometry args={[0.35, 0.8, 4]} />
-              <meshStandardMaterial color={color} />
-            </mesh>
-          </group>
-        )}
+        </group>
+      ))}
+
+      <group ref={(el) => { groupRef.current = el; carRefs.current[0] = el; }} position={[data.x, 0.5, data.z]} onClick={(e) => { e.stopPropagation(); onClick(e); }}>
+        {carBody}
         {isSelected && (
           <mesh position={[0, 1.5, 0]}>
             <coneGeometry args={[0.2, 0.5, 4]} />

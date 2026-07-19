@@ -14,6 +14,7 @@ export default function App() {
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
+    addCar, removeCar,
     addSchedule, worldRef,
     scheduleClipboard, copySchedule, pasteSchedule,
     saveGame, loadGame,
@@ -61,6 +62,8 @@ export default function App() {
         isEditingSchedule={isEditingSchedule}
         setIsEditingSchedule={setIsEditingSchedule}
         onDeploy={deployTrain}
+        onAddCar={addCar}
+        onRemoveCar={removeCar}
         scheduleClipboard={scheduleClipboard}
         onCopySchedule={copySchedule}
         onPasteSchedule={pasteSchedule}

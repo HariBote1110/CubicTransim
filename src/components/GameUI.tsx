@@ -34,6 +34,9 @@ interface GameUIProps {
   isEditingSchedule: boolean;
   setIsEditingSchedule: (v: boolean) => void;
   onDeploy: (trainId: string) => void;
+  // ★追加: 編成エディタ(増結・解結)
+  onAddCar: (trainId: string) => void;
+  onRemoveCar: (trainId: string) => void;
   // ★追加
   scheduleClipboard: string[] | null;
   onCopySchedule: (trainId: string) => void;
@@ -61,6 +64,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   selectedTrainId, trains, stations,
   isEditingSchedule, setIsEditingSchedule,
   onDeploy,
+  onAddCar, onRemoveCar,
   scheduleClipboard, onCopySchedule, onPasteSchedule,
   simSpeed, setSimSpeed,
   onSave, onLoad,
@@ -292,6 +296,56 @@ export const GameUI: React.FC<GameUIProps> = ({
                </div>
              </div>
 
+             {/* ★追加: 編成エディタ(車庫在籍中のみ増結・解結できる) */}
+             <div style={{ marginBottom: '10px' }}>
+               <div style={{ fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '5px' }}>
+                 Consist: <span style={{ fontWeight: 'normal', color: '#666' }}>{selectedTrain.cars}両</span>
+               </div>
+               <div style={{ display: 'flex', gap: '3px', marginBottom: '6px' }}>
+                 {Array.from({ length: selectedTrain.cars }).map((_, i) => (
+                   <div
+                     key={i}
+                     style={{
+                       width: '22px', height: '14px', borderRadius: '3px',
+                       background: i === 0 ? '#ff0055' : '#00aaff',
+                       border: '1px solid #333',
+                     }}
+                     title={i === 0 ? '先頭車' : `${i + 1}両目`}
+                   />
+                 ))}
+               </div>
+               {selectedTrain.status === 'stored' && (
+                 <div style={{ display: 'flex', gap: '5px' }}>
+                   <button
+                     onClick={() => onAddCar(selectedTrain.id)}
+                     disabled={selectedTrain.cars >= 8 || money < CAR_COST}
+                     style={{
+                       flex: 1, padding: '6px', fontSize: '0.75rem', fontWeight: 'bold',
+                       cursor: selectedTrain.cars >= 8 || money < CAR_COST ? 'not-allowed' : 'pointer',
+                       background: selectedTrain.cars >= 8 || money < CAR_COST ? '#eee' : '#00cc66',
+                       color: selectedTrain.cars >= 8 || money < CAR_COST ? '#999' : 'white',
+                       border: '1px solid #ccc', borderRadius: '4px',
+                     }}
+                   >
+                     + 増結 ¥{CAR_COST.toLocaleString()}
+                   </button>
+                   <button
+                     onClick={() => onRemoveCar(selectedTrain.id)}
+                     disabled={selectedTrain.cars <= 1}
+                     style={{
+                       flex: 1, padding: '6px', fontSize: '0.75rem', fontWeight: 'bold',
+                       cursor: selectedTrain.cars <= 1 ? 'not-allowed' : 'pointer',
+                       background: selectedTrain.cars <= 1 ? '#eee' : '#ffaa00',
+                       color: selectedTrain.cars <= 1 ? '#999' : 'white',
+                       border: '1px solid #ccc', borderRadius: '4px',
+                     }}
+                   >
+                     − 解結 (+¥{CAR_REFUND.toLocaleString()})
+                   </button>
+                 </div>
+               )}
+             </div>
+
              {/* スケジュール表示 */}
              <div style={{ marginBottom: '10px' }}>
                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -369,6 +423,9 @@ export const GameUI: React.FC<GameUIProps> = ({
               </div>
               <div style={{ fontSize: '0.8rem', color: '#666' }}>
                 Demand: <span style={{ fontWeight: 'bold' }}>{stationDemand.toFixed(1)}x</span>
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                Platform: <span style={{ fontWeight: 'bold' }}>{selectedStation.cells.length} cells</span>
               </div>
               <div style={{ fontSize: '0.8rem', color: '#666' }}>
                 Platform doors: <span style={{ fontWeight: 'bold' }}>{selectedStation.platformDoors}</span>

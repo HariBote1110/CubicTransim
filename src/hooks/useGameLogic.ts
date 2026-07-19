@@ -9,8 +9,12 @@ import type { ConstructionState } from '../sim/construction';
 import {
   STARTING_MONEY, TRAIN_COST, costOfPath,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
-  calculateUpkeep,
+  calculateUpkeep, CAR_COST, CAR_REFUND,
 } from '../sim/economy';
+
+// 編成の最小・最大両数
+const MIN_CARS = 1;
+const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { mulberry32, generateTowns } from '../sim/towns';
 import { generateTerrain } from '../sim/terrain';
@@ -207,6 +211,28 @@ export const useGameLogic = () => {
     setCurrentLedger(l => ({ ...l, construction: l.construction + TRAIN_COST }));
   };
 
+  // ★追加: 増結(車庫在籍中の列車のみ想定。running中はGameUI側でボタンを非表示にする)。
+  // 8両超は不可、資金不足時は不可。増結費用は月次台帳のconstructionに計上する。
+  const addCar = (trainId: string) => {
+    const target = trains.find(t => t.id === trainId);
+    if (!target) return;
+    if (target.cars >= MAX_CARS) return;
+    if (money < CAR_COST) return;
+    setTrains(prev => prev.map(t => (t.id === trainId ? { ...t, cars: t.cars + 1 } : t)));
+    setMoney(m => m - CAR_COST);
+    setCurrentLedger(l => ({ ...l, construction: l.construction + CAR_COST }));
+  };
+
+  // ★追加: 解結。1両未満にはできない。払い戻しも月次台帳のconstructionに(マイナス計上で)計上する。
+  const removeCar = (trainId: string) => {
+    const target = trains.find(t => t.id === trainId);
+    if (!target) return;
+    if (target.cars <= MIN_CARS) return;
+    setTrains(prev => prev.map(t => (t.id === trainId ? { ...t, cars: t.cars - 1 } : t)));
+    setMoney(m => m + CAR_REFUND);
+    setCurrentLedger(l => ({ ...l, construction: l.construction - CAR_REFUND }));
+  };
+
   // ★追加: 運賃収入の反映(sim層の'income'イベントを受けて呼ばれる)
   const addIncome = (amount: number) => {
     setMoney(m => m + amount);
@@ -351,6 +377,7 @@ export const useGameLogic = () => {
     commitPath, removeSignal,
     handleTrainArrive,
     buyTrain, deployTrain,
+    addCar, removeCar,
     addSchedule,
     worldRef,
     // 公開
