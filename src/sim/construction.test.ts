@@ -151,6 +151,67 @@ describe('applySignal（特性テスト）', () => {
   });
 });
 
+describe('地形による建設制約（水域・山岳）', () => {
+  const waterTerrain = new Map<string, 'water' | 'mountain'>([['0,0', 'water']]);
+  const mountainTerrain = new Map<string, 'water' | 'mountain'>([['0,0', 'mountain']]);
+
+  it('水域セルへの駅設置は no-op（stateの参照が変わらない）', () => {
+    const state = emptyState();
+    const result = applyStation(state, { x: 0, z: 0 }, waterTerrain);
+    expect(result).toBe(state);
+    expect(result.railMap.has(toKey(0, 0))).toBe(false);
+  });
+
+  it('山岳セルへの駅設置は no-op', () => {
+    const state = emptyState();
+    const result = applyStation(state, { x: 0, z: 0 }, mountainTerrain);
+    expect(result).toBe(state);
+  });
+
+  it('水域セルへの車庫設置は no-op', () => {
+    const state = emptyState();
+    const result = applyDepot(state, { x: 0, z: 0 }, waterTerrain);
+    expect(result).toBe(state);
+    expect(result.railMap.has(toKey(0, 0))).toBe(false);
+  });
+
+  it('山岳セルへの車庫設置は no-op', () => {
+    const state = emptyState();
+    const result = applyDepot(state, { x: 0, z: 0 }, mountainTerrain);
+    expect(result).toBe(state);
+  });
+
+  it('水域セル(橋)への信号設置は no-op', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], waterTerrain);
+    const result = applySignal(state, [{ x: 0, z: 0 }], waterTerrain);
+    expect(result).toBe(state);
+  });
+
+  it('平地には従来通り駅・車庫・信号を設置できる（terrain省略時は互換動作）', () => {
+    const state = emptyState();
+    const stationResult = applyStation(state, { x: 0, z: 0 });
+    expect(stationResult.railMap.get(toKey(0, 0))!.type).toBe('station');
+  });
+
+  it('水上には線路(橋)を敷設でき、bridgeフラグが立つ', () => {
+    const state = emptyState();
+    const result = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], waterTerrain);
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.type).toBe('rail');
+    expect(cell.bridge).toBe(true);
+    expect(result.railMap.get(toKey(1, 0))!.bridge).toBeFalsy();
+  });
+
+  it('山岳には線路(トンネル)を敷設でき、tunnelフラグが立つ', () => {
+    const state = emptyState();
+    const result = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], mountainTerrain);
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.type).toBe('rail');
+    expect(cell.tunnel).toBe(true);
+  });
+});
+
 describe('removePath（特性テスト）', () => {
   it('rail を削除すると隣接セルの connections も掃除される', () => {
     let state = emptyState();

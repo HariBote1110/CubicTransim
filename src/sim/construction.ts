@@ -1,5 +1,6 @@
 import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
-import type { CellData, StationData } from '../types';
+import type { CellData, StationData, TerrainType } from '../types';
+import { terrainAt } from './terrain';
 
 export interface ConstructionState {
   railMap: Map<string, CellData>;
@@ -7,6 +8,13 @@ export interface ConstructionState {
 }
 
 type Pos = { x: number; z: number };
+
+// terrain省略時は空Map(=すべて平地)扱いにする。既存呼び出し・既存テストとの互換のため。
+const EMPTY_TERRAIN: Map<string, TerrainType> = new Map();
+
+// セルが水域・山岳かどうか(駅・車庫・信号は平地にしか置けない)。
+const isBuildableGround = (terrain: Map<string, TerrainType>, x: number, z: number): boolean =>
+  terrainAt(terrain, x, z) === 'grass';
 
 // --- ヘルパー ---
 const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
@@ -54,7 +62,15 @@ export const nextStationName = (stations: Map<string, StationData>): string => {
   }
 };
 
-export function applyRailPath(state: ConstructionState, path: Pos[]): ConstructionState {
+// terrainに応じたbridge/tunnelフラグ(描画用)。平地ならどちらも付かない。
+const terrainFlags = (terrain: Map<string, TerrainType>, x: number, z: number): Pick<CellData, 'bridge' | 'tunnel'> => {
+  const t = terrainAt(terrain, x, z);
+  if (t === 'water') return { bridge: true };
+  if (t === 'mountain') return { tunnel: true };
+  return { bridge: undefined, tunnel: undefined };
+};
+
+export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
   const railMap = new Map(state.railMap);
 
   for (let i = 0; i < path.length - 1; i++) {
@@ -69,17 +85,17 @@ export function applyRailPath(state: ConstructionState, path: Pos[]): Constructi
 
     const currCell = railMap.get(currKey) || { type: 'rail' as const, connections: 0 };
     if (currCell.type !== 'rail') {
-      railMap.set(currKey, { ...currCell, connections: (currCell.connections || 0) | dir });
+      railMap.set(currKey, { ...currCell, connections: (currCell.connections || 0) | dir, ...terrainFlags(terrain, curr.x, curr.z) });
       if (currCell.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
     } else {
-      railMap.set(currKey, { type: 'rail', connections: (currCell.connections || 0) | dir });
+      railMap.set(currKey, { type: 'rail', connections: (currCell.connections || 0) | dir, ...terrainFlags(terrain, curr.x, curr.z) });
     }
     const nextCell = railMap.get(nextKey) || { type: 'rail' as const, connections: 0 };
     if (nextCell.type !== 'rail') {
-      railMap.set(nextKey, { ...nextCell, connections: (nextCell.connections || 0) | oppDir });
+      railMap.set(nextKey, { ...nextCell, connections: (nextCell.connections || 0) | oppDir, ...terrainFlags(terrain, next.x, next.z) });
       if (nextCell.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
     } else {
-      railMap.set(nextKey, { type: 'rail', connections: (nextCell.connections || 0) | oppDir });
+      railMap.set(nextKey, { type: 'rail', connections: (nextCell.connections || 0) | oppDir, ...terrainFlags(terrain, next.x, next.z) });
     }
     const checkDepotNeighbours = (px: number, pz: number) => {
       const nbs = [{ x: 1, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 1 }, { x: 0, z: -1 }];
@@ -92,9 +108,14 @@ export function applyRailPath(state: ConstructionState, path: Pos[]): Constructi
   return { railMap, stations: state.stations };
 }
 
-export function applyStation(state: ConstructionState, pos: Pos): ConstructionState {
+export function applyStation(state: ConstructionState, pos: Pos, terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
   const key = toKey(pos.x, pos.z);
   const existingBeforeUpdate = state.railMap.get(key);
+
+  // 駅は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
+  if (!isBuildableGround(terrain, pos.x, pos.z)) {
+    return state;
+  }
 
   // バグ1/2対策: すでに駅・車庫があるセルへの再設置は no-op
   if (existingBeforeUpdate && (existingBeforeUpdate.type === 'station' || existingBeforeUpdate.type === 'depot')) {
@@ -148,9 +169,14 @@ export function applyStation(state: ConstructionState, pos: Pos): ConstructionSt
   return { railMap, stations };
 }
 
-export function applyDepot(state: ConstructionState, pos: Pos): ConstructionState {
+export function applyDepot(state: ConstructionState, pos: Pos, terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
   const key = toKey(pos.x, pos.z);
   const existing = state.railMap.get(key);
+
+  // 車庫は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
+  if (!isBuildableGround(terrain, pos.x, pos.z)) {
+    return state;
+  }
 
   // バグ1対策: 空セル以外への設置は no-op（駅の上に車庫を置いて駅を消してしまわないように）
   if (existing) {
@@ -164,11 +190,13 @@ export function applyDepot(state: ConstructionState, pos: Pos): ConstructionStat
   return { railMap, stations: state.stations };
 }
 
-export function applySignal(state: ConstructionState, path: Pos[]): ConstructionState {
+export function applySignal(state: ConstructionState, path: Pos[], terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
   const pos = path[0];
   const key = toKey(pos.x, pos.z);
   const cell = state.railMap.get(key);
   if (!cell || (cell.type !== 'rail' && cell.type !== 'station')) return state;
+  // 信号は平地にしか置けない: 橋・トンネル区間(水域・山岳)への設置は no-op
+  if (!isBuildableGround(terrain, pos.x, pos.z)) return state;
 
   const railMap = new Map(state.railMap);
   const conns = cell.connections || 0;
