@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import type { CellData, StationData, TrainData, TownData } from '../types';
+import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
 import type { TrainRuntime } from './simulation';
 import { serialiseWorld, deserialiseWorld } from './persistence';
 import { STARTING_MONEY } from './economy';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v4)', () => {
-  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns が JSON 経由でも復元できる', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v5)', () => {
+  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns/terrain が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
@@ -38,9 +38,10 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const waiting = new Map<string, number>([['stA', 34]]);
     const money = 42_300;
     const towns: TownData[] = [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }];
+    const terrain = new Map<string, TerrainType>([['2,2', 'water'], ['3,3', 'mountain']]);
 
-    const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns);
-    expect(saveData.version).toBe(4);
+    const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns, terrain);
+    expect(saveData.version).toBe(5);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -53,6 +54,46 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored.waiting).toEqual(waiting);
     expect(restored.money).toBe(money);
     expect(restored.towns).toEqual(towns);
+    expect(restored.terrain).toEqual(terrain);
+  });
+});
+
+describe('persistence: v4→v5 移行', () => {
+  it('v4データ(terrainが無い)を読み込むとterrain=空Mapで補われる(既存セーブはフラット地形として動作)', () => {
+    const v4Data = {
+      version: 4,
+      railMap: [['1,0', { type: 'station', connections: 15, stationId: 'stA' }]] as [string, CellData][],
+      stations: [
+        ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+      ] as [string, StationData][],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as TrainData[],
+      runtimes: [['t1', {
+        id: 't1',
+        grid: { x: 0, z: 0 },
+        prevGrid: null,
+        progress: 0,
+        speedKmh: 0,
+        route: [],
+        trail: [{ x: 0, z: 0 }],
+        stopRemaining: 0,
+        waitTimer: 0,
+        debugStatus: '',
+        renderPos: { x: 0, y: 0.5, z: 0 },
+        renderTarget: null,
+        passengers: 0,
+        lastStopStationId: null,
+        haltRemaining: 0,
+      }]] as unknown as [string, TrainRuntime][],
+      waiting: [['stA', 12]] as [string, number][],
+      money: 12_345,
+      towns: [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
+    };
+
+    const restored = deserialiseWorld(v4Data as never);
+
+    expect(restored.money).toBe(12_345);
+    expect(restored.towns).toEqual(v4Data.towns);
+    expect(restored.terrain).toEqual(new Map());
   });
 });
 
