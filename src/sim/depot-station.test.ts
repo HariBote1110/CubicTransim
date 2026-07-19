@@ -72,13 +72,24 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     const train = makeTrain({ schedule: ['stX', 'stY'] });
     const world = makeWorld(railMap, stations, [train]);
 
-    const events = runTicks(world, train, 0.1, 200);
-    const rt = world.runtimes.get('t1')!;
+    // schedule=[stX,stY]は巡回するため、固定tick数で打ち切ると停車完了後に折り返し発車して
+    // しまい得る(駅接近クランプ導入で低速区間が伸び、到着タイミングの見積りが難しいため)。
+    // 1回目の到着(stX)を確認したうえで、2回目の到着(stY)が起きた時点で打ち切る。
+    const events: SimEvent[] = [];
+    let rt = world.runtimes.get('t1');
+    let arriveCount = 0;
+    for (let i = 0; i < 1000 && arriveCount < 2; i++) {
+      const evs = stepWorld(world, 0.1);
+      events.push(...evs);
+      advanceSchedule(train, evs);
+      rt = world.runtimes.get('t1')!;
+      arriveCount += evs.filter(e => e.type === 'arrive').length;
+    }
 
     expect(events.some(e => e.type === 'arrive' && (e as any).scheduleIndex === 0)).toBe(true);
-    expect(rt.debugStatus).not.toBe('Waiting for Path...');
-    // stYに到着していること(cars=2でホーム長1のため多少停車時間が延びるが十分なtick数)
-    expect(rt.grid.x).toBe(5);
+    expect(rt!.debugStatus).not.toBe('Waiting for Path...');
+    // stYに到着していること
+    expect(rt!.grid.x).toBe(5);
   });
 
   it('シナリオ2: スケジュール[Y, X](先に遠い駅へ)でも正常に往復できる', () => {
@@ -86,7 +97,7 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     const train = makeTrain({ schedule: ['stY', 'stX'] });
     const world = makeWorld(railMap, stations, [train]);
 
-    const events = runTicks(world, train, 0.1, 400);
+    const events = runTicks(world, train, 0.1, 800);
     const rt = world.runtimes.get('t1')!;
 
     expect(events.some(e => e.type === 'arrive')).toBe(true);
@@ -103,7 +114,7 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     // 「停車した瞬間」で打ち切る。
     const events: SimEvent[] = [];
     let rt = world.runtimes.get('t1');
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < 600; i++) {
       const evs = stepWorld(world, 0.1);
       events.push(...evs);
       advanceSchedule(train, evs);
@@ -121,29 +132,28 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     const train = makeTrain({ schedule: ['stX'] });
     const world = makeWorld(railMap, stations, [train]);
 
-    // 最初にstXへ到着するまで進める(編成中央基準でホームの1つ先(x=2)まで走るぶん
-    // 従来より距離が伸びるため、十分なtick数を確保する)
-    let events = runTicks(world, train, 0.1, 150);
+    // 最初にstXへ到着するまで進める
+    let events = runTicks(world, train, 0.1, 300);
     const firstArrivals = events.filter(e => e.type === 'arrive');
     expect(firstArrivals.length).toBe(1);
     let rt = world.runtimes.get('t1')!;
-    // 編成中央基準の停止位置: stXはP=1セル、cars=2 -> headIdx=ceil((1+2)/2)-1=1。
-    // ホームセル(x=1)の1つ先(x=2)まで延長して停車する。
-    expect(rt.grid.x).toBe(2);
+    // FarEnd固定の停止位置: stXはP=1セル、cars=2(>=P)なのでFarEnd固定(headIdx=P-1=0)。
+    // ホームセル(x=1)自身で停車し、その先へは延長しない。
+    expect(rt.grid.x).toBe(1);
 
     // scheduleIndexは0のままstXに戻ってくる(単独駅スケジュールの仕様)。
     // この状態でさらに進めても、直前に停車を終えた駅と目的駅が同じ場合は
     // 再停車もarriveも発行せず、'At destination'で静かに待機し続けるのが仕様。
     // (以前はここでstopRemainingが再セットされ、arriveが繰り返し発火して
     //  発車不能になる回帰バグがあった)
-    const evsAfter = runTicks(world, train, 0.1, 200);
+    const evsAfter = runTicks(world, train, 0.1, 500);
     const arriveEventsAfter = evsAfter.filter(e => e.type === 'arrive');
     expect(arriveEventsAfter.length).toBe(0);
     rt = world.runtimes.get('t1')!;
     expect(rt.debugStatus).not.toBe('Waiting for Path...');
     expect(rt.debugStatus).toBe('At destination');
     expect(rt.stopRemaining).toBe(0);
-    expect(rt.grid.x).toBe(2);
+    expect(rt.grid.x).toBe(1);
   });
 
   it('シナリオ5: スケジュール[A,B]でAの停車終了後、scheduleIndexが進む前に数tick進めてもAに再停車しない', () => {
@@ -154,14 +164,14 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     // stXに到着・停車完了(arriveイベント発行)まで進める。ただしscheduleIndexは
     // React側の非同期更新を模して、ここでは意図的にまだ進めない。
     let arrived = false;
-    for (let i = 0; i < 200 && !arrived; i++) {
+    for (let i = 0; i < 500 && !arrived; i++) {
       const evs = stepWorld(world, 0.1);
       if (evs.some(e => e.type === 'arrive')) arrived = true;
     }
     expect(arrived).toBe(true);
     let rt = world.runtimes.get('t1')!;
-    // 編成中央基準の停止位置: stXはP=1セル、cars=2 -> headIdx=1(ホームの1つ先=x=2)
-    expect(rt.grid.x).toBe(2);
+    // FarEnd固定の停止位置: stXはP=1セル、cars=2(>=P)なのでFarEnd固定(headIdx=0、ホームセル自身=x=1)
+    expect(rt.grid.x).toBe(1);
     expect(rt.lastStopStationId).toBe('stX');
     expect(train.scheduleIndex).toBe(0); // まだ進めていない
 
@@ -171,7 +181,7 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     }
     rt = world.runtimes.get('t1')!;
     expect(rt.stopRemaining).toBe(0);
-    expect(rt.grid.x).toBe(2);
+    expect(rt.grid.x).toBe(1);
     expect(rt.debugStatus).toBe('At destination');
 
     // scheduleIndexをBへ進めれば、通常の経路探索で発車してYへ到着する。
@@ -179,7 +189,7 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     // すぐ折り返し発車してしまい得るので、arriveイベントが発行された時点(まだYで停車中)で打ち切る。
     train.scheduleIndex = 1;
     const events: SimEvent[] = [];
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 400; i++) {
       const evs = stepWorld(world, 0.1);
       events.push(...evs);
       advanceSchedule(train, evs);

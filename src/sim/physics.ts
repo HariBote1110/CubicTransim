@@ -13,9 +13,11 @@ export interface TrainSpec {
 }
 
 // 将来の車種差別化(express/commuter)を見据えた定数テーブル。TrainDataには持たせない。
+// enginePower/maxTractiveEffortは、既存の走行感(空車2両編成・最高100km/h、発進直後の
+// 加速度が旧ACCEL_KMH_S=15km/h/s相当)を概ね維持するように調整した値。
 export const TRAIN_SPECS: Record<'commuter' | 'express', TrainSpec> = {
-  commuter: { enginePower: 500, carMassEmpty: 30, maxTractiveEffort: 120 },
-  express: { enginePower: 900, carMassEmpty: 34, maxTractiveEffort: 160 },
+  commuter: { enginePower: 1200, carMassEmpty: 30, maxTractiveEffort: 260 },
+  express: { enginePower: 2000, carMassEmpty: 34, maxTractiveEffort: 320 },
 };
 
 export const DEFAULT_TRAIN_TYPE: keyof typeof TRAIN_SPECS = 'commuter';

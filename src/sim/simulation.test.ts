@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, TrainData, TownData } from '../types';
-import { stepWorld, STOP_DURATION, ACCEL_KMH_S, MAX_SPEED_KMH } from './simulation';
+import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
 import { carPositions } from './consist';
+import { computeAcceleration, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
@@ -119,7 +120,7 @@ const buildStraightLine = (length: number, stationId: string, platformLen = 2) =
 };
 
 describe('stepWorld', () => {
-  it('加速: 障害物が無ければ速度がACCEL_KMH_S刻みで増える', () => {
+  it('加速: 障害物が無ければ物理加速モデル(F/m)で速度が増える', () => {
     const { railMap, stations } = buildStraightLine(10, 'stA');
     const train = makeTrain({ schedule: ['stA'] });
     const world = makeWorld(railMap, stations, [train]);
@@ -128,7 +129,36 @@ describe('stepWorld', () => {
     runTicks(world, dt, 3);
 
     const rt = world.runtimes.get('t1')!;
-    expect(rt.speedKmh).toBeCloseTo(ACCEL_KMH_S * dt * 3, 5);
+    // 発進直後(低速域)は牽引力(粘着限界)がほぼ一定なため、加速度もほぼ一定になる。
+    const accelMs2 = computeAcceleration(
+      { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars, passengers: 0, speedKmh: 0 },
+      'accelerating',
+      DECEL_KMH_S
+    );
+    expect(rt.speedKmh).toBeCloseTo(accelMs2 * 3.6 * dt * 3, 3);
+  });
+
+  it('加速: 満載時は空車より加速が鈍り、同じ時間での到達速度が低くなる', () => {
+    const trainCapacity = TRAIN_CAPACITY;
+    const dt = 0.1;
+
+    const emptyLine = buildStraightLine(30, 'stEmpty');
+    const emptyTrain = makeTrain({ id: 'tEmpty', schedule: ['stEmpty'] });
+    const emptyWorld = makeWorld(emptyLine.railMap, emptyLine.stations, [emptyTrain]);
+    runTicks(emptyWorld, dt, 20);
+    const emptyRt = emptyWorld.runtimes.get('tEmpty')!;
+
+    const fullLine = buildStraightLine(30, 'stFull');
+    const fullTrain = makeTrain({ id: 'tFull', schedule: ['stFull'] });
+    const fullWorld = makeWorld(fullLine.railMap, fullLine.stations, [fullTrain]);
+    // ランタイムだけ先に作らせ(1tick目はdt=0で進行に影響させない)、満載状態を直接注入する
+    // (乗降処理を経由せず、質量差の影響だけを見るため)。
+    runTicks(fullWorld, 0, 1);
+    fullWorld.runtimes.get('tFull')!.passengers = trainCapacity;
+    runTicks(fullWorld, dt, 20);
+    const fullRt = fullWorld.runtimes.get('tFull')!;
+
+    expect(fullRt.speedKmh).toBeLessThan(emptyRt.speedKmh);
   });
 
   it('走行: progressが進みマスが進行してtrailが更新される(上限=train.cars)', () => {
@@ -536,7 +566,10 @@ describe('stepWorld: 編成(consist)システム', () => {
 });
 
 describe('stepWorld: 減速カーブ(距離ベースの許容速度)', () => {
-  it('100km/hからの停止で、速度が10km/h未満である時間の合計が3秒以内になる', () => {
+  it('100km/hからの停止で、速度が10km/h未満である時間が過大にならない(OpenTTD流の駅接近クランプにより従来より長め)', () => {
+    // OpenTTDノートB節の駅接近クランプ(st_max_speed=max(25×残りセル数, ...))を導入したことで、
+    // 停止直前(残り1セル未満)は意図的に25km/h以下へゆっくり滑り込むようになり、
+    // 以前(sqrt(2ad)カーブのみ)より低速区間が長くなる。この仕様変更を踏まえて上限を緩めた。
     const { railMap, stations } = buildStraightLine(250, 'stA', 2);
     const train = makeTrain({ schedule: ['stA'] });
     const world = makeWorld(railMap, stations, [train]);
@@ -552,7 +585,7 @@ describe('stepWorld: 減速カーブ(距離ベースの許容速度)', () => {
     }
 
     expect(rt!.speedKmh === 0 || rt!.stopRemaining > 0).toBe(true);
-    expect(timeBelow10).toBeLessThanOrEqual(3);
+    expect(timeBelow10).toBeLessThanOrEqual(10);
   });
 
   it('MAX_SPEED_KMHを超えて加速しない(距離が十分あれば最高速度まで到達する)', () => {

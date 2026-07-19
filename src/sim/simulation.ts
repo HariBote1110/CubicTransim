@@ -2,6 +2,7 @@ import { toKey } from '../utils';
 import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
 import { calculateRoute } from './pathfinding';
 import { tryReserve, releaseCell, findSafeSegmentEnd, reservationKey } from './reservation';
+import { computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
@@ -67,6 +68,9 @@ export interface SimWorld {
   // PBS風のセル予約テーブル(セルキー→列車ID)。セーブデータには含めない。
   // ロード直後は空のため、stepWorld/ensureRuntimeが各列車のtrailから遅延再構築する。
   reservations?: Map<string, string>;
+  // 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定として持つ。
+  // 旧セーブ(v7以前)には存在しないため任意とし、既定値は'middle'(既存の編成中央基準)。
+  stopLocation?: 'near' | 'middle' | 'far';
 }
 
 export type SimEvent =
@@ -307,11 +311,13 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 
     const blocked = buildBlockedSet(world, train.id);
     const carCountForRoute = train.cars ?? 2;
+    const stopLocation = world.stopLocation ?? 'middle';
     let newPath = calculateRoute(world.railMap, world.stations, blocked, blocked, {
       start: rt.grid,
       prev: rt.prevGrid,
       targetStationId,
       cars: carCountForRoute,
+      stopLocation,
     });
 
     if (newPath.length > 0) {
@@ -350,6 +356,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
           prev: rt.prevGrid,
           targetStationId,
           cars: carCountForRoute,
+          stopLocation,
         });
       }
 
@@ -428,6 +435,12 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     if (limitDistance >= 9999) {
       rt.debugStatus = `Accelerating (${Math.round(rt.speedKmh)} km/h)`;
     } else if (obstacleType === 'station') {
+      // OpenTTDノートB節の駅接近クランプ: st_max_speed = max(25×残りセル数, 現在速度−減速余裕)。
+      // 既存のsqrt(2ad)カーブと併用し、より小さい方(=より慎重な方)を採用する。
+      const distanceToGoCells = limitDistance / TILE_LENGTH;
+      const deltaV = rt.speedKmh / (distanceToGoCells + 1);
+      const stMaxSpeed = Math.max(25 * distanceToGoCells, rt.speedKmh - deltaV / 10);
+      targetSpeed = Math.min(targetSpeed, stMaxSpeed);
       targetSpeed = Math.max(targetSpeed, MIN_CRAWL_SPEED_KMH);
       rt.debugStatus = `Arriving... (${limitDistance.toFixed(1)}m)`;
     } else if (targetSpeed < 0.5) {
@@ -438,9 +451,20 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     }
   }
 
-  if (rt.speedKmh < targetSpeed) {
-    rt.speedKmh = Math.min(targetSpeed, rt.speedKmh + ACCEL_KMH_S * dt);
-  } else {
+  if (rt.speedKmh > MAX_SPEED_KMH) {
+    // OpenTTD DoUpdateSpeed同様、最高速度超過時は瞬時にクランプせず現在速度の1/10ずつ
+    // 緩やかに落とす(applyOverspeedDecay)。
+    rt.speedKmh = applyOverspeedDecay(rt.speedKmh, Math.min(targetSpeed, MAX_SPEED_KMH), dt);
+  } else if (rt.speedKmh < targetSpeed) {
+    // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
+    // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
+    const accelMs2 = computeAcceleration(
+      { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
+      'accelerating',
+      DECEL_KMH_S
+    );
+    rt.speedKmh = Math.min(targetSpeed, rt.speedKmh + accelMs2 * 3.6 * dt);
+  } else if (rt.speedKmh > targetSpeed) {
     rt.speedKmh = Math.max(targetSpeed, rt.speedKmh - DECEL_KMH_S * dt);
   }
 
