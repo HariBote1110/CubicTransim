@@ -213,4 +213,53 @@ describe('calculateRoute', () => {
 
     expect(result).toEqual([]);
   });
+
+  // 座標系: x+=東, z+=南。「進行方向左」はこのゲームの座標系における
+  // 左側通行の定義であり、東行き(dv=(1,0))はz+側(z=1、南側の並行線)を、
+  // 西行き(dv=(-1,0))はz-側(z=0、北側の並行線)を優先する。
+  it('無信号の並行複線では、同距離のタイブレークで進行方向左側の線路が優先される(日本式左側通行)', () => {
+    // z=0(北側)とz=1(南側)の2本の並行線路が(0,0)で分岐し(6,0)で合流する、同距離の複線。
+    const pathZ0 = buildRailMap([
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }, { x: 6, z: 0 },
+    ]);
+    const pathZ1 = buildRailMap([
+      { x: 0, z: 0 }, { x: 1, z: 1 }, { x: 2, z: 1 }, { x: 3, z: 1 }, { x: 4, z: 1 }, { x: 5, z: 1 }, { x: 6, z: 0 },
+    ]);
+    const railMap = new Map<string, CellData>(pathZ0);
+    pathZ1.forEach((cell, key) => {
+      const existing = railMap.get(key);
+      if (existing) {
+        railMap.set(key, { ...existing, connections: (existing.connections || 0) | (cell.connections || 0) });
+      } else {
+        railMap.set(key, cell);
+      }
+    });
+    railMap.set(toKey(6, 0), { ...railMap.get(toKey(6, 0))!, type: 'station', stationId: 'stEast' });
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, type: 'station', stationId: 'stWest' });
+
+    const stations = new Map<string, StationData>([
+      ['stEast', { id: 'stEast', name: 'East', cells: [{ x: 6, z: 0 }], center: { x: 6, z: 0 }, platformDoors: 'none' }],
+      ['stWest', { id: 'stWest', name: 'West', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    // 東行き(西から進入、prev=(-1,0)): 進行方向左側=z=1(南)の線路を選ぶ
+    const eastboundResult = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: { x: -1, z: 0 },
+      targetStationId: 'stEast',
+    });
+    expect(eastboundResult).toEqual([
+      { x: 1, z: 1 }, { x: 2, z: 1 }, { x: 3, z: 1 }, { x: 4, z: 1 }, { x: 5, z: 1 }, { x: 6, z: 0 },
+    ]);
+
+    // 西行き(東から進入、prev=(7,0)): 進行方向左側=z=0(北)の線路を選ぶ
+    const westboundResult = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 6, z: 0 },
+      prev: { x: 7, z: 0 },
+      targetStationId: 'stWest',
+    });
+    expect(westboundResult).toEqual([
+      { x: 5, z: 0 }, { x: 4, z: 0 }, { x: 3, z: 0 }, { x: 2, z: 0 }, { x: 1, z: 0 }, { x: 0, z: 0 },
+    ]);
+  });
 });

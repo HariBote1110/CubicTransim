@@ -15,6 +15,12 @@ const normalize = (x: number, z: number) => {
 
 const dot = (a: { x: number; z: number }, b: { x: number; z: number }) => a.x * b.x + a.z * b.z;
 
+// 2Dの符号付き外積。座標系は x+=東, z+=南。この値が大きい(正の)候補ほど
+// 進行方向(dv)に対して「進行方向左側」に寄る候補とみなす(このゲームの座標系・
+// カメラ視点における左側の定義。日本式の左側通行をデフォルトにするため、
+// 同距離の並行経路がある場合はこの順にBFSキューへ積んで先に採用させる)。
+const leftwardness = (dv: { x: number; z: number }, d: { x: number; z: number }) => dv.x * d.z - dv.z * d.x;
+
 export function calculateRoute(
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>,
@@ -75,7 +81,15 @@ export function calculateRoute(
                   if (occupied.has(targetKey)) continue;
               }
 
-              validMoves.push({ x: tx, z: tz });
+              validMoves.push({ x: tx, z: tz, dx: d.x, dz: d.z });
+          }
+
+          // 進行方向がある(prevが存在する)場合、同距離のタイブレークで日本式左側通行を
+          // 優先するため「進行方向左側に曲がる/寄る」候補から先にキューへ積む。
+          // BFSはFIFOなので、同距離なら先に積んだ左寄りの経路が採用される。
+          if (prev) {
+              const cv = normalize(curr.x - prev.x, curr.z - prev.z);
+              validMoves.sort((a, b) => leftwardness(cv, { x: b.dx, z: b.dz }) - leftwardness(cv, { x: a.dx, z: a.dz }));
           }
 
           if (validMoves.length === 0 && prev) {
@@ -86,7 +100,8 @@ export function calculateRoute(
               const key = toKey(move.x, move.z);
               if (!visited.has(key)) {
                   visited.add(key);
-                  queue.push({ curr: move, path: [...path, move], prev: curr });
+                  const cell = { x: move.x, z: move.z };
+                  queue.push({ curr: cell, path: [...path, cell], prev: curr });
               }
           }
       }
