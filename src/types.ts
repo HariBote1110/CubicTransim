@@ -1,12 +1,19 @@
 export type TrainType = 'commuter' | 'express';
 export type CellType = 'rail' | 'station' | 'depot';
 
+// 地形。平地は既定値のため Map には載せず、terrainAt() が 'grass' を返す。
+export type TerrainType = 'water' | 'mountain';
+
 export interface CellData {
   type: CellType;
-  connections?: number; 
+  connections?: number;
   stationId?: string;
   rotation?: number;
   signalDir?: number;
+  // ★追加: 水上の橋・山岳のトンネル(描画用のフラグ)。costOfPathの倍率とは別に、
+  // applyRailPathがterrainを見て設定する。
+  bridge?: boolean;
+  tunnel?: boolean;
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
