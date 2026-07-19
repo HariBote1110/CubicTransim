@@ -74,4 +74,23 @@ describe('generateTowns', () => {
     const ids = new Set(towns.map(t => t.id));
     expect(ids.size).toBe(towns.length);
   });
+
+  it('terrainを渡すと水域セルの半径3タイル以内には街が生成されない', () => {
+    // マップ中央付近を広く水域で埋め、街がその近傍を避けることを確認する
+    const terrain = new Map<string, 'water' | 'mountain'>();
+    for (let x = -5; x <= 5; x++) {
+      for (let z = -5; z <= 5; z++) {
+        terrain.set(`${x},${z}`, 'water');
+      }
+    }
+
+    const towns = generateTowns(mulberry32(7), 8, terrain);
+    for (const town of towns) {
+      for (const key of terrain.keys()) {
+        const [tx, tz] = key.split(',').map(Number);
+        const dist = Math.hypot(town.centre.x - tx, town.centre.z - tz);
+        expect(dist).toBeGreaterThan(3);
+      }
+    }
+  });
 });
