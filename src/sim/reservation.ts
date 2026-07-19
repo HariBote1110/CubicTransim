@@ -52,34 +52,40 @@ const popcount = (n: number) => {
   return c;
 };
 
-// セルが分岐点(接続方向3以上)かどうか。分岐点そのものと、分岐点の手前は
-// safe waiting pointにしない(分岐を塞いで待たないため)。
+// セルが分岐点(接続方向3以上)かどうか。分岐点そのものはsafe waiting pointにしない
+// (分岐点上に停止して塞いだまま待つことはない)。
 const isJunction = (cell: CellData | undefined): boolean => popcount(cell?.connections ?? 0) >= 3;
 
 // セルcellがsafe waiting point(そこで安全に停止して次の予約取得を待てる地点)かどうかを
 // 判定する。nextはcellの次に進むセル(route上の次要素。終端ならnull)。
 // 条件(openttd-source-notes A-1 / 設計文書 準拠、1セル粒度への簡略化):
-//   - 分岐点そのもの、または次セルが分岐点 -> 不可(分岐を塞いで待たない)
+//   - 分岐点そのもの -> 不可(分岐点上で待たない)
 //   - 車庫セル -> 可
 //   - 駅セル -> 可(目的駅の停止位置。経路末尾は必ず駅セルまたはホーム延長セルになる)
-//   - 次セルが信号セル(=信号の手前) -> 可
+//   - 次セルが信号セル(=信号の手前。信号は分岐点の直後に置かれることもあるため、
+//     分岐点の直前でも信号が守っていれば安全点として扱う)-> 可
 //   - 次セルが無い(行き止まり) -> 可
+//   - それ以外(次セルも分岐点でなく、信号も無いただの直線区間)-> 不可
+//     (次セルが分岐点の場合、信号が無ければ不可のまま=分岐点の直前で漫然と
+//     待つことは避ける)
 export function isSafeWaitingPoint(
   railMap: Map<string, CellData>,
   cell: Grid,
   next: Grid | null
 ): boolean {
   const cellData = railMap.get(toKey(cell.x, cell.z));
+  const nextData = next ? railMap.get(toKey(next.x, next.z)) : undefined;
+  // 次セルが信号セルなら、信号がその先を防護しているため、cell自身が分岐点で
+  // あっても安全点として扱う(交換設備の分岐直後に信号を置く構成を想定)。
+  if (nextData?.signalDir) return true;
   if (isJunction(cellData)) return false;
-  if (next) {
-    const nextData = railMap.get(toKey(next.x, next.z));
-    if (isJunction(nextData)) return false;
-  }
   if (cellData?.type === 'depot') return true;
   if (cellData?.type === 'station') return true;
   if (!next) return true;
-  const nextData = railMap.get(toKey(next.x, next.z));
-  if (nextData?.signalDir) return true;
+  // 次セルが分岐点の手前で待つ(分岐点自体には進入・停止しない)。分岐を1区間ごとに
+  // 細かく区切ることで、対向列車と予約区間が丸ごと衝突するのを避け、双方が
+  // 順番に分岐点を通過できるようにする。
+  if (isJunction(nextData)) return true;
   return false;
 }
 

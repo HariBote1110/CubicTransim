@@ -141,6 +141,9 @@ export function deserialiseWorld(data: SaveData): {
         lastStopStationId: rt.lastStopStationId ?? null,
         haltRemaining: rt.haltRemaining ?? 0,
         pathHistory: (rt as TrainRuntime).pathHistory ?? [...rt.trail],
+        // 予約(PBS)状態はセーブに含めない。ロード後の最初のstepWorldで
+        // ensureRuntime/ensureReservationが再構築する(-1=未取得の状態から再開)。
+        reservedEndIndex: -1,
       },
     ])
   );

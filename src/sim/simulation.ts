@@ -1,6 +1,7 @@
-import { toKey, getVectorFromDir } from '../utils';
+import { toKey } from '../utils';
 import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
 import { calculateRoute } from './pathfinding';
+import { tryReserve, releaseCell, findSafeSegmentEnd, reservationKey } from './reservation';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
@@ -32,6 +33,9 @@ export interface TrainRuntime {
   progress: number;
   speedKmh: number;
   route: Grid[];
+  // route[0..reservedEndIndex]がPBS予約済みの区間(safe waiting pointまで)。
+  // -1は「まだ何も予約できていない(次の安全点を待っている)」を意味する。
+  reservedEndIndex: number;
   trail: Grid[];
   // 描画用の走行履歴。占有判定に使う trail(cars長)とは別に、連結器の滑らか描画のため
   // trail より長め(cars+2程度)に保持する。先頭は常に trail[0](= rt.grid)と一致する。
@@ -60,6 +64,9 @@ export interface SimWorld {
   terrain?: Map<string, TerrainType>;
   // ゲーム内暦(シミュレーション累積秒)。旧セーブ(v5以前)には存在しないため任意とする。
   clock?: { elapsed: number };
+  // PBS風のセル予約テーブル(セルキー→列車ID)。セーブデータには含めない。
+  // ロード直後は空のため、stepWorld/ensureRuntimeが各列車のtrailから遅延再構築する。
+  reservations?: Map<string, string>;
 }
 
 export type SimEvent =
@@ -75,29 +82,8 @@ const normalize = (x: number, z: number) => {
 
 const dot = (a: Grid, b: Grid) => a.x * b.x + a.z * b.z;
 
-// connectionsビットマスクの立っているビット数(接続方向の数)を数える。
-const popcount = (n: number) => {
-  let c = 0;
-  let v = n;
-  while (v) {
-    c += v & 1;
-    v >>= 1;
-  }
-  return c;
-};
-
-// 分岐点(connectionsが3方向以上)または信号セルを「区間の境界」とみなす。
-// すれ違い設備では分岐点そのものは両列車が一時的に立ち寄る共有地点であり、
-// そこに対向列車が留まっているだけで単線区間への進入を諦めるべきではないため、
-// 信号コンフリクト判定の見通し距離はこの境界の手前までに限定する。
-const isSectionBoundary = (cell: CellData | undefined) => {
-  if (!cell) return false;
-  if (cell.signalDir) return true;
-  if (popcount(cell.connections ?? 0) >= 3) return true;
-  return false;
-};
-
 const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
+  if (!world.reservations) world.reservations = new Map();
   let rt = world.runtimes.get(train.id);
   if (!rt) {
     rt = {
@@ -107,6 +93,7 @@ const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
       progress: 0,
       speedKmh: 0,
       route: [],
+      reservedEndIndex: -1,
       trail: [{ x: train.x, z: train.z }],
       pathHistory: [{ x: train.x, z: train.z }],
       stopRemaining: 0,
@@ -120,26 +107,71 @@ const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
     };
     world.runtimes.set(train.id, rt);
   }
+  // 予約テーブルへの遅延再構築: セーブロード直後や、まだ他列車の予約と衝突していない
+  // trailセルは、この列車の物理占有として予約テーブルへ補完しておく(自列車の予約=
+  // 物理占有+前方経路、という設計のため)。
+  for (const c of rt.trail) {
+    const k = reservationKey(c);
+    if (!world.reservations.has(k)) world.reservations.set(k, train.id);
+  }
   return rt;
 };
 
-// 経路探索用: 自分以外の列車の占有(trail)・予約(route)セルを集める
-const buildRouteSets = (world: SimWorld, selfId: string) => {
-  const occupied = new Set<string>();
-  const reserved = new Set<string>();
-  for (const t of world.trains) {
-    if (t.id === selfId) continue;
-    const otherRt = world.runtimes.get(t.id);
-    if (otherRt) {
-      otherRt.trail.forEach(c => occupied.add(toKey(c.x, c.z)));
-      if (t.status === 'running') {
-        otherRt.route.forEach(p => reserved.add(toKey(p.x, p.z)));
-      }
-    } else {
-      occupied.add(toKey(t.x, t.z));
-    }
+// 経路探索用: 自分以外の列車が予約している(物理占有+前方経路)セル集合を集める。
+// 予約テーブルが「占有」と「予約」を統合した単一の情報源になったため、
+// 以前のtrail(占有)/route(予約)を別々に集めるロジックは不要になった。
+const buildBlockedSet = (world: SimWorld, selfId: string): Set<string> => {
+  const blocked = new Set<string>();
+  if (!world.reservations) return blocked;
+  for (const [key, owner] of world.reservations) {
+    if (owner !== selfId) blocked.add(key);
   }
-  return { occupied, reserved };
+  return blocked;
+};
+
+// PBS予約の取得・延長。route[0..reservedEndIndex]が予約済み区間になる。
+// - reservedEndIndexが-1(未取得)なら、次のsafe waiting pointまでの区間取得を試みる
+// - 取得済みで、予約末端までの残り距離が制動距離+マージン以内に近づいたら、
+//   さらに次のsafe waiting pointまでの延長を試みる(失敗時は現状維持=末端で待機)
+const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime) => {
+  if (rt.route.length === 0) return;
+  if (!world.reservations) world.reservations = new Map();
+
+  if (rt.reservedEndIndex < 0) {
+    const idx = findSafeSegmentEnd(world.railMap, rt.route, 0);
+    if (tryReserve(world.reservations, train.id, rt.route.slice(0, idx + 1))) {
+      rt.reservedEndIndex = idx;
+    }
+    return;
+  }
+
+  if (rt.reservedEndIndex >= rt.route.length - 1) return; // 既に目的地(経路末尾)まで予約済み
+
+  const remaining = distanceAlongRouteTo(rt, rt.reservedEndIndex);
+  const decelMs2 = DECEL_KMH_S / 3.6;
+  const brakingDistance = (rt.speedKmh / 3.6) ** 2 / (2 * decelMs2);
+  if (remaining > brakingDistance + BRAKING_MARGIN_M) return;
+
+  const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, rt.reservedEndIndex + 1);
+  const segment = rt.route.slice(rt.reservedEndIndex + 1, nextIdx + 1);
+  if (tryReserve(world.reservations, train.id, segment)) {
+    rt.reservedEndIndex = nextIdx;
+  }
+};
+
+// 現在位置(rt.grid + progress)からroute[idx]までの弧長距離(m)
+const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
+  const route = rt.route;
+  const first = route[0];
+  const currentTileGeoDist = Math.sqrt((first.x - rt.grid.x) ** 2 + (first.z - rt.grid.z) ** 2);
+  let dist = (1.0 - rt.progress) * (currentTileGeoDist * TILE_LENGTH);
+  for (let i = 1; i <= idx; i++) {
+    const p = route[i];
+    const prevP = route[i - 1];
+    const dGeo = Math.sqrt((p.x - prevP.x) ** 2 + (p.z - prevP.z) ** 2);
+    dist += dGeo * TILE_LENGTH;
+  }
+  return dist;
 };
 
 // 直前マスの物理的占有(緊急ブレーキ)判定
@@ -155,113 +187,16 @@ const findPhysicalBlocker = (world: SimWorld, selfId: string, nextTile: Grid): s
   return null;
 };
 
-interface ObstacleResult {
-  limitDistance: number;
-  obstacleType: 'station' | 'signal' | 'none';
-}
-
-// 前方の障害物(駅・信号)までの距離を計算する
-const computeObstacleDistance = (world: SimWorld, train: TrainData, rt: TrainRuntime): ObstacleResult => {
-  const targetStationId = train.schedule.length > 0 ? train.schedule[train.scheduleIndex] : null;
-  const nextTile = rt.route[0];
-  let distAccumulator = 0;
-  const currentTileGeoDist = Math.sqrt((nextTile.x - rt.grid.x) ** 2 + (nextTile.z - rt.grid.z) ** 2);
-  distAccumulator += (1.0 - rt.progress) * (currentTileGeoDist * TILE_LENGTH);
-
-  let foundObstacle = false;
-  let obstacleType: 'station' | 'signal' | 'none' = 'none';
-
-  for (let i = 0; i < rt.route.length; i++) {
-    const p = rt.route[i];
-
-    if (i > 0) {
-      const prevP = rt.route[i - 1];
-      const dGeo = Math.sqrt((p.x - prevP.x) ** 2 + (p.z - prevP.z) ** 2);
-      distAccumulator += dGeo * TILE_LENGTH;
-    }
-
-    const cell = world.railMap.get(toKey(p.x, p.z));
-
-    // 駅(停止目標)。ただし目的駅(targetStationId)自身のセルでは止まらない
-    // (経路は既にpathfinding側で編成中央基準の停止セルまで延長済みのため、
-    // 目的駅への停止距離は経路全体の残り弧長=経路末尾を停止目標とする)。
-    if (cell && cell.type === 'station' && cell.stationId !== targetStationId) {
-      foundObstacle = true;
-      obstacleType = 'station';
-      break;
-    }
-
-    // 信号 (赤なら停止目標)
-    if (cell && cell.signalDir) {
-      const prevGridForSignal = i === 0 ? rt.grid : rt.route[i - 1];
-      const dx = p.x - prevGridForSignal.x;
-      const dz = p.z - prevGridForSignal.z;
-      if (dx !== 0 || dz !== 0) {
-        const moveVec = normalize(dx, dz);
-        const sv = getVectorFromDir(cell.signalDir);
-        const signalVec = normalize(sv.x, sv.z);
-
-        if (dot(moveVec, signalVec) > 0.1) {
-          const lookAheadStart = i + 1;
-          // 固定10マスではなく「次の分岐点または信号セルの手前まで」を見通し区間とする。
-          // 分岐点セル自体は境界外(対向列車がそこに留まっていても衝突判定しない)。
-          let lookAheadEnd = rt.route.length;
-          for (let j = lookAheadStart; j < rt.route.length; j++) {
-            const boundaryCell = world.railMap.get(toKey(rt.route[j].x, rt.route[j].z));
-            if (isSectionBoundary(boundaryCell)) {
-              lookAheadEnd = j;
-              break;
-            }
-          }
-          const blockSegment = rt.route.slice(lookAheadStart, lookAheadEnd);
-
-          const conflict = world.trains.some(other => {
-            if (other.id === train.id) return false;
-            if (other.status !== 'running') return false;
-            const otherRt = world.runtimes.get(other.id);
-            if (!otherRt) return false;
-
-            if (blockSegment.some(bp => otherRt.trail.some(oc => Math.round(oc.x) === bp.x && Math.round(oc.z) === bp.z))) return true;
-
-            if (blockSegment.some(bp => otherRt.route.some(op => op.x === bp.x && op.z === bp.z))) {
-              const myDir = moveVec;
-              let otherDir = { x: 0, z: 0 };
-              if (otherRt.route.length > 0) {
-                const op = otherRt.route[0];
-                otherDir = normalize(op.x - otherRt.grid.x, op.z - otherRt.grid.z);
-              }
-              if (dot(myDir, otherDir) > 0.5) return false;
-              if (train.id < other.id) return false;
-              return true;
-            }
-            return false;
-          });
-
-          if (conflict) {
-            foundObstacle = true;
-            obstacleType = 'signal';
-          }
-          if (foundObstacle) break;
-        }
-      }
-    }
-  }
-
-  // ループ中に(目的駅以外の)障害物が見つからなかった場合、経路の末尾(編成中央基準の
-  // 停止セル)を目的駅への停止目標とみなし、経路全体の残り弧長をそのまま停止距離とする。
-  if (!foundObstacle && targetStationId && rt.route.length > 0) {
-    foundObstacle = true;
-    obstacleType = 'station';
-  }
-
-  return { limitDistance: foundObstacle ? distAccumulator : 9999, obstacleType };
-};
-
 // trail(占有判定用、cars長)とpathHistory(描画用、cars+2長)を同時に更新する。
 // pathHistory[0]は常にtrail[0](= arrivedGrid = rt.grid)と一致させる。
-const pushArrivedGrid = (rt: TrainRuntime, arrivedGrid: Grid, carCount: number) => {
+// trailから抜け落ちた(後端の)セルは、この列車の物理占有ではなくなるため
+// 予約テーブルからも即時解放する(他列車が直後にそのセルを予約できるようにするため)。
+const pushArrivedGrid = (world: SimWorld, rt: TrainRuntime, arrivedGrid: Grid, carCount: number) => {
   rt.trail = [arrivedGrid, ...rt.trail];
-  if (rt.trail.length > carCount) rt.trail.pop();
+  if (rt.trail.length > carCount) {
+    const dropped = rt.trail.pop();
+    if (dropped && world.reservations) releaseCell(world.reservations, dropped);
+  }
 
   rt.pathHistory = [arrivedGrid, ...rt.pathHistory];
   const historyCap = carCount + 2;
@@ -318,6 +253,7 @@ const stopAtStation = (
   rt.stopRemaining = STOP_DURATION * stopMultiplier;
   rt.speedKmh = 0;
   rt.route = [];
+  rt.reservedEndIndex = -1;
   rt.prevGrid = null;
   rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
   // renderTargetをリセットせず、進入方向の延長線上の点に維持する。
@@ -369,9 +305,9 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       return;
     }
 
-    const { occupied, reserved } = buildRouteSets(world, train.id);
+    const blocked = buildBlockedSet(world, train.id);
     const carCountForRoute = train.cars ?? 2;
-    let newPath = calculateRoute(world.railMap, world.stations, occupied, reserved, {
+    let newPath = calculateRoute(world.railMap, world.stations, blocked, blocked, {
       start: rt.grid,
       prev: rt.prevGrid,
       targetStationId,
@@ -409,7 +345,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
         rt.renderPos = { x: newHead.x, y: 0.5, z: newHead.z };
         rt.renderTarget = null;
 
-        newPath = calculateRoute(world.railMap, world.stations, occupied, reserved, {
+        newPath = calculateRoute(world.railMap, world.stations, blocked, blocked, {
           start: rt.grid,
           prev: rt.prevGrid,
           targetStationId,
@@ -418,6 +354,9 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       }
 
       rt.route = newPath;
+      // 予約はここでは取得しない(=まだ何も予約できていない状態)。この直後の
+      // ensureReservation呼び出しで、次のsafe waiting pointまでの区間を実際に取得する。
+      rt.reservedEndIndex = -1;
       rt.debugStatus = 'Route Found';
       rt.waitTimer = 0;
     } else {
@@ -440,21 +379,35 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     }
   }
 
+  // PBS予約の取得・延長を試みる(取得済み区間の末端が制動距離+マージン以内に
+  // 近づいたら、次のsafe waiting pointまでの延長を試みる)。
+  ensureReservation(world, train, rt);
+
+  if (rt.reservedEndIndex < 0) {
+    // 次のsafe waiting pointまでの区間がまだ1つも予約できていない
+    // (他列車がそこを予約中)。その場で待機し、毎tick再試行する。
+    rt.speedKmh = Math.max(0, rt.speedKmh - DECEL_KMH_S * dt);
+    rt.debugStatus = 'Waiting for reservation...';
+    return;
+  }
+
   const nextTile = rt.route[0];
   let immediateBlock = false;
   let limitDistance = 9999;
   let obstacleType: 'station' | 'signal' | 'none' = 'none';
 
-  // 1. 直前マスの物理的占有 (緊急ブレーキ)
+  // 1. 直前マスの物理的占有 (緊急ブレーキ。予約が正しく機能していれば通常は発生しないが、
+  // 念のための安全網として残す)
   const physicalBlocker = findPhysicalBlocker(world, train.id, nextTile);
   if (physicalBlocker) {
     immediateBlock = true;
     rt.debugStatus = `Blocked by Train ${physicalBlocker}`;
   } else {
-    // 2. 前方の障害物までの距離計算
-    const obstacle = computeObstacleDistance(world, train, rt);
-    limitDistance = obstacle.limitDistance;
-    obstacleType = obstacle.obstacleType;
+    // 2. 減速目標はPBS予約の末端に一本化する(駅停止位置も信号待ちも「予約がそこまで
+    // しか無い」の一形態として統一。予約末端が経路の最後尾=目的駅なら'station'、
+    // 途中のsafe waiting pointなら'signal'として扱う)。
+    limitDistance = distanceAlongRouteTo(rt, rt.reservedEndIndex);
+    obstacleType = rt.reservedEndIndex >= rt.route.length - 1 ? 'station' : 'signal';
   }
 
   // 3. 速度制御: 前方の障害物までの距離から「今の位置で安全に止まれる許容速度」を逆算する方式。
@@ -505,8 +458,9 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     rt.prevGrid = oldCurrent;
     rt.progress = 0;
     rt.route = rt.route.slice(1);
+    rt.reservedEndIndex -= 1;
 
-    pushArrivedGrid(rt, arrivedGrid, train.cars ?? 2);
+    pushArrivedGrid(world, rt, arrivedGrid, train.cars ?? 2);
 
     // 駅到着判定: 経路は既にpathfinding側で編成中央基準の停止セル(ホーム外のこともある)
     // まで延長済みのため、経路を消化しきった(rt.route.length === 0)セルで停車する。
@@ -549,6 +503,15 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
     const current = world.waiting.get(station.id) ?? 0;
     const factor = demandFactor(station.center, towns);
     world.waiting.set(station.id, Math.min(STATION_WAITING_CAP, current + PASSENGER_SPAWN_RATE * factor * dt));
+  }
+
+  // 予約テーブルへのbootstrap(自列車の物理占有セルの予約登録)は、経路の予約取得より
+  // 必ず先に全列車分終わらせる。同一tick内でrunning中の列車を先に処理してしまうと、
+  // まだ自身のtrailセルを予約登録していない停車中の列車の位置を、先に動く列車が
+  // 「誰も予約していないセル」と誤認して横取りしてしまうため(2パスに分離して回避)。
+  for (const train of world.trains) {
+    if (train.status !== 'running') continue;
+    ensureRuntime(world, train);
   }
 
   for (const train of world.trains) {
