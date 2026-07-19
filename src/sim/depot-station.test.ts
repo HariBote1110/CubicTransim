@@ -98,12 +98,22 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     const train = makeTrain({ schedule: ['stX', 'stY'], cars: 4 });
     const world = makeWorld(railMap, stations, [train]);
 
-    const events = runTicks(world, train, 0.1, 300);
-    const rt = world.runtimes.get('t1')!;
+    // stYで停車した瞬間(stopRemaining>0)を捉える。スケジュールは[stX,stY]の巡回なので、
+    // 固定tick数だけ回すと停車完了後にすぐ折り返し発車してしまい、位置検証が不安定になるため
+    // 「停車した瞬間」で打ち切る。
+    const events: SimEvent[] = [];
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 300; i++) {
+      const evs = stepWorld(world, 0.1);
+      events.push(...evs);
+      advanceSchedule(train, evs);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x === 5 && rt.stopRemaining > 0) break;
+    }
 
     expect(events.some(e => e.type === 'arrive')).toBe(true);
-    expect(rt.debugStatus).not.toBe('Waiting for Path...');
-    expect(rt.grid.x).toBe(5);
+    expect(rt!.debugStatus).not.toBe('Waiting for Path...');
+    expect(rt!.grid.x).toBe(5);
   });
 
   it('シナリオ4: スケジュールが[X]のみ(単独駅)ではarriveはちょうど1回だけ発行され、その後は静かに待機し続ける', () => {
@@ -160,11 +170,19 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     expect(rt.grid.x).toBe(1);
     expect(rt.debugStatus).toBe('At destination');
 
-    // scheduleIndexをBへ進めれば、通常の経路探索で発車してYへ到着する
+    // scheduleIndexをBへ進めれば、通常の経路探索で発車してYへ到着する。
+    // schedule=[stX,stY]は巡回するため、固定tick数で打ち切ると停車完了(arriveイベント)後に
+    // すぐ折り返し発車してしまい得るので、arriveイベントが発行された時点(まだYで停車中)で打ち切る。
     train.scheduleIndex = 1;
-    const events = runTicks(world, train, 0.1, 150);
+    const events: SimEvent[] = [];
+    for (let i = 0; i < 150; i++) {
+      const evs = stepWorld(world, 0.1);
+      events.push(...evs);
+      advanceSchedule(train, evs);
+      rt = world.runtimes.get('t1')!;
+      if (evs.some(e => e.type === 'arrive')) break;
+    }
     expect(events.some(e => e.type === 'arrive')).toBe(true);
-    rt = world.runtimes.get('t1')!;
     expect(rt.grid.x).toBe(5);
   });
 });
