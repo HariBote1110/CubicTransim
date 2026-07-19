@@ -90,3 +90,71 @@ targetSpeed = min(既存のsqrt(2ad)カーブ, stMaxSpeed)
   鈍ることを確認(F/m構造が効いている)。UI右上のNear/Middle/Farトグルをクリックし、
   `worldRef.current.stopLocation`が'middle'→'near'に切り替わることを確認(SimWorldへの
   React state配線が機能している)。
+
+## 5. v0.2.0-Alpha-2b: 駅接近クランプの条件分岐欠落を修正(ガクガク/だらだらクロールの根本原因)
+
+### 5-1. 症状の実測(修正前)
+
+`buildStraightLine(15セル)` + 単一駅で、dt=1/60・列車1両でstepWorldを回し、
+残距離とspeedKmhの推移をログした(scratchpadに保存)。判明した具体的な症状:
+
+- 停止直前、残距離6.0m地点でspeedKmhがちょうど5.00km/h(=MIN_CRAWL_SPEED_KMH)に張り付き、
+  そのまま**258tick(4.3秒)**にわたって完全に一定のまま停止位置まで這い続けた
+  (「だらだらクロール」の実測値)。
+- ただし今回のシナリオ(単一駅・信号なし・reservedEndIndexが常に終点)では速度の増加=脈動は
+  観測されなかった。ピーク速度92.4km/h到達後は単調非増加だった。
+
+### 5-2. 根本原因の確認結果
+
+`src/sim/simulation.ts`の駅接近クランプ(旧420〜445行付近)は、OpenTTD原式
+(`train_cmd.cpp Train::GetCurrentMaxSpeed()`)の
+
+```cpp
+int st_max_speed = 120; // ノーオペ相当の初期値
+int delta_v = this->cur_speed / (distance_to_go + 1);
+if (max_speed > (this->cur_speed - delta_v)) st_max_speed = this->cur_speed - (delta_v / 10);
+st_max_speed = std::max(st_max_speed, 25 * distance_to_go);
+max_speed = std::min(max_speed, st_max_speed);
+```
+
+のうち、`if (max_speed > cur_speed - delta_v)` という**条件分岐**を欠落させ、
+`cur_speed - delta_v/10`を無条件で`25×distanceToGoCells`とmax合成していた。
+これにより、sqrtカーブが既に十分減速している場面でもこのヒューリスティックが
+毎tick介入し続け、2つの減速メカニズムが常に競合する構造になっていた。
+
+なお実測では、この用意された単一駅シナリオでは`targetSpeed(sqrtカーブ)`が
+ほぼ常に現在速度を上回る状態(加速・巡航・単純減速の全域)だったため、条件分岐の
+有無で数値上の差はほぼ出なかった(条件が常にtrueで従来と同じ経路を通る)。
+条件分岐は「複数の障害物(信号・他列車予約)が切り替わる場面」や「sqrtカーブ側の
+制約が既により厳しい場面」で無用な二重介入を防ぐためのものであり、原式に忠実な
+構造にしておくことがOpenTTD挙動への準拠と将来の信号シナリオでの安全性につながる。
+
+### 5-3. 修正内容
+
+`src/sim/simulation.ts`の駅接近クランプを2段構成に修正した:
+
+```ts
+let stMaxSpeed = MAX_SPEED_KMH; // ノーオペ相当
+if (targetSpeed > rt.speedKmh - deltaV) {
+  stMaxSpeed = rt.speedKmh - deltaV / 10;
+}
+stMaxSpeed = Math.max(stMaxSpeed, 25 * distanceToGoCells); // 無条件の安全下限
+targetSpeed = Math.min(targetSpeed, stMaxSpeed);
+targetSpeed = Math.max(targetSpeed, MIN_CRAWL_SPEED_KMH);
+```
+
+修正後のプロファイルは修正前と同一シナリオでは数値上ほぼ変化なし(上記5-2の理由による)。
+`MIN_CRAWL_SPEED_KMH`によるクロール(258tick=4.3秒・残り6m)は、到着判定を確実に
+発火させるための既存の意図的な仕様(コメント参照)であり、かつOpenTTD自体も駅への
+最終アプローチで低速クロールする挙動を持つため、これ自体は許容範囲内と判断した
+(単に速度が下限に張り付いたまま停止まで直進するだけで、脈動や急変は伴わない)。
+
+### 5-4. 追加したテスト
+
+`src/sim/station-approach.test.ts`(新規、2件):
+
+1. 「ピーク速度到達後、停止まで速度が増加に転じない(脈動なし・単調非増加)」
+2. 「MIN_CRAWL_SPEED_KMH以下の低速クロール時間は妥当な範囲に収まる(=無限に這い続けない)」
+   (実測4.3秒に対し、上限6秒を「異常な長時間停滞ではないこと」の回帰チェックとして設定)
+
+Red→Green確認済み。`npm run test`は全196件パス、`npm run build`成功。

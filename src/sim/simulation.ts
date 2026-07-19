@@ -435,11 +435,18 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     if (limitDistance >= 9999) {
       rt.debugStatus = `Accelerating (${Math.round(rt.speedKmh)} km/h)`;
     } else if (obstacleType === 'station') {
-      // OpenTTDノートB節の駅接近クランプ: st_max_speed = max(25×残りセル数, 現在速度−減速余裕)。
-      // 既存のsqrt(2ad)カーブと併用し、より小さい方(=より慎重な方)を採用する。
+      // OpenTTDノートB節の駅接近クランプ(train_cmd.cpp Train::GetCurrentMaxSpeed()に忠実な2段構成)。
+      // 1段目: sqrtカーブ(targetSpeed)がまだ十分減速し切れていない場合に限り、
+      //        cur_speed - delta_v/10 で上書きする(条件を満たさなければノーオペ=無制約)。
+      //        これによりsqrtカーブと本ヒューリスティックが常時競合して脈動するのを防ぐ。
+      // 2段目: 上記の結果に対し、最終安全下限として 25×残りセル数 の床を無条件で適用する。
       const distanceToGoCells = limitDistance / TILE_LENGTH;
       const deltaV = rt.speedKmh / (distanceToGoCells + 1);
-      const stMaxSpeed = Math.max(25 * distanceToGoCells, rt.speedKmh - deltaV / 10);
+      let stMaxSpeed = MAX_SPEED_KMH;
+      if (targetSpeed > rt.speedKmh - deltaV) {
+        stMaxSpeed = rt.speedKmh - deltaV / 10;
+      }
+      stMaxSpeed = Math.max(stMaxSpeed, 25 * distanceToGoCells);
       targetSpeed = Math.min(targetSpeed, stMaxSpeed);
       targetSpeed = Math.max(targetSpeed, MIN_CRAWL_SPEED_KMH);
       rt.debugStatus = `Arriving... (${limitDistance.toFixed(1)}m)`;
