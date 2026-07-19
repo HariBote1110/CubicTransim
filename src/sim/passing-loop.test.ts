@@ -73,6 +73,7 @@ const makeTrain = (overrides: Partial<TrainData>): TrainData => ({
   schedule: [],
   scheduleIndex: 0,
   status: 'running',
+  cars: 2,
   ...overrides,
 });
 

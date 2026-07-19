@@ -4,7 +4,7 @@ import { calculateRoute } from './pathfinding';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
-  TRAIN_CAPACITY,
+  CAPACITY_PER_CAR,
   FARE_PER_TILE,
   ACCIDENT_HALT_DURATION,
   ACCIDENT_PENALTY,
@@ -15,12 +15,13 @@ import {
 } from './economy';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
-export const TRAIN_LENGTH_TILES = 2;
 export const TILE_LENGTH = 30;
 export const MAX_SPEED_KMH = 100.0;
 export const MIN_CRAWL_SPEED_KMH = 5.0;
 export const ACCEL_KMH_S = 15.0;
 export const DECEL_KMH_S = 20.0;
+// 減速カーブ計算で見通し距離から安全マージンとして差し引く距離(m)。
+export const BRAKING_MARGIN_M = 0.5;
 
 type Grid = { x: number; z: number };
 
@@ -308,29 +309,32 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     obstacleType = obstacle.obstacleType;
   }
 
-  // 3. 速度制御
-  const currentSpeedMs = rt.speedKmh / 3.6;
-  const decelMs2 = DECEL_KMH_S / 3.6;
-  const brakingDist = currentSpeedMs ** 2 / (2 * decelMs2);
-
+  // 3. 速度制御: 前方の障害物までの距離から「今の位置で安全に止まれる許容速度」を逆算する方式。
+  // permittedSpeed = sqrt(2×減速度(m/s²)×max(0, 見通し距離−マージン)) をkm/hに変換する。
+  // 駅のみ最低速度(MIN_CRAWL_SPEED_KMH)を保証し、到着判定(newProgress>=1.0)を確実に発火させる。
+  // 信号・他列車待ちは許容速度が0まで落ち切ってよい。
   let targetSpeed = MAX_SPEED_KMH;
 
   if (immediateBlock) {
     targetSpeed = 0;
     rt.speedKmh = 0;
-  } else if (limitDistance <= brakingDist + 5.0) {
-    if (obstacleType === 'station') {
-      targetSpeed = MIN_CRAWL_SPEED_KMH;
+  } else {
+    const decelMs2 = DECEL_KMH_S / 3.6;
+    const permittedMs = Math.sqrt(2 * decelMs2 * Math.max(0, limitDistance - BRAKING_MARGIN_M));
+    const permittedKmh = permittedMs * 3.6;
+    targetSpeed = Math.min(MAX_SPEED_KMH, permittedKmh);
+
+    if (limitDistance >= 9999) {
+      rt.debugStatus = `Accelerating (${Math.round(rt.speedKmh)} km/h)`;
+    } else if (obstacleType === 'station') {
+      targetSpeed = Math.max(targetSpeed, MIN_CRAWL_SPEED_KMH);
       rt.debugStatus = `Arriving... (${limitDistance.toFixed(1)}m)`;
-    } else if (limitDistance < 0.5) {
+    } else if (targetSpeed < 0.5) {
       targetSpeed = 0;
       rt.debugStatus = `Waiting Signal... (${limitDistance.toFixed(1)}m)`;
     } else {
-      targetSpeed = MIN_CRAWL_SPEED_KMH;
       rt.debugStatus = `Braking... (${limitDistance.toFixed(1)}m)`;
     }
-  } else {
-    rt.debugStatus = `Accelerating (${Math.round(rt.speedKmh)} km/h)`;
   }
 
   if (rt.speedKmh < targetSpeed) {
@@ -355,7 +359,8 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     rt.route = rt.route.slice(1);
 
     rt.trail = [arrivedGrid, ...rt.trail];
-    if (rt.trail.length > TRAIN_LENGTH_TILES) rt.trail.pop();
+    const carCount = train.cars ?? 2;
+    if (rt.trail.length > carCount) rt.trail.pop();
 
     // 駅到着判定
     let shouldStop = false;
@@ -391,10 +396,12 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
         rt.passengers = 0;
       }
 
-      // 乗車: waitingからTRAIN_CAPACITYまで乗せる。waitingは小数で蓄積されるため、
+      // 乗車: waitingから編成定員(cars×CAPACITY_PER_CAR)まで乗せる。waitingは小数で蓄積されるため、
       // 乗車人数は整数に切り捨て、端数は駅に残す(passengersが常に整数であることを保証する)。
+      const carCount = train.cars ?? 2;
+      const trainCapacity = carCount * CAPACITY_PER_CAR;
       const waitingCount = world.waiting.get(targetStationId!) ?? 0;
-      const boarding = Math.max(0, Math.min(Math.floor(waitingCount), TRAIN_CAPACITY - rt.passengers));
+      const boarding = Math.max(0, Math.min(Math.floor(waitingCount), trainCapacity - rt.passengers));
       rt.passengers += boarding;
       world.waiting.set(targetStationId!, waitingCount - boarding);
       rt.lastStopStationId = targetStationId!;
@@ -407,7 +414,11 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
         events.push({ type: 'accident', trainId: train.id, stationId: targetStationId!, penalty: ACCIDENT_PENALTY });
       }
 
-      rt.stopRemaining = STOP_DURATION;
+      // ホーム長ペナルティ: 編成両数がホーム(停車したセルのstationId一致セル数)を超えると
+      // 乗降に余分な時間がかかるものとして停車時間を延長する。
+      const platformLen = st?.cells.length ?? 1;
+      const stopMultiplier = carCount > platformLen ? 1 + 0.5 * (carCount - platformLen) : 1;
+      rt.stopRemaining = STOP_DURATION * stopMultiplier;
       rt.speedKmh = 0;
       rt.route = [];
       rt.prevGrid = null;

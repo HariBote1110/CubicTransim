@@ -198,6 +198,7 @@ export const useGameLogic = () => {
         id: Math.random().toString(36).substr(0, 4),
         x, z,
         schedule: [], scheduleIndex: 0, status: 'stored',
+        cars: 2,
     };
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);

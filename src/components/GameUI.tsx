@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
 import type { CellType, TrainData, StationData, PlatformDoorType } from '../types';
 import {
-  RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TRAIN_CAPACITY,
+  RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, CAPACITY_PER_CAR,
+  CAR_COST, CAR_REFUND,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   demandFactor, clockToDate,
 } from '../sim/economy';
@@ -287,7 +288,7 @@ export const GameUI: React.FC<GameUIProps> = ({
                  Status: <span style={{ fontWeight: 'bold', color: selectedTrain.status === 'running' ? '#00aaff' : '#999' }}>{selectedTrain.status.toUpperCase()}</span>
                </div>
                <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                 Passengers: <span style={{ fontWeight: 'bold' }}>{passengers}/{TRAIN_CAPACITY}</span>
+                 Passengers: <span style={{ fontWeight: 'bold' }}>{passengers}/{selectedTrain.cars * CAPACITY_PER_CAR}</span>
                </div>
              </div>
 

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, TrainData, TownData } from '../types';
-import { stepWorld, STOP_DURATION, ACCEL_KMH_S, TRAIN_LENGTH_TILES } from './simulation';
+import { stepWorld, STOP_DURATION, ACCEL_KMH_S, MAX_SPEED_KMH } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
-  TRAIN_CAPACITY,
+  CAPACITY_PER_CAR,
   FARE_PER_TILE,
   ACCIDENT_HALT_DURATION,
   ACCIDENT_PENALTY,
@@ -43,8 +43,11 @@ const makeTrain = (overrides: Partial<TrainData>): TrainData => ({
   schedule: [],
   scheduleIndex: 0,
   status: 'running',
+  cars: 2,
   ...overrides,
 });
+
+const TRAIN_CAPACITY = 2 * CAPACITY_PER_CAR;
 
 // rng省略時は常に1を返す(=事故が発生しない)ことで既存テストの決定性を保つ。
 // towns省略時は空(=旅客需要が発生しない、旧仕様のテストとの互換用)。
@@ -64,6 +67,9 @@ const townsAtStations = (stations: StationData[]): TownData[] =>
   stations.map(st => ({ id: `town-${st.id}`, centre: { ...st.center }, population: 1000 }));
 
 // 直線上に2駅(両端)を置く。列車が往復してincome/lastStopStationIdを検証するために使う。
+// railMap上の駅セルは1つのまま(経路探索・到着挙動を既存テストと同一に保つ)。
+// StationData.cellsだけ2セル分のダミー座標にして、既定のcars=2とホーム長が一致し、
+// ホーム長ペナルティが既存テストの数値に影響しないようにする。
 const buildTwoStationLine = (length: number, stationAId: string, stationBId: string) => {
   const cells = Array.from({ length }, (_, i) => ({ x: i, z: 0 }));
   const railMap = buildRailMap(cells);
@@ -72,8 +78,8 @@ const buildTwoStationLine = (length: number, stationAId: string, stationBId: str
   railMap.set(aKey, { ...railMap.get(aKey)!, type: 'station', stationId: stationAId });
   railMap.set(bKey, { ...railMap.get(bKey)!, type: 'station', stationId: stationBId });
   const stations = new Map<string, StationData>([
-    [stationAId, { id: stationAId, name: 'A', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
-    [stationBId, { id: stationBId, name: 'B', cells: [{ x: length - 1, z: 0 }], center: { x: length - 1, z: 0 }, platformDoors: 'none' }],
+    [stationAId, { id: stationAId, name: 'A', cells: [{ x: 0, z: 0 }, { x: 0, z: 1 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+    [stationBId, { id: stationBId, name: 'B', cells: [{ x: length - 1, z: 0 }, { x: length - 1, z: 1 }], center: { x: length - 1, z: 0 }, platformDoors: 'none' }],
   ]);
   return { railMap, stations };
 };
@@ -96,13 +102,17 @@ const runTicks = (world: SimWorld, dt: number, count: number): SimEvent[] => {
   return events;
 };
 
-const buildStraightLine = (length: number, stationId: string) => {
+// railMap上の駅セルは常に1つ(経路探索・到着挙動を既存テストと同一に保つ)。
+// StationData.cellsだけplatformLen個のダミー座標にする(ホーム長ペナルティ計算はcells.lengthのみを見るため)。
+// 既定値2は既定のcars=2と一致し、ホーム長ペナルティが既存テストの数値に影響しないようにする。
+const buildStraightLine = (length: number, stationId: string, platformLen = 2) => {
   const cells = Array.from({ length }, (_, i) => ({ x: i, z: 0 }));
   const railMap = buildRailMap(cells);
   const lastKey = toKey(length - 1, 0);
   railMap.set(lastKey, { ...railMap.get(lastKey)!, type: 'station', stationId });
+  const platformCells = Array.from({ length: platformLen }, (_, i) => ({ x: length - 1, z: i }));
   const stations = new Map<string, StationData>([
-    [stationId, { id: stationId, name: 'A', cells: [{ x: length - 1, z: 0 }], center: { x: length - 1, z: 0 }, platformDoors: 'none' }],
+    [stationId, { id: stationId, name: 'A', cells: platformCells, center: { x: length - 1, z: 0 }, platformDoors: 'none' }],
   ]);
   return { railMap, stations };
 };
@@ -120,7 +130,7 @@ describe('stepWorld', () => {
     expect(rt.speedKmh).toBeCloseTo(ACCEL_KMH_S * dt * 3, 5);
   });
 
-  it('走行: progressが進みマスが進行してtrailが更新される(上限TRAIN_LENGTH_TILES)', () => {
+  it('走行: progressが進みマスが進行してtrailが更新される(上限=train.cars)', () => {
     const { railMap, stations } = buildStraightLine(10, 'stA');
     const train = makeTrain({ schedule: ['stA'] });
     const world = makeWorld(railMap, stations, [train]);
@@ -136,7 +146,7 @@ describe('stepWorld', () => {
     }
 
     expect(rt!.grid.x).toBeGreaterThanOrEqual(2);
-    expect(rt!.trail.length).toBe(TRAIN_LENGTH_TILES);
+    expect(rt!.trail.length).toBe(train.cars);
     expect(rt!.trail[0]).toEqual(rt!.grid);
   });
 
@@ -449,6 +459,116 @@ describe('stepWorld: 人身事故とホームドア', () => {
 
     expect(events.some(e => e.type === 'accident')).toBe(false);
     expect(rt.haltRemaining).toBe(0);
+  });
+});
+
+describe('stepWorld: 編成(consist)システム', () => {
+  it('定員はcars×CAPACITY_PER_CARになる(cars=1と8の境界)', () => {
+    const capacityFor = (cars: number) => {
+      const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+      const towns = townsAtStations(Array.from(stations.values()));
+      const train = makeTrain({ schedule: ['stB', 'stA'], cars });
+      const world = makeWorld(railMap, stations, [train], () => 1, towns);
+      world.waiting.set('stB', 9999);
+      for (let i = 0; i < 5000; i++) {
+        stepWorld(world, 0.1);
+        const rt = world.runtimes.get('t1')!;
+        if (rt.stopRemaining > 0) break;
+      }
+      return world.runtimes.get('t1')!.passengers;
+    };
+
+    // cars=1(定員50)はSTATION_WAITING_CAP(200)未満なのでそのまま定員まで乗車する。
+    expect(capacityFor(1)).toBe(1 * CAPACITY_PER_CAR);
+    // cars=8(定員400)はSTATION_WAITING_CAP(200)を超えるため、実際の乗車数は
+    // 駅の待ち上限に頭打ちされる(定員の計算式自体はcars×CAPACITY_PER_CARで正しく効いている)。
+    expect(capacityFor(8)).toBe(Math.min(8 * CAPACITY_PER_CAR, STATION_WAITING_CAP));
+  });
+
+  it('trailの物理長上限はtrain.carsに一致する(cars=1と8の境界)', () => {
+    const trailLenFor = (cars: number) => {
+      const { railMap, stations } = buildStraightLine(20, 'stA');
+      const train = makeTrain({ schedule: ['stA'], cars });
+      const world = makeWorld(railMap, stations, [train]);
+      let rt = world.runtimes.get('t1');
+      for (let i = 0; i < 3000; i++) {
+        stepWorld(world, 0.1);
+        rt = world.runtimes.get('t1')!;
+        if (rt.grid.x >= cars + 1) break;
+      }
+      return rt!.trail.length;
+    };
+
+    expect(trailLenFor(1)).toBe(1);
+    expect(trailLenFor(8)).toBe(8);
+  });
+
+  it('ホーム長ペナルティ: 3両編成が2セル駅に停車するとstopRemaining=STOP_DURATION×1.5になる', () => {
+    const { railMap, stations } = buildStraightLine(8, 'stA', 2);
+    const train = makeTrain({ schedule: ['stA'], cars: 3 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(rt!.stopRemaining).toBeCloseTo(STOP_DURATION * 1.5, 5);
+  });
+
+  it('ホーム長ペナルティ: 編成がホーム長以下なら通常のSTOP_DURATIONのまま', () => {
+    const { railMap, stations } = buildStraightLine(8, 'stA', 2);
+    const train = makeTrain({ schedule: ['stA'], cars: 2 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(rt!.stopRemaining).toBeCloseTo(STOP_DURATION, 5);
+  });
+});
+
+describe('stepWorld: 減速カーブ(距離ベースの許容速度)', () => {
+  it('100km/hからの停止で、速度が10km/h未満である時間の合計が3秒以内になる', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.05;
+    let timeBelow10 = 0;
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 20000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.speedKmh > 0 && rt.speedKmh < 10) timeBelow10 += dt;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(rt!.speedKmh === 0 || rt!.stopRemaining > 0).toBe(true);
+    expect(timeBelow10).toBeLessThanOrEqual(3);
+  });
+
+  it('MAX_SPEED_KMHを超えて加速しない(距離が十分あれば最高速度まで到達する)', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 2000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      expect(rt.speedKmh).toBeLessThanOrEqual(MAX_SPEED_KMH + 1e-6);
+      if (rt.speedKmh >= MAX_SPEED_KMH - 0.01) break;
+    }
+
+    expect(rt!.speedKmh).toBeGreaterThanOrEqual(MAX_SPEED_KMH - 0.01);
   });
 });
 

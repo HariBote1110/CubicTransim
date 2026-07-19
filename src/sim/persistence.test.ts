@@ -4,7 +4,7 @@ import type { TrainRuntime } from './simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v6)', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v7)', () => {
   it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns/terrain/clock/台帳 が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
@@ -14,7 +14,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
     ]);
     const trains: TrainData[] = [
-      { id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' },
+      { id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running', cars: 2 },
     ];
     const runtimes = new Map<string, TrainRuntime>([
       ['t1', {
@@ -46,7 +46,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     ];
 
     const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns, terrain, clock, currentLedger, ledgerHistory);
-    expect(saveData.version).toBe(6);
+    expect(saveData.version).toBe(7);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -66,6 +66,52 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
   });
 });
 
+describe('persistence: v6→v7 移行', () => {
+  it('v6データ(trains[].carsが無い)を読み込むと各列車にcars=2が補われる', () => {
+    const v6Data = {
+      version: 6,
+      railMap: [['1,0', { type: 'station', connections: 15, stationId: 'stA' }]] as [string, CellData][],
+      stations: [
+        ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+      ] as [string, StationData][],
+      trains: [
+        { id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' },
+        { id: 't2', x: 2, z: 0, schedule: [], scheduleIndex: 0, status: 'stored' },
+      ] as unknown as TrainData[],
+      runtimes: [['t1', {
+        id: 't1',
+        grid: { x: 0, z: 0 },
+        prevGrid: null,
+        progress: 0,
+        speedKmh: 0,
+        route: [],
+        trail: [{ x: 0, z: 0 }],
+        stopRemaining: 0,
+        waitTimer: 0,
+        debugStatus: '',
+        renderPos: { x: 0, y: 0.5, z: 0 },
+        renderTarget: null,
+        passengers: 0,
+        lastStopStationId: null,
+        haltRemaining: 0,
+      }]] as unknown as [string, TrainRuntime][],
+      waiting: [['stA', 12]] as [string, number][],
+      money: 12_345,
+      towns: [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
+      terrain: [['2,2', 'water']] as [string, TerrainType][],
+      clock: { elapsed: 999 },
+      currentLedger: { year: 1, month: 3, fares: 0, construction: 0, upkeep: 0, accidents: 0 } as MonthlyLedger,
+      ledgerHistory: [] as MonthlyLedger[],
+    };
+
+    const restored = deserialiseWorld(v6Data as never);
+
+    expect(restored.money).toBe(12_345);
+    expect(restored.trains.every(t => t.cars === 2)).toBe(true);
+    expect(restored.trains).toHaveLength(2);
+  });
+});
+
 describe('persistence: v5→v6 移行', () => {
   it('v5データ(clock/台帳が無い)を読み込むとelapsed=0・台帳空で補われる', () => {
     const v5Data = {
@@ -74,7 +120,7 @@ describe('persistence: v5→v6 移行', () => {
       stations: [
         ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
       ] as [string, StationData][],
-      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as TrainData[],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as unknown as TrainData[],
       runtimes: [['t1', {
         id: 't1',
         grid: { x: 0, z: 0 },
@@ -115,7 +161,7 @@ describe('persistence: v4→v5 移行', () => {
       stations: [
         ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
       ] as [string, StationData][],
-      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as TrainData[],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as unknown as TrainData[],
       runtimes: [['t1', {
         id: 't1',
         grid: { x: 0, z: 0 },
@@ -154,7 +200,7 @@ describe('persistence: v3→v4 移行', () => {
       stations: [
         ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
       ] as [string, StationData][],
-      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as TrainData[],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as unknown as TrainData[],
       runtimes: [['t1', {
         id: 't1',
         grid: { x: 0, z: 0 },
@@ -189,7 +235,7 @@ describe('persistence: v1→v2 移行', () => {
       version: 1,
       railMap: [['0,0', { type: 'rail', connections: 3 }]] as [string, CellData][],
       stations: [] as [string, StationData][],
-      trains: [{ id: 't1', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'stored' }] as TrainData[],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'stored' }] as unknown as TrainData[],
       runtimes: [['t1', {
         id: 't1',
         grid: { x: 0, z: 0 },
@@ -228,7 +274,7 @@ describe('persistence: v2→v3 移行', () => {
       stations: [
         ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 } }],
       ] as unknown as [string, StationData][],
-      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as TrainData[],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as unknown as TrainData[],
       runtimes: [['t1', {
         id: 't1',
         grid: { x: 0, z: 0 },

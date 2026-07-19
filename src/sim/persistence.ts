@@ -68,7 +68,22 @@ export interface SaveDataV6 {
   ledgerHistory: MonthlyLedger[];
 }
 
-export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5 | SaveDataV6;
+export interface SaveDataV7 {
+  version: 7;
+  railMap: [string, CellData][];
+  stations: [string, StationData][];
+  trains: TrainData[];
+  runtimes: [string, TrainRuntime][];
+  waiting: [string, number][];
+  money: number;
+  towns: TownData[];
+  terrain: [string, TerrainType][];
+  clock: { elapsed: number };
+  currentLedger: MonthlyLedger;
+  ledgerHistory: MonthlyLedger[];
+}
+
+export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5 | SaveDataV6 | SaveDataV7;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 });
@@ -85,9 +100,9 @@ export function serialiseWorld(
   clock: { elapsed: number },
   currentLedger: MonthlyLedger,
   ledgerHistory: MonthlyLedger[]
-): SaveDataV6 {
+): SaveDataV7 {
   return {
-    version: 6,
+    version: 7,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -135,11 +150,31 @@ export function deserialiseWorld(data: SaveData): {
       stations.map(([id, st]) => [id, { ...st, platformDoors: st.platformDoors ?? 'none' }])
     );
 
+  // v6以前のデータにはtrains[].carsが存在しないため、既定値2(新造時の編成両数)で補う。
+  const migrateTrains = (trains: TrainData[]) =>
+    trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
+
+  if (data.version === 7) {
+    return {
+      railMap: new Map(data.railMap),
+      stations: migrateStations(data.stations),
+      trains: migrateTrains(data.trains),
+      runtimes,
+      waiting: new Map(data.waiting),
+      money: data.money,
+      towns: data.towns,
+      terrain: new Map(data.terrain),
+      clock: data.clock,
+      currentLedger: data.currentLedger,
+      ledgerHistory: data.ledgerHistory,
+    };
+  }
+
   if (data.version === 6) {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
-      trains: data.trains,
+      trains: migrateTrains(data.trains),
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
@@ -155,7 +190,7 @@ export function deserialiseWorld(data: SaveData): {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
-      trains: data.trains,
+      trains: migrateTrains(data.trains),
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
@@ -172,7 +207,7 @@ export function deserialiseWorld(data: SaveData): {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
-      trains: data.trains,
+      trains: migrateTrains(data.trains),
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
@@ -189,7 +224,7 @@ export function deserialiseWorld(data: SaveData): {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
-      trains: data.trains,
+      trains: migrateTrains(data.trains),
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
@@ -206,7 +241,7 @@ export function deserialiseWorld(data: SaveData): {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
-      trains: data.trains,
+      trains: migrateTrains(data.trains),
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
@@ -222,7 +257,7 @@ export function deserialiseWorld(data: SaveData): {
   return {
     railMap: new Map(data.railMap),
     stations: migrateStations(data.stations),
-    trains: data.trains,
+    trains: migrateTrains(data.trains),
     runtimes,
     waiting: new Map(),
     money: STARTING_MONEY,
