@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [openttd-inspired-train-behaviour.md](openttd-inspired-train-behaviour.md) — OpenTTD流の列車挙動(PBS予約・YAPF-lite・制動距離統一)の輸入設計。GPLコードはコピーせず考え方のみ。実装フェーズ案つき
 - [consist-system-and-braking-curve.md](consist-system-and-braking-curve.md) — 編成(consist)システム(TrainData.cars、両数比例の定員/維持費/増結解結、ホーム長ペナルティ、車庫の編成エディタUI、DynamicTrainの複数車両描画)と、距離ベースの許容速度に変更した減速カーブの設計。SaveData v7移行
 - [passing-loop-signalling.md](passing-loop-signalling.md) — 信号場での自動すれ違い(交換設備)。信号コンフリクト判定の見通し区間(lookahead)を固定10マスから「次の分岐点/信号セルの手前まで」に変更し、対向列車が分岐点に単に立ち寄っているだけの状態を衝突懸念とみなさないようにしてデッドロックを解消
 - [terrain-and-construction-constraints.md](terrain-and-construction-constraints.md) — 地形(水域・山岳)の決定的生成(generateTerrain/terrainAt)、駅・車庫・信号の水域/山岳no-op、線路の橋(5倍)/トンネル(8倍)コスト、街生成の地形除外、SaveData v5移行、地形描画(TerrainBlocks)とworld座標→screen座標のアフィン変換(ブラウザ検証用)
