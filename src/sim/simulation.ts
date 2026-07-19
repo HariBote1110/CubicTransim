@@ -20,6 +20,11 @@ export const STOP_DURATION = 3; // seconds (simulation time)
 export const TILE_LENGTH = 30;
 export const MAX_SPEED_KMH = 100.0;
 export const MIN_CRAWL_SPEED_KMH = 5.0;
+// 駅接近クランプ(25×残りセル数)の最低値(km/h)。線形床(v∝距離)をそのまま0まで
+// 使うと時間軸では指数的漸近になり、停止直前に低速で延々と這い続けてしまう。
+// 終盤(この値を下回る領域)はsqrt(2ad)カーブに速度制御を引き継がせ、
+// 「スッと入ってピタッと止まる」停車感にする。
+export const STATION_APPROACH_MIN_KMH = 15.0;
 export const ACCEL_KMH_S = 15.0;
 export const DECEL_KMH_S = 20.0;
 // 減速カーブ計算で見通し距離から安全マージンとして差し引く距離(m)。
@@ -446,7 +451,10 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       if (targetSpeed > rt.speedKmh - deltaV) {
         stMaxSpeed = rt.speedKmh - deltaV / 10;
       }
-      stMaxSpeed = Math.max(stMaxSpeed, 25 * distanceToGoCells);
+      // 2段目の床には最低値(STATION_APPROACH_MIN_KMH)を設ける。線形床が終盤の支配的
+      // 制約になると時間軸で指数的漸近となり超低速クロールが数秒続くため、終盤は
+      // sqrt(2ad)カーブ(targetSpeed)側に制御を渡し、停止精度はMIN_CRAWL_SPEED_KMHで担保する。
+      stMaxSpeed = Math.max(stMaxSpeed, 25 * distanceToGoCells, STATION_APPROACH_MIN_KMH);
       targetSpeed = Math.min(targetSpeed, stMaxSpeed);
       targetSpeed = Math.max(targetSpeed, MIN_CRAWL_SPEED_KMH);
       rt.debugStatus = `Arriving... (${limitDistance.toFixed(1)}m)`;
