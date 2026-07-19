@@ -21,6 +21,59 @@ const dot = (a: { x: number; z: number }, b: { x: number; z: number }) => a.x * 
 // 同距離の並行経路がある場合はこの順にBFSキューへ積んで先に採用させる)。
 const leftwardness = (dv: { x: number; z: number }, d: { x: number; z: number }) => dv.x * d.z - dv.z * d.x;
 
+const EXTEND_DIRECTIONS = [
+    { x: 0, z: -1, dir: DIR.N }, { x: 1, z: -1, dir: DIR.NE },
+    { x: 1, z: 0, dir: DIR.E }, { x: 1, z: 1, dir: DIR.SE },
+    { x: 0, z: 1, dir: DIR.S }, { x: -1, z: 1, dir: DIR.SW },
+    { x: -1, z: 0, dir: DIR.W }, { x: -1, z: -1, dir: DIR.NW }
+];
+
+// 目的駅セルに到達した経路を、進行方向に連続する同一stationIdのセルが続く限り延長する。
+// これにより先頭車はホームの奥端まで進んでから停車するようになる(編成全体がホームへ載る)。
+// 急カーブ制約(内積>=0.5)を満たす直進方向のみを辿り、分岐がある場合は最も直進に近い
+// (内積が最大の)候補を優先し、そのような候補が無ければ延長を終える。
+const extendThroughPlatform = (
+  railMap: Map<string, CellData>,
+  targetId: string,
+  lastCell: { x: number; z: number },
+  prevCell: { x: number; z: number } | null,
+  path: { x: number; z: number }[]
+): { x: number; z: number }[] => {
+  const extended = [...path];
+  let curr = lastCell;
+  let prev = prevCell;
+
+  while (prev) {
+    const cellData = railMap.get(toKey(curr.x, curr.z));
+    const connections = cellData?.connections || 0;
+    const cv = normalize(curr.x - prev.x, curr.z - prev.z);
+
+    let best: { x: number; z: number; score: number } | null = null;
+    for (const d of EXTEND_DIRECTIONS) {
+      if ((connections & d.dir) === 0) continue;
+      const tx = curr.x + d.x;
+      const tz = curr.z + d.z;
+      if (tx === prev.x && tz === prev.z) continue;
+
+      const nv = normalize(d.x, d.z);
+      const score = dot(cv, nv);
+      if (score < 0.5) continue;
+
+      const nextCell = railMap.get(toKey(tx, tz));
+      if (!nextCell || nextCell.stationId !== targetId) continue;
+
+      if (!best || score > best.score) best = { x: tx, z: tz, score };
+    }
+
+    if (!best) break;
+    extended.push({ x: best.x, z: best.z });
+    prev = curr;
+    curr = { x: best.x, z: best.z };
+  }
+
+  return extended;
+};
+
 export function calculateRoute(
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>,
@@ -44,7 +97,7 @@ export function calculateRoute(
           const currKey = toKey(curr.x, curr.z);
           const cell = railMap.get(currKey);
 
-          if (cell && cell.stationId === targetId) return path;
+          if (cell && cell.stationId === targetId) return extendThroughPlatform(railMap, targetId, curr, prev, path);
           if (path.length >= MAX_DEPTH) continue;
 
           const myConnections = cell?.connections || 0;

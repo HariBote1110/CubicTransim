@@ -3,6 +3,7 @@ import { toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, TrainData, TownData } from '../types';
 import { stepWorld, STOP_DURATION, ACCEL_KMH_S, MAX_SPEED_KMH } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
+import { carPositions } from './consist';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
@@ -569,6 +570,93 @@ describe('stepWorld: 減速カーブ(距離ベースの許容速度)', () => {
     }
 
     expect(rt!.speedKmh).toBeGreaterThanOrEqual(MAX_SPEED_KMH - 0.01);
+  });
+});
+
+describe('stepWorld: 停車位置(ホーム全体基準)', () => {
+  it('3セル連続ホームでは進行方向最後のホームセル(奥端)で停止する', () => {
+    const cells = Array.from({ length: 8 }, (_, i) => ({ x: i, z: 0 }));
+    const railMap = buildRailMap(cells);
+    for (const x of [5, 6, 7]) {
+      railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: 'stP' });
+    }
+    const stations = new Map<string, StationData>([
+      ['stP', { id: 'stP', name: 'P', cells: [{ x: 5, z: 0 }, { x: 6, z: 0 }, { x: 7, z: 0 }], center: { x: 6, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ schedule: ['stP'] });
+    const world = makeWorld(railMap, stations, [train]);
+
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(rt!.grid).toEqual({ x: 7, z: 0 });
+  });
+});
+
+describe('stepWorld: 終端駅での瞬時反転', () => {
+  it('終端駅到着後の発車時に編成が瞬時に反転し、車間一定を保って逆走し、A駅に到着する', () => {
+    const length = 10;
+    const { railMap, stations } = buildTwoStationLine(length, 'stA', 'stB');
+    const train = makeTrain({ x: 0, z: 0, schedule: ['stB', 'stA'], cars: 4 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    // stBに到着するまで進める
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+    expect(rt!.grid).toEqual({ x: length - 1, z: 0 });
+
+    // arriveイベントでscheduleIndexを進める(実機のhandleTrainArrive相当の処理)
+    for (let i = 0; i < 100; i++) {
+      const evs = stepWorld(world, 0.1);
+      evs.forEach(e => {
+        if (e.type === 'arrive') train.scheduleIndex = (train.scheduleIndex + 1) % train.schedule.length;
+      });
+      rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining === 0) break;
+    }
+
+    const oldTail = rt!.trail[rt!.trail.length - 1];
+
+    // 発車(反転)する1tick
+    stepWorld(world, 0.1);
+    rt = world.runtimes.get('t1')!;
+
+    // (a) 新先頭セルは旧最後尾セル
+    expect(rt.grid).toEqual(oldTail);
+
+    // (b) 発車直後の連続tickで車間(弧長基準)が常にspacing一定を保つ(めり込み・重なりなし)
+    for (let i = 0; i < 150; i++) {
+      stepWorld(world, 0.05);
+      rt = world.runtimes.get('t1')!;
+      const positions = carPositions(rt, 4, 1.0);
+      for (let k = 1; k < positions.length; k++) {
+        const dx = positions[k - 1].x - positions[k].x;
+        const dz = positions[k - 1].z - positions[k].z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        expect(dist).toBeGreaterThan(0.9);
+        expect(dist).toBeLessThan(1.1);
+      }
+    }
+
+    // (c) その後A駅に到着する
+    let arrivedAtA = false;
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x === 0 && rt.stopRemaining > 0) {
+        arrivedAtA = true;
+        break;
+      }
+    }
+    expect(arrivedAtA).toBe(true);
   });
 });
 

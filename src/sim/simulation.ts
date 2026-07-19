@@ -348,13 +348,50 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
   // 経路が無ければ探索する
   if (rt.route.length === 0) {
     const { occupied, reserved } = buildRouteSets(world, train.id);
-    const newPath = calculateRoute(world.railMap, world.stations, occupied, reserved, {
+    let newPath = calculateRoute(world.railMap, world.stations, occupied, reserved, {
       start: rt.grid,
       prev: rt.prevGrid,
       targetStationId,
     });
 
     if (newPath.length > 0) {
+      // 折り返し判定: 発車方向が「自編成の2両目へめり込む方向」、または到着時の進行方向と
+      // 逆(内積<0)であれば、終端駅での折り返しとみなす。
+      const firstStep = newPath[0];
+      const mergesIntoSelf = rt.trail.length > 1 && firstStep.x === rt.trail[1].x && firstStep.z === rt.trail[1].z;
+      const arrivalVec = rt.prevGrid ? normalize(rt.grid.x - rt.prevGrid.x, rt.grid.z - rt.prevGrid.z) : null;
+      const departVec = normalize(firstStep.x - rt.grid.x, firstStep.z - rt.grid.z);
+      const isReversal = mergesIntoSelf || (arrivalVec !== null && dot(arrivalVec, departVec) < 0);
+
+      if (isReversal && rt.trail.length > 0) {
+        // 編成ごと瞬時に反転する: 新先頭セル=旧最後尾セル。trail/pathHistoryを反転した向きに
+        // 組み直す(pathHistoryは旧向きの延長分(carCount超過分)をそのまま反転すると
+        // 新先頭の手前に逆走の折り返し点ができてしまう=carPositionsの弧長サンプリングが
+        // 破綻するため、trail反転分を最後尾セルの複製で埋め直す)。
+        const carCount = train.cars ?? 2;
+        const reversedTrail = [...rt.trail].reverse();
+        rt.trail = reversedTrail;
+        const historyCap = carCount + 2;
+        const reversedHistory = [...reversedTrail];
+        while (reversedHistory.length < historyCap) {
+          reversedHistory.push(reversedHistory[reversedHistory.length - 1]);
+        }
+        rt.pathHistory = reversedHistory;
+
+        const newHead = reversedTrail[0];
+        rt.grid = newHead;
+        rt.prevGrid = reversedTrail.length > 1 ? reversedTrail[1] : null;
+        rt.progress = 0;
+        rt.renderPos = { x: newHead.x, y: 0.5, z: newHead.z };
+        rt.renderTarget = null;
+
+        newPath = calculateRoute(world.railMap, world.stations, occupied, reserved, {
+          start: rt.grid,
+          prev: rt.prevGrid,
+          targetStationId,
+        });
+      }
+
       rt.route = newPath;
       rt.debugStatus = 'Route Found';
       rt.waitTimer = 0;
@@ -457,20 +494,13 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     let shouldStop = false;
     const cell = world.railMap.get(toKey(arrivedGrid.x, arrivedGrid.z));
     if (cell && cell.stationId === targetStationId) {
-      const st = world.stations.get(targetStationId);
-      if (st) {
-        const distToCenter = Math.sqrt((arrivedGrid.x - st.center.x) ** 2 + (arrivedGrid.z - st.center.z) ** 2);
-        let keepGoing = false;
-        if (rt.route.length > 0) {
-          const nextCell = world.railMap.get(toKey(rt.route[0].x, rt.route[0].z));
-          if (nextCell && nextCell.stationId === targetStationId) {
-            const nextDist = Math.sqrt((rt.route[0].x - st.center.x) ** 2 + (rt.route[0].z - st.center.z) ** 2);
-            // 駅の中心に近づくなら進む
-            if (nextDist < distToCenter - 0.5) keepGoing = true;
-          }
-        }
-        if (!keepGoing) shouldStop = true;
+      // 次の経路セルも同一駅(ホーム)なら通過し続け、経路が尽きたセル(ホーム奥端)で停車する。
+      let keepGoing = false;
+      if (rt.route.length > 0) {
+        const nextCell = world.railMap.get(toKey(rt.route[0].x, rt.route[0].z));
+        if (nextCell && nextCell.stationId === targetStationId) keepGoing = true;
       }
+      if (!keepGoing) shouldStop = true;
     }
 
     if (shouldStop) {

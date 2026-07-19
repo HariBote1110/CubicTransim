@@ -262,4 +262,45 @@ describe('calculateRoute', () => {
       { x: 5, z: 0 }, { x: 4, z: 0 }, { x: 3, z: 0 }, { x: 2, z: 0 }, { x: 1, z: 0 }, { x: 0, z: 0 },
     ]);
   });
+
+  it('ホーム(同一駅IDの連続セル)は進行方向へ奥端まで経路を延長する', () => {
+    // (2,0)-(3,0)-(4,0) の3セルが同一駅stHのホーム。目的駅ヒットは(2,0)で成立するが、
+    // 経路はそこで終わらず、直進方向に連続する同一stationIdのセルを奥端(4,0)まで延長する。
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const railMap = buildRailMap(cells);
+    for (const x of [2, 3, 4]) {
+      railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: 'stH' });
+    }
+    const stations = new Map<string, StationData>([
+      ['stH', { id: 'stH', name: 'H', cells: [{ x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: null,
+      targetStationId: 'stH',
+    });
+
+    expect(result).toEqual([
+      { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+  });
+
+  it('ホーム延長は先が行き止まり(接続なし)であれば最初の到達セルで止まる', () => {
+    // 単一セルの駅(既存の全テストと同じ形)では延長候補が無いため従来通りの挙動になる。
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stI' });
+    const stations = new Map<string, StationData>([
+      ['stI', { id: 'stI', name: 'I', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: null,
+      targetStationId: 'stI',
+    });
+
+    expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
+  });
 });
