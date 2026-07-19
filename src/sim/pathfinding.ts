@@ -8,6 +8,9 @@ export interface RouteQuery {
   // 編成両数。停車位置(先頭車の停止セル)を「編成中央がホーム中央に最も近づく位置」
   // に決めるために使う(headIdx計算)。
   cars: number;
+  // 停車位置設定(OpenTTD流のNear/Middle/Far)。省略時は'middle'(既存の編成中央基準)。
+  // ただし編成長(cars) >= ホーム長(P)の場合はこの設定によらず無条件でFarEnd(奥端)固定になる。
+  stopLocation?: 'near' | 'middle' | 'far';
 }
 
 const normalize = (x: number, z: number) => {
@@ -62,19 +65,24 @@ const findNextInLine = (
   return best;
 };
 
-// 目的駅セルに到達した経路を、「編成中央がホーム中央に(セル単位で)最も近づく」先頭車の
-// 停止セルまで延長する。ホームセル列(進行方向に連続する同一stationIdのセル、進入順に
-// 0..P-1、entry=lastCellがindex0)に対し、headIdx = ceil((P+cars)/2) - 1 を停止目標とする。
-// headIdxがホーム内(<=P-1)ならホーム内のそのセルで止める。ホームを超える場合は、
-// 直進方向に存在する線路/駅セル(stationIdは問わない)をさらに辿って延長し、
-// 線路が尽きた場合はそこでクランプする(headIdxに届かなくてもよい)。
+// 目的駅セルに到達した経路を、OpenTTD流のGetTrainStopLocation相当の停止セルまで延長する。
+// ホームセル列(進行方向に連続する同一stationIdのセル、進入順に0..P-1、entry=lastCellが
+// index0)に対し、headIdxを次の優先順位で決める:
+//   1. 編成長(cars) >= ホーム長(P) なら stopLocation設定によらず無条件で FarEnd(headIdx=P-1)固定
+//   2. それ以外は stopLocation ('near'|'middle'|'far') に従う
+//      near:   headIdx = min(cars,P) - 1 (編成ができるだけホーム内に収まる最小前進)
+//      middle: headIdx = ceil((P+cars)/2) - 1 (編成中央がホーム中央に最も近づく)
+//      far:    headIdx = P - 1 (ホーム奥端)
+// headIdxは常にP-1以下になるため、ホームより先へ延長することはない(FarEndは
+// あくまで「ホーム奥端で止まる」処理であり、ホームの先の線路まで出て行くわけではない)。
 const extendThroughPlatform = (
   railMap: Map<string, CellData>,
   targetId: string,
   lastCell: { x: number; z: number },
   prevCell: { x: number; z: number } | null,
   path: { x: number; z: number }[],
-  cars: number
+  cars: number,
+  stopLocation: 'near' | 'middle' | 'far' = 'middle'
 ): { x: number; z: number }[] => {
   const extended = [...path];
   if (!prevCell) return extended;
@@ -94,28 +102,23 @@ const extendThroughPlatform = (
   }
 
   const P = platformCells.length;
-  const headIdx = Math.ceil((P + cars) / 2) - 1;
-
-  if (headIdx <= P - 1) {
-    for (let i = 1; i <= headIdx; i++) extended.push(platformCells[i]);
-    return extended;
+  // OpenTTD流: 編成長(cars) >= ホーム長(P)なら停止位置はstopLocation設定によらず
+  // 無条件でFarEnd(奥端)固定になる。それ以外はNear/Middle/Farのオーダー設定に従う。
+  let headIdx: number;
+  if (cars >= P) {
+    headIdx = P - 1;
+  } else if (stopLocation === 'near') {
+    headIdx = Math.min(cars, P) - 1;
+  } else if (stopLocation === 'far') {
+    headIdx = P - 1;
+  } else {
+    headIdx = Math.ceil((P + cars) / 2) - 1;
   }
 
-  // ホーム全体を延長した上で、さらにホームの先へ延長する。
-  for (let i = 1; i < P; i++) extended.push(platformCells[i]);
-
-  let extra = headIdx - (P - 1);
-  let curr = platformCells[P - 1];
-  let prev = P >= 2 ? platformCells[P - 2] : prevCell;
-  while (extra > 0) {
-    const best = findNextInLine(railMap, curr, prev, (c) => !!c);
-    if (!best) break; // 線路が尽きたのでクランプする
-    extended.push({ x: best.x, z: best.z });
-    prev = curr;
-    curr = { x: best.x, z: best.z };
-    extra--;
-  }
-
+  // headIdxは常にP-1以下になる(cars>=Pの場合はFarEnd固定でheadIdx=P-1、near/far/middleの
+  // いずれもcars<Pのときはホーム内に収まる)。そのため、ホームの先の線路まで停止位置を
+  // 延長する必要はない(=FarEndは「ホーム奥端で止まる」のであり、それより先には出ない)。
+  for (let i = 1; i <= headIdx; i++) extended.push(platformCells[i]);
   return extended;
 };
 
@@ -126,7 +129,7 @@ export function calculateRoute(
   reserved: Set<string>,
   query: RouteQuery
 ): { x: number; z: number }[] {
-  const { start, prev: prevGrid, targetStationId: targetId, cars } = query;
+  const { start, prev: prevGrid, targetStationId: targetId, cars, stopLocation = 'middle' } = query;
 
   const targetSt = stations.get(targetId);
   if (!targetSt) return [];
@@ -142,7 +145,7 @@ export function calculateRoute(
           const currKey = toKey(curr.x, curr.z);
           const cell = railMap.get(currKey);
 
-          if (cell && cell.stationId === targetId) return extendThroughPlatform(railMap, targetId, curr, prev, path, cars);
+          if (cell && cell.stationId === targetId) return extendThroughPlatform(railMap, targetId, curr, prev, path, cars, stopLocation);
           if (path.length >= MAX_DEPTH) continue;
 
           const myConnections = cell?.connections || 0;

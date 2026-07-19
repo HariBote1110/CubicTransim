@@ -320,8 +320,8 @@ describe('calculateRoute', () => {
     ]);
   });
 
-  it('編成中央基準: ホーム1セル+4両は線路があればホームの2つ先で止まる', () => {
-    // P=1, cars=4 -> headIdx = ceil((1+4)/2)-1 = 2 (ホームセルの2つ先)
+  it('FarEnd固定: ホーム1セル+4両(cars>=P)はホーム奥端(自身)で止まり、先の線路へは延長しない', () => {
+    // P=1, cars=4 (>=P) -> FarEnd固定でheadIdx=P-1=0。ホームの先に線路があっても出て行かない。
     const cells = [
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
     ];
@@ -338,30 +338,7 @@ describe('calculateRoute', () => {
       cars: 4,
     });
 
-    expect(result).toEqual([
-      { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
-    ]);
-  });
-
-  it('編成中央基準: ホームの先の線路が足りない場合は行ける所までにクランプされる', () => {
-    // P=1, cars=4 -> headIdx=2だが、ホームの先の線路は1セルしか無いため1つ先でクランプ。
-    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
-    const railMap = buildRailMap(cells);
-    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stK' });
-    const stations = new Map<string, StationData>([
-      ['stK', { id: 'stK', name: 'K', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
-    ]);
-
-    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
-      start: { x: 0, z: 0 },
-      prev: null,
-      targetStationId: 'stK',
-      cars: 4,
-    });
-
-    expect(result).toEqual([
-      { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 },
-    ]);
+    expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
   });
 
   it('ホーム延長は先が行き止まり(接続なし)であれば最初の到達セルで止まる', () => {
@@ -381,5 +358,71 @@ describe('calculateRoute', () => {
     });
 
     expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
+  });
+
+  describe('stopLocation (Near/Middle/Far)', () => {
+    // ホーム5セル(x=2..6)、cars=2 で near/middle/far それぞれの停止セルを検証する。
+    const buildFiveCellPlatform = () => {
+      const cells = [
+        { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 },
+        { x: 4, z: 0 }, { x: 5, z: 0 }, { x: 6, z: 0 },
+      ];
+      const railMap = buildRailMap(cells);
+      for (const x of [2, 3, 4, 5, 6]) {
+        railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: 'stP' });
+      }
+      const stations = new Map<string, StationData>([
+        ['stP', {
+          id: 'stP', name: 'P',
+          cells: [2, 3, 4, 5, 6].map(x => ({ x, z: 0 })),
+          center: { x: 4, z: 0 }, platformDoors: 'none',
+        }],
+      ]);
+      return { railMap, stations };
+    };
+
+    it('near: 編成ができるだけホーム内に収まる最小前進(手前寄り)で止まる', () => {
+      const { railMap, stations } = buildFiveCellPlatform();
+      const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+        start: { x: 0, z: 0 }, prev: null, targetStationId: 'stP', cars: 2, stopLocation: 'near',
+      });
+      expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    });
+
+    it('middle: 編成中央がホーム中央に最も近づく位置で止まる', () => {
+      const { railMap, stations } = buildFiveCellPlatform();
+      const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+        start: { x: 0, z: 0 }, prev: null, targetStationId: 'stP', cars: 2, stopLocation: 'middle',
+      });
+      expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }]);
+    });
+
+    it('far: ホーム奥端で止まる', () => {
+      const { railMap, stations } = buildFiveCellPlatform();
+      const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+        start: { x: 0, z: 0 }, prev: null, targetStationId: 'stP', cars: 2, stopLocation: 'far',
+      });
+      expect(result).toEqual([
+        { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }, { x: 6, z: 0 },
+      ]);
+    });
+
+    it('編成長がホーム長以上の場合、stopLocation設定によらずFarEnd固定になる', () => {
+      // P=3, cars=4 (>=P) -> nearを指定してもFarEndで止まる。
+      const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+      const railMap = buildRailMap(cells);
+      for (const x of [2, 3, 4]) {
+        railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: 'stF' });
+      }
+      const stations = new Map<string, StationData>([
+        ['stF', { id: 'stF', name: 'F', cells: [2, 3, 4].map(x => ({ x, z: 0 })), center: { x: 3, z: 0 }, platformDoors: 'none' }],
+      ]);
+
+      const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+        start: { x: 0, z: 0 }, prev: null, targetStationId: 'stF', cars: 4, stopLocation: 'near',
+      });
+
+      expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+    });
   });
 });
