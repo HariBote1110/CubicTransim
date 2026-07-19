@@ -79,9 +79,20 @@ describe('駅接近時の減速プロファイル', () => {
     const crawlSeconds = crawlTicks * dt;
 
     // MIN_CRAWL_SPEED_KMH(5km/h=約1.39m/s)は「到着判定を確実に発火させるための
-    // 最低保証速度」であり、駅直前のごく短い距離だけ一定速度区間が生じるのは
-    // 物理的に妥当(=OpenTTD等でも駅への忍び寄りは存在する)。ただし数十秒単位に
-    // 及ぶような異常な長時間停滞(バグ)ではないことを確認する上限として6秒を採る。
-    expect(crawlSeconds).toBeLessThanOrEqual(6.0);
+    // 最低保証速度」。停止位置直前のごく短い区間に限られるべきで、1秒以内に収める。
+    expect(crawlSeconds).toBeLessThanOrEqual(1.0);
+  });
+
+  it('10km/h未満の低速区間は合計1.5秒以内(=スッと入ってピタッと止まる)', () => {
+    const dt = 1 / 60;
+    const speeds = recordApproachProfile(15);
+
+    // 「25×残りセル数」の線形床(v∝d)が終盤の支配的制約になると、時間軸では
+    // 指数的漸近となり10km/h未満の区間が数秒〜十秒近くまで延びる(だらだらクロール)。
+    // OpenTTD実機の停車感に合わせ、超低速区間は停止位置直前の短時間に限定する。
+    const slowTicks = speeds.filter(s => s > 0 && s < 10).length;
+    const slowSeconds = slowTicks * dt;
+
+    expect(slowSeconds).toBeLessThanOrEqual(1.5);
   });
 });
