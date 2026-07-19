@@ -280,6 +280,27 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     expect(world.waiting.get('stB')).toBeCloseTo(waitingAfterGrowth - TRAIN_CAPACITY, 5);
   });
 
+  it('停車直後もrenderTargetが進入方向の延長線上を指し、列車の向きが維持される', () => {
+    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+    const towns = townsAtStations(Array.from(stations.values()));
+    const train = makeTrain({ x: 0, z: 0, schedule: ['stB', 'stA'] });
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
+
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    rt = world.runtimes.get('t1')!;
+    expect(rt.stopRemaining).toBeGreaterThan(0);
+    expect(rt.renderTarget).not.toBeNull();
+    // このレーンは常にx+方向(東)へ進むので、進入方向の延長線上=停止セルよりxが大きい点になる
+    expect(rt.renderTarget!.x).toBeGreaterThan(rt.grid.x);
+    expect(rt.renderTarget!.z).toBeCloseTo(rt.grid.z, 5);
+  });
+
   it('waitingが小数(38.7人)のとき乗車は38人の整数になり、端数0.7人は駅に残る', () => {
     const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
     const towns = townsAtStations(Array.from(stations.values()));

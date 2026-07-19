@@ -412,6 +412,10 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       rt.route = [];
       rt.prevGrid = null;
       rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
+      // renderTargetをリセットせず、進入方向の延長線上の点に維持する。
+      // こうしないとDynamicTrain側のlookAtが働かず、停車の瞬間に列車の向きが初期値へ戻ってしまう。
+      const enterVec = normalize(arrivedGrid.x - oldCurrent.x, arrivedGrid.z - oldCurrent.z);
+      rt.renderTarget = { x: arrivedGrid.x + enterVec.x, y: 0.5, z: arrivedGrid.z + enterVec.z };
       rt.debugStatus = 'Arrived';
     } else {
       rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
