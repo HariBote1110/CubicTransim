@@ -22,6 +22,7 @@ export default function App() {
     selectedStationId, selectStation, upgradeStationDoors,
     activeAccidents, handleAccident,
     currentLedger, ledgerHistory, handleMonthEnd,
+    stopLocation, setStopLocation,
   } = useGameLogic();
 
   return (
@@ -78,6 +79,8 @@ export default function App() {
         accidents={activeAccidents}
         currentLedger={currentLedger}
         ledgerHistory={ledgerHistory}
+        stopLocation={stopLocation}
+        onSetStopLocation={setStopLocation}
       />
     </div>
   );

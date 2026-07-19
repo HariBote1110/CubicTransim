@@ -4,8 +4,8 @@ import type { TrainRuntime } from './simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v7)', () => {
-  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns/terrain/clock/台帳 が JSON 経由でも復元できる', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v8)', () => {
+  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns/terrain/clock/台帳/stopLocation が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
@@ -46,8 +46,8 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       { year: 1, month: 4, fares: 900, construction: 0, upkeep: 300, accidents: 5000 },
     ];
 
-    const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns, terrain, clock, currentLedger, ledgerHistory);
-    expect(saveData.version).toBe(7);
+    const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns, terrain, clock, currentLedger, ledgerHistory, 'far');
+    expect(saveData.version).toBe(8);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -64,6 +64,34 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored.money).toBe(money);
     expect(restored.towns).toEqual(towns);
     expect(restored.terrain).toEqual(terrain);
+    expect(restored.stopLocation).toBe('far');
+  });
+});
+
+describe('persistence: v7→v8 移行', () => {
+  it('v7データ(stopLocationが無い)を読み込むと既定値middleが補われる', () => {
+    const v7Data = {
+      version: 7,
+      railMap: [['1,0', { type: 'station', connections: 15, stationId: 'stA' }]] as [string, CellData][],
+      stations: [
+        ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+      ] as [string, StationData][],
+      trains: [
+        { id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running', cars: 2 },
+      ] as TrainData[],
+      runtimes: [] as [string, TrainRuntime][],
+      waiting: [] as [string, number][],
+      money: 1000,
+      towns: [] as TownData[],
+      terrain: [] as [string, TerrainType][],
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [] as MonthlyLedger[],
+    };
+
+    const restored = deserialiseWorld(v7Data as never);
+
+    expect(restored.stopLocation).toBe('middle');
   });
 });
 

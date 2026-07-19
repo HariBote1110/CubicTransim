@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [physics-and-openttd-stop-location.md](physics-and-openttd-stop-location.md) — v0.2.0-Alpha-2a: OpenTTD Realistic流の物理加速モデル(牽引力-抵抗のF/m構造、乗客数に応じた質量増加、最高速度超過時の1/10減衰)を新設(sim/physics.ts)し、stepWorldの加速をACCEL_KMH_S固定から置き換え。停車処理をOpenTTD化し、編成長>=ホーム長ならFarEnd固定・それ以外はNear/Middle/Farのゲーム全体設定(SaveData v8)に従う停止位置と、駅接近時の25×残りセル数クランプを追加
 - [pbs-reservation-refactor.md](pbs-reservation-refactor.md) — v0.2.0-Alpha-1a: OpenTTD流PBS(経路予約ベース)運行モデルへの全面リファクタリング。セル単位の予約テーブル(sim/reservation.ts)を新設し、信号衝突ヒューリスティック(id比較・対向方向内積判定・trail/route個別スキャン)を削除して「次のsafe waiting pointまでの区間予約→制動距離+マージン以内で延長」の運行ループに置換。交換設備ですれ違いシナリオが恒久デッドロックした実例から、safe waiting pointの判定に「分岐点の手前も安全(分岐点自体には停止しない)」ルールを追加した経緯を記録
 - [openttd-source-notes.md](openttd-source-notes.md) — OpenTTD実ソース(master, 2026-07-20取得)精読ノート。PBS経路予約(TryReserveRailTrack/IsSafeWaitingPosition/解放タイミング)、停車位置計算(GetTrainStopLocation, Near/Middle/FarEnd)、加減速2モデル(Original/Realistic)の式と定数、折り返し(ReverseTrainDirection)の2方式と手順を再実装可能な粒度で抽出
 - [openttd-inspired-train-behaviour.md](openttd-inspired-train-behaviour.md) — OpenTTD流の列車挙動(PBS予約・YAPF-lite・制動距離統一)の輸入設計。GPLコードはコピーせず考え方のみ。実装フェーズ案つき

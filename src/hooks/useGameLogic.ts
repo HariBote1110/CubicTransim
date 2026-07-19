@@ -66,6 +66,9 @@ export const useGameLogic = () => {
   // ★追加: 所持金。建設・列車購入のたびに減算し、運賃収入で増加する。マイナスも許容する(赤字表示のみ)。
   const [money, setMoney] = useState<number>(STARTING_MONEY);
 
+  // ★追加: 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定。既定値'middle'。
+  const [stopLocation, setStopLocation] = useState<'near' | 'middle' | 'far'>('middle');
+
   // ★追加: 月次収支台帳。今月の途中経過(currentLedger)と、確定済み直近12ヶ月(ledgerHistory)。
   const [currentLedger, setCurrentLedger] = useState<MonthlyLedger>(emptyLedger());
   const [ledgerHistory, setLedgerHistory] = useState<MonthlyLedger[]>([]);
@@ -83,6 +86,7 @@ export const useGameLogic = () => {
     towns,
     terrain,
     clock: { elapsed: 0 },
+    stopLocation: 'middle',
   });
 
   useEffect(() => {
@@ -109,6 +113,10 @@ export const useGameLogic = () => {
   useEffect(() => {
     worldRef.current.economyMirror = { money };
   }, [money]);
+
+  useEffect(() => {
+    worldRef.current.stopLocation = stopLocation;
+  }, [stopLocation]);
 
   // ★追加: 事故バナーの自動消去。該当列車のhaltRemainingが尽きたら通知を取り除く。
   useEffect(() => {
@@ -334,7 +342,7 @@ export const useGameLogic = () => {
   const saveGame = () => {
     const saveData = serialiseWorld(
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, terrain,
-      worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory
+      worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
@@ -356,6 +364,7 @@ export const useGameLogic = () => {
     setTerrain(restored.terrain);
     setCurrentLedger(restored.currentLedger);
     setLedgerHistory(restored.ledgerHistory);
+    setStopLocation(restored.stopLocation);
 
     // runtimes/waiting は DynamicTrain/StationLabel が Map インスタンスを参照し続けているため、
     // 差し替えず中身だけ入れ替える。clockも同様にworldRef上のオブジェクトを直接更新する。
@@ -364,6 +373,7 @@ export const useGameLogic = () => {
     worldRef.current.waiting.clear();
     restored.waiting.forEach((count, id) => worldRef.current.waiting.set(id, count));
     worldRef.current.clock = restored.clock;
+    worldRef.current.stopLocation = restored.stopLocation;
   };
 
   return {
@@ -399,5 +409,8 @@ export const useGameLogic = () => {
     currentLedger,
     ledgerHistory,
     handleMonthEnd,
+    // ★追加: 駅停車位置設定(Near/Middle/Far)
+    stopLocation,
+    setStopLocation,
   };
 };

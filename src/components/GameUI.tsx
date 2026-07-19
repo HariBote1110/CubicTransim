@@ -57,6 +57,9 @@ interface GameUIProps {
   // ★追加: 月次収支台帳
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
+  // ★追加: 駅停車位置設定(Near/Middle/Far)
+  stopLocation: 'near' | 'middle' | 'far';
+  onSetStopLocation: (loc: 'near' | 'middle' | 'far') => void;
 }
 
 export const GameUI: React.FC<GameUIProps> = ({
@@ -71,6 +74,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   money, world,
   selectedStationId, onUpgradeDoors, accidents,
   currentLedger, ledgerHistory,
+  stopLocation, onSetStopLocation,
 }) => {
   // ゲーム内日付(sim層所有のclockから低頻度でポーリングする)
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
@@ -184,6 +188,26 @@ export const GameUI: React.FC<GameUIProps> = ({
         </button>
         <button onClick={onSave} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #00cc66', borderRadius: '8px' }}>Save</button>
         <button onClick={onLoad} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #ffaa00', borderRadius: '8px' }}>Load</button>
+        <div style={{ width: '1px', background: '#ccc', margin: '0 4px' }} />
+        {/* ★追加: 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定トグル。 */}
+        <div style={{
+          display: 'flex', border: '2px solid #8855cc', borderRadius: '8px', overflow: 'hidden',
+        }} title="駅の停車位置(Near/Middle/Far)">
+          {(['near', 'middle', 'far'] as const).map(loc => (
+            <button
+              key={loc}
+              onClick={() => onSetStopLocation(loc)}
+              style={{
+                padding: '8px 10px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
+                background: stopLocation === loc ? '#8855cc' : 'white',
+                color: stopLocation === loc ? 'white' : 'black',
+                border: 'none',
+              }}
+            >
+              {loc === 'near' ? 'Near' : loc === 'middle' ? 'Middle' : 'Far'}
+            </button>
+          ))}
+        </div>
       </div>
 
       {isFinanceOpen && (

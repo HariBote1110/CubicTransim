@@ -83,7 +83,23 @@ export interface SaveDataV7 {
   ledgerHistory: MonthlyLedger[];
 }
 
-export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5 | SaveDataV6 | SaveDataV7;
+export interface SaveDataV8 {
+  version: 8;
+  railMap: [string, CellData][];
+  stations: [string, StationData][];
+  trains: TrainData[];
+  runtimes: [string, TrainRuntime][];
+  waiting: [string, number][];
+  money: number;
+  towns: TownData[];
+  terrain: [string, TerrainType][];
+  clock: { elapsed: number };
+  currentLedger: MonthlyLedger;
+  ledgerHistory: MonthlyLedger[];
+  stopLocation: 'near' | 'middle' | 'far';
+}
+
+export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5 | SaveDataV6 | SaveDataV7 | SaveDataV8;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 });
@@ -99,10 +115,11 @@ export function serialiseWorld(
   terrain: Map<string, TerrainType>,
   clock: { elapsed: number },
   currentLedger: MonthlyLedger,
-  ledgerHistory: MonthlyLedger[]
-): SaveDataV7 {
+  ledgerHistory: MonthlyLedger[],
+  stopLocation: 'near' | 'middle' | 'far' = 'middle'
+): SaveDataV8 {
   return {
-    version: 7,
+    version: 8,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -114,6 +131,7 @@ export function serialiseWorld(
     clock,
     currentLedger,
     ledgerHistory,
+    stopLocation,
   };
 }
 
@@ -129,6 +147,7 @@ export function deserialiseWorld(data: SaveData): {
   clock: { elapsed: number };
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
+  stopLocation: 'near' | 'middle' | 'far';
 } {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -158,6 +177,23 @@ export function deserialiseWorld(data: SaveData): {
   const migrateTrains = (trains: TrainData[]) =>
     trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
+  if (data.version === 8) {
+    return {
+      railMap: new Map(data.railMap),
+      stations: migrateStations(data.stations),
+      trains: migrateTrains(data.trains),
+      runtimes,
+      waiting: new Map(data.waiting),
+      money: data.money,
+      towns: data.towns,
+      terrain: new Map(data.terrain),
+      clock: data.clock,
+      currentLedger: data.currentLedger,
+      ledgerHistory: data.ledgerHistory,
+      stopLocation: data.stopLocation,
+    };
+  }
+
   if (data.version === 7) {
     return {
       railMap: new Map(data.railMap),
@@ -171,6 +207,8 @@ export function deserialiseWorld(data: SaveData): {
       clock: data.clock,
       currentLedger: data.currentLedger,
       ledgerHistory: data.ledgerHistory,
+      // v7以前にはstopLocationが存在しないため、既定値'middle'(既存の編成中央基準)で移行する。
+      stopLocation: 'middle',
     };
   }
 
@@ -187,6 +225,7 @@ export function deserialiseWorld(data: SaveData): {
       clock: data.clock,
       currentLedger: data.currentLedger,
       ledgerHistory: data.ledgerHistory,
+      stopLocation: 'middle',
     };
   }
 
@@ -204,6 +243,7 @@ export function deserialiseWorld(data: SaveData): {
       clock: { elapsed: 0 },
       currentLedger: emptyLedger(),
       ledgerHistory: [],
+      stopLocation: 'middle',
     };
   }
 
@@ -221,6 +261,7 @@ export function deserialiseWorld(data: SaveData): {
       clock: { elapsed: 0 },
       currentLedger: emptyLedger(),
       ledgerHistory: [],
+      stopLocation: 'middle',
     };
   }
 
@@ -238,6 +279,7 @@ export function deserialiseWorld(data: SaveData): {
       clock: { elapsed: 0 },
       currentLedger: emptyLedger(),
       ledgerHistory: [],
+      stopLocation: 'middle',
     };
   }
 
@@ -254,6 +296,7 @@ export function deserialiseWorld(data: SaveData): {
       clock: { elapsed: 0 },
       currentLedger: emptyLedger(),
       ledgerHistory: [],
+      stopLocation: 'middle',
     };
   }
 
@@ -270,5 +313,6 @@ export function deserialiseWorld(data: SaveData): {
     ledgerHistory: [],
     towns: [],
     terrain: new Map(),
+    stopLocation: 'middle',
   };
 }
