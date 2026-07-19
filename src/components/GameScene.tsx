@@ -11,9 +11,10 @@ import { SignalBlock } from './SignalBlock';
 import { StationLabel } from './StationLabel';
 import { TownBlocks } from './TownBlocks';
 import { GROUND_COLOUR, STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, CellType, TrainData, StationData, TownData } from '../types';
+import type { CellData, CellType, TrainData, StationData, TownData, TerrainType } from '../types';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
+import { TerrainBlocks } from './TerrainBlocks';
 
 const REMOVE_COLOUR = '#ff3333';
 
@@ -22,6 +23,7 @@ interface GameSceneProps {
   stations: Map<string, StationData>;
   trains: TrainData[];
   towns: TownData[];
+  terrain: Map<string, TerrainType>;
   world: React.RefObject<SimWorld>;
   buildMode: CellType | 'none' | 'remove' | 'signal';
   selectedTrainId: string | null;
@@ -39,7 +41,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
@@ -119,6 +121,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
 
+  const tunnelKeys = useMemo(
+    () => new Set(Array.from(railMap.entries()).filter(([, d]) => d.tunnel).map(([key]) => key)),
+    [railMap]
+  );
+
   return (
     <>
       <ambientLight intensity={0.5} />
@@ -146,6 +153,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
          return <RailBlock key={`preview-${i}`} position={[pos.x, 0.05, pos.z]} isPreview={true} connections={0} />;
       })}
 
+      <TerrainBlocks terrain={terrain} tunnelKeys={tunnelKeys} />
+
       {Array.from(railMap.entries()).map(([key, data]) => {
         const { x, z } = fromKey(key);
         const elements = [];
@@ -158,6 +167,24 @@ export const GameScene: React.FC<GameSceneProps> = ({
         }
         if (data.signalDir) {
            elements.push(<SignalBlock key={`${key}-sig`} position={[x, 0.05, z]} dir={data.signalDir} />);
+        }
+        // 橋(水上の線路)は桁を示す薄い茶色のboxを下に、トンネル(山岳の線路)は坑口風の
+        // 暗いグレーの縁取りboxを表示する(見分けが付けばよいシンプルな描画)。
+        if (data.bridge) {
+          elements.push(
+            <mesh key={`${key}-bridge`} position={[x, -0.05, z]}>
+              <boxGeometry args={[1, 0.1, 1]} />
+              <meshStandardMaterial color="#8B5A2B" />
+            </mesh>
+          );
+        }
+        if (data.tunnel) {
+          elements.push(
+            <mesh key={`${key}-tunnel`} position={[x, 0, z]}>
+              <boxGeometry args={[1, 0.02, 1]} />
+              <meshStandardMaterial color="#333333" />
+            </mesh>
+          );
         }
         return <group key={key}>{elements}</group>;
       })}

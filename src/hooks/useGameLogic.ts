@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, StationData, PlatformDoorType, TownData } from '../types';
+import type { CellData, CellType, TrainData, StationData, PlatformDoorType, TownData, TerrainType } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
@@ -8,6 +8,7 @@ import { applyRailPath, applyStation, applyDepot, applySignal, removePath } from
 import type { ConstructionState } from '../sim/construction';
 import { STARTING_MONEY, TRAIN_COST, costOfPath, PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST } from '../sim/economy';
 import { mulberry32, generateTowns } from '../sim/towns';
+import { generateTerrain } from '../sim/terrain';
 
 const SAVE_KEY = 'cubictransim-save-v1';
 
@@ -24,10 +25,21 @@ export const useGameLogic = () => {
   const [stations, setStations] = useState<Map<string, StationData>>(new Map());
   const [trains, setTrains] = useState<TrainData[]>([]);
 
+  // ★追加: 新規ゲームの決定的生成に使う共通シード。terrain→townsの順で同じ乱数の系譜から生成する
+  // (townsの生成は水域・山岳セルを避けるためterrainが先に必要)。
+  const [worldSeed] = useState<number>(() => Date.now() % 2 ** 31);
+
+  // ★追加: 地形(水域・山岳)。初回起動(セーブなしの新規状態)ではシード付き乱数で自動生成する。
+  // ロード時はセーブデータ(v5以降)のterrainで置き換わる(v4以前は terrain=空Map になる)。
+  const [terrain, setTerrain] = useState<Map<string, TerrainType>>(() =>
+    generateTerrain(mulberry32(worldSeed))
+  );
+
   // ★追加: 街(town)。初回起動(セーブなしの新規状態)ではシード付き乱数で自動生成する。
   // ロード時はセーブデータ(v4以降)のtownsで置き換わる(v3以前は towns=[] になる)。
+  // 街は必ず平地に生成されるよう、terrainを渡して水域・山岳付近を除外する。
   const [towns, setTowns] = useState<TownData[]>(() =>
-    generateTowns(mulberry32(Date.now() % 2 ** 31), 8)
+    generateTowns(mulberry32(worldSeed + 1), 8, terrain)
   );
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
@@ -53,6 +65,7 @@ export const useGameLogic = () => {
     rng: Math.random,
     economyMirror: { money: STARTING_MONEY },
     towns,
+    terrain,
   });
 
   useEffect(() => {
@@ -70,6 +83,10 @@ export const useGameLogic = () => {
   useEffect(() => {
     worldRef.current.towns = towns;
   }, [towns]);
+
+  useEffect(() => {
+    worldRef.current.terrain = terrain;
+  }, [terrain]);
 
   // economyMirrorはデバッグ/表示用のReact state鏡写しで、simロジックからは参照されない。
   useEffect(() => {
@@ -108,22 +125,23 @@ export const useGameLogic = () => {
       case 'signal':
         cost = costOfPath('signal', path.length);
         if (money < cost) return;
-        result = applySignal(state, path);
+        result = applySignal(state, path, terrain);
         break;
       case 'station':
         cost = costOfPath('station', path.length);
         if (money < cost) return;
-        result = applyStation(state, path[path.length - 1]);
+        result = applyStation(state, path[path.length - 1], terrain);
         break;
       case 'depot':
         cost = costOfPath('depot', path.length);
         if (money < cost) return;
-        result = applyDepot(state, path[path.length - 1]);
+        result = applyDepot(state, path[path.length - 1], terrain);
         break;
       case 'rail':
-        cost = costOfPath('rail', path.length);
+        // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
+        cost = costOfPath('rail', path.length, path, terrain);
         if (money < cost) return;
-        result = applyRailPath(state, path);
+        result = applyRailPath(state, path, terrain);
         break;
       default:
         return;
@@ -255,7 +273,7 @@ export const useGameLogic = () => {
 
   // ★追加: セーブ／ロード
   const saveGame = () => {
-    const saveData = serialiseWorld(railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns);
+    const saveData = serialiseWorld(railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, terrain);
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
 
@@ -273,6 +291,7 @@ export const useGameLogic = () => {
     setTrains(restored.trains);
     setMoney(restored.money);
     setTowns(restored.towns);
+    setTerrain(restored.terrain);
 
     // runtimes/waiting は DynamicTrain/StationLabel が Map インスタンスを参照し続けているため、
     // 差し替えず中身だけ入れ替える。
@@ -287,6 +306,7 @@ export const useGameLogic = () => {
     stations, setStations,
     trains, setTrains,
     towns,
+    terrain,
     selectedTrainId, setSelectedTrainId: selectTrain,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal,

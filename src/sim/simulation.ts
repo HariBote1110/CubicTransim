@@ -1,5 +1,5 @@
 import { toKey, getVectorFromDir } from '../utils';
-import type { CellData, StationData, TrainData, TownData } from '../types';
+import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
 import { calculateRoute } from './pathfinding';
 import {
   PASSENGER_SPAWN_RATE,
@@ -50,6 +50,8 @@ export interface SimWorld {
   economyMirror?: { money: number };
   // 立地需要のもとになる街一覧。旧セーブ(v3以前)には存在しないため任意とする。
   towns?: TownData[];
+  // 地形(水域・山岳)。デバッグ表示・描画同期用。旧セーブ(v4以前)には存在しないため任意とする。
+  terrain?: Map<string, TerrainType>;
 }
 
 export type SimEvent =
