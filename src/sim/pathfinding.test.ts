@@ -43,6 +43,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stA',
+      cars: 1,
     });
 
     expect(result).toEqual([
@@ -59,6 +60,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'nope',
+      cars: 1,
     });
 
     expect(result).toEqual([]);
@@ -87,6 +89,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stB',
+      cars: 1,
     });
 
     expect(result).toEqual([
@@ -120,6 +123,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stC',
+      cars: 1,
     });
 
     expect(result).toEqual([
@@ -142,6 +146,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stD',
+      cars: 1,
     });
 
     expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
@@ -164,6 +169,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stE',
+      cars: 1,
     });
     expect(okResult).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
 
@@ -178,6 +184,7 @@ describe('calculateRoute', () => {
       start: { x: 2, z: 0 },
       prev: null,
       targetStationId: 'stF',
+      cars: 1,
     });
     expect(blockedResult).toEqual([]);
   });
@@ -209,6 +216,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stG',
+      cars: 1,
     });
 
     expect(result).toEqual([]);
@@ -247,6 +255,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: { x: -1, z: 0 },
       targetStationId: 'stEast',
+      cars: 1,
     });
     expect(eastboundResult).toEqual([
       { x: 1, z: 1 }, { x: 2, z: 1 }, { x: 3, z: 1 }, { x: 4, z: 1 }, { x: 5, z: 1 }, { x: 6, z: 0 },
@@ -257,15 +266,16 @@ describe('calculateRoute', () => {
       start: { x: 6, z: 0 },
       prev: { x: 7, z: 0 },
       targetStationId: 'stWest',
+      cars: 1,
     });
     expect(westboundResult).toEqual([
       { x: 5, z: 0 }, { x: 4, z: 0 }, { x: 3, z: 0 }, { x: 2, z: 0 }, { x: 1, z: 0 }, { x: 0, z: 0 },
     ]);
   });
 
-  it('ホーム(同一駅IDの連続セル)は進行方向へ奥端まで経路を延長する', () => {
+  it('ホーム(同一駅IDの連続セル)3セル+3両編成はホーム奥端まで経路を延長する', () => {
     // (2,0)-(3,0)-(4,0) の3セルが同一駅stHのホーム。目的駅ヒットは(2,0)で成立するが、
-    // 経路はそこで終わらず、直進方向に連続する同一stationIdのセルを奥端(4,0)まで延長する。
+    // 3両編成(cars=3, P=3)はheadIdx=P-1=奥端となるため、経路は奥端(4,0)まで延長される。
     const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const railMap = buildRailMap(cells);
     for (const x of [2, 3, 4]) {
@@ -279,10 +289,78 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stH',
+      cars: 3,
     });
 
     expect(result).toEqual([
       { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+  });
+
+  it('編成中央基準: ホーム3セル+1両は中央セルで止まる', () => {
+    // P=3, cars=1 -> headIdx = ceil((3+1)/2)-1 = 1 (ホーム中央セル)
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const railMap = buildRailMap(cells);
+    for (const x of [2, 3, 4]) {
+      railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: 'stH2' });
+    }
+    const stations = new Map<string, StationData>([
+      ['stH2', { id: 'stH2', name: 'H2', cells: [{ x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: null,
+      targetStationId: 'stH2',
+      cars: 1,
+    });
+
+    expect(result).toEqual([
+      { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 },
+    ]);
+  });
+
+  it('編成中央基準: ホーム1セル+4両は線路があればホームの2つ先で止まる', () => {
+    // P=1, cars=4 -> headIdx = ceil((1+4)/2)-1 = 2 (ホームセルの2つ先)
+    const cells = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stJ' });
+    const stations = new Map<string, StationData>([
+      ['stJ', { id: 'stJ', name: 'J', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: null,
+      targetStationId: 'stJ',
+      cars: 4,
+    });
+
+    expect(result).toEqual([
+      { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+  });
+
+  it('編成中央基準: ホームの先の線路が足りない場合は行ける所までにクランプされる', () => {
+    // P=1, cars=4 -> headIdx=2だが、ホームの先の線路は1セルしか無いため1つ先でクランプ。
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stK' });
+    const stations = new Map<string, StationData>([
+      ['stK', { id: 'stK', name: 'K', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: null,
+      targetStationId: 'stK',
+      cars: 4,
+    });
+
+    expect(result).toEqual([
+      { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 },
     ]);
   });
 
@@ -299,6 +377,7 @@ describe('calculateRoute', () => {
       start: { x: 0, z: 0 },
       prev: null,
       targetStationId: 'stI',
+      cars: 1,
     });
 
     expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);

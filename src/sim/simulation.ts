@@ -162,6 +162,7 @@ interface ObstacleResult {
 
 // 前方の障害物(駅・信号)までの距離を計算する
 const computeObstacleDistance = (world: SimWorld, train: TrainData, rt: TrainRuntime): ObstacleResult => {
+  const targetStationId = train.schedule.length > 0 ? train.schedule[train.scheduleIndex] : null;
   const nextTile = rt.route[0];
   let distAccumulator = 0;
   const currentTileGeoDist = Math.sqrt((nextTile.x - rt.grid.x) ** 2 + (nextTile.z - rt.grid.z) ** 2);
@@ -181,8 +182,10 @@ const computeObstacleDistance = (world: SimWorld, train: TrainData, rt: TrainRun
 
     const cell = world.railMap.get(toKey(p.x, p.z));
 
-    // 駅 (停止目標)
-    if (cell && cell.type === 'station') {
+    // 駅(停止目標)。ただし目的駅(targetStationId)自身のセルでは止まらない
+    // (経路は既にpathfinding側で編成中央基準の停止セルまで延長済みのため、
+    // 目的駅への停止距離は経路全体の残り弧長=経路末尾を停止目標とする)。
+    if (cell && cell.type === 'station' && cell.stationId !== targetStationId) {
       foundObstacle = true;
       obstacleType = 'station';
       break;
@@ -242,6 +245,13 @@ const computeObstacleDistance = (world: SimWorld, train: TrainData, rt: TrainRun
         }
       }
     }
+  }
+
+  // ループ中に(目的駅以外の)障害物が見つからなかった場合、経路の末尾(編成中央基準の
+  // 停止セル)を目的駅への停止目標とみなし、経路全体の残り弧長をそのまま停止距離とする。
+  if (!foundObstacle && targetStationId && rt.route.length > 0) {
+    foundObstacle = true;
+    obstacleType = 'station';
   }
 
   return { limitDistance: foundObstacle ? distAccumulator : 9999, obstacleType };
@@ -347,11 +357,25 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 
   // 経路が無ければ探索する
   if (rt.route.length === 0) {
+    // 直前に停車を終えた駅がそのまま次の目的駅でもある場合(単独駅スケジュールのループ、
+    // scheduleIndexがReact側の非同期更新でまだ進んでいない場合など)、経路探索を行わず
+    // 静かに待機する。停止セルは編成中央基準で延長され、ホーム外(prevGridがnullで
+    // 方向制約が外れた状態)のこともあるため、ここで経路探索してしまうとBFSが逆方向の
+    // 短絡路(直前に通過したホームへ逆走する経路)を見つけてしまい、無用な瞬時反転を
+    // 繰り返す回帰につながる。そのため経路探索より前にこの判定を行う。
+    if (rt.lastStopStationId === targetStationId) {
+      rt.speedKmh = 0;
+      rt.debugStatus = 'At destination';
+      return;
+    }
+
     const { occupied, reserved } = buildRouteSets(world, train.id);
+    const carCountForRoute = train.cars ?? 2;
     let newPath = calculateRoute(world.railMap, world.stations, occupied, reserved, {
       start: rt.grid,
       prev: rt.prevGrid,
       targetStationId,
+      cars: carCountForRoute,
     });
 
     if (newPath.length > 0) {
@@ -389,6 +413,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
           start: rt.grid,
           prev: rt.prevGrid,
           targetStationId,
+          cars: carCountForRoute,
         });
       }
 
@@ -396,22 +421,15 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       rt.debugStatus = 'Route Found';
       rt.waitTimer = 0;
     } else {
-      // 目的駅のセル上に既にいる場合(例: 車庫の隣駅が単独スケジュールでscheduleIndexが
-      // ループして再び同じ駅を目指すケース)、経路探索は空を返す(BFSが開始セルで即座に
-      // 目的駅ヒットと判定し空経路を返すため)。これを「経路なし=永久待機」として扱うと
-      // 二度と発車できずWaitingし続けるバグになるため、既に目的駅にいるなら即到着扱いにする。
+      // 目的駅に既にいる場合(例: 車庫の隣駅が単独スケジュールでscheduleIndexがループして
+      // 再び同じ駅を目指すケース)、経路探索は空を返す(BFSが開始セルで即座に目的駅ヒットと
+      // 判定し空経路を返すため)。これを「経路なし=永久待機」として扱うと二度と発車できず
+      // Waitingし続けるバグになるため、既に目的駅にいるなら即到着扱いにする。
+      // (直前に停車を終えた駅と目的駅が同じケースは、この分岐に来る前に既に
+      // 'At destination'として処理済みのため、ここに来るのは「まだ一度も停車していない
+      // (lastStopStationIdがnullまたは別駅)のに、たまたま目的駅セル上にいる」場合のみ)
       const currentCell = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
       if (currentCell && currentCell.stationId === targetStationId) {
-        // scheduleIndexの更新はReact側で非同期のため、同一バッチ内で複数tick進むと
-        // 「停車を終えたばかりの駅がまだ目的駅のまま」の状態でここに来ることがある。
-        // その場合に再度stopAtStationを呼ぶと停車をリセットして無限に発車できなくなる
-        // (回帰バグ)ため、直前に停車を終えた駅と同じなら再停車もarriveも発行せず、
-        // scheduleIndexが進んで別の駅が目的地になるまで静かに待機する。
-        if (rt.lastStopStationId === targetStationId) {
-          rt.speedKmh = 0;
-          rt.debugStatus = 'At destination';
-          return;
-        }
         stopAtStation(world, train, rt, targetStationId, rt.grid, rt.prevGrid ?? rt.grid, events);
         return;
       }
@@ -490,18 +508,9 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 
     pushArrivedGrid(rt, arrivedGrid, train.cars ?? 2);
 
-    // 駅到着判定
-    let shouldStop = false;
-    const cell = world.railMap.get(toKey(arrivedGrid.x, arrivedGrid.z));
-    if (cell && cell.stationId === targetStationId) {
-      // 次の経路セルも同一駅(ホーム)なら通過し続け、経路が尽きたセル(ホーム奥端)で停車する。
-      let keepGoing = false;
-      if (rt.route.length > 0) {
-        const nextCell = world.railMap.get(toKey(rt.route[0].x, rt.route[0].z));
-        if (nextCell && nextCell.stationId === targetStationId) keepGoing = true;
-      }
-      if (!keepGoing) shouldStop = true;
-    }
+    // 駅到着判定: 経路は既にpathfinding側で編成中央基準の停止セル(ホーム外のこともある)
+    // まで延長済みのため、経路を消化しきった(rt.route.length === 0)セルで停車する。
+    const shouldStop = rt.route.length === 0;
 
     if (shouldStop) {
       stopAtStation(world, train, rt, targetStationId!, arrivedGrid, oldCurrent, events);

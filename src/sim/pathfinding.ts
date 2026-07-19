@@ -5,6 +5,9 @@ export interface RouteQuery {
   start: { x: number; z: number };
   prev: { x: number; z: number } | null;
   targetStationId: string;
+  // 編成両数。停車位置(先頭車の停止セル)を「編成中央がホーム中央に最も近づく位置」
+  // に決めるために使う(headIdx計算)。
+  cars: number;
 }
 
 const normalize = (x: number, z: number) => {
@@ -28,47 +31,89 @@ const EXTEND_DIRECTIONS = [
     { x: -1, z: 0, dir: DIR.W }, { x: -1, z: -1, dir: DIR.NW }
 ];
 
-// 目的駅セルに到達した経路を、進行方向に連続する同一stationIdのセルが続く限り延長する。
-// これにより先頭車はホームの奥端まで進んでから停車するようになる(編成全体がホームへ載る)。
-// 急カーブ制約(内積>=0.5)を満たす直進方向のみを辿り、分岐がある場合は最も直進に近い
-// (内積が最大の)候補を優先し、そのような候補が無ければ延長を終える。
+// curr(直前セルprevから直進してきた)から、急カーブ制約(内積>=0.5)を満たす直進方向のうち
+// acceptを満たす次セルを探す。複数候補があれば最も直進に近い(内積が最大の)ものを選ぶ。
+const findNextInLine = (
+  railMap: Map<string, CellData>,
+  curr: { x: number; z: number },
+  prev: { x: number; z: number },
+  accept: (cell: CellData | undefined) => boolean
+): { x: number; z: number; score: number } | null => {
+  const cellData = railMap.get(toKey(curr.x, curr.z));
+  const connections = cellData?.connections || 0;
+  const cv = normalize(curr.x - prev.x, curr.z - prev.z);
+
+  let best: { x: number; z: number; score: number } | null = null;
+  for (const d of EXTEND_DIRECTIONS) {
+    if ((connections & d.dir) === 0) continue;
+    const tx = curr.x + d.x;
+    const tz = curr.z + d.z;
+    if (tx === prev.x && tz === prev.z) continue;
+
+    const nv = normalize(d.x, d.z);
+    const score = dot(cv, nv);
+    if (score < 0.5) continue;
+
+    const nextCell = railMap.get(toKey(tx, tz));
+    if (!accept(nextCell)) continue;
+
+    if (!best || score > best.score) best = { x: tx, z: tz, score };
+  }
+  return best;
+};
+
+// 目的駅セルに到達した経路を、「編成中央がホーム中央に(セル単位で)最も近づく」先頭車の
+// 停止セルまで延長する。ホームセル列(進行方向に連続する同一stationIdのセル、進入順に
+// 0..P-1、entry=lastCellがindex0)に対し、headIdx = ceil((P+cars)/2) - 1 を停止目標とする。
+// headIdxがホーム内(<=P-1)ならホーム内のそのセルで止める。ホームを超える場合は、
+// 直進方向に存在する線路/駅セル(stationIdは問わない)をさらに辿って延長し、
+// 線路が尽きた場合はそこでクランプする(headIdxに届かなくてもよい)。
 const extendThroughPlatform = (
   railMap: Map<string, CellData>,
   targetId: string,
   lastCell: { x: number; z: number },
   prevCell: { x: number; z: number } | null,
-  path: { x: number; z: number }[]
+  path: { x: number; z: number }[],
+  cars: number
 ): { x: number; z: number }[] => {
   const extended = [...path];
-  let curr = lastCell;
-  let prev = prevCell;
+  if (!prevCell) return extended;
 
-  while (prev) {
-    const cellData = railMap.get(toKey(curr.x, curr.z));
-    const connections = cellData?.connections || 0;
-    const cv = normalize(curr.x - prev.x, curr.z - prev.z);
-
-    let best: { x: number; z: number; score: number } | null = null;
-    for (const d of EXTEND_DIRECTIONS) {
-      if ((connections & d.dir) === 0) continue;
-      const tx = curr.x + d.x;
-      const tz = curr.z + d.z;
-      if (tx === prev.x && tz === prev.z) continue;
-
-      const nv = normalize(d.x, d.z);
-      const score = dot(cv, nv);
-      if (score < 0.5) continue;
-
-      const nextCell = railMap.get(toKey(tx, tz));
-      if (!nextCell || nextCell.stationId !== targetId) continue;
-
-      if (!best || score > best.score) best = { x: tx, z: tz, score };
+  // Phase 0: ホームセル列(P個、entry=index0)を先読みする。
+  const platformCells: { x: number; z: number }[] = [lastCell];
+  {
+    let curr = lastCell;
+    let prev = prevCell;
+    while (true) {
+      const best = findNextInLine(railMap, curr, prev, (c) => !!c && c.stationId === targetId);
+      if (!best) break;
+      platformCells.push({ x: best.x, z: best.z });
+      prev = curr;
+      curr = { x: best.x, z: best.z };
     }
+  }
 
-    if (!best) break;
+  const P = platformCells.length;
+  const headIdx = Math.ceil((P + cars) / 2) - 1;
+
+  if (headIdx <= P - 1) {
+    for (let i = 1; i <= headIdx; i++) extended.push(platformCells[i]);
+    return extended;
+  }
+
+  // ホーム全体を延長した上で、さらにホームの先へ延長する。
+  for (let i = 1; i < P; i++) extended.push(platformCells[i]);
+
+  let extra = headIdx - (P - 1);
+  let curr = platformCells[P - 1];
+  let prev = P >= 2 ? platformCells[P - 2] : prevCell;
+  while (extra > 0) {
+    const best = findNextInLine(railMap, curr, prev, (c) => !!c);
+    if (!best) break; // 線路が尽きたのでクランプする
     extended.push({ x: best.x, z: best.z });
     prev = curr;
     curr = { x: best.x, z: best.z };
+    extra--;
   }
 
   return extended;
@@ -81,7 +126,7 @@ export function calculateRoute(
   reserved: Set<string>,
   query: RouteQuery
 ): { x: number; z: number }[] {
-  const { start, prev: prevGrid, targetStationId: targetId } = query;
+  const { start, prev: prevGrid, targetStationId: targetId, cars } = query;
 
   const targetSt = stations.get(targetId);
   if (!targetSt) return [];
@@ -97,7 +142,7 @@ export function calculateRoute(
           const currKey = toKey(curr.x, curr.z);
           const cell = railMap.get(currKey);
 
-          if (cell && cell.stationId === targetId) return extendThroughPlatform(railMap, targetId, curr, prev, path);
+          if (cell && cell.stationId === targetId) return extendThroughPlatform(railMap, targetId, curr, prev, path, cars);
           if (path.length >= MAX_DEPTH) continue;
 
           const myConnections = cell?.connections || 0;

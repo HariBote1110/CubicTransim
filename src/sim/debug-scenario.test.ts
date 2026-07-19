@@ -25,6 +25,7 @@ describe('車庫→駅の経路探索(実機シナリオ再現)', () => {
       start: { x: 11, z: 0 },
       prev: null,
       targetStationId: 'stC',
+      cars: 1,
     });
     expect(path.length).toBeGreaterThan(0);
   });

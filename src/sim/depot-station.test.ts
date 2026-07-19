@@ -121,12 +121,15 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     const train = makeTrain({ schedule: ['stX'] });
     const world = makeWorld(railMap, stations, [train]);
 
-    // 最初にstXへ到着するまで進める
-    let events = runTicks(world, train, 0.1, 100);
+    // 最初にstXへ到着するまで進める(編成中央基準でホームの1つ先(x=2)まで走るぶん
+    // 従来より距離が伸びるため、十分なtick数を確保する)
+    let events = runTicks(world, train, 0.1, 150);
     const firstArrivals = events.filter(e => e.type === 'arrive');
     expect(firstArrivals.length).toBe(1);
     let rt = world.runtimes.get('t1')!;
-    expect(rt.grid.x).toBe(1);
+    // 編成中央基準の停止位置: stXはP=1セル、cars=2 -> headIdx=ceil((1+2)/2)-1=1。
+    // ホームセル(x=1)の1つ先(x=2)まで延長して停車する。
+    expect(rt.grid.x).toBe(2);
 
     // scheduleIndexは0のままstXに戻ってくる(単独駅スケジュールの仕様)。
     // この状態でさらに進めても、直前に停車を終えた駅と目的駅が同じ場合は
@@ -140,7 +143,7 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     expect(rt.debugStatus).not.toBe('Waiting for Path...');
     expect(rt.debugStatus).toBe('At destination');
     expect(rt.stopRemaining).toBe(0);
-    expect(rt.grid.x).toBe(1);
+    expect(rt.grid.x).toBe(2);
   });
 
   it('シナリオ5: スケジュール[A,B]でAの停車終了後、scheduleIndexが進む前に数tick進めてもAに再停車しない', () => {
@@ -157,7 +160,8 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     }
     expect(arrived).toBe(true);
     let rt = world.runtimes.get('t1')!;
-    expect(rt.grid.x).toBe(1);
+    // 編成中央基準の停止位置: stXはP=1セル、cars=2 -> headIdx=1(ホームの1つ先=x=2)
+    expect(rt.grid.x).toBe(2);
     expect(rt.lastStopStationId).toBe('stX');
     expect(train.scheduleIndex).toBe(0); // まだ進めていない
 
@@ -167,7 +171,7 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     }
     rt = world.runtimes.get('t1')!;
     expect(rt.stopRemaining).toBe(0);
-    expect(rt.grid.x).toBe(1);
+    expect(rt.grid.x).toBe(2);
     expect(rt.debugStatus).toBe('At destination');
 
     // scheduleIndexをBへ進めれば、通常の経路探索で発車してYへ到着する。
