@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [pbs-reservation-refactor.md](pbs-reservation-refactor.md) — v0.2.0-Alpha-1a: OpenTTD流PBS(経路予約ベース)運行モデルへの全面リファクタリング。セル単位の予約テーブル(sim/reservation.ts)を新設し、信号衝突ヒューリスティック(id比較・対向方向内積判定・trail/route個別スキャン)を削除して「次のsafe waiting pointまでの区間予約→制動距離+マージン以内で延長」の運行ループに置換。交換設備ですれ違いシナリオが恒久デッドロックした実例から、safe waiting pointの判定に「分岐点の手前も安全(分岐点自体には停止しない)」ルールを追加した経緯を記録
 - [openttd-source-notes.md](openttd-source-notes.md) — OpenTTD実ソース(master, 2026-07-20取得)精読ノート。PBS経路予約(TryReserveRailTrack/IsSafeWaitingPosition/解放タイミング)、停車位置計算(GetTrainStopLocation, Near/Middle/FarEnd)、加減速2モデル(Original/Realistic)の式と定数、折り返し(ReverseTrainDirection)の2方式と手順を再実装可能な粒度で抽出
 - [openttd-inspired-train-behaviour.md](openttd-inspired-train-behaviour.md) — OpenTTD流の列車挙動(PBS予約・YAPF-lite・制動距離統一)の輸入設計。GPLコードはコピーせず考え方のみ。実装フェーズ案つき
 - [consist-system-and-braking-curve.md](consist-system-and-braking-curve.md) — 編成(consist)システム(TrainData.cars、両数比例の定員/維持費/増結解結、ホーム長ペナルティ、車庫の編成エディタUI、DynamicTrainの複数車両描画)と、距離ベースの許容速度に変更した減速カーブの設計。SaveData v7移行
