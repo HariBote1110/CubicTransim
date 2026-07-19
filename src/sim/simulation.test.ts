@@ -280,6 +280,28 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     expect(world.waiting.get('stB')).toBeCloseTo(waitingAfterGrowth - TRAIN_CAPACITY, 5);
   });
 
+  it('waitingが小数(38.7人)のとき乗車は38人の整数になり、端数0.7人は駅に残る', () => {
+    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+    const towns = townsAtStations(Array.from(stations.values()));
+    const train = makeTrain({ schedule: ['stB', 'stA'] });
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
+    // stepWorldの旅客需要増加(demandFactor依存)による誤差を避けるため、townsを空にして
+    // waitingが停車直前まで固定値のまま変化しないようにする
+    world.towns = [];
+    world.waiting.set('stB', 38.7);
+
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.passengers).toBe(38);
+    expect(Number.isInteger(rt.passengers)).toBe(true);
+    expect(world.waiting.get('stB')).toBeCloseTo(0.7, 5);
+  });
+
   it('2駅目到着時にincomeイベントが発行される(金額=距離×FARE_PER_TILE×人数)', () => {
     const length = 6;
     const { railMap, stations } = buildTwoStationLine(length, 'stA', 'stB');

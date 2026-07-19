@@ -391,10 +391,11 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
         rt.passengers = 0;
       }
 
-      // 乗車: waitingからTRAIN_CAPACITYまで乗せる
+      // 乗車: waitingからTRAIN_CAPACITYまで乗せる。waitingは小数で蓄積されるため、
+      // 乗車人数は整数に切り捨て、端数は駅に残す(passengersが常に整数であることを保証する)。
       const waitingCount = world.waiting.get(targetStationId!) ?? 0;
-      const boarding = Math.min(waitingCount, TRAIN_CAPACITY);
-      rt.passengers = boarding;
+      const boarding = Math.max(0, Math.min(Math.floor(waitingCount), TRAIN_CAPACITY - rt.passengers));
+      rt.passengers += boarding;
       world.waiting.set(targetStationId!, waitingCount - boarding);
       rt.lastStopStationId = targetStationId!;
 
