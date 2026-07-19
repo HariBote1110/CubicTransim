@@ -63,17 +63,17 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
     <>
       {type === 'commuter' ? (
         <mesh>
-          <boxGeometry args={[0.8, 0.8, 1.6]} />
+          <boxGeometry args={[0.6, 0.6, 0.85]} />
           <meshStandardMaterial color={color} />
         </mesh>
       ) : (
         <group>
           <mesh position={[0, 0, 0.2]}>
-            <boxGeometry args={[0.7, 0.7, 1.8]} />
+            <boxGeometry args={[0.6, 0.6, 0.85]} />
             <meshStandardMaterial color={color} />
           </mesh>
-          <mesh position={[0, 0, 1.3]} rotation={[Math.PI / 2, 0, 0]}>
-            <coneGeometry args={[0.35, 0.8, 4]} />
+          <mesh position={[0, 0, 0.425]} rotation={[Math.PI / 2, 0, 0]}>
+            <coneGeometry args={[0.3, 0.4, 4]} />
             <meshStandardMaterial color={color} />
           </mesh>
         </group>
@@ -87,7 +87,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       {Array.from({ length: trailingCars }).map((_, idx) => (
         <group key={`car-${idx}`} ref={el => { carRefs.current[idx + 1] = el; }}>
           <mesh>
-            <boxGeometry args={[0.8, 0.8, 1.6]} />
+            <boxGeometry args={[0.6, 0.6, 0.85]} />
             <meshStandardMaterial color="#8899aa" />
           </mesh>
         </group>
