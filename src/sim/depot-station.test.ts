@@ -106,23 +106,65 @@ describe('車庫の真ん前に駅があるシナリオ', () => {
     expect(rt.grid.x).toBe(5);
   });
 
-  it('シナリオ4: スケジュールが[X]のみ(単独駅)でscheduleIndexがループしても永久Waitingにならない', () => {
+  it('シナリオ4: スケジュールが[X]のみ(単独駅)ではarriveはちょうど1回だけ発行され、その後は静かに待機し続ける', () => {
     const { railMap, stations } = buildDepotLine();
     const train = makeTrain({ schedule: ['stX'] });
     const world = makeWorld(railMap, stations, [train]);
 
     // 最初にstXへ到着するまで進める
     let events = runTicks(world, train, 0.1, 100);
-    expect(events.some(e => e.type === 'arrive')).toBe(true);
+    const firstArrivals = events.filter(e => e.type === 'arrive');
+    expect(firstArrivals.length).toBe(1);
     let rt = world.runtimes.get('t1')!;
     expect(rt.grid.x).toBe(1);
 
-    // scheduleIndexは0のままstXに戻ってくる。この状態でさらに進めても
-    // 「既に目的駅にいる」ため経路が空になり、永久Waitingにならず
-    // 停車→到着イベントを繰り返せることを確認する。
-    const arriveEventsAfter = runTicks(world, train, 0.1, 200).filter(e => e.type === 'arrive');
-    expect(arriveEventsAfter.length).toBeGreaterThan(0);
+    // scheduleIndexは0のままstXに戻ってくる(単独駅スケジュールの仕様)。
+    // この状態でさらに進めても、直前に停車を終えた駅と目的駅が同じ場合は
+    // 再停車もarriveも発行せず、'At destination'で静かに待機し続けるのが仕様。
+    // (以前はここでstopRemainingが再セットされ、arriveが繰り返し発火して
+    //  発車不能になる回帰バグがあった)
+    const evsAfter = runTicks(world, train, 0.1, 200);
+    const arriveEventsAfter = evsAfter.filter(e => e.type === 'arrive');
+    expect(arriveEventsAfter.length).toBe(0);
     rt = world.runtimes.get('t1')!;
     expect(rt.debugStatus).not.toBe('Waiting for Path...');
+    expect(rt.debugStatus).toBe('At destination');
+    expect(rt.stopRemaining).toBe(0);
+    expect(rt.grid.x).toBe(1);
+  });
+
+  it('シナリオ5: スケジュール[A,B]でAの停車終了後、scheduleIndexが進む前に数tick進めてもAに再停車しない', () => {
+    const { railMap, stations } = buildDepotLine();
+    const train = makeTrain({ schedule: ['stX', 'stY'] });
+    const world = makeWorld(railMap, stations, [train]);
+
+    // stXに到着・停車完了(arriveイベント発行)まで進める。ただしscheduleIndexは
+    // React側の非同期更新を模して、ここでは意図的にまだ進めない。
+    let arrived = false;
+    for (let i = 0; i < 200 && !arrived; i++) {
+      const evs = stepWorld(world, 0.1);
+      if (evs.some(e => e.type === 'arrive')) arrived = true;
+    }
+    expect(arrived).toBe(true);
+    let rt = world.runtimes.get('t1')!;
+    expect(rt.grid.x).toBe(1);
+    expect(rt.lastStopStationId).toBe('stX');
+    expect(train.scheduleIndex).toBe(0); // まだ進めていない
+
+    // scheduleIndexを進めずに数tick進めても、stXに再停車しない(stopRemainingは0のまま)
+    for (let i = 0; i < 20; i++) {
+      stepWorld(world, 0.1);
+    }
+    rt = world.runtimes.get('t1')!;
+    expect(rt.stopRemaining).toBe(0);
+    expect(rt.grid.x).toBe(1);
+    expect(rt.debugStatus).toBe('At destination');
+
+    // scheduleIndexをBへ進めれば、通常の経路探索で発車してYへ到着する
+    train.scheduleIndex = 1;
+    const events = runTicks(world, train, 0.1, 150);
+    expect(events.some(e => e.type === 'arrive')).toBe(true);
+    rt = world.runtimes.get('t1')!;
+    expect(rt.grid.x).toBe(5);
   });
 });

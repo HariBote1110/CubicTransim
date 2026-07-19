@@ -365,6 +365,16 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       // 二度と発車できずWaitingし続けるバグになるため、既に目的駅にいるなら即到着扱いにする。
       const currentCell = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
       if (currentCell && currentCell.stationId === targetStationId) {
+        // scheduleIndexの更新はReact側で非同期のため、同一バッチ内で複数tick進むと
+        // 「停車を終えたばかりの駅がまだ目的駅のまま」の状態でここに来ることがある。
+        // その場合に再度stopAtStationを呼ぶと停車をリセットして無限に発車できなくなる
+        // (回帰バグ)ため、直前に停車を終えた駅と同じなら再停車もarriveも発行せず、
+        // scheduleIndexが進んで別の駅が目的地になるまで静かに待機する。
+        if (rt.lastStopStationId === targetStationId) {
+          rt.speedKmh = 0;
+          rt.debugStatus = 'At destination';
+          return;
+        }
         stopAtStation(world, train, rt, targetStationId, rt.grid, rt.prevGrid ?? rt.grid, events);
         return;
       }

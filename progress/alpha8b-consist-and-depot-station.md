@@ -1,4 +1,4 @@
-# v0.1.0-Alpha-8b: 連結車両の滑らか描画と車庫隣接駅のバグ修正
+# v0.1.0-Alpha-8b/8c: 連結車両の滑らか描画と車庫隣接駅のバグ修正
 
 ## 問題1: 後続車両のカクつき
 
@@ -66,3 +66,45 @@
   レンダリング層・stepWorldループを通した検証を行った。DIR定数(`src/utils.ts`)のビット値
   (N=128,NE=64,E=32,SE=16,S=8,SW=4,W=2,NW=1)を使わないと接続ビットが噛み合わず経路探索が
   常に失敗するため、検証スクリプトを書く際は必ずこの値を使うこと。
+
+## v0.1.0-Alpha-8c: 問題2修正の回帰(即到着分岐の再発火)
+
+上記「問題2」の修正(経路探索が空 かつ 現在セルが目的駅なら即 `stopAtStation` する)には、
+以下の回帰バグがあった。
+
+`train.scheduleIndex` の更新は React 側(`useGameLogic` の `handleTrainArrive` 相当)で
+`arrive` イベントを受けて非同期に行われる。そのため、同一バッチ/フレーム内で `stepWorld` が
+複数tick進むケースでは、次のような順序になり得る:
+
+1. ある駅で `stopRemaining` が0になり `arrive` イベント発行、`stopAtStation` は既に
+   `rt.route = []`・`rt.lastStopStationId = 停車した駅` にしている
+2. しかし `scheduleIndex` はまだ更新されておらず、`targetStationId` は依然として
+   「いま停車を終えたばかりの駅」のまま
+3. 次のtickで `rt.route.length === 0` の分岐に入り、経路探索は開始セル=目的駅のため空を返す
+4. 「現在セルが目的駅」判定にヒットし、`stopAtStation` が**再び**呼ばれる
+   → `stopRemaining` が再セットされ、乗降・事故判定も再実行される
+5. これが `scheduleIndex` が実際に進むまで毎tick繰り返され、列車が永久に発車できなくなる
+
+### 修正
+
+`src/sim/simulation.ts` の `stepTrain` 内、経路探索が空だった際の即到着分岐に
+`rt.lastStopStationId !== targetStationId` のガードを追加した。直前に停車を終えた駅が
+再び目的地になっている(=scheduleIndexがまだ進んでいない)場合は、`stopAtStation` を呼ばず、
+`arrive` イベントも発行せず、`rt.speedKmh = 0` / `rt.debugStatus = 'At destination'` として
+静かに待機する。`scheduleIndex` が進んで別の駅が目的地になれば、通常の経路探索で発車する。
+
+単独駅スケジュール `[X]` の場合はこの待機状態が仕様となる(最初の到着で `arrive` が1回だけ
+発行され、以降は `At destination` のまま停車し続ける)。
+
+### テスト更新
+
+`src/sim/depot-station.test.ts` のシナリオ4(単独駅スケジュール)は、旧仕様
+「`arrive` が繰り返し発火する」ことを検証していたが、これは上記回帰バグの挙動を固定して
+しまっていたため書き換えた。新仕様: `arrive` はちょうど1回のみ発行され、以降は
+`stopRemaining` が再セットされず(2回目の停車が起きない)、`debugStatus` は
+`'At destination'` のまま `'Waiting for Path...'` にはならない。
+
+シナリオ5を新規追加: 2駅スケジュール `[A, B]` で、A に停車・`arrive` 発行後、
+(実機を模して) `scheduleIndex` をすぐには進めずに数tick進めても A に再停車しない
+(`stopRemaining` が0のまま)ことを確認し、その後 `scheduleIndex` を B に進めれば
+通常どおり発車して B に到着することを確認する。
