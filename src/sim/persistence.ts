@@ -1,6 +1,6 @@
 import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
 import type { TrainRuntime } from './simulation';
-import { STARTING_MONEY } from './economy';
+import { STARTING_MONEY, type MonthlyLedger } from './economy';
 
 export interface SaveDataV1 {
   version: 1;
@@ -53,7 +53,25 @@ export interface SaveDataV5 {
   terrain: [string, TerrainType][];
 }
 
-export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5;
+export interface SaveDataV6 {
+  version: 6;
+  railMap: [string, CellData][];
+  stations: [string, StationData][];
+  trains: TrainData[];
+  runtimes: [string, TrainRuntime][];
+  waiting: [string, number][];
+  money: number;
+  towns: TownData[];
+  terrain: [string, TerrainType][];
+  clock: { elapsed: number };
+  currentLedger: MonthlyLedger;
+  ledgerHistory: MonthlyLedger[];
+}
+
+export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5 | SaveDataV6;
+
+// 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
+export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 });
 
 export function serialiseWorld(
   railMap: Map<string, CellData>,
@@ -63,10 +81,13 @@ export function serialiseWorld(
   waiting: Map<string, number>,
   money: number,
   towns: TownData[],
-  terrain: Map<string, TerrainType>
-): SaveDataV5 {
+  terrain: Map<string, TerrainType>,
+  clock: { elapsed: number },
+  currentLedger: MonthlyLedger,
+  ledgerHistory: MonthlyLedger[]
+): SaveDataV6 {
   return {
-    version: 5,
+    version: 6,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -75,6 +96,9 @@ export function serialiseWorld(
     money,
     towns,
     terrain: Array.from(terrain.entries()),
+    clock,
+    currentLedger,
+    ledgerHistory,
   };
 }
 
@@ -87,6 +111,9 @@ export function deserialiseWorld(data: SaveData): {
   money: number;
   towns: TownData[];
   terrain: Map<string, TerrainType>;
+  clock: { elapsed: number };
+  currentLedger: MonthlyLedger;
+  ledgerHistory: MonthlyLedger[];
 } {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが
   // 存在しないため、既定値で補う。
@@ -108,6 +135,22 @@ export function deserialiseWorld(data: SaveData): {
       stations.map(([id, st]) => [id, { ...st, platformDoors: st.platformDoors ?? 'none' }])
     );
 
+  if (data.version === 6) {
+    return {
+      railMap: new Map(data.railMap),
+      stations: migrateStations(data.stations),
+      trains: data.trains,
+      runtimes,
+      waiting: new Map(data.waiting),
+      money: data.money,
+      towns: data.towns,
+      terrain: new Map(data.terrain),
+      clock: data.clock,
+      currentLedger: data.currentLedger,
+      ledgerHistory: data.ledgerHistory,
+    };
+  }
+
   if (data.version === 5) {
     return {
       railMap: new Map(data.railMap),
@@ -118,6 +161,10 @@ export function deserialiseWorld(data: SaveData): {
       money: data.money,
       towns: data.towns,
       terrain: new Map(data.terrain),
+      // v5以前には暦・台帳が存在しないため、暦0(1年1月1日)・台帳空で移行する。
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
     };
   }
 
@@ -132,6 +179,9 @@ export function deserialiseWorld(data: SaveData): {
       towns: data.towns,
       // v4以前にはterrainが存在しないため、地形なし(全て平地)として移行する。
       terrain: new Map(),
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
     };
   }
 
@@ -146,6 +196,9 @@ export function deserialiseWorld(data: SaveData): {
       // v3以前にはtownsが存在しないため、街なし(旅客需要0)で開始する。
       towns: [],
       terrain: new Map(),
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
     };
   }
 
@@ -159,10 +212,13 @@ export function deserialiseWorld(data: SaveData): {
       money: data.money,
       towns: [],
       terrain: new Map(),
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
     };
   }
 
-  // v1→v5移行: waitingは空、moneyはSTARTING_MONEYから開始し、towns/terrainも空にする。
+  // v1→v6移行: waitingは空、moneyはSTARTING_MONEYから開始し、towns/terrain/暦/台帳も既定値にする。
   return {
     railMap: new Map(data.railMap),
     stations: migrateStations(data.stations),
@@ -170,6 +226,9 @@ export function deserialiseWorld(data: SaveData): {
     runtimes,
     waiting: new Map(),
     money: STARTING_MONEY,
+    clock: { elapsed: 0 },
+    currentLedger: emptyLedger(),
+    ledgerHistory: [],
     towns: [],
     terrain: new Map(),
   };

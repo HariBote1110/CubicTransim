@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { TownData } from '../types';
+import type { CellData, StationData, TownData, TrainData } from '../types';
+import type { SimWorld } from './simulation';
 import {
   costOfPath,
   calculateAccidentChance,
@@ -23,6 +24,14 @@ import {
   ACCIDENT_DOOR_MODIFIER,
   ACCIDENT_HALT_DURATION,
   ACCIDENT_PENALTY,
+  SECONDS_PER_DAY,
+  DAYS_PER_MONTH,
+  clockToDate,
+  TRAIN_UPKEEP,
+  RAIL_UPKEEP,
+  STATION_UPKEEP,
+  DEPOT_UPKEEP,
+  calculateUpkeep,
 } from './economy';
 
 describe('economy: 定数', () => {
@@ -138,5 +147,69 @@ describe('economy: costOfPath', () => {
 
   it('pathを渡さない場合は従来通りcellCount×RAIL_COSTのまま', () => {
     expect(costOfPath('rail', 5)).toBe(5 * RAIL_COST);
+  });
+});
+
+describe('economy: 定数(暦・維持費)', () => {
+  it('暦・維持費の定数が仕様通り定義されている', () => {
+    expect(SECONDS_PER_DAY).toBe(10);
+    expect(DAYS_PER_MONTH).toBe(30);
+    expect(TRAIN_UPKEEP).toBe(500);
+    expect(RAIL_UPKEEP).toBe(2);
+    expect(STATION_UPKEEP).toBe(100);
+    expect(DEPOT_UPKEEP).toBe(100);
+  });
+});
+
+describe('economy: clockToDate', () => {
+  it('0秒は1年1月1日', () => {
+    expect(clockToDate(0)).toEqual({ year: 1, month: 1, day: 1 });
+  });
+
+  it('1日分未満(SECONDS_PER_DAY-1秒)は依然1年1月1日', () => {
+    expect(clockToDate(SECONDS_PER_DAY - 1)).toEqual({ year: 1, month: 1, day: 1 });
+  });
+
+  it('1日経過すると1年1月2日になる', () => {
+    expect(clockToDate(SECONDS_PER_DAY)).toEqual({ year: 1, month: 1, day: 2 });
+  });
+
+  it('1ヶ月(DAYS_PER_MONTH日)経過すると1年2月1日になる', () => {
+    expect(clockToDate(SECONDS_PER_DAY * DAYS_PER_MONTH)).toEqual({ year: 1, month: 2, day: 1 });
+  });
+
+  it('300秒は1年2月1日', () => {
+    expect(clockToDate(300)).toEqual({ year: 1, month: 2, day: 1 });
+  });
+
+  it('12ヶ月経過すると2年1月1日になる(年が繰り上がる)', () => {
+    expect(clockToDate(SECONDS_PER_DAY * DAYS_PER_MONTH * 12)).toEqual({ year: 2, month: 1, day: 1 });
+  });
+});
+
+describe('economy: calculateUpkeep', () => {
+  it('列車2・線路10セル・駅2・車庫1の合計が定数通り', () => {
+    const railMap = new Map<string, CellData>();
+    for (let i = 0; i < 10; i++) {
+      railMap.set(`rail-${i}`, { type: 'rail', connections: 3 });
+    }
+    railMap.set('depot-0', { type: 'depot', connections: 0 });
+
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+      ['stB', { id: 'stB', name: 'B', cells: [], center: { x: 1, z: 1 }, platformDoors: 'none' }],
+    ]);
+
+    const trains: TrainData[] = [
+      { id: 't1', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running' },
+      { id: 't2', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running' },
+    ];
+
+    const world: SimWorld = {
+      railMap, stations, trains, runtimes: new Map(), waiting: new Map(), rng: () => 1,
+    };
+
+    expect(calculateUpkeep(world)).toBe(2 * TRAIN_UPKEEP + 10 * RAIL_UPKEEP + 2 * STATION_UPKEEP + 1 * DEPOT_UPKEEP);
+    expect(calculateUpkeep(world)).toBe(1320);
   });
 });

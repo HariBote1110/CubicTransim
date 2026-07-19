@@ -2,15 +2,23 @@ import { useState, useRef, useEffect } from 'react';
 import { toKey } from '../utils';
 import type { CellData, CellType, TrainData, StationData, PlatformDoorType, TownData, TerrainType } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
-import { serialiseWorld, deserialiseWorld } from '../sim/persistence';
+import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import { applyRailPath, applyStation, applyDepot, applySignal, removePath } from '../sim/construction';
 import type { ConstructionState } from '../sim/construction';
-import { STARTING_MONEY, TRAIN_COST, costOfPath, PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST } from '../sim/economy';
+import {
+  STARTING_MONEY, TRAIN_COST, costOfPath,
+  PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
+  calculateUpkeep,
+} from '../sim/economy';
+import type { MonthlyLedger } from '../sim/economy';
 import { mulberry32, generateTowns } from '../sim/towns';
 import { generateTerrain } from '../sim/terrain';
 
 const SAVE_KEY = 'cubictransim-save-v1';
+
+// 台帳履歴として保持する直近ヶ月数。
+const LEDGER_HISTORY_LIMIT = 12;
 
 // 事故バナー表示用の通知の生存確認間隔(ms)。該当列車のhaltRemainingが0になったら消す。
 const ACCIDENT_POLL_INTERVAL_MS = 500;
@@ -51,8 +59,12 @@ export const useGameLogic = () => {
   // ★追加: スケジュール用クリップボード
   const [scheduleClipboard, setScheduleClipboard] = useState<string[] | null>(null);
 
-  // ★追加: 所持金。建設・列車購入のたびに減算し、運賃収入で増加する。
+  // ★追加: 所持金。建設・列車購入のたびに減算し、運賃収入で増加する。マイナスも許容する(赤字表示のみ)。
   const [money, setMoney] = useState<number>(STARTING_MONEY);
+
+  // ★追加: 月次収支台帳。今月の途中経過(currentLedger)と、確定済み直近12ヶ月(ledgerHistory)。
+  const [currentLedger, setCurrentLedger] = useState<MonthlyLedger>(emptyLedger());
+  const [ledgerHistory, setLedgerHistory] = useState<MonthlyLedger[]>([]);
 
   // シミュレーション世界の実体。runtimes/waitingは列車ID/駅IDごとに保持し続け、
   // railMap/stations/trainsはReact stateが更新されるたびに差し替える。
@@ -66,6 +78,7 @@ export const useGameLogic = () => {
     economyMirror: { money: STARTING_MONEY },
     towns,
     terrain,
+    clock: { elapsed: 0 },
   });
 
   useEffect(() => {
@@ -152,6 +165,7 @@ export const useGameLogic = () => {
     const changed = result.railMap !== state.railMap || result.stations !== state.stations;
     if (changed && cost > 0) {
       setMoney(m => m - cost);
+      setCurrentLedger(l => ({ ...l, construction: l.construction + cost }));
     }
 
     setRailMap(result.railMap);
@@ -189,11 +203,28 @@ export const useGameLogic = () => {
     setSelectedTrainId(newTrain.id);
     setIsEditingSchedule(false);
     setMoney(m => m - TRAIN_COST);
+    setCurrentLedger(l => ({ ...l, construction: l.construction + TRAIN_COST }));
   };
 
   // ★追加: 運賃収入の反映(sim層の'income'イベントを受けて呼ばれる)
   const addIncome = (amount: number) => {
     setMoney(m => m + amount);
+    setCurrentLedger(l => ({ ...l, fares: l.fares + amount }));
+  };
+
+  // ★追加: 月次決算(sim層の'monthEnd'イベントを受けて呼ばれる)。
+  // 維持費をmoneyから差し引き、確定した台帳を履歴(直近LEDGER_HISTORY_LIMIT件)へpushし、
+  // 新しい月の台帳を開始する。
+  const handleMonthEnd = (event: Extract<SimEvent, { type: 'monthEnd' }>) => {
+    const upkeep = calculateUpkeep(worldRef.current);
+    setMoney(m => m - upkeep);
+    setCurrentLedger(l => {
+      const finalised: MonthlyLedger = { ...l, year: event.year, month: event.month, upkeep };
+      setLedgerHistory(prev => [...prev, finalised].slice(-LEDGER_HISTORY_LIMIT));
+      const nextMonth = event.month === 12 ? 1 : event.month + 1;
+      const nextYear = event.month === 12 ? event.year + 1 : event.year;
+      return { year: nextYear, month: nextMonth, fares: 0, construction: 0, upkeep: 0, accidents: 0 };
+    });
   };
 
   const deployTrain = (trainId: string) => {
@@ -249,6 +280,7 @@ export const useGameLogic = () => {
   // ★追加: 人身事故イベントの反映(賠償金の減算 + バナー通知の追加)
   const handleAccident = (event: Extract<SimEvent, { type: 'accident' }>) => {
     setMoney(m => m - event.penalty);
+    setCurrentLedger(l => ({ ...l, accidents: l.accidents + event.penalty }));
     setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId }]);
   };
 
@@ -273,7 +305,10 @@ export const useGameLogic = () => {
 
   // ★追加: セーブ／ロード
   const saveGame = () => {
-    const saveData = serialiseWorld(railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, terrain);
+    const saveData = serialiseWorld(
+      railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, terrain,
+      worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory
+    );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
 
@@ -292,13 +327,16 @@ export const useGameLogic = () => {
     setMoney(restored.money);
     setTowns(restored.towns);
     setTerrain(restored.terrain);
+    setCurrentLedger(restored.currentLedger);
+    setLedgerHistory(restored.ledgerHistory);
 
     // runtimes/waiting は DynamicTrain/StationLabel が Map インスタンスを参照し続けているため、
-    // 差し替えず中身だけ入れ替える。
+    // 差し替えず中身だけ入れ替える。clockも同様にworldRef上のオブジェクトを直接更新する。
     worldRef.current.runtimes.clear();
     restored.runtimes.forEach((rt, id) => worldRef.current.runtimes.set(id, rt));
     worldRef.current.waiting.clear();
     restored.waiting.forEach((count, id) => worldRef.current.waiting.set(id, count));
+    worldRef.current.clock = restored.clock;
   };
 
   return {
@@ -329,5 +367,9 @@ export const useGameLogic = () => {
     upgradeStationDoors,
     activeAccidents,
     handleAccident,
+    // ★追加: 月次決算(収支台帳)
+    currentLedger,
+    ledgerHistory,
+    handleMonthEnd,
   };
 };

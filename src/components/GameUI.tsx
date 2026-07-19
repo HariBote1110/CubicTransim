@@ -4,10 +4,19 @@ import type { CellType, TrainData, StationData, PlatformDoorType } from '../type
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TRAIN_CAPACITY,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
-  demandFactor,
+  demandFactor, clockToDate,
 } from '../sim/economy';
+import type { MonthlyLedger } from '../sim/economy';
 import type { SimWorld } from '../sim/simulation';
 import type { AccidentNotice } from '../hooks/useGameLogic';
+
+// ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
+const CLOCK_POLL_INTERVAL_MS = 500;
+
+const formatSigned = (n: number) => {
+  const rounded = Math.floor(n);
+  return `${rounded < 0 ? '-' : ''}¥${Math.abs(rounded).toLocaleString()}`;
+};
 
 const REMOVE_COLOUR = '#ff3333';
 
@@ -41,6 +50,9 @@ interface GameUIProps {
   selectedStationId: string | null;
   onUpgradeDoors: (stationId: string, doorType: PlatformDoorType) => void;
   accidents: AccidentNotice[];
+  // ★追加: 月次収支台帳
+  currentLedger: MonthlyLedger;
+  ledgerHistory: MonthlyLedger[];
 }
 
 export const GameUI: React.FC<GameUIProps> = ({
@@ -52,8 +64,21 @@ export const GameUI: React.FC<GameUIProps> = ({
   simSpeed, setSimSpeed,
   onSave, onLoad,
   money, world,
-  selectedStationId, onUpgradeDoors, accidents
+  selectedStationId, onUpgradeDoors, accidents,
+  currentLedger, ledgerHistory,
 }) => {
+  // ゲーム内日付(sim層所有のclockから低頻度でポーリングする)
+  const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
+  const [isFinanceOpen, setIsFinanceOpen] = useState(false);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      const elapsed = world.current?.clock?.elapsed ?? 0;
+      setGameDate(clockToDate(elapsed));
+    }, CLOCK_POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [world]);
+
   // 選択中列車の乗客数(sim層所有のTrainRuntimeから低頻度でポーリングする)
   const [passengers, setPassengers] = useState(0);
 
@@ -135,9 +160,87 @@ export const GameUI: React.FC<GameUIProps> = ({
         <button onClick={() => setSimSpeed(2)} style={speedBtnStyle(2)}>2x</button>
         <button onClick={() => setSimSpeed(4)} style={speedBtnStyle(4)}>4x</button>
         <div style={{ width: '1px', background: '#ccc', margin: '0 4px' }} />
+        <div style={{
+          padding: '8px 14px', fontSize: '14px', fontWeight: 'bold',
+          background: 'white', color: '#333', border: '2px solid #999', borderRadius: '8px',
+          display: 'flex', alignItems: 'center'
+        }}>
+          {gameDate.year}年 {gameDate.month}月 {gameDate.day}日
+        </div>
+        <button
+          onClick={() => setIsFinanceOpen(v => !v)}
+          style={{
+            padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer',
+            background: isFinanceOpen ? '#00994d' : 'white', color: isFinanceOpen ? 'white' : 'black',
+            border: '2px solid #00994d', borderRadius: '8px'
+          }}
+        >
+          Finance
+        </button>
         <button onClick={onSave} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #00cc66', borderRadius: '8px' }}>Save</button>
         <button onClick={onLoad} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #ffaa00', borderRadius: '8px' }}>Load</button>
       </div>
+
+      {isFinanceOpen && (
+        <div style={{
+          position: 'absolute', top: 70, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(255,255,255,0.97)', borderRadius: '8px', padding: '1rem',
+          fontFamily: 'sans-serif', pointerEvents: 'auto', zIndex: 10,
+          boxShadow: '0 4px 6px rgba(0,0,0,0.15)', minWidth: '420px'
+        }}>
+          <h3 style={{ margin: '0 0 8px 0', fontSize: '1rem', color: '#333' }}>収支</h3>
+          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.85rem' }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid #ccc', textAlign: 'right' }}>
+                <th style={{ textAlign: 'left', padding: '4px' }}>月</th>
+                <th style={{ padding: '4px' }}>運賃収入</th>
+                <th style={{ padding: '4px' }}>建設費</th>
+                <th style={{ padding: '4px' }}>維持費</th>
+                <th style={{ padding: '4px' }}>事故</th>
+                <th style={{ padding: '4px' }}>損益</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ borderBottom: '1px solid #eee', textAlign: 'right', color: '#666' }}>
+                <td style={{ textAlign: 'left', padding: '4px' }}>{currentLedger.year}年{currentLedger.month}月(進行中)</td>
+                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.fares)}</td>
+                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.construction)}</td>
+                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.upkeep)}</td>
+                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.accidents)}</td>
+                <td style={{
+                  padding: '4px',
+                  color: currentLedger.fares - currentLedger.construction - currentLedger.upkeep - currentLedger.accidents >= 0 ? '#00994d' : '#cc0000',
+                  fontWeight: 'bold'
+                }}>
+                  {formatSigned(currentLedger.fares - currentLedger.construction - currentLedger.upkeep - currentLedger.accidents)}
+                </td>
+              </tr>
+              {[...ledgerHistory].reverse().map((l, i) => {
+                const profit = l.fares - l.construction - l.upkeep - l.accidents;
+                return (
+                  <tr key={i} style={{ borderBottom: '1px solid #eee', textAlign: 'right' }}>
+                    <td style={{ textAlign: 'left', padding: '4px' }}>{l.year}年{l.month}月</td>
+                    <td style={{ padding: '4px' }}>{formatSigned(l.fares)}</td>
+                    <td style={{ padding: '4px' }}>{formatSigned(l.construction)}</td>
+                    <td style={{ padding: '4px' }}>{formatSigned(l.upkeep)}</td>
+                    <td style={{ padding: '4px' }}>{formatSigned(l.accidents)}</td>
+                    <td style={{ padding: '4px', color: profit >= 0 ? '#00994d' : '#cc0000', fontWeight: 'bold' }}>
+                      {formatSigned(profit)}
+                    </td>
+                  </tr>
+                );
+              })}
+              {ledgerHistory.length === 0 && (
+                <tr>
+                  <td colSpan={6} style={{ padding: '8px', textAlign: 'center', color: '#999', fontStyle: 'italic' }}>
+                    確定済みの月次決算はまだありません
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div style={{ position: 'absolute', bottom: 30, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -171,8 +274,8 @@ export const GameUI: React.FC<GameUIProps> = ({
         zIndex: 10, minWidth: '220px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
       }}>
         <h2 style={{ margin: '0 0 4px 0', fontSize: '1.2rem', color: '#333' }}>CubicTransim</h2>
-        <div style={{ margin: '0 0 10px 0', fontSize: '1.1rem', fontWeight: 'bold', color: '#00994d' }}>
-          ¥{Math.floor(money).toLocaleString()}
+        <div style={{ margin: '0 0 10px 0', fontSize: '1.1rem', fontWeight: 'bold', color: money < 0 ? '#cc0000' : '#00994d' }}>
+          {formatSigned(money)}
         </div>
         {selectedTrain ? (
           <div>

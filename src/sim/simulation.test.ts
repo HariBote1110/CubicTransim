@@ -11,6 +11,8 @@ import {
   ACCIDENT_HALT_DURATION,
   ACCIDENT_PENALTY,
   demandFactor,
+  SECONDS_PER_DAY,
+  DAYS_PER_MONTH,
 } from './economy';
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
@@ -404,5 +406,38 @@ describe('stepWorld: 人身事故とホームドア', () => {
 
     expect(events.some(e => e.type === 'accident')).toBe(false);
     expect(rt.haltRemaining).toBe(0);
+  });
+});
+
+describe('stepWorld: ゲーム内暦とmonthEndイベント', () => {
+  it('月を跨がないtickではmonthEndイベントは発行されない', () => {
+    const world = makeWorld(new Map(), new Map(), []);
+    const events = stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH - 1);
+    expect(events.filter(e => e.type === 'monthEnd')).toHaveLength(0);
+    expect(world.clock!.elapsed).toBeCloseTo(SECONDS_PER_DAY * DAYS_PER_MONTH - 1, 5);
+  });
+
+  it('ちょうど1ヶ月分のtickでmonthEndイベントが1回だけ発行される(終わった月=1月)', () => {
+    const world = makeWorld(new Map(), new Map(), []);
+    const events = stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH);
+    const monthEnds = events.filter((e): e is Extract<SimEvent, { type: 'monthEnd' }> => e.type === 'monthEnd');
+    expect(monthEnds).toHaveLength(1);
+    expect(monthEnds[0]).toEqual({ type: 'monthEnd', year: 1, month: 1 });
+  });
+
+  it('複数月分の大きいdtでは月数分のmonthEndイベントが発行される', () => {
+    const world = makeWorld(new Map(), new Map(), []);
+    const events = stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH * 3);
+    const monthEnds = events.filter((e): e is Extract<SimEvent, { type: 'monthEnd' }> => e.type === 'monthEnd');
+    expect(monthEnds).toHaveLength(3);
+    expect(monthEnds.map(e => e.month)).toEqual([1, 2, 3]);
+  });
+
+  it('2回目のtickで前回からの続きとして月跨ぎが検出される', () => {
+    const world = makeWorld(new Map(), new Map(), []);
+    stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH - 1);
+    const events = stepWorld(world, 1);
+    const monthEnds = events.filter(e => e.type === 'monthEnd');
+    expect(monthEnds).toHaveLength(1);
   });
 });

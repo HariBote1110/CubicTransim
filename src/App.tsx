@@ -19,7 +19,8 @@ export default function App() {
     saveGame, loadGame,
     money, addIncome,
     selectedStationId, selectStation, upgradeStationDoors,
-    activeAccidents, handleAccident
+    activeAccidents, handleAccident,
+    currentLedger, ledgerHistory, handleMonthEnd,
   } = useGameLogic();
 
   return (
@@ -42,6 +43,7 @@ export default function App() {
             if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
             if (event.type === 'income') addIncome(event.amount);
             if (event.type === 'accident') handleAccident(event);
+            if (event.type === 'monthEnd') handleMonthEnd(event);
           }}
           onSelectTrain={setSelectedTrainId}
           onBuyTrain={buyTrain}
@@ -71,6 +73,8 @@ export default function App() {
         selectedStationId={selectedStationId}
         onUpgradeDoors={upgradeStationDoors}
         accidents={activeAccidents}
+        currentLedger={currentLedger}
+        ledgerHistory={ledgerHistory}
       />
     </div>
   );

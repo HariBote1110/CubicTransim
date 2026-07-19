@@ -7,3 +7,4 @@
 - [sim-layer-extraction.md](sim-layer-extraction.md) — 走行ロジックを純粋なsim層(stepWorld)へ分離した経緯と、非表示タブのrAF停止・既知バグ一覧などの注意点
 - [accidents-and-platform-doors.md](accidents-and-platform-doors.md) — 人身事故(rng注入で決定的にテスト)とホームドアの設計、駅選択UI(列車選択と排他)、SaveData v3移行、Browserツールでの建設操作の注意点(単発clickでは反応しない場合がある等)
 - [towns-and-location-based-demand.md](towns-and-location-based-demand.md) — 街(town)の決定的生成(mulberry32/generateTowns)、駅の立地需要係数demandFactor、stepWorldの旅客湧き率を立地需要ベースに変更、街の描画(TownBlocks)とUIへのDemand表示、SaveData v4移行
+- [finance-system.md](finance-system.md) — ゲーム内暦(clockToDate/monthEndイベント)と維持費(calculateUpkeep)、月次収支台帳(MonthlyLedger)のReact側管理とFinanceパネルUI、SaveData v6移行

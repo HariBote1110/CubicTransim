@@ -2,8 +2,75 @@
 // 純粋関数のみ。React/THREE には依存しない。
 import type { PlatformDoorType, TerrainType, TownData } from '../types';
 import { terrainAt } from './terrain';
+import type { SimWorld } from './simulation';
 
 export const STARTING_MONEY = 50_000;
+
+// ゲーム内暦: シミュレーション秒→日→月の換算。
+export const SECONDS_PER_DAY = 10; // シミュレーション秒
+export const DAYS_PER_MONTH = 30;
+const MONTHS_PER_YEAR = 12;
+
+export interface GameDate {
+  year: number;
+  month: number;
+  day: number;
+}
+
+// elapsed(シミュレーション累積秒)から年月日を導出する。1年1月1日開始。
+export function clockToDate(elapsed: number): GameDate {
+  const dayIndex = Math.floor(elapsed / SECONDS_PER_DAY);
+  const monthIndex = Math.floor(dayIndex / DAYS_PER_MONTH);
+  const year = Math.floor(monthIndex / MONTHS_PER_YEAR) + 1;
+  const month = (monthIndex % MONTHS_PER_YEAR) + 1;
+  const day = (dayIndex % DAYS_PER_MONTH) + 1;
+  return { year, month, day };
+}
+
+// elapsedから「何ヶ月目(0始まりの絶対月インデックス)」を導出する(月跨ぎ検出用の内部ヘルパー)。
+export function monthIndexOf(elapsed: number): number {
+  const dayIndex = Math.floor(elapsed / SECONDS_PER_DAY);
+  return Math.floor(dayIndex / DAYS_PER_MONTH);
+}
+
+// 絶対月インデックスから年月を導出する(stepWorldがmonthEndイベントの年月を求めるのに使う)。
+export function yearMonthOfIndex(monthIndex: number): { year: number; month: number } {
+  const year = Math.floor(monthIndex / MONTHS_PER_YEAR) + 1;
+  const month = (monthIndex % MONTHS_PER_YEAR) + 1;
+  return { year, month };
+}
+
+// 維持費(月額)
+export const TRAIN_UPKEEP = 500; // /編成/月
+export const RAIL_UPKEEP = 2; // /セル/月(橋・トンネルも同額)
+export const STATION_UPKEEP = 100; // /駅/月
+export const DEPOT_UPKEEP = 100; // /棟/月
+
+// 月次の維持費合計を計算する(純粋関数)。
+export function calculateUpkeep(world: SimWorld): number {
+  let railCells = 0;
+  let depotCount = 0;
+  for (const cell of world.railMap.values()) {
+    if (cell.type === 'rail') railCells += 1;
+    else if (cell.type === 'depot') depotCount += 1;
+  }
+  return (
+    world.trains.length * TRAIN_UPKEEP +
+    railCells * RAIL_UPKEEP +
+    world.stations.size * STATION_UPKEEP +
+    depotCount * DEPOT_UPKEEP
+  );
+}
+
+// 月次収支台帳
+export interface MonthlyLedger {
+  year: number;
+  month: number;
+  fares: number;
+  construction: number;
+  upkeep: number;
+  accidents: number;
+}
 
 export const RAIL_COST = 100; // 1セルあたり(平地)
 export const STATION_COST = 1_000;

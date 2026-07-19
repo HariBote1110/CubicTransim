@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
 import type { TrainRuntime } from './simulation';
-import { serialiseWorld, deserialiseWorld } from './persistence';
-import { STARTING_MONEY } from './economy';
+import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
+import { STARTING_MONEY, type MonthlyLedger } from './economy';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v5)', () => {
-  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns/terrain が JSON 経由でも復元できる', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v6)', () => {
+  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns/terrain/clock/台帳 が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
@@ -39,15 +39,23 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const money = 42_300;
     const towns: TownData[] = [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }];
     const terrain = new Map<string, TerrainType>([['2,2', 'water'], ['3,3', 'mountain']]);
+    const clock = { elapsed: 1234 };
+    const currentLedger: MonthlyLedger = { year: 1, month: 5, fares: 1000, construction: 2000, upkeep: 0, accidents: 0 };
+    const ledgerHistory: MonthlyLedger[] = [
+      { year: 1, month: 4, fares: 900, construction: 0, upkeep: 300, accidents: 5000 },
+    ];
 
-    const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns, terrain);
-    expect(saveData.version).toBe(5);
+    const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns, terrain, clock, currentLedger, ledgerHistory);
+    expect(saveData.version).toBe(6);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
     const restored = deserialiseWorld(parsed);
 
     expect(restored.railMap).toEqual(railMap);
+    expect(restored.clock).toEqual(clock);
+    expect(restored.currentLedger).toEqual(currentLedger);
+    expect(restored.ledgerHistory).toEqual(ledgerHistory);
     expect(restored.stations).toEqual(stations);
     expect(restored.trains).toEqual(trains);
     expect(restored.runtimes).toEqual(runtimes);
@@ -55,6 +63,47 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored.money).toBe(money);
     expect(restored.towns).toEqual(towns);
     expect(restored.terrain).toEqual(terrain);
+  });
+});
+
+describe('persistence: v5→v6 移行', () => {
+  it('v5データ(clock/台帳が無い)を読み込むとelapsed=0・台帳空で補われる', () => {
+    const v5Data = {
+      version: 5,
+      railMap: [['1,0', { type: 'station', connections: 15, stationId: 'stA' }]] as [string, CellData][],
+      stations: [
+        ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+      ] as [string, StationData][],
+      trains: [{ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running' }] as TrainData[],
+      runtimes: [['t1', {
+        id: 't1',
+        grid: { x: 0, z: 0 },
+        prevGrid: null,
+        progress: 0,
+        speedKmh: 0,
+        route: [],
+        trail: [{ x: 0, z: 0 }],
+        stopRemaining: 0,
+        waitTimer: 0,
+        debugStatus: '',
+        renderPos: { x: 0, y: 0.5, z: 0 },
+        renderTarget: null,
+        passengers: 0,
+        lastStopStationId: null,
+        haltRemaining: 0,
+      }]] as unknown as [string, TrainRuntime][],
+      waiting: [['stA', 12]] as [string, number][],
+      money: 12_345,
+      towns: [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
+      terrain: [['2,2', 'water']] as [string, TerrainType][],
+    };
+
+    const restored = deserialiseWorld(v5Data as never);
+
+    expect(restored.money).toBe(12_345);
+    expect(restored.clock).toEqual({ elapsed: 0 });
+    expect(restored.currentLedger).toEqual(emptyLedger());
+    expect(restored.ledgerHistory).toEqual([]);
   });
 });
 

@@ -10,6 +10,8 @@ import {
   ACCIDENT_PENALTY,
   calculateAccidentChance,
   demandFactor,
+  monthIndexOf,
+  yearMonthOfIndex,
 } from './economy';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
@@ -52,12 +54,15 @@ export interface SimWorld {
   towns?: TownData[];
   // 地形(水域・山岳)。デバッグ表示・描画同期用。旧セーブ(v4以前)には存在しないため任意とする。
   terrain?: Map<string, TerrainType>;
+  // ゲーム内暦(シミュレーション累積秒)。旧セーブ(v5以前)には存在しないため任意とする。
+  clock?: { elapsed: number };
 }
 
 export type SimEvent =
   | { type: 'arrive'; trainId: string; scheduleIndex: number }
   | { type: 'income'; trainId: string; amount: number; passengers: number }
-  | { type: 'accident'; trainId: string; stationId: string; penalty: number };
+  | { type: 'accident'; trainId: string; stationId: string; penalty: number }
+  | { type: 'monthEnd'; year: number; month: number };
 
 const normalize = (x: number, z: number) => {
   const len = Math.sqrt(x * x + z * z) || 1;
@@ -392,6 +397,17 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 
 export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
   const events: SimEvent[] = [];
+
+  // ゲーム内暦を進め、月が変わったtickでmonthEndイベントを発行する(dtが大きく複数月
+  // 跨いだ場合は月数分発行する)。
+  if (!world.clock) world.clock = { elapsed: 0 };
+  const prevMonthIndex = monthIndexOf(world.clock.elapsed);
+  world.clock.elapsed += dt;
+  const newMonthIndex = monthIndexOf(world.clock.elapsed);
+  for (let m = prevMonthIndex; m < newMonthIndex; m++) {
+    const { year, month } = yearMonthOfIndex(m);
+    events.push({ type: 'monthEnd', year, month });
+  }
 
   // 旅客需要: 各駅の待ち人数を PASSENGER_SPAWN_RATE×demandFactor×dt ずつ増やす(上限STATION_WAITING_CAP)。
   // demandFactorは周辺の街の人口と距離から決まり、街から離れた駅にはほぼ客が来ない。
