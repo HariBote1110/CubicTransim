@@ -96,26 +96,26 @@ describe('applyStation（特性テスト）', () => {
 });
 
 describe('nextStationName（バグ5: 採番）', () => {
-  it('駅がなければ Station A になる', () => {
+  it('駅がなければ A駅 になる', () => {
     const stations = new Map<string, StationData>();
-    expect(nextStationName(stations)).toBe('Station A');
+    expect(nextStationName(stations)).toBe('A駅');
   });
 
   it('既存駅の名前を走査し未使用の文字を使う（孤児駅で飛ばない）', () => {
     const stations = new Map<string, StationData>([
-      ['id1', { id: 'id1', name: 'Station A', cells: [], center: { x: 0, z: 0 }, platformDoors: 'none' }],
-      // Station B は孤児として消えている想定 → 次は B が再利用されるべき
+      ['id1', { id: 'id1', name: 'A駅', cells: [], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+      // B駅 は孤児として消えている想定 → 次は B が再利用されるべき
     ]);
-    expect(nextStationName(stations)).toBe('Station B');
+    expect(nextStationName(stations)).toBe('B駅');
   });
 
   it('A〜Z が全て使われていたら数字サフィックス付きに進む', () => {
     const stations = new Map<string, StationData>();
     for (let i = 0; i < 26; i++) {
-      const name = `Station ${String.fromCharCode(65 + i)}`;
+      const name = `${String.fromCharCode(65 + i)}駅`;
       stations.set(`id${i}`, { id: `id${i}`, name, cells: [], center: { x: 0, z: 0 }, platformDoors: 'none' });
     }
-    expect(nextStationName(stations)).toBe('Station A2');
+    expect(nextStationName(stations)).toBe('A2駅');
   });
 });
 

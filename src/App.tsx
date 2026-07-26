@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGameLogic } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
@@ -6,8 +6,21 @@ import { GameUI } from './components/GameUI';
 import type { CellType } from './types';
 
 export default function App() {
-  const [buildMode, setBuildMode] = useState<CellType | 'none' | 'remove' | 'signal'>('rail');
+  const [buildMode, setBuildMode] = useState<CellType | 'none' | 'remove' | 'signal'>('none');
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
+  // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
+  const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
+
+  // GameScene側のuseEffect依存に入るため参照を固定し、内容が変わらないときは
+  // stateを更新しない(毎フレームの再レンダリングを避ける)。
+  const handlePreviewChange = useCallback((path: { x: number; z: number }[]) => {
+    setPreviewPath(prev => {
+      if (prev.length === path.length && prev.every((p, i) => p.x === path[i].x && p.z === path[i].z)) {
+        return prev;
+      }
+      return path;
+    });
+  }, []);
 
   const {
     railMap, stations, trains, towns, terrain, selectedTrainId, setSelectedTrainId,
@@ -26,7 +39,7 @@ export default function App() {
   } = useGameLogic();
 
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#f0f0f0', position: 'relative' }}>
+    <div style={{ width: '100vw', height: '100vh', background: '#cfe3ef', position: 'relative', overflow: 'hidden' }}>
       <Canvas shadows>
         <GameScene
           railMap={railMap}
@@ -51,15 +64,18 @@ export default function App() {
           onBuyTrain={buyTrain}
           onAddSchedule={addSchedule}
           onSelectStation={selectStation}
+          onPreviewChange={handlePreviewChange}
         />
       </Canvas>
-      
+
       <GameUI
         buildMode={buildMode}
         setBuildMode={setBuildMode}
         selectedTrainId={selectedTrainId}
         trains={trains}
         stations={stations}
+        railMap={railMap}
+        terrain={terrain}
         isEditingSchedule={isEditingSchedule}
         setIsEditingSchedule={setIsEditingSchedule}
         onDeploy={deployTrain}
@@ -81,6 +97,7 @@ export default function App() {
         ledgerHistory={ledgerHistory}
         stopLocation={stopLocation}
         onSetStopLocation={setStopLocation}
+        previewPath={previewPath}
       />
     </div>
   );

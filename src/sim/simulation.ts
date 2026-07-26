@@ -1,8 +1,11 @@
 import { toKey } from '../utils';
 import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
-import { calculateRoute } from './pathfinding';
+import { calculateRouteWithStop } from './pathfinding';
 import { tryReserve, releaseCell, findSafeSegmentEnd, reservationKey } from './reservation';
-import { computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
+import {
+  computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
+  permittedSpeedKmh, rampDecel, brakingDistanceM, BRAKE_JERK_MS3,
+} from './physics';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
@@ -19,16 +22,24 @@ import {
 export const STOP_DURATION = 3; // seconds (simulation time)
 export const TILE_LENGTH = 30;
 export const MAX_SPEED_KMH = 100.0;
-export const MIN_CRAWL_SPEED_KMH = 5.0;
-// 駅接近クランプ(25×残りセル数)の最低値(km/h)。線形床(v∝距離)をそのまま0まで
-// 使うと時間軸では指数的漸近になり、停止直前に低速で延々と這い続けてしまう。
-// 終盤(この値を下回る領域)はsqrt(2ad)カーブに速度制御を引き継がせ、
-// 「スッと入ってピタッと止まる」停車感にする。
-export const STATION_APPROACH_MIN_KMH = 15.0;
 export const ACCEL_KMH_S = 15.0;
 export const DECEL_KMH_S = 20.0;
 // 減速カーブ計算で見通し距離から安全マージンとして差し引く距離(m)。
+// 信号・予約末端で「手前に止まる」ために使う。駅の停止位置には適用しない
+// (停止位置そのものを狙うのが正しく、マージンを引くと永遠に手前で漸近してしまう)。
 export const BRAKING_MARGIN_M = 0.5;
+// 停止点までの残距離がこの値以下になったら停車完了とみなす(m)。
+// 減速カーブは理論上有限時間で0に収束するが、dtが粗い場合に停止直前で
+// 極低速のまま刻み続けるのを防ぐスナップ。1セル=30mに対し十分小さい値にする。
+export const ARRIVAL_SNAP_M = 0.05;
+// 非常制動の減速度(km/h/s)。ジャーク制限つきの常用ブレーキが間に合わない場合
+// (予約が急に短くなった等)にのみ効く安全網。
+export const EMERGENCY_DECEL_KMH_S = 34.0;
+// ブレーキ緩解のヒステリシス(km/h)。制動中に見通しがこの分だけ伸びて初めて緩解する。
+export const BRAKE_RELEASE_MARGIN_KMH = 3.0;
+// PBS予約を延長する判定の余裕(m)。予約末端で完全停止した状態からでも
+// 必ず延長を再試行できるようにするための下駄。
+export const RESERVE_EXTEND_SLACK_M = 1.0;
 
 type Grid = { x: number; z: number };
 
@@ -54,6 +65,19 @@ export interface TrainRuntime {
   passengers: number;
   lastStopStationId: string | null;
   haltRemaining: number;
+  // 経路末尾セルへの最終区間のうち、先頭車が実際に停止する位置(0<f<=1)。
+  // 1 は「末尾セル中心で停車」(従来挙動)、0.5 は「末尾セル中心の半セル手前で停車」。
+  // 端数停車中は progress が負値(= セル中心の手前)になる。
+  // 旧セーブには存在しないため任意とし、読み出しは常に (rt.stopProgress ?? 1) で行う。
+  stopProgress?: number;
+  // 現在込めているブレーキの減速度(m/s²)。ジャーク(加加速度)制限のために保持する。
+  // 旧セーブには存在しないため任意とし、読み出しは常に (rt.brakeDecelMs2 ?? 0) で行う。
+  brakeDecelMs2?: number;
+  // 制動中フラグ(ブレーキ指令のラッチ)。一度制動に入ったら、見通しが伸びて明確に
+  // 余裕ができるまで解除しない。これがないと、停止直前でブレーキ指令のしきい値
+  // (ジャーク余裕を織り込んだ包絡線)と実速度が交差し続け、込める/緩めるを毎tick
+  // 繰り返して速度が脈動する。
+  braking?: boolean;
 }
 
 export interface SimWorld {
@@ -113,6 +137,8 @@ const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
       passengers: 0,
       lastStopStationId: null,
       haltRemaining: 0,
+      stopProgress: 1,
+      brakeDecelMs2: 0,
     };
     world.runtimes.set(train.id, rt);
   }
@@ -157,9 +183,14 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime) 
   if (rt.reservedEndIndex >= rt.route.length - 1) return; // 既に目的地(経路末尾)まで予約済み
 
   const remaining = distanceAlongRouteTo(rt, rt.reservedEndIndex);
-  const decelMs2 = DECEL_KMH_S / 3.6;
-  const brakingDistance = (rt.speedKmh / 3.6) ** 2 / (2 * decelMs2);
-  if (remaining > brakingDistance + BRAKING_MARGIN_M) return;
+  // 制動距離は速度制御と同じ式(ジャーク立ち上げぶんを含む)を使う。ここだけ
+  // sqrt(2ad)前提の短い制動距離を使うと、速度制御が常にその外側を走るため
+  // 「remaining > brakingDistance + マージン」が永久に成立し、予約末端の直前で
+  // 停止したまま二度と延長できないデッドロックになる。
+  // さらに、予約末端で完全停止した状態(制動距離0・残距離=マージン)でも必ず
+  // 再試行できるよう RESERVE_EXTEND_SLACK_M の余裕を持たせる。
+  const brakingDistance = brakingDistanceM(rt.speedKmh, DECEL_KMH_S / 3.6, BRAKE_JERK_MS3);
+  if (remaining > brakingDistance + BRAKING_MARGIN_M + RESERVE_EXTEND_SLACK_M) return;
 
   const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, rt.reservedEndIndex + 1);
   const segment = rt.route.slice(rt.reservedEndIndex + 1, nextIdx + 1);
@@ -181,6 +212,23 @@ const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
     dist += dGeo * TILE_LENGTH;
   }
   return dist;
+};
+
+// route[idx]へ入る区間(route[idx-1]→route[idx]、idx=0なら rt.grid→route[0])の長さ(m)
+const segmentLengthInto = (rt: TrainRuntime, idx: number): number => {
+  const to = rt.route[idx];
+  const from = idx === 0 ? rt.grid : rt.route[idx - 1];
+  return Math.sqrt((to.x - from.x) ** 2 + (to.z - from.z) ** 2) * TILE_LENGTH;
+};
+
+// 現在位置から実際の停止点(経路末尾セルの手前 stopProgress の位置)までの距離(m)。
+// stopProgress=1(セル中心停車)なら distanceAlongRouteTo(末尾) と一致する。
+const distanceToStopPoint = (rt: TrainRuntime): number => {
+  const last = rt.route.length - 1;
+  const f = rt.stopProgress ?? 1;
+  const base = distanceAlongRouteTo(rt, last);
+  if (f >= 1) return base;
+  return base - (1 - f) * segmentLengthInto(rt, last);
 };
 
 // 直前マスの物理的占有(緊急ブレーキ)判定
@@ -222,7 +270,9 @@ const stopAtStation = (
   targetStationId: string,
   arrivedGrid: Grid,
   oldCurrent: Grid,
-  events: SimEvent[]
+  events: SimEvent[],
+  // 先頭車が実際に停止した位置(セル中心とは限らない)。省略時は arrivedGrid の中心。
+  headPos: Grid = arrivedGrid
 ) => {
   const st = world.stations.get(targetStationId);
 
@@ -261,14 +311,17 @@ const stopAtStation = (
   const stopMultiplier = carCount > platformLen ? 1 + 0.5 * (carCount - platformLen) : 1;
   rt.stopRemaining = STOP_DURATION * stopMultiplier;
   rt.speedKmh = 0;
+  rt.brakeDecelMs2 = 0;
+  rt.braking = false;
   rt.route = [];
   rt.reservedEndIndex = -1;
   rt.prevGrid = null;
-  rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
+  // 端数停車(headPosがセル中心でない)の場合も、描画位置は実際の停止点に置く。
+  rt.renderPos = { x: headPos.x, y: 0.5, z: headPos.z };
   // renderTargetをリセットせず、進入方向の延長線上の点に維持する。
   // こうしないとDynamicTrain側のlookAtが働かず、停車の瞬間に列車の向きが初期値へ戻ってしまう。
   const enterVec = normalize(arrivedGrid.x - oldCurrent.x, arrivedGrid.z - oldCurrent.z);
-  rt.renderTarget = { x: arrivedGrid.x + enterVec.x, y: 0.5, z: arrivedGrid.z + enterVec.z };
+  rt.renderTarget = { x: headPos.x + enterVec.x, y: 0.5, z: headPos.z + enterVec.z };
   rt.debugStatus = 'Arrived';
 };
 
@@ -317,13 +370,14 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     const blocked = buildBlockedSet(world, train.id);
     const carCountForRoute = train.cars ?? 2;
     const stopLocation = world.stopLocation ?? 'middle';
-    let newPath = calculateRoute(world.railMap, world.stations, blocked, blocked, {
+    let routeResult = calculateRouteWithStop(world.railMap, world.stations, blocked, blocked, {
       start: rt.grid,
       prev: rt.prevGrid,
       targetStationId,
       cars: carCountForRoute,
       stopLocation,
     });
+    let newPath = routeResult.path;
 
     if (newPath.length > 0) {
       // 折り返し判定: 発車方向が「自編成の2両目へめり込む方向」、または到着時の進行方向と
@@ -356,16 +410,18 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
         rt.renderPos = { x: newHead.x, y: 0.5, z: newHead.z };
         rt.renderTarget = null;
 
-        newPath = calculateRoute(world.railMap, world.stations, blocked, blocked, {
+        routeResult = calculateRouteWithStop(world.railMap, world.stations, blocked, blocked, {
           start: rt.grid,
           prev: rt.prevGrid,
           targetStationId,
           cars: carCountForRoute,
           stopLocation,
         });
+        newPath = routeResult.path;
       }
 
       rt.route = newPath;
+      rt.stopProgress = routeResult.stopProgress;
       // 予約はここでは取得しない(=まだ何も予約できていない状態)。この直後の
       // ensureReservation呼び出しで、次のsafe waiting pointまでの区間を実際に取得する。
       rt.reservedEndIndex = -1;
@@ -418,69 +474,140 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     // 2. 減速目標はPBS予約の末端に一本化する(駅停止位置も信号待ちも「予約がそこまで
     // しか無い」の一形態として統一。予約末端が経路の最後尾=目的駅なら'station'、
     // 途中のsafe waiting pointなら'signal'として扱う)。
-    limitDistance = distanceAlongRouteTo(rt, rt.reservedEndIndex);
-    obstacleType = rt.reservedEndIndex >= rt.route.length - 1 ? 'station' : 'signal';
-  }
-
-  // 3. 速度制御: 前方の障害物までの距離から「今の位置で安全に止まれる許容速度」を逆算する方式。
-  // permittedSpeed = sqrt(2×減速度(m/s²)×max(0, 見通し距離−マージン)) をkm/hに変換する。
-  // 駅のみ最低速度(MIN_CRAWL_SPEED_KMH)を保証し、到着判定(newProgress>=1.0)を確実に発火させる。
-  // 信号・他列車待ちは許容速度が0まで落ち切ってよい。
-  let targetSpeed = MAX_SPEED_KMH;
-
-  if (immediateBlock) {
-    targetSpeed = 0;
-    rt.speedKmh = 0;
-  } else {
-    const decelMs2 = DECEL_KMH_S / 3.6;
-    const permittedMs = Math.sqrt(2 * decelMs2 * Math.max(0, limitDistance - BRAKING_MARGIN_M));
-    const permittedKmh = permittedMs * 3.6;
-    targetSpeed = Math.min(MAX_SPEED_KMH, permittedKmh);
-
-    if (limitDistance >= 9999) {
-      rt.debugStatus = `Accelerating (${Math.round(rt.speedKmh)} km/h)`;
-    } else if (obstacleType === 'station') {
-      // OpenTTDノートB節の駅接近クランプ(train_cmd.cpp Train::GetCurrentMaxSpeed()に忠実な2段構成)。
-      // 1段目: sqrtカーブ(targetSpeed)がまだ十分減速し切れていない場合に限り、
-      //        cur_speed - delta_v/10 で上書きする(条件を満たさなければノーオペ=無制約)。
-      //        これによりsqrtカーブと本ヒューリスティックが常時競合して脈動するのを防ぐ。
-      // 2段目: 上記の結果に対し、最終安全下限として 25×残りセル数 の床を無条件で適用する。
-      const distanceToGoCells = limitDistance / TILE_LENGTH;
-      const deltaV = rt.speedKmh / (distanceToGoCells + 1);
-      let stMaxSpeed = MAX_SPEED_KMH;
-      if (targetSpeed > rt.speedKmh - deltaV) {
-        stMaxSpeed = rt.speedKmh - deltaV / 10;
-      }
-      // 2段目の床には最低値(STATION_APPROACH_MIN_KMH)を設ける。線形床が終盤の支配的
-      // 制約になると時間軸で指数的漸近となり超低速クロールが数秒続くため、終盤は
-      // sqrt(2ad)カーブ(targetSpeed)側に制御を渡し、停止精度はMIN_CRAWL_SPEED_KMHで担保する。
-      stMaxSpeed = Math.max(stMaxSpeed, 25 * distanceToGoCells, STATION_APPROACH_MIN_KMH);
-      targetSpeed = Math.min(targetSpeed, stMaxSpeed);
-      targetSpeed = Math.max(targetSpeed, MIN_CRAWL_SPEED_KMH);
-      rt.debugStatus = `Arriving... (${limitDistance.toFixed(1)}m)`;
-    } else if (targetSpeed < 0.5) {
-      targetSpeed = 0;
-      rt.debugStatus = `Waiting Signal... (${limitDistance.toFixed(1)}m)`;
+    if (rt.reservedEndIndex >= rt.route.length - 1) {
+      obstacleType = 'station';
+      // 駅は「停止点そのもの」を狙う。セル中心とは限らない(stopProgressの端数)。
+      limitDistance = distanceToStopPoint(rt);
     } else {
-      rt.debugStatus = `Braking... (${limitDistance.toFixed(1)}m)`;
+      obstacleType = 'signal';
+      limitDistance = distanceAlongRouteTo(rt, rt.reservedEndIndex);
     }
   }
 
-  if (rt.speedKmh > MAX_SPEED_KMH) {
+  // 停止点まであとわずかなら、そこで停車を確定させる。減速カーブは理論上有限時間で
+  // 0に収束するが、dtが粗いと停止直前で極低速のまま刻み続けてしまうため、
+  // 1セル(30m)に対して十分小さい距離でスナップする。
+  if (!immediateBlock && obstacleType === 'station' && limitDistance <= ARRIVAL_SNAP_M) {
+    const stopP = rt.stopProgress ?? 1;
+    const lastIdx = rt.route.length - 1;
+    const finalTile = rt.route[lastIdx];
+    const fromTile = lastIdx === 0 ? rt.grid : rt.route[lastIdx - 1];
+    const headPos = {
+      x: fromTile.x + (finalTile.x - fromTile.x) * stopP,
+      z: fromTile.z + (finalTile.z - fromTile.z) * stopP,
+    };
+    const oldCurrent = rt.grid;
+    rt.grid = finalTile;
+    rt.prevGrid = fromTile;
+    // 端数停車ではセル中心の手前で止まっているため progress は負値になる。
+    // 発車時にこの値から動き出すことで、描画位置が跳ねずに滑らかに走り出す。
+    rt.progress = stopP - 1;
+    rt.route = [];
+    rt.reservedEndIndex = -1;
+    if (finalTile.x !== oldCurrent.x || finalTile.z !== oldCurrent.z) {
+      pushArrivedGrid(world, rt, finalTile, train.cars ?? 2);
+    }
+    stopAtStation(world, train, rt, targetStationId, finalTile, fromTile, events, headPos);
+    return;
+  }
+
+  // 3. 速度制御: 前方の停止点までの距離から「今の位置で安全に止まれる許容速度」を逆算する。
+  //
+  // 従来は sqrt(2ad) の包絡線に、OpenTTDのヒューリスティック(cur_speed − delta_v/10 と
+  // 25×残りセル数の線形床)を重ねていたが、
+  //   - 2つの制約が競合して減速が段付きになる
+  //   - 線形床(v∝d)は時間軸では指数的漸近になり、停止直前のだらだらクロールを生む
+  //   - それを潰すための最低速度床(15km/h→5km/h)のせいで最後に速度が0へ飛ぶ
+  // という三重苦になっていた。ここでは制約を「ジャーク制限つきの制動曲線」1本に統一する。
+  //
+  //   - 包絡線 permittedSpeedKmh() は「まだ込めていない減速度をジャークで立ち上げる」
+  //     ぶんの距離を織り込むため、ブレーキ開始が早まり当たりが柔らかくなる
+  //   - 込め終わった時点で包絡線は sqrt(2ad) に一致し、有限時間で0へ収束する
+  //     (=線形床のような無限クロールにならないので最低速度床が不要)
+  //   - 実際の減速度も rampDecel() でジャーク制限し、階段状の減速をなくす
+  const serviceDecelMs2 = DECEL_KMH_S / 3.6;
+  // 駅の停止点は「そこに止まりたい位置」そのものなので手前マージンを引かない。
+  // 信号・予約末端は手前で止まりたいのでマージンを引く。
+  const margin = obstacleType === 'station' ? 0 : BRAKING_MARGIN_M;
+  const usableDistance = Math.max(0, limitDistance - margin);
+
+  // ブレーキ指令のしきい値。「今ブレーキを緩解している状態から、ジャークで常用最大まで
+  // 立ち上げて停止する」のに必要な距離を織り込んだ包絡線。これを超えたら制動に入る。
+  // 一度制動に入ると、実速度はこの包絡線より必ず上に留まる(既に込めているぶん有利なため)
+  // ので、制動中に加速側へ戻って脈動することがない。
+  const releaseEnvelopeKmh = Math.min(
+    MAX_SPEED_KMH,
+    permittedSpeedKmh(usableDistance, serviceDecelMs2, BRAKE_JERK_MS3, 0)
+  );
+  // ジャーク制限を無視した常用ブレーキの包絡線。絶対に超えてはならない上限で、
+  // 終盤は sqrt(2ad) に従って有限時間で0へ収束する(=だらだらクロールしない)。
+  const hardEnvelopeKmh = Math.sqrt(2 * serviceDecelMs2 * usableDistance) * 3.6;
+
+  if (limitDistance >= 9999) {
+    rt.debugStatus = `Accelerating (${Math.round(rt.speedKmh)} km/h)`;
+  } else if (obstacleType === 'station') {
+    rt.debugStatus = `Arriving... (${limitDistance.toFixed(1)}m)`;
+  } else if (releaseEnvelopeKmh < 0.5) {
+    rt.debugStatus = `Waiting Signal... (${limitDistance.toFixed(1)}m)`;
+  } else {
+    rt.debugStatus = `Braking... (${limitDistance.toFixed(1)}m)`;
+  }
+
+  // ブレーキ指令のラッチ。しきい値を超えたら制動に入り、見通しが伸びて明確な余裕
+  // (BRAKE_RELEASE_MARGIN_KMH)ができるまで緩解しない。
+  // これがないと、停止直前でしきい値と実速度が交差し続けて毎tick込める/緩めるを
+  // 繰り返し、速度が脈動したうえ「v ∝ 残り距離」の線形則に引き込まれて
+  // だらだらクロールになる(旧実装の最低速度床が必要だった原因)。
+  if (rt.speedKmh > releaseEnvelopeKmh) {
+    rt.braking = true;
+  } else if (releaseEnvelopeKmh > rt.speedKmh + BRAKE_RELEASE_MARGIN_KMH) {
+    rt.braking = false;
+  }
+
+  if (immediateBlock) {
+    rt.speedKmh = 0;
+    rt.brakeDecelMs2 = serviceDecelMs2;
+    rt.braking = true;
+  } else if (rt.speedKmh > MAX_SPEED_KMH) {
     // OpenTTD DoUpdateSpeed同様、最高速度超過時は瞬時にクランプせず現在速度の1/10ずつ
     // 緩やかに落とす(applyOverspeedDecay)。
-    rt.speedKmh = applyOverspeedDecay(rt.speedKmh, Math.min(targetSpeed, MAX_SPEED_KMH), dt);
-  } else if (rt.speedKmh < targetSpeed) {
-    // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
-    // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
-    const accelMs2 = computeAcceleration(
-      { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
-      'accelerating',
-      DECEL_KMH_S
-    );
-    rt.speedKmh = Math.min(targetSpeed, rt.speedKmh + accelMs2 * 3.6 * dt);
-  } else if (rt.speedKmh > targetSpeed) {
-    rt.speedKmh = Math.max(targetSpeed, rt.speedKmh - DECEL_KMH_S * dt);
+    rt.speedKmh = applyOverspeedDecay(rt.speedKmh, Math.min(releaseEnvelopeKmh, MAX_SPEED_KMH), dt);
+    rt.brakeDecelMs2 = 0;
+  } else if (rt.braking) {
+    // 制動中。「常に常用最大で込める」のではなく、停止点でちょうど0になるのに必要な
+    // 減速度 aReq = v²/(2d) を目標にし、ジャーク制限つきで追従させる(サーボ制御)。
+    //
+    // 常用最大で込め切ってしまうと、必要以上に減速して停止点の手前で失速し、
+    // そこから包絡線に沿って這い直す(=だらだらクロール)ことになる。
+    // 必要ぶんだけ込めれば、ブレーキ開始から停止まで一定の当たりで滑らかに減速し、
+    // 有限時間でちょうど停止点に着く。
+    const speedMs = rt.speedKmh / 3.6;
+    const requiredDecelMs2 = usableDistance > 1e-6
+      ? (speedMs * speedMs) / (2 * usableDistance)
+      : serviceDecelMs2;
+    const desiredDecelMs2 = Math.min(serviceDecelMs2, requiredDecelMs2);
+    rt.brakeDecelMs2 = rampDecel(rt.brakeDecelMs2 ?? 0, desiredDecelMs2, BRAKE_JERK_MS3, dt);
+    let next = rt.speedKmh - rt.brakeDecelMs2 * 3.6 * dt;
+    // 上限: ジャーク制限を無視した常用ブレーキの包絡線 sqrt(2ad)。
+    // 予約が急に短くなった等でこれを上回った場合のみ非常制動で追いつく。
+    // 終盤はこの包絡線が支配的になり、有限時間で0へ収束する。
+    if (next > hardEnvelopeKmh) {
+      next = Math.max(hardEnvelopeKmh, rt.speedKmh - EMERGENCY_DECEL_KMH_S * dt);
+    }
+    rt.speedKmh = Math.max(0, next);
+  } else {
+    // 制動不要。ブレーキを緩解して加速(または巡航)する。
+    rt.brakeDecelMs2 = 0;
+    if (rt.speedKmh < releaseEnvelopeKmh) {
+      // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
+      // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
+      const accelMs2 = computeAcceleration(
+        { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
+        'accelerating',
+        DECEL_KMH_S
+      );
+      rt.speedKmh = Math.min(releaseEnvelopeKmh, rt.speedKmh + accelMs2 * 3.6 * dt);
+    }
   }
 
   // 4. 移動
@@ -489,13 +616,24 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
   const progressDelta = (moveSpeedTilesPerSec / geoDist) * dt;
   const newProgress = rt.progress + progressDelta;
 
-  if (newProgress >= 1.0) {
+  // 最終区間だけは、セル中心(1.0)ではなく停止点(stopProgress)で到着とする。
+  // これにより停止位置がセル中心に量子化されず、ホーム中央と編成中央が正確に合う。
+  const isFinalSegment = rt.route.length === 1;
+  const arriveAt = isFinalSegment ? (rt.stopProgress ?? 1) : 1.0;
+
+  if (newProgress >= arriveAt) {
     const arrivedGrid = nextTile;
     const oldCurrent = rt.grid;
+    const headPos = {
+      x: oldCurrent.x + (arrivedGrid.x - oldCurrent.x) * arriveAt,
+      z: oldCurrent.z + (arrivedGrid.z - oldCurrent.z) * arriveAt,
+    };
 
     rt.grid = arrivedGrid;
     rt.prevGrid = oldCurrent;
-    rt.progress = 0;
+    // 端数停車(arriveAt<1)ではセル中心の手前で止まっているため progress は負値になる。
+    // 発車時にこの値から動き出すことで、描画位置が跳ねずに滑らかに走り出す。
+    rt.progress = arriveAt - 1;
     rt.route = rt.route.slice(1);
     rt.reservedEndIndex -= 1;
 
@@ -506,7 +644,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     const shouldStop = rt.route.length === 0;
 
     if (shouldStop) {
-      stopAtStation(world, train, rt, targetStationId!, arrivedGrid, oldCurrent, events);
+      stopAtStation(world, train, rt, targetStationId!, arrivedGrid, oldCurrent, events, headPos);
     } else {
       rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
     }

@@ -14,8 +14,12 @@ OpenTTD・A列車で行こう系を目指すインフラ整備ゲームのプロ
   - `simulation.ts` — `stepWorld(world, dt)` が全列車を dt 秒進める。走行状態は `TrainRuntime`（ミュータブル）
   - `pathfinding.ts` — BFS 経路探索
   - `persistence.ts` — セーブデータの serialise/deserialise
+  - `physics.ts` — 加速モデルとジャーク制限つきの制動曲線（`permittedSpeedKmh` / `rampDecel` / `brakingDistanceM`）。速度制御と予約延長判定は必ず同じ制動距離の式を使うこと
+  - `buildPreview.ts` — 建設のコスト・可否判定。UIに条件を書き写さず、construction.ts の apply系に問い合わせて判定する
 - `src/hooks/useGameLogic.ts` — React state（railMap/stations/trains）と `worldRef: SimWorld` の同期、建設・購入ロジック
 - `src/components/` — 描画専任。`SimulationDriver` が useFrame から stepWorld を呼ぶ。`DynamicTrain` は runtime.renderPos を反映するだけ
+- `src/render/` — 描画専用のパレット・共有マテリアル・ジオメトリ生成。sim層からは参照しない
+- `src/ui/theme.ts` — GUIのデザイントークン。UIの配色・角丸・余白・ボタンはここを経由すること（インラインstyleの直書きを増やさない）
 - 設計判断・既知バグは `progress/INDEX.md` から辿ること
 
 ## ブラウザでの動作検証手順（エージェント向け）
@@ -33,6 +37,16 @@ Browser ツール（`mcp__Claude_Browser__*`）で検証する。`preview_start`
 4. **キャンバス操作の前に必ず同座標へ hover してから click/drag する**（cursorPos が pointermove で更新されるため。省くと直前の位置に建設される）
 5. 建設結果の確認は screenshot より `__debugWorld.railMap` のダンプが確実
 6. カメラ初期状態では画面中央が原点付近。世界 +x は画面右下方向（1セル ≈ click座標で (+30,+17)）。画面横方向のドラッグは斜め線路になるので注意
+
+## 描画の注意点
+
+- ジオメトリのマージは `render/mergeGeometry.ts` の `mergeAndDispose()` を使う。three の
+  `mergeGeometries` は index 付き（Box/Cone/Cylinder）と index 無し（Octahedron/Icosahedron）が
+  混ざると黙って null を返す
+- `shadow-camera-*` を JSX に書いても react-three-fiber は `updateProjectionMatrix()` を
+  呼ばないため効かない。ref 経由で設定すること（`GameScene.tsx` の `SunLight`）
+- 光源はカメラと同じ側（+x,+y,+z）に置くと影が物体の裏に隠れて見えない。`-x` 側からの横光にする
+- `<Environment preset="...">` は外部HDRを取得するのでオフラインでは失敗する。使わない
 
 ## 規約
 

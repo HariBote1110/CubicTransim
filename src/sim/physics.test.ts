@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { computeAcceleration, applyOverspeedDecay, TRAIN_SPECS } from './physics';
+import {
+  computeAcceleration, applyOverspeedDecay, TRAIN_SPECS,
+  permittedSpeedKmh, brakingDistanceM, rampDecel, BRAKE_JERK_MS3,
+} from './physics';
 
 describe('computeAcceleration', () => {
   const spec = TRAIN_SPECS.commuter;
@@ -39,5 +42,46 @@ describe('applyOverspeedDecay', () => {
 
   it('既にtarget以下なら変化しない', () => {
     expect(applyOverspeedDecay(80, 100, 1)).toBe(80);
+  });
+});
+
+describe('permittedSpeedKmh / brakingDistanceM (ジャーク制限つき制動曲線)', () => {
+  const a = 20 / 3.6; // DECEL_KMH_S=20 相当 (m/s²)
+  const j = BRAKE_JERK_MS3;
+
+  it('ジャークを無限大とみなすと従来の sqrt(2ad) に一致する', () => {
+    const d = 100;
+    expect(permittedSpeedKmh(d, a, 0)).toBeCloseTo(Math.sqrt(2 * a * d) * 3.6, 6);
+  });
+
+  it('ジャーク制限があると sqrt(2ad) より低い速度しか許さない(=ブレーキ開始が早まる)', () => {
+    const d = 100;
+    expect(permittedSpeedKmh(d, a, j)).toBeLessThan(Math.sqrt(2 * a * d) * 3.6);
+  });
+
+  it('ブレーキを込め切っている(deficit=0)なら sqrt(2ad) に戻る', () => {
+    const d = 50;
+    expect(permittedSpeedKmh(d, a, j, a)).toBeCloseTo(Math.sqrt(2 * a * d) * 3.6, 6);
+  });
+
+  it('距離0では速度0', () => {
+    expect(permittedSpeedKmh(0, a, j)).toBe(0);
+    expect(permittedSpeedKmh(-5, a, j)).toBe(0);
+  });
+
+  it('permittedSpeedKmh と brakingDistanceM は互いに逆関数になっている', () => {
+    for (const d of [1, 10, 50, 200, 800]) {
+      const v = permittedSpeedKmh(d, a, j);
+      expect(brakingDistanceM(v, a, j)).toBeCloseTo(d, 6);
+    }
+  });
+
+  it('rampDecel はジャーク上限を超えて減速度を変化させない', () => {
+    const dt = 1 / 60;
+    expect(rampDecel(0, a, j, dt)).toBeCloseTo(j * dt, 9);
+    // 目標との差が1tickぶんの変化量以内ならぴったり目標値になる
+    expect(rampDecel(a - j * dt * 0.5, a, j, dt)).toBe(a);
+    // 緩解方向も同じ上限
+    expect(rampDecel(a, 0, j, dt)).toBeCloseTo(a - j * dt, 9);
   });
 });

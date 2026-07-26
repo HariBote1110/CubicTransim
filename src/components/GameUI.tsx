@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellType, TrainData, StationData, PlatformDoorType } from '../types';
+import React, { useEffect, useMemo, useState } from 'react';
+import type { CellData, CellType, TrainData, StationData, PlatformDoorType, TerrainType } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND,
@@ -8,66 +7,88 @@ import {
   demandFactor, clockToDate,
 } from '../sim/economy';
 import type { MonthlyLedger } from '../sim/economy';
+import { evaluateBuild } from '../sim/buildPreview';
+import type { BuildPreview } from '../sim/buildPreview';
 import type { SimWorld } from '../sim/simulation';
 import type { AccidentNotice } from '../hooks/useGameLogic';
+import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
+// 選択中列車の乗客数・駅の待ち人数の更新間隔(ms)。
+const POLL_INTERVAL_MS = 400;
 
-const formatSigned = (n: number) => {
-  const rounded = Math.floor(n);
-  return `${rounded < 0 ? '-' : ''}¥${Math.abs(rounded).toLocaleString()}`;
-};
-
-const REMOVE_COLOUR = '#ff3333';
-
-// 選択中列車の乗客数表示の更新間隔(ms)。sim層のpassengersは毎tick変化するが、
-// Canvas外のDOM(GameUI)からは低頻度ポーリングで十分。
-const PASSENGERS_POLL_INTERVAL_MS = 500;
+export type BuildMode = CellType | 'none' | 'remove' | 'signal';
 
 interface GameUIProps {
-  buildMode: CellType | 'none' | 'remove' | 'signal';
-  setBuildMode: (mode: CellType | 'none' | 'remove' | 'signal') => void;
+  buildMode: BuildMode;
+  setBuildMode: (mode: BuildMode) => void;
   selectedTrainId: string | null;
   trains: TrainData[];
   stations: Map<string, StationData>;
+  railMap: Map<string, CellData>;
+  terrain: Map<string, TerrainType>;
   isEditingSchedule: boolean;
   setIsEditingSchedule: (v: boolean) => void;
   onDeploy: (trainId: string) => void;
-  // ★追加: 編成エディタ(増結・解結)
   onAddCar: (trainId: string) => void;
   onRemoveCar: (trainId: string) => void;
-  // ★追加
   scheduleClipboard: string[] | null;
   onCopySchedule: (trainId: string) => void;
   onPasteSchedule: (trainId: string) => void;
-  // ★追加: ゲーム内時計
   simSpeed: 0 | 1 | 2 | 4;
   setSimSpeed: (speed: 0 | 1 | 2 | 4) => void;
-  // ★追加: セーブ／ロード
   onSave: () => void;
   onLoad: () => void;
-  // ★追加: 経済システム
   money: number;
   world: React.RefObject<SimWorld>;
-  // ★追加: 人身事故とホームドア
   selectedStationId: string | null;
   onUpgradeDoors: (stationId: string, doorType: PlatformDoorType) => void;
   accidents: AccidentNotice[];
-  // ★追加: 月次収支台帳
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
-  // ★追加: 駅停車位置設定(Near/Middle/Far)
   stopLocation: 'near' | 'middle' | 'far';
   onSetStopLocation: (loc: 'near' | 'middle' | 'far') => void;
+  /** 建設プレビュー中のセル列(GameSceneのカーソル/ドラッグから流れてくる) */
+  previewPath: { x: number; z: number }[];
 }
+
+// --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
+const BUILD_TOOLS: {
+  mode: BuildMode;
+  label: string;
+  key: string;
+  accent: string;
+  cost?: string;
+  hint: string;
+}[] = [
+  { mode: 'none', label: '選択', key: '1', accent: '#8b98a6', hint: '列車や駅をクリックして選ぶ' },
+  { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: 'ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)' },
+  { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: '線路の上に置くと隣接セルと繋がって長いホームになる' },
+  { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
+  { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
+  { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
+];
+
+const SPEEDS: (0 | 1 | 2 | 4)[] = [0, 1, 2, 4];
+
+const DOOR_LABEL: Record<PlatformDoorType, string> = {
+  none: 'なし',
+  standard: '標準',
+  fullscreen: 'フルスクリーン',
+};
+
+const STOP_LOCATION_LABEL = {
+  near: '手前',
+  middle: '中央',
+  far: '奥',
+} as const;
 
 export const GameUI: React.FC<GameUIProps> = ({
   buildMode, setBuildMode,
-  selectedTrainId, trains, stations,
+  selectedTrainId, trains, stations, railMap, terrain,
   isEditingSchedule, setIsEditingSchedule,
-  onDeploy,
-  onAddCar, onRemoveCar,
+  onDeploy, onAddCar, onRemoveCar,
   scheduleClipboard, onCopySchedule, onPasteSchedule,
   simSpeed, setSimSpeed,
   onSave, onLoad,
@@ -75,421 +96,543 @@ export const GameUI: React.FC<GameUIProps> = ({
   selectedStationId, onUpgradeDoors, accidents,
   currentLedger, ledgerHistory,
   stopLocation, onSetStopLocation,
+  previewPath,
 }) => {
-  // ゲーム内日付(sim層所有のclockから低頻度でポーリングする)
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
-  const [isFinanceOpen, setIsFinanceOpen] = useState(false);
+  const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings'>('none');
+  const [passengers, setPassengers] = useState(0);
+  const [stationWaiting, setStationWaiting] = useState(0);
+  const [stationDemand, setStationDemand] = useState(0);
 
+  // sim層が持つ値(時計・乗客数・待ち人数)は毎tick変わるため、UIからは低頻度でポーリングする。
   useEffect(() => {
     const id = setInterval(() => {
-      const elapsed = world.current?.clock?.elapsed ?? 0;
-      setGameDate(clockToDate(elapsed));
+      setGameDate(clockToDate(world.current?.clock?.elapsed ?? 0));
     }, CLOCK_POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [world]);
 
-  // 選択中列車の乗客数(sim層所有のTrainRuntimeから低頻度でポーリングする)
-  const [passengers, setPassengers] = useState(0);
-
   useEffect(() => {
     const id = setInterval(() => {
-      if (!selectedTrainId) {
-        setPassengers(0);
-        return;
-      }
-      const rt = world.current?.runtimes.get(selectedTrainId);
-      setPassengers(rt ? rt.passengers : 0);
-    }, PASSENGERS_POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [selectedTrainId, world]);
+      setPassengers(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.passengers ?? 0) : 0);
 
-  // 選択中駅の待ち人数(StationLabelと同様、低頻度でポーリングする)
-  const [stationWaiting, setStationWaiting] = useState(0);
-  // 選択中駅の立地需要係数(周辺の街から算出。waitingと同様に低頻度でポーリングする)
-  const [stationDemand, setStationDemand] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => {
       if (!selectedStationId) {
         setStationWaiting(0);
         setStationDemand(0);
         return;
       }
-      const waiting = world.current?.waiting.get(selectedStationId) ?? 0;
-      setStationWaiting(Math.floor(waiting));
-
+      setStationWaiting(Math.floor(world.current?.waiting.get(selectedStationId) ?? 0));
       const station = stations.get(selectedStationId);
-      const towns = world.current?.towns ?? [];
-      setStationDemand(station ? demandFactor(station.center, towns) : 0);
-    }, PASSENGERS_POLL_INTERVAL_MS);
+      setStationDemand(station ? demandFactor(station.center, world.current?.towns ?? []) : 0);
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [selectedStationId, world, stations]);
+  }, [selectedTrainId, selectedStationId, world, stations]);
 
-  const speedBtnStyle = (speed: 0 | 1 | 2 | 4) => ({
-    padding: '8px 14px', fontSize: '14px', fontWeight: 'bold' as const, cursor: 'pointer',
-    background: simSpeed === speed ? '#00aaff' : 'white',
-    color: simSpeed === speed ? 'white' : 'black',
-    border: '2px solid #00aaff', borderRadius: '8px'
-  });
-  const btnStyle = (mode: string, color: string) => ({
-    padding: '10px 20px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer',
-    background: buildMode === mode ? color : 'white',
-    color: buildMode === mode ? 'white' : 'black',
-    border: `2px solid ${color}`, borderRadius: '8px'
-  });
+  // キーボードショートカット: 1〜6で建設モード、Spaceで一時停止、Escで選択解除。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+      const tool = BUILD_TOOLS.find(t => t.key === e.key);
+      if (tool) { setBuildMode(tool.mode); return; }
+      if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
+      if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setBuildMode, setSimSpeed, simSpeed]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
+  const activeTool = BUILD_TOOLS.find(t => t.mode === buildMode);
+
+  // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
+  const preview = useMemo(() => {
+    if (buildMode === 'none' || previewPath.length === 0) return null;
+    return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money);
+  }, [buildMode, previewPath, railMap, stations, terrain, money]);
+
+  const monthProfit =
+    currentLedger.fares - currentLedger.construction - currentLedger.upkeep - currentLedger.accidents;
 
   return (
     <>
-      {/* ★追加: 人身事故バナー */}
+      {/* ===== 左上: 資金と選択中の対象 ===== */}
+      <div style={panel({ position: 'absolute', top: 16, left: 16, width: 264, zIndex: 10, overflow: 'hidden' })}>
+        <div style={{ padding: '12px 14px 10px', borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ fontSize: 11, letterSpacing: '0.14em', color: T.textFaint, fontWeight: 700 }}>
+            CUBICTRANSIM
+          </div>
+          <div style={{
+            fontSize: 24, fontWeight: 700, marginTop: 2,
+            color: money < 0 ? T.danger : T.text, fontVariantNumeric: 'tabular-nums',
+          }}>
+            {formatYen(money)}
+          </div>
+          <div style={{ fontSize: 11.5, color: monthProfit >= 0 ? T.positive : T.danger, marginTop: 1 }}>
+            今月 {formatYen(monthProfit)}
+          </div>
+        </div>
+
+        <div style={{ padding: '11px 14px 13px' }}>
+          {selectedTrain ? (
+            <TrainInspector
+              train={selectedTrain}
+              stations={stations}
+              passengers={passengers}
+              money={money}
+              isEditingSchedule={isEditingSchedule}
+              setIsEditingSchedule={setIsEditingSchedule}
+              onDeploy={onDeploy}
+              onAddCar={onAddCar}
+              onRemoveCar={onRemoveCar}
+              scheduleClipboard={scheduleClipboard}
+              onCopySchedule={onCopySchedule}
+              onPasteSchedule={onPasteSchedule}
+            />
+          ) : selectedStation ? (
+            <StationInspector
+              station={selectedStation}
+              waiting={stationWaiting}
+              demand={stationDemand}
+              money={money}
+              onUpgradeDoors={onUpgradeDoors}
+            />
+          ) : (
+            <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
+              列車・駅・車庫をクリックすると、ここに詳細が出ます。
+              <div style={{ marginTop: 8, color: T.textFaint, fontSize: 11.5 }}>
+                {activeTool ? `${activeTool.label}: ${activeTool.hint}` : ''}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ===== 上中央: 時間の操作 ===== */}
+      <div style={{
+        position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+        display: 'flex', gap: 8, zIndex: 10, pointerEvents: 'none',
+      }}>
+        <div style={panel({ display: 'flex', alignItems: 'center', gap: 4, padding: 4 })}>
+          {SPEEDS.map(s => (
+            <button
+              key={s}
+              onClick={() => setSimSpeed(s)}
+              style={{ ...button({ active: simSpeed === s, compact: true }), minWidth: 34 }}
+              title={s === 0 ? '一時停止 (Space)' : `${s}倍速`}
+            >
+              {s === 0 ? '❚❚' : `${s}x`}
+            </button>
+          ))}
+          <div style={{ width: 1, alignSelf: 'stretch', background: T.line, margin: '2px 4px' }} />
+          <div style={{
+            padding: '0 10px', fontSize: 12.5, fontWeight: 600, color: T.text,
+            fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+          }}>
+            {gameDate.year}年{gameDate.month}月{gameDate.day}日
+          </div>
+        </div>
+      </div>
+
+      {/* ===== 右上: 収支・設定・セーブ ===== */}
+      <div style={{
+        position: 'absolute', top: 16, right: 16, zIndex: 10,
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8,
+      }}>
+        <div style={panel({ display: 'flex', gap: 4, padding: 4 })}>
+          <button
+            onClick={() => setOpenPanel(p => (p === 'finance' ? 'none' : 'finance'))}
+            style={button({ active: openPanel === 'finance', accent: T.positive, compact: true })}
+          >
+            収支
+          </button>
+          <button
+            onClick={() => setOpenPanel(p => (p === 'settings' ? 'none' : 'settings'))}
+            style={button({ active: openPanel === 'settings', compact: true })}
+          >
+            設定
+          </button>
+          <div style={{ width: 1, alignSelf: 'stretch', background: T.line, margin: '2px' }} />
+          <button onClick={onSave} style={button({ compact: true })}>保存</button>
+          <button onClick={onLoad} style={button({ compact: true })}>読込</button>
+        </div>
+
+        {openPanel === 'settings' && (
+          <div style={panel({ padding: 14, width: 260 })}>
+            <div style={sectionLabel}>駅での停車位置</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {(['near', 'middle', 'far'] as const).map(loc => (
+                <button
+                  key={loc}
+                  onClick={() => onSetStopLocation(loc)}
+                  style={{ ...button({ active: stopLocation === loc, compact: true }), flex: 1 }}
+                >
+                  {STOP_LOCATION_LABEL[loc]}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.6 }}>
+              編成がホームのどこに止まるかを決めます。編成がホームより長い場合は、
+              設定によらず奥端で停車します。
+            </div>
+          </div>
+        )}
+
+        {openPanel === 'finance' && (
+          <FinancePanel currentLedger={currentLedger} ledgerHistory={ledgerHistory} />
+        )}
+      </div>
+
+      {/* ===== 事故バナー ===== */}
       {accidents.length > 0 && (
         <div style={{
-          position: 'absolute', top: 70, left: '50%', transform: 'translateX(-50%)',
-          display: 'flex', flexDirection: 'column', gap: '6px', pointerEvents: 'none', zIndex: 20
+          position: 'absolute', top: 74, left: '50%', transform: 'translateX(-50%)',
+          display: 'flex', flexDirection: 'column', gap: 6, pointerEvents: 'none', zIndex: 20,
         }}>
-          {accidents.map((a, i) => {
-            const st = stations.get(a.stationId);
-            return (
-              <div key={`${a.trainId}-${i}`} style={{
-                background: '#cc0000', color: 'white', padding: '8px 16px', borderRadius: '6px',
-                fontWeight: 'bold', fontSize: '0.9rem', boxShadow: '0 2px 6px rgba(0,0,0,0.3)'
-              }}>
-                ⚠ {st ? st.name : a.stationId} で人身事故が発生 — 運転見合わせ中
-              </div>
-            );
-          })}
+          {accidents.map((a, i) => (
+            <div key={`${a.trainId}-${i}`} style={panel({
+              background: 'rgba(153, 27, 27, 0.92)', border: '1px solid rgba(255,255,255,0.22)',
+              padding: '8px 14px', fontSize: 12.5, fontWeight: 700, color: '#fff',
+            })}>
+              ⚠ {stations.get(a.stationId)?.name ?? a.stationId} で人身事故 — 運転見合わせ中
+            </div>
+          ))}
         </div>
       )}
 
-      <div style={{ position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>
-        <button onClick={() => setSimSpeed(0)} style={speedBtnStyle(0)} title="Pause">⏸</button>
-        <button onClick={() => setSimSpeed(1)} style={speedBtnStyle(1)}>1x</button>
-        <button onClick={() => setSimSpeed(2)} style={speedBtnStyle(2)}>2x</button>
-        <button onClick={() => setSimSpeed(4)} style={speedBtnStyle(4)}>4x</button>
-        <div style={{ width: '1px', background: '#ccc', margin: '0 4px' }} />
-        <div style={{
-          padding: '8px 14px', fontSize: '14px', fontWeight: 'bold',
-          background: 'white', color: '#333', border: '2px solid #999', borderRadius: '8px',
-          display: 'flex', alignItems: 'center'
-        }}>
-          {gameDate.year}年 {gameDate.month}月 {gameDate.day}日
-        </div>
-        <button
-          onClick={() => setIsFinanceOpen(v => !v)}
-          style={{
-            padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer',
-            background: isFinanceOpen ? '#00994d' : 'white', color: isFinanceOpen ? 'white' : 'black',
-            border: '2px solid #00994d', borderRadius: '8px'
-          }}
-        >
-          Finance
-        </button>
-        <button onClick={onSave} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #00cc66', borderRadius: '8px' }}>Save</button>
-        <button onClick={onLoad} style={{ padding: '8px 14px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', background: 'white', color: 'black', border: '2px solid #ffaa00', borderRadius: '8px' }}>Load</button>
-        <div style={{ width: '1px', background: '#ccc', margin: '0 4px' }} />
-        {/* ★追加: 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定トグル。 */}
-        <div style={{
-          display: 'flex', border: '2px solid #8855cc', borderRadius: '8px', overflow: 'hidden',
-        }} title="駅の停車位置(Near/Middle/Far)">
-          {(['near', 'middle', 'far'] as const).map(loc => (
+      {/* ===== 下中央: 建設フィードバック + ツールバー ===== */}
+      <div style={{
+        position: 'absolute', bottom: 22, left: '50%', transform: 'translateX(-50%)',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, zIndex: 10,
+      }}>
+        <BuildFeedback preview={preview} toolLabel={activeTool?.label ?? ''} />
+
+        <div style={panel({ display: 'flex', gap: 4, padding: 5 })}>
+          {BUILD_TOOLS.map(tool => (
             <button
-              key={loc}
-              onClick={() => onSetStopLocation(loc)}
+              key={tool.mode}
+              onClick={() => setBuildMode(tool.mode)}
               style={{
-                padding: '8px 10px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
-                background: stopLocation === loc ? '#8855cc' : 'white',
-                color: stopLocation === loc ? 'white' : 'black',
-                border: 'none',
+                ...button({ active: buildMode === tool.mode, accent: tool.accent }),
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
+                minWidth: 64, padding: '7px 10px',
               }}
+              title={`${tool.label} (${tool.key}) — ${tool.hint}`}
             >
-              {loc === 'near' ? 'Near' : loc === 'middle' ? 'Middle' : 'Far'}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                {tool.label}
+                <span style={{
+                  fontSize: 9, fontWeight: 700, opacity: 0.55,
+                  border: '1px solid currentColor', borderRadius: 3, padding: '0 3px', lineHeight: '12px',
+                }}>{tool.key}</span>
+              </span>
+              {tool.cost && (
+                <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.75 }}>{tool.cost}</span>
+              )}
             </button>
           ))}
         </div>
       </div>
+    </>
+  );
+};
 
-      {isFinanceOpen && (
+// --- 建設フィードバック(コストと可否) ---
+const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string }> = ({
+  preview, toolLabel,
+}) => {
+  if (!preview || preview.cellCount === 0) return null;
+
+  const { reason, cost, cellCount, bridgeCells, tunnelCells, mode } = preview;
+  const tone = reason === 'ok' ? T.positive : reason === 'insufficient-funds' ? T.danger : T.warning;
+  const message =
+    reason === 'insufficient-funds' ? '資金が足りません'
+    : reason === 'no-effect' ? 'ここには建設できません'
+    : null;
+
+  const detail: string[] = [];
+  if (mode === 'rail' || mode === 'remove') detail.push(`${cellCount}マス`);
+  if (bridgeCells > 0) detail.push(`橋 ${bridgeCells}`);
+  if (tunnelCells > 0) detail.push(`隧道 ${tunnelCells}`);
+
+  return (
+    <div style={panel({
+      display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px',
+      borderColor: tone, fontSize: 12.5,
+    })}>
+      <span style={{ width: 7, height: 7, borderRadius: '50%', background: tone, flexShrink: 0 }} />
+      <span style={{ fontWeight: 700 }}>{toolLabel}</span>
+      {detail.length > 0 && <span style={{ color: T.textMuted }}>{detail.join(' / ')}</span>}
+      {message
+        ? <span style={{ color: tone, fontWeight: 700 }}>{message}</span>
+        : <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{formatYen(cost)}</span>}
+    </div>
+  );
+};
+
+// --- 列車インスペクタ ---
+const TrainInspector: React.FC<{
+  train: TrainData;
+  stations: Map<string, StationData>;
+  passengers: number;
+  money: number;
+  isEditingSchedule: boolean;
+  setIsEditingSchedule: (v: boolean) => void;
+  onDeploy: (id: string) => void;
+  onAddCar: (id: string) => void;
+  onRemoveCar: (id: string) => void;
+  scheduleClipboard: string[] | null;
+  onCopySchedule: (id: string) => void;
+  onPasteSchedule: (id: string) => void;
+}> = ({
+  train, stations, passengers, money, isEditingSchedule, setIsEditingSchedule,
+  onDeploy, onAddCar, onRemoveCar, scheduleClipboard, onCopySchedule, onPasteSchedule,
+}) => {
+  const stored = train.status === 'stored';
+  const capacity = train.cars * CAPACITY_PER_CAR;
+  const load = capacity > 0 ? passengers / capacity : 0;
+  const canAdd = train.cars < 8 && money >= CAR_COST;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: T.accent }}>列車 {train.id}</div>
         <div style={{
-          position: 'absolute', top: 70, left: '50%', transform: 'translateX(-50%)',
-          background: 'rgba(255,255,255,0.97)', borderRadius: '8px', padding: '1rem',
-          fontFamily: 'sans-serif', pointerEvents: 'auto', zIndex: 10,
-          boxShadow: '0 4px 6px rgba(0,0,0,0.15)', minWidth: '420px'
+          fontSize: 10.5, fontWeight: 700, padding: '2px 7px', borderRadius: T.radiusPill,
+          background: stored ? 'rgba(255,255,255,0.09)' : 'rgba(52,211,153,0.16)',
+          color: stored ? T.textMuted : T.positive,
         }}>
-          <h3 style={{ margin: '0 0 8px 0', fontSize: '1rem', color: '#333' }}>収支</h3>
-          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.85rem' }}>
-            <thead>
-              <tr style={{ borderBottom: '2px solid #ccc', textAlign: 'right' }}>
-                <th style={{ textAlign: 'left', padding: '4px' }}>月</th>
-                <th style={{ padding: '4px' }}>運賃収入</th>
-                <th style={{ padding: '4px' }}>建設費</th>
-                <th style={{ padding: '4px' }}>維持費</th>
-                <th style={{ padding: '4px' }}>事故</th>
-                <th style={{ padding: '4px' }}>損益</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr style={{ borderBottom: '1px solid #eee', textAlign: 'right', color: '#666' }}>
-                <td style={{ textAlign: 'left', padding: '4px' }}>{currentLedger.year}年{currentLedger.month}月(進行中)</td>
-                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.fares)}</td>
-                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.construction)}</td>
-                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.upkeep)}</td>
-                <td style={{ padding: '4px' }}>{formatSigned(currentLedger.accidents)}</td>
-                <td style={{
-                  padding: '4px',
-                  color: currentLedger.fares - currentLedger.construction - currentLedger.upkeep - currentLedger.accidents >= 0 ? '#00994d' : '#cc0000',
-                  fontWeight: 'bold'
-                }}>
-                  {formatSigned(currentLedger.fares - currentLedger.construction - currentLedger.upkeep - currentLedger.accidents)}
-                </td>
-              </tr>
-              {[...ledgerHistory].reverse().map((l, i) => {
-                const profit = l.fares - l.construction - l.upkeep - l.accidents;
-                return (
-                  <tr key={i} style={{ borderBottom: '1px solid #eee', textAlign: 'right' }}>
-                    <td style={{ textAlign: 'left', padding: '4px' }}>{l.year}年{l.month}月</td>
-                    <td style={{ padding: '4px' }}>{formatSigned(l.fares)}</td>
-                    <td style={{ padding: '4px' }}>{formatSigned(l.construction)}</td>
-                    <td style={{ padding: '4px' }}>{formatSigned(l.upkeep)}</td>
-                    <td style={{ padding: '4px' }}>{formatSigned(l.accidents)}</td>
-                    <td style={{ padding: '4px', color: profit >= 0 ? '#00994d' : '#cc0000', fontWeight: 'bold' }}>
-                      {formatSigned(profit)}
-                    </td>
-                  </tr>
-                );
-              })}
-              {ledgerHistory.length === 0 && (
-                <tr>
-                  <td colSpan={6} style={{ padding: '8px', textAlign: 'center', color: '#999', fontStyle: 'italic' }}>
-                    確定済みの月次決算はまだありません
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <div style={{ position: 'absolute', bottom: 30, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '10px', pointerEvents: 'auto', zIndex: 10 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <button onClick={() => setBuildMode('none')} style={btnStyle('none', '#666')}>Select</button>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <button onClick={() => setBuildMode('rail')} style={btnStyle('rail', '#00aaff')}>Rail</button>
-          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>{RAIL_COST}/cell</div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <button onClick={() => setBuildMode('station')} style={btnStyle('station', STATION_COLOUR)}>Station</button>
-          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>¥{STATION_COST.toLocaleString()}</div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <button onClick={() => setBuildMode('depot')} style={btnStyle('depot', DEPOT_COLOUR)}>Depot</button>
-          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>¥{DEPOT_COST.toLocaleString()}</div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <button onClick={() => setBuildMode('signal')} style={btnStyle('signal', SIGNAL_COLOUR)}>Signal</button>
-          <div style={{ fontSize: '0.7rem', color: '#666', marginTop: '2px' }}>¥{SIGNAL_COST.toLocaleString()}</div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <button onClick={() => setBuildMode('remove')} style={btnStyle('remove', REMOVE_COLOUR)}>Remove</button>
+          {stored ? '車庫' : '運行中'}
         </div>
       </div>
 
-      <div style={{
-        position: 'absolute', top: 20, left: 20, padding: '1rem',
-        background: 'rgba(255,255,255,0.95)', borderRadius: '8px',
-        fontFamily: 'sans-serif', pointerEvents: 'auto', userSelect: 'none',
-        zIndex: 10, minWidth: '220px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-      }}>
-        <h2 style={{ margin: '0 0 4px 0', fontSize: '1.2rem', color: '#333' }}>CubicTransim</h2>
-        <div style={{ margin: '0 0 10px 0', fontSize: '1.1rem', fontWeight: 'bold', color: money < 0 ? '#cc0000' : '#00994d' }}>
-          {formatSigned(money)}
+      {/* 乗車率 */}
+      <div style={{ marginTop: 9 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: T.textMuted }}>
+          <span>乗車</span>
+          <span style={{ fontVariantNumeric: 'tabular-nums' }}>{passengers} / {capacity}</span>
         </div>
-        {selectedTrain ? (
-          <div>
-             <div style={{ borderBottom: '1px solid #ccc', paddingBottom: '5px', marginBottom: '10px' }}>
-               <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#ff0055' }}>
-                 Train {selectedTrain.id}
-               </div>
-               <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                 Status: <span style={{ fontWeight: 'bold', color: selectedTrain.status === 'running' ? '#00aaff' : '#999' }}>{selectedTrain.status.toUpperCase()}</span>
-               </div>
-               <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                 Passengers: <span style={{ fontWeight: 'bold' }}>{passengers}/{selectedTrain.cars * CAPACITY_PER_CAR}</span>
-               </div>
-             </div>
+        <div style={{ height: 5, borderRadius: 3, background: 'rgba(255,255,255,0.09)', marginTop: 4, overflow: 'hidden' }}>
+          <div style={{
+            width: `${Math.min(100, load * 100)}%`, height: '100%',
+            background: load > 0.85 ? T.warning : T.accent, transition: 'width 300ms ease',
+          }} />
+        </div>
+      </div>
 
-             {/* ★追加: 編成エディタ(車庫在籍中のみ増結・解結できる) */}
-             <div style={{ marginBottom: '10px' }}>
-               <div style={{ fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '5px' }}>
-                 Consist: <span style={{ fontWeight: 'normal', color: '#666' }}>{selectedTrain.cars}両</span>
-               </div>
-               <div style={{ display: 'flex', gap: '3px', marginBottom: '6px' }}>
-                 {Array.from({ length: selectedTrain.cars }).map((_, i) => (
-                   <div
-                     key={i}
-                     style={{
-                       width: '22px', height: '14px', borderRadius: '3px',
-                       background: i === 0 ? '#ff0055' : '#00aaff',
-                       border: '1px solid #333',
-                     }}
-                     title={i === 0 ? '先頭車' : `${i + 1}両目`}
-                   />
-                 ))}
-               </div>
-               {selectedTrain.status === 'stored' && (
-                 <div style={{ display: 'flex', gap: '5px' }}>
-                   <button
-                     onClick={() => onAddCar(selectedTrain.id)}
-                     disabled={selectedTrain.cars >= 8 || money < CAR_COST}
-                     style={{
-                       flex: 1, padding: '6px', fontSize: '0.75rem', fontWeight: 'bold',
-                       cursor: selectedTrain.cars >= 8 || money < CAR_COST ? 'not-allowed' : 'pointer',
-                       background: selectedTrain.cars >= 8 || money < CAR_COST ? '#eee' : '#00cc66',
-                       color: selectedTrain.cars >= 8 || money < CAR_COST ? '#999' : 'white',
-                       border: '1px solid #ccc', borderRadius: '4px',
-                     }}
-                   >
-                     + 増結 ¥{CAR_COST.toLocaleString()}
-                   </button>
-                   <button
-                     onClick={() => onRemoveCar(selectedTrain.id)}
-                     disabled={selectedTrain.cars <= 1}
-                     style={{
-                       flex: 1, padding: '6px', fontSize: '0.75rem', fontWeight: 'bold',
-                       cursor: selectedTrain.cars <= 1 ? 'not-allowed' : 'pointer',
-                       background: selectedTrain.cars <= 1 ? '#eee' : '#ffaa00',
-                       color: selectedTrain.cars <= 1 ? '#999' : 'white',
-                       border: '1px solid #ccc', borderRadius: '4px',
-                     }}
-                   >
-                     − 解結 (+¥{CAR_REFUND.toLocaleString()})
-                   </button>
-                 </div>
-               )}
-             </div>
-
-             {/* スケジュール表示 */}
-             <div style={{ marginBottom: '10px' }}>
-               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                 <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>Schedule:</div>
-                 {/* コピー＆ペーストボタン */}
-                 <div style={{ display:'flex', gap:'5px' }}>
-                   <button onClick={() => onCopySchedule(selectedTrain.id)} style={{ fontSize:'0.8rem', cursor:'pointer' }} title="Copy">📋</button>
-                   {scheduleClipboard && (
-                     <button onClick={() => onPasteSchedule(selectedTrain.id)} style={{ fontSize:'0.8rem', cursor:'pointer' }} title="Paste">📝</button>
-                   )}
-                 </div>
-               </div>
-
-               {selectedTrain.schedule.length === 0 ? (
-                 <div style={{ fontSize: '0.8rem', color: '#999', fontStyle: 'italic', marginTop:'5px' }}>No stops</div>
-               ) : (
-                 <div style={{ maxHeight: '100px', overflowY: 'auto', fontSize: '0.85rem', marginTop:'5px' }}>
-                   {selectedTrain.schedule.map((sid, idx) => {
-                     const st = stations.get(sid);
-                     const isNext = idx === selectedTrain.scheduleIndex;
-                     return (
-                       <div key={idx} style={{ 
-                         padding: '2px 0', 
-                         color: isNext ? '#00aaff' : '#333',
-                         fontWeight: isNext ? 'bold' : 'normal'
-                       }}>
-                         {idx + 1}. {st ? st.name : sid} {isNext && '<<'}
-                       </div>
-                     );
-                   })}
-                 </div>
-               )}
-             </div>
-
-             {selectedTrain.status === 'stored' && (
-                 <button 
-                   onClick={() => onDeploy(selectedTrain.id)}
-                   style={{
-                     width: '100%', padding: '8px', marginTop: '10px',
-                     background: '#00cc66', border: '1px solid #ccc', borderRadius: '4px',
-                     fontWeight: 'bold', cursor: 'pointer', color: 'white'
-                   }}
-                 >
-                   Deploy Train
-                 </button>
-             )}
-
-             <button 
-               onClick={() => setIsEditingSchedule(!isEditingSchedule)}
-               style={{
-                 width: '100%', padding: '8px', marginTop: '5px',
-                 background: isEditingSchedule ? '#ffaa00' : '#eee',
-                 border: '1px solid #ccc', borderRadius: '4px',
-                 fontWeight: 'bold', cursor: 'pointer',
-                 color: isEditingSchedule ? 'white' : 'black'
-               }}
-             >
-               {isEditingSchedule ? 'Finish Editing' : 'Edit Schedule'}
-             </button>
-             
-             {isEditingSchedule && (
-               <div style={{ fontSize: '0.8rem', color: '#ffaa00', marginTop: '5px', textAlign: 'center' }}>
-                 Click stations to add stops
-               </div>
-             )}
-          </div>
-        ) : selectedStation ? (
-          <div>
-            <div style={{ borderBottom: '1px solid #ccc', paddingBottom: '5px', marginBottom: '10px' }}>
-              <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: STATION_COLOUR }}>
-                {selectedStation.name}
-              </div>
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                Waiting: <span style={{ fontWeight: 'bold' }}>{stationWaiting}</span>
-              </div>
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                Demand: <span style={{ fontWeight: 'bold' }}>{stationDemand.toFixed(1)}x</span>
-              </div>
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                Platform: <span style={{ fontWeight: 'bold' }}>{selectedStation.cells.length} cells</span>
-              </div>
-              <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                Platform doors: <span style={{ fontWeight: 'bold' }}>{selectedStation.platformDoors}</span>
-              </div>
-            </div>
-
+      {/* 編成 */}
+      <div style={{ marginTop: 12 }}>
+        <div style={sectionLabel}>編成 — {train.cars}両</div>
+        <div style={{ display: 'flex', gap: 3, marginBottom: 7 }}>
+          {Array.from({ length: train.cars }).map((_, i) => (
+            <div key={i} title={i === 0 ? '先頭車' : `${i + 1}両目`} style={{
+              flex: 1, height: 13, borderRadius: 3,
+              background: i === 0 ? T.accent : 'rgba(255,255,255,0.22)',
+              border: `1px solid ${T.line}`,
+            }} />
+          ))}
+        </div>
+        {stored ? (
+          <div style={{ display: 'flex', gap: 5 }}>
             <button
-              onClick={() => onUpgradeDoors(selectedStation.id, 'standard')}
-              disabled={selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST}
-              style={{
-                width: '100%', padding: '8px', marginBottom: '5px',
-                background: selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST ? '#eee' : '#00aaff',
-                color: selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST ? '#999' : 'white',
-                border: '1px solid #ccc', borderRadius: '4px', fontWeight: 'bold',
-                cursor: selectedStation.platformDoors !== 'none' || money < PLATFORM_DOOR_STANDARD_COST ? 'not-allowed' : 'pointer'
-              }}
+              onClick={() => onAddCar(train.id)}
+              disabled={!canAdd}
+              style={{ ...button({ compact: true, disabled: !canAdd }), flex: 1 }}
             >
-              標準ホームドア ¥{PLATFORM_DOOR_STANDARD_COST.toLocaleString()}
+              ＋増結 ¥{CAR_COST.toLocaleString()}
             </button>
-
             <button
-              onClick={() => onUpgradeDoors(selectedStation.id, 'fullscreen')}
-              disabled={selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST}
-              style={{
-                width: '100%', padding: '8px',
-                background: selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST ? '#eee' : '#00cc66',
-                color: selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST ? '#999' : 'white',
-                border: '1px solid #ccc', borderRadius: '4px', fontWeight: 'bold',
-                cursor: selectedStation.platformDoors === 'fullscreen' || money < PLATFORM_DOOR_FULLSCREEN_COST ? 'not-allowed' : 'pointer'
-              }}
+              onClick={() => onRemoveCar(train.id)}
+              disabled={train.cars <= 1}
+              style={{ ...button({ compact: true, disabled: train.cars <= 1 }), flex: 1 }}
             >
-              フルスクリーン ¥{PLATFORM_DOOR_FULLSCREEN_COST.toLocaleString()}
+              −解結 +¥{CAR_REFUND.toLocaleString()}
             </button>
           </div>
         ) : (
-           <div style={{ color: '#666', fontSize: '0.9rem' }}>
-             Select a train or Depot to manage.
-           </div>
+          <div style={{ fontSize: 11, color: T.textFaint }}>増解結は車庫在籍中のみ行えます</div>
         )}
       </div>
-    </>
+
+      {/* 運行表 */}
+      <div style={{ marginTop: 13 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={sectionLabel}>運行表</div>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+            <button onClick={() => onCopySchedule(train.id)} style={button({ compact: true })} title="運行表をコピー">複製</button>
+            {scheduleClipboard && (
+              <button onClick={() => onPasteSchedule(train.id)} style={button({ compact: true })} title="運行表を貼り付け">貼付</button>
+            )}
+          </div>
+        </div>
+
+        {train.schedule.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: T.textFaint }}>停車駅がありません</div>
+        ) : (
+          <div style={{ maxHeight: 108, overflowY: 'auto', fontSize: 12 }}>
+            {train.schedule.map((sid, idx) => {
+              const isNext = idx === train.scheduleIndex;
+              return (
+                <div key={idx} style={{
+                  display: 'flex', alignItems: 'center', gap: 7, padding: '3px 0',
+                  color: isNext ? T.text : T.textMuted, fontWeight: isNext ? 700 : 400,
+                }}>
+                  <span style={{
+                    width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                    background: isNext ? T.accent : 'rgba(255,255,255,0.1)',
+                    color: isNext ? T.accentInk : T.textMuted,
+                    fontSize: 10, fontWeight: 700, display: 'grid', placeItems: 'center',
+                  }}>{idx + 1}</span>
+                  {stations.get(sid)?.name ?? sid}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {stored && (
+        <button
+          onClick={() => onDeploy(train.id)}
+          style={{ ...button({ active: true, accent: T.positive }), width: '100%', marginTop: 11 }}
+        >
+          出庫する
+        </button>
+      )}
+
+      <button
+        onClick={() => setIsEditingSchedule(!isEditingSchedule)}
+        style={{ ...button({ active: isEditingSchedule, accent: T.station }), width: '100%', marginTop: 6 }}
+      >
+        {isEditingSchedule ? '運行表の編集を終える' : '運行表を編集'}
+      </button>
+      {isEditingSchedule && (
+        <div style={{ fontSize: 11.5, color: T.station, marginTop: 6, textAlign: 'center' }}>
+          地図上の駅をクリックして停車駅を追加
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- 駅インスペクタ ---
+const StationInspector: React.FC<{
+  station: StationData;
+  waiting: number;
+  demand: number;
+  money: number;
+  onUpgradeDoors: (stationId: string, doorType: PlatformDoorType) => void;
+}> = ({ station, waiting, demand, money, onUpgradeDoors }) => {
+  const rows: [string, string][] = [
+    ['待ち人数', `${waiting}人`],
+    ['立地需要', `${demand.toFixed(1)}倍`],
+    ['ホーム長', `${station.cells.length}マス`],
+    ['ホームドア', DOOR_LABEL[station.platformDoors]],
+  ];
+
+  const upgrades: { type: PlatformDoorType; label: string; cost: number; accent: string }[] = [
+    { type: 'standard', label: '標準ホームドア', cost: PLATFORM_DOOR_STANDARD_COST, accent: T.accent },
+    { type: 'fullscreen', label: 'フルスクリーン', cost: PLATFORM_DOOR_FULLSCREEN_COST, accent: T.positive },
+  ];
+
+  return (
+    <div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: T.station }}>{station.name}</div>
+
+      <div style={{ marginTop: 9, display: 'grid', gap: 3 }}>
+        {rows.map(([k, v]) => (
+          <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+            <span style={{ color: T.textMuted }}>{k}</span>
+            <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{v}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 13 }}>
+        <div style={sectionLabel}>ホームドアの設置</div>
+        {upgrades.map(u => {
+          const already = u.type === 'standard'
+            ? station.platformDoors !== 'none'
+            : station.platformDoors === 'fullscreen';
+          const disabled = already || money < u.cost;
+          return (
+            <button
+              key={u.type}
+              onClick={() => onUpgradeDoors(station.id, u.type)}
+              disabled={disabled}
+              style={{ ...button({ disabled, accent: u.accent }), width: '100%', marginBottom: 5, textAlign: 'left' }}
+            >
+              {u.label}
+              <span style={{ float: 'right', opacity: 0.8 }}>
+                {already ? '設置済' : `¥${u.cost.toLocaleString()}`}
+              </span>
+            </button>
+          );
+        })}
+        <div style={{ fontSize: 11, color: T.textFaint, lineHeight: 1.6 }}>
+          ホームドアを設置すると人身事故の発生確率が下がります。
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- 収支パネル ---
+const FinancePanel: React.FC<{ currentLedger: MonthlyLedger; ledgerHistory: MonthlyLedger[] }> = ({
+  currentLedger, ledgerHistory,
+}) => {
+  const rows = [
+    { ledger: currentLedger, label: `${currentLedger.year}年${currentLedger.month}月（進行中）`, current: true },
+    ...[...ledgerHistory].reverse().map(l => ({ ledger: l, label: `${l.year}年${l.month}月`, current: false })),
+  ];
+
+  const cell: React.CSSProperties = { padding: '5px 7px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+
+  return (
+    <div style={panel({ padding: 14, width: 470, maxHeight: '58vh', overflowY: 'auto' })}>
+      <div style={sectionLabel}>月次収支</div>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11.5 }}>
+        <thead>
+          <tr style={{ color: T.textFaint, borderBottom: `1px solid ${T.line}` }}>
+            <th style={{ ...cell, textAlign: 'left' }}>月</th>
+            <th style={cell}>運賃</th>
+            <th style={cell}>建設</th>
+            <th style={cell}>維持</th>
+            <th style={cell}>事故</th>
+            <th style={cell}>損益</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const l = r.ledger;
+            const profit = l.fares - l.construction - l.upkeep - l.accidents;
+            return (
+              <tr key={i} style={{
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+                color: r.current ? T.textMuted : T.text,
+              }}>
+                <td style={{ ...cell, textAlign: 'left', whiteSpace: 'nowrap' }}>{r.label}</td>
+                <td style={cell}>{formatYen(l.fares)}</td>
+                <td style={cell}>{formatYen(l.construction)}</td>
+                <td style={cell}>{formatYen(l.upkeep)}</td>
+                <td style={cell}>{formatYen(l.accidents)}</td>
+                <td style={{ ...cell, fontWeight: 700, color: profit >= 0 ? T.positive : T.danger }}>
+                  {formatYen(profit)}
+                </td>
+              </tr>
+            );
+          })}
+          {ledgerHistory.length === 0 && (
+            <tr>
+              <td colSpan={6} style={{ padding: 10, textAlign: 'center', color: T.textFaint, fontStyle: 'italic' }}>
+                確定済みの月次決算はまだありません
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 };

@@ -48,6 +48,8 @@ const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) =
 
 // バグ5対策: 既存駅名を走査し、A から順に未使用の文字を割り当てる。
 // 孤児駅（隣接がなくなった駅）を消しても採番が飛ばない。
+// 表記は日本語に統一しているため「A駅」形式で採番する(旧セーブの
+// "Station A" 形式の駅名はそのまま保持され、採番の重複判定にも影響しない)。
 export const nextStationName = (stations: Map<string, StationData>): string => {
   const used = new Set(Array.from(stations.values()).map(s => s.name));
   let suffix = 1;
@@ -55,7 +57,7 @@ export const nextStationName = (stations: Map<string, StationData>): string => {
   while (true) {
     for (let i = 0; i < 26; i++) {
       const letter = String.fromCharCode(65 + i);
-      const name = suffix === 1 ? `Station ${letter}` : `Station ${letter}${suffix}`;
+      const name = suffix === 1 ? `${letter}駅` : `${letter}${suffix}駅`;
       if (!used.has(name)) return name;
     }
     suffix++;

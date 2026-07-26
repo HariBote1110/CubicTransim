@@ -2,10 +2,11 @@ import React, { useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { TRAIN_COLOUR, SELECTED_TRAIN_COLOUR } from '../types';
 import type { TrainType, TrainData } from '../types';
 import type { TrainRuntime } from '../sim/simulation';
 import { carPositions } from '../sim/consist';
+import { TrainCar, type CarVariant } from './TrainCar';
+import { PALETTE } from '../render/palette';
 
 interface DynamicTrainProps {
   data: TrainData;
@@ -14,6 +15,10 @@ interface DynamicTrainProps {
   isSelected: boolean;
   onClick: (e: any) => void;
 }
+
+// 車両の高さ基準。sim層のrenderPos.yは0.5固定で、TrainCarはこのyを車体中心付近として
+// 組んである(台車が概ねレール上面に接する)。
+const CAR_Y = 0.5;
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   data, runtimes, type, isSelected, onClick
@@ -43,8 +48,8 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       if (!carGroup) continue;
       const pos = positions[i];
       if (!pos) continue;
-      carGroup.position.set(pos.x, 0.5, pos.z);
-      carGroup.lookAt(pos.x + pos.heading.x, 0.5, pos.z + pos.heading.z);
+      carGroup.position.set(pos.x, CAR_Y, pos.z);
+      carGroup.lookAt(pos.x + pos.heading.x, CAR_Y, pos.z + pos.heading.z);
     }
 
     if (isSelected) {
@@ -56,71 +61,58 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
 
   if (data.status === 'stored') return null;
 
-  const color = isSelected ? SELECTED_TRAIN_COLOUR : TRAIN_COLOUR;
+  const lineColour = isSelected
+    ? PALETTE.carLineSelected
+    : (type === 'express' ? '#e2571f' : PALETTE.carLine);
   const trailingCars = Math.max(0, data.cars - 1);
-
-  const carBody = (
-    <>
-      {type === 'commuter' ? (
-        <mesh>
-          <boxGeometry args={[0.6, 0.6, 0.85]} />
-          <meshStandardMaterial color={color} />
-        </mesh>
-      ) : (
-        <group>
-          <mesh position={[0, 0, 0.2]}>
-            <boxGeometry args={[0.6, 0.6, 0.85]} />
-            <meshStandardMaterial color={color} />
-          </mesh>
-          <mesh position={[0, 0, 0.425]} rotation={[Math.PI / 2, 0, 0]}>
-            <coneGeometry args={[0.3, 0.4, 4]} />
-            <meshStandardMaterial color={color} />
-          </mesh>
-        </group>
-      )}
-    </>
-  );
+  // 1両編成なら先頭車のみ。それ以外は最後尾だけ 'rear'(尾灯つき)にする。
+  const variantOf = (index: number): CarVariant =>
+    index === 0 ? 'front' : (index === data.cars - 1 ? 'rear' : 'middle');
 
   return (
     <group>
-      {/* 2両目以降(後続車両)。先頭より落ち着いた色にして見分けが付くようにする。 */}
+      {/* 2両目以降(後続車両) */}
       {Array.from({ length: trailingCars }).map((_, idx) => (
         <group key={`car-${idx}`} ref={el => { carRefs.current[idx + 1] = el; }}>
-          <mesh>
-            <boxGeometry args={[0.6, 0.6, 0.85]} />
-            <meshStandardMaterial color="#8899aa" />
-          </mesh>
+          <TrainCar variant={variantOf(idx + 1)} lineColour={lineColour} />
         </group>
       ))}
 
-      <group ref={(el) => { groupRef.current = el; carRefs.current[0] = el; }} position={[data.x, 0.5, data.z]} onClick={(e) => { e.stopPropagation(); onClick(e); }}>
-        {carBody}
+      <group
+        ref={(el) => { groupRef.current = el; carRefs.current[0] = el; }}
+        position={[data.x, CAR_Y, data.z]}
+        onClick={(e) => { e.stopPropagation(); onClick(e); }}
+      >
+        <TrainCar variant="front" lineColour={lineColour} />
+
         {isSelected && (
-          <mesh position={[0, 1.5, 0]}>
-            <coneGeometry args={[0.2, 0.5, 4]} />
-            <meshBasicMaterial color={SELECTED_TRAIN_COLOUR} />
+          <mesh position={[0, 0.85, 0]} rotation={[Math.PI, 0, 0]}>
+            <coneGeometry args={[0.16, 0.28, 4]} />
+            <meshBasicMaterial color={PALETTE.carLineSelected} />
           </mesh>
         )}
 
         {isSelected && (
-          <Html position={[0, 2.5, 0]} center style={{ pointerEvents: 'none', width: '200px', textAlign: 'center' }}>
+          <Html position={[0, 1.6, 0]} center style={{ pointerEvents: 'none', width: '200px', textAlign: 'center' }}>
             <div style={{
-              background: 'rgba(0,0,0,0.8)', color: 'white', padding: '4px 8px',
-              borderRadius: '4px', fontSize: '11px', fontFamily: 'monospace',
-              border: '1px solid #666'
+              background: 'rgba(17,22,28,0.86)', color: '#f4f7fa', padding: '5px 9px',
+              borderRadius: '7px', fontSize: '11px',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              border: '1px solid rgba(255,255,255,0.18)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
             }}>
-              <div>{data.id}</div>
-              <div ref={speedTextRef} style={{ color: '#aaffaa', fontWeight: 'bold' }} />
-              <div ref={statusTextRef} style={{ color: '#ccc' }} />
+              <div style={{ fontWeight: 700 }}>{data.id}</div>
+              <div ref={speedTextRef} style={{ color: '#8fe3a5', fontWeight: 'bold' }} />
+              <div ref={statusTextRef} style={{ color: '#b9c3cc' }} />
             </div>
           </Html>
         )}
       </group>
 
       {isSelected && displayRoute.map((pos, i) => (
-        <mesh key={`route-${i}`} position={[pos.x, 0.5, pos.z]}>
-          <sphereGeometry args={[0.08]} />
-          <meshBasicMaterial color="#ffff00" transparent opacity={0.3} />
+        <mesh key={`route-${i}`} position={[pos.x, 0.2, pos.z]}>
+          <sphereGeometry args={[0.07]} />
+          <meshBasicMaterial color="#ffd23f" transparent opacity={0.5} />
         </mesh>
       ))}
     </group>

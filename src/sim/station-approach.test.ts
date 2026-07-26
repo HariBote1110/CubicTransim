@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, TrainData } from '../types';
-import { stepWorld, MIN_CRAWL_SPEED_KMH } from './simulation';
+import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 
-// 駅接近時の減速プロファイルが「滑らかに単調減速し、クロール時間が短い」ことを
-// 検証する回帰テスト群。OpenTTD原式(train_cmd.cpp Train::GetCurrentMaxSpeed())の
-// 「sqrtカーブがまだ十分減速していない場合にのみ st_max_speed = cur_speed - delta_v/10 で
-// 上書きする」という条件付き介入を再現できているかを、実測プロファイルから確認する。
+// 駅接近時の減速プロファイルが「滑らかに単調減速し、クロール時間が短く、
+// 最後に速度が0へ飛ばない」ことを検証する回帰テスト群。
+// v0.2.0-Alpha-3 で、OpenTTDのヒューリスティック(cur_speed − delta_v/10 と
+// 25×残りセル数の線形床、およびそれを打ち消すための最低速度床)を廃し、
+// ジャーク制限つきの制動曲線1本に統一した。
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
   const map = new Map<string, CellData>();
@@ -71,28 +72,55 @@ describe('駅接近時の減速プロファイル', () => {
     }
   });
 
-  it('MIN_CRAWL_SPEED_KMH以下の低速クロール時間は妥当な範囲に収まる(=無限に這い続けない)', () => {
+  it('5km/h以下の低速クロール時間は1秒以内(=無限に這い続けない)', () => {
     const dt = 1 / 60;
     const speeds = recordApproachProfile(15);
 
-    const crawlTicks = speeds.filter(s => s > 0 && s <= MIN_CRAWL_SPEED_KMH).length;
-    const crawlSeconds = crawlTicks * dt;
-
-    // MIN_CRAWL_SPEED_KMH(5km/h=約1.39m/s)は「到着判定を確実に発火させるための
-    // 最低保証速度」。停止位置直前のごく短い区間に限られるべきで、1秒以内に収める。
-    expect(crawlSeconds).toBeLessThanOrEqual(1.0);
+    const crawlTicks = speeds.filter(s => s > 0 && s <= 5).length;
+    expect(crawlTicks * dt).toBeLessThanOrEqual(1.0);
   });
 
   it('10km/h未満の低速区間は合計1.5秒以内(=スッと入ってピタッと止まる)', () => {
     const dt = 1 / 60;
     const speeds = recordApproachProfile(15);
 
-    // 「25×残りセル数」の線形床(v∝d)が終盤の支配的制約になると、時間軸では
-    // 指数的漸近となり10km/h未満の区間が数秒〜十秒近くまで延びる(だらだらクロール)。
-    // OpenTTD実機の停車感に合わせ、超低速区間は停止位置直前の短時間に限定する。
+    // 線形床(v∝d)が終盤の支配的制約になると、時間軸では指数的漸近となり
+    // 10km/h未満の区間が数秒〜十秒近くまで延びる(だらだらクロール)。
     const slowTicks = speeds.filter(s => s > 0 && s < 10).length;
-    const slowSeconds = slowTicks * dt;
+    expect(slowTicks * dt).toBeLessThanOrEqual(1.5);
+  });
 
-    expect(slowSeconds).toBeLessThanOrEqual(1.5);
+  it('停車の瞬間まで速度が連続している(最低速度床による0への飛びがない)', () => {
+    const speeds = recordApproachProfile(15);
+
+    // 旧実装では MIN_CRAWL_SPEED_KMH=5km/h の床があったため、最後のtickで
+    // 5km/h → 0 とカクッと落ちていた。ジャーク制限つきの制動曲線では
+    // 停車直前の速度が十分小さくなっているはず。
+    const lastMoving = [...speeds].reverse().find(s => s > 0) ?? 0;
+    expect(lastMoving).toBeLessThan(3.0);
+  });
+
+  it('減速度(km/h/s)が階段状に跳ばず、ジャーク制限内で滑らかに立ち上がる', () => {
+    const dt = 1 / 60;
+    const speeds = recordApproachProfile(20);
+
+    // ピーク速度に達したあと(=制動フェーズ)だけを見る。停車確定の最終tick
+    // (速度0へのスナップ)は除く。加速→巡航の頭打ちは別の話なので対象外。
+    let peakIdx = 0;
+    for (let i = 1; i < speeds.length; i++) if (speeds[i] > speeds[peakIdx]) peakIdx = i;
+    const moving = speeds.slice(peakIdx).filter(s => s > 0);
+
+    const decels: number[] = [];
+    for (let i = 1; i < moving.length; i++) {
+      decels.push((moving[i - 1] - moving[i]) / dt);
+    }
+
+    // 減速度そのものの変化率(ジャーク)[km/h/s²]の上限。
+    // BRAKE_JERK_MS3=6.0 m/s³ ≒ 21.6 km/h/s² に離散化ぶんの余裕を見た値。
+    let maxJerk = 0;
+    for (let i = 1; i < decels.length; i++) {
+      maxJerk = Math.max(maxJerk, Math.abs(decels[i] - decels[i - 1]) / dt);
+    }
+    expect(maxJerk).toBeLessThanOrEqual(30);
   });
 });

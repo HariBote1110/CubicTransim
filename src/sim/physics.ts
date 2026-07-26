@@ -79,6 +79,72 @@ export function computeAcceleration(
   return netForceN / massKg;
 }
 
+/**
+ * ブレーキのジャーク(加加速度)上限 (m/s³)。減速度をこの割合より速く変化させない。
+ * 実車の常用ブレーキは指令から込め終わりまでに時間がかかるため、減速度が0から
+ * 一定値へ階段状に跳ぶと「ぎこちない」当たりの強い停車に見える。
+ */
+// DECEL_KMH_S=20km/h/s(≒5.56 m/s²)を約0.9秒かけて込め切る値。
+// 小さくしすぎるとブレーキ開始が極端に早まり、大きくすると階段状の当たりに戻る。
+export const BRAKE_JERK_MS3 = 6.0;
+
+/**
+ * 「残り距離 distanceM で停止するために、今許される速度」(km/h)。
+ *
+ * 単純な sqrt(2ad) は「減速度aが即座に立ち上がる」前提のため、ブレーキ込め中の
+ * 距離を食い潰してしまい、込め終わった時点では既に手遅れ→急制動、という
+ * ぎこちない挙動になる。ここでは「まだ立ち上げていない減速度ぶん(a − 現在の減速度)を
+ * ジャークjで立ち上げる」のに必要な余分距離を織り込む:
+ *
+ *   d = v²/(2a) + v·k,  k = (a − currentDecel) / (2j)
+ *   ⟹ v = a·( sqrt(k² + 2d/a) − k )
+ *
+ * - ブレーキ緩解中(currentDecel=0)は最大の余裕を見てブレーキ開始を早める
+ * - ブレーキ込め終わり(currentDecel=a)では k=0 となり sqrt(2ad) に一致する。
+ *   これが重要で、終盤にkが残ると v∝d の線形則になり、時間軸では指数的漸近=
+ *   停止直前に延々と這い続ける「だらだらクロール」を生んでしまう。
+ */
+export function permittedSpeedKmh(
+  distanceM: number,
+  decelMs2: number,
+  jerkMs3: number,
+  currentDecelMs2 = 0
+): number {
+  const d = Math.max(0, distanceM);
+  if (decelMs2 <= 0) return 0;
+  if (!(jerkMs3 > 0)) return Math.sqrt(2 * decelMs2 * d) * 3.6;
+
+  const deficit = Math.max(0, decelMs2 - Math.max(0, currentDecelMs2));
+  const k = deficit / (2 * jerkMs3);
+  const v = decelMs2 * (Math.sqrt(k * k + (2 * d) / decelMs2) - k);
+  return v * 3.6;
+}
+
+/**
+ * permittedSpeedKmh の逆関数。速度 v から「ジャークで減速度を立ち上げつつ停止する」
+ * のに必要な距離(m)を返す:  d = v²/(2a) + v·a/(2j)
+ * 速度制御と予約延長の判定で同じ制動距離を使うために切り出してある。
+ */
+export function brakingDistanceM(speedKmh: number, decelMs2: number, jerkMs3: number): number {
+  const v = Math.max(0, speedKmh) / 3.6;
+  if (decelMs2 <= 0) return Infinity;
+  const jerkAllowance = jerkMs3 > 0 ? (v * decelMs2) / (2 * jerkMs3) : 0;
+  return (v * v) / (2 * decelMs2) + jerkAllowance;
+}
+
+/** 減速度(m/s²)をジャーク上限に従って desired へ近づける。 */
+export function rampDecel(
+  currentMs2: number,
+  desiredMs2: number,
+  jerkMs3: number,
+  dt: number
+): number {
+  const maxStep = Math.max(0, jerkMs3) * Math.max(0, dt);
+  const diff = desiredMs2 - currentMs2;
+  if (Math.abs(diff) <= maxStep) return desiredMs2;
+  return currentMs2 + Math.sign(diff) * maxStep;
+}
+
 // OpenTTD 1tick相当(約1/30秒)を単位に減衰を刻む。
 const OVERSPEED_TICK_S = 1 / 30;
 

@@ -27,6 +27,9 @@ const dot = (a: { x: number; z: number }, b: { x: number; z: number }) => a.x * 
 // 同距離の並行経路がある場合はこの順にBFSキューへ積んで先に採用させる)。
 const leftwardness = (dv: { x: number; z: number }, d: { x: number; z: number }) => dv.x * d.z - dv.z * d.x;
 
+// 停止位置(セル単位の連続量)の端数判定に使う許容誤差。
+const STOP_POS_EPSILON = 1e-9;
+
 const EXTEND_DIRECTIONS = [
     { x: 0, z: -1, dir: DIR.N }, { x: 1, z: -1, dir: DIR.NE },
     { x: 1, z: 0, dir: DIR.E }, { x: 1, z: 1, dir: DIR.SE },
@@ -65,16 +68,31 @@ const findNextInLine = (
   return best;
 };
 
-// 目的駅セルに到達した経路を、OpenTTD流のGetTrainStopLocation相当の停止セルまで延長する。
+export interface RouteResult {
+  path: { x: number; z: number }[];
+  /**
+   * 経路末尾セルへの最終区間のうち、先頭車が実際に停止する位置(0<f<=1)。
+   * 1 は従来どおり「末尾セルの中心で停車」、0.5 なら「末尾セル中心の半セル手前で停車」。
+   * 停止位置をセル中心に量子化せず、ホーム中央と編成中央を正確に合わせるために使う。
+   */
+  stopProgress: number;
+}
+
+// 目的駅セルに到達した経路を、OpenTTD流のGetTrainStopLocation相当の停止位置まで延長する。
 // ホームセル列(進行方向に連続する同一stationIdのセル、進入順に0..P-1、entry=lastCellが
-// index0)に対し、headIdxを次の優先順位で決める:
-//   1. 編成長(cars) >= ホーム長(P) なら stopLocation設定によらず無条件で FarEnd(headIdx=P-1)固定
+// index0)に対し、先頭車の停止位置 headPos(セル単位の連続量)を次の優先順位で決める:
+//   1. 編成長(cars) >= ホーム長(P) なら stopLocation設定によらず無条件で FarEnd(headPos=P-1)固定
 //   2. それ以外は stopLocation ('near'|'middle'|'far') に従う
-//      near:   headIdx = min(cars,P) - 1 (編成ができるだけホーム内に収まる最小前進)
-//      middle: headIdx = ceil((P+cars)/2) - 1 (編成中央がホーム中央に最も近づく)
-//      far:    headIdx = P - 1 (ホーム奥端)
-// headIdxは常にP-1以下になるため、ホームより先へ延長することはない(FarEndは
+//      near:   headPos = min(cars,P) - 1 (編成ができるだけホーム内に収まる最小前進)
+//      middle: headPos = (P+cars)/2 - 1  (編成中央がホーム中央と一致する連続量)
+//      far:    headPos = P - 1 (ホーム奥端)
+// headPosは常にP-1以下になるため、ホームより先へ延長することはない(FarEndは
 // あくまで「ホーム奥端で止まる」処理であり、ホームの先の線路まで出て行くわけではない)。
+//
+// middleのheadPosは半端値(x.5)になり得る。従来はこれをceilで切り上げてセル中心に
+// 量子化していたため、P+carsが奇数のとき編成が半セル(=15m)ホーム奥へ寄っていた。
+// ここでは切り上げたセルまで経路を延ばしたうえで、その最終区間の途中(stopProgress)で
+// 停車させることで、量子化誤差なくホーム中央に合わせる。
 const extendThroughPlatform = (
   railMap: Map<string, CellData>,
   targetId: string,
@@ -83,9 +101,9 @@ const extendThroughPlatform = (
   path: { x: number; z: number }[],
   cars: number,
   stopLocation: 'near' | 'middle' | 'far' = 'middle'
-): { x: number; z: number }[] => {
+): RouteResult => {
   const extended = [...path];
-  if (!prevCell) return extended;
+  if (!prevCell) return { path: extended, stopProgress: 1 };
 
   // Phase 0: ホームセル列(P個、entry=index0)を先読みする。
   const platformCells: { x: number; z: number }[] = [lastCell];
@@ -104,35 +122,45 @@ const extendThroughPlatform = (
   const P = platformCells.length;
   // OpenTTD流: 編成長(cars) >= ホーム長(P)なら停止位置はstopLocation設定によらず
   // 無条件でFarEnd(奥端)固定になる。それ以外はNear/Middle/Farのオーダー設定に従う。
-  let headIdx: number;
+  let headPos: number;
   if (cars >= P) {
-    headIdx = P - 1;
+    headPos = P - 1;
   } else if (stopLocation === 'near') {
-    headIdx = Math.min(cars, P) - 1;
+    headPos = Math.min(cars, P) - 1;
   } else if (stopLocation === 'far') {
-    headIdx = P - 1;
+    headPos = P - 1;
   } else {
-    headIdx = Math.ceil((P + cars) / 2) - 1;
+    headPos = (P + cars) / 2 - 1;
   }
 
-  // headIdxは常にP-1以下になる(cars>=Pの場合はFarEnd固定でheadIdx=P-1、near/far/middleの
+  // headPosは常にP-1以下になる(cars>=Pの場合はFarEnd固定でheadPos=P-1、near/far/middleの
   // いずれもcars<Pのときはホーム内に収まる)。そのため、ホームの先の線路まで停止位置を
   // 延長する必要はない(=FarEndは「ホーム奥端で止まる」のであり、それより先には出ない)。
-  for (let i = 1; i <= headIdx; i++) extended.push(platformCells[i]);
-  return extended;
+  //
+  // 経路は headPos を含む最小のセル(=切り上げ)まで延ばし、端数は stopProgress で表す。
+  const headCell = Math.ceil(headPos - STOP_POS_EPSILON);
+  for (let i = 1; i <= headCell; i++) extended.push(platformCells[i]);
+
+  const remainder = headCell - headPos;
+  const stopProgress = remainder <= STOP_POS_EPSILON ? 1 : 1 - remainder;
+  return { path: extended, stopProgress };
 };
 
-export function calculateRoute(
+/**
+ * 経路と停止位置(最終区間内の端数)をまとめて返す版。
+ * 停止位置の端数を必要としない呼び出し側のために、pathのみを返す calculateRoute も残す。
+ */
+export function calculateRouteWithStop(
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>,
   occupied: Set<string>,
   reserved: Set<string>,
   query: RouteQuery
-): { x: number; z: number }[] {
+): RouteResult {
   const { start, prev: prevGrid, targetStationId: targetId, cars, stopLocation = 'middle' } = query;
 
   const targetSt = stations.get(targetId);
-  if (!targetSt) return [];
+  if (!targetSt) return { path: [], stopProgress: 1 };
 
   const runSearch = (ignoreOccupied: boolean) => {
       const queue = [{ curr: start, path: [] as { x: number; z: number }[], prev: prevGrid }];
@@ -212,5 +240,15 @@ export function calculateRoute(
   const smartPath = runSearch(false);
   if (smartPath) return smartPath;
   const fallbackPath = runSearch(true);
-  return fallbackPath || [];
+  return fallbackPath || { path: [], stopProgress: 1 };
+}
+
+export function calculateRoute(
+  railMap: Map<string, CellData>,
+  stations: Map<string, StationData>,
+  occupied: Set<string>,
+  reserved: Set<string>,
+  query: RouteQuery
+): { x: number; z: number }[] {
+  return calculateRouteWithStop(railMap, stations, occupied, reserved, query).path;
 }
