@@ -18,7 +18,7 @@ import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownDa
 import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
-import { canPlaceTrainAt } from '../sim/relocate';
+import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import { T } from '../ui/theme';
@@ -113,11 +113,16 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
 
-  // 列車ドラッグ(プラレールを掴んで移動する操作)。押下したセルから動くまでは
-  // 「押しているだけ」(=クリック候補)とみなし、選択モード(buildMode==='none')の
-  // クリックによる列車選択と競合しないようにする。
+  // 列車ドラッグ(プラレールを掴んで移動する操作)。操作の起点は地面プレーンの
+  // onPointerDown(押下したセルに列車がいるかをtrainAtCellで判定する)。列車メッシュ
+  // 自身のonPointerDownには依存しない(発火しない/拾えないケースがあり選択できなく
+  // なる不具合の原因だったため。詳細はprogress/train-relocate-drag.md参照)。
+  // 押下したセルから動くまでは「押しているだけ」(=クリック候補)とみなし、選択モード
+  // (buildMode==='none')のクリックによる列車選択と競合しないようにする。
   const [trainPress, setTrainPress] = useState<{ id: string; startCell: { x: number; z: number } } | null>(null);
   const [draggingTrainId, setDraggingTrainId] = useState<string | null>(null);
+  // ドラッグ確定直後に発生しうる余計なクリック(=選択解除やクリック選択)を1回だけ無視する。
+  const justDraggedRef = React.useRef(false);
 
   const canDropTrainHere = useMemo(() => {
     if (!draggingTrainId || !cursorPos) return false;
@@ -154,27 +159,30 @@ export const GameScene: React.FC<GameSceneProps> = ({
     }
   };
 
-  const handleTrainPointerDown = (trainId: string) => (e: ThreeEvent<PointerEvent>) => {
-    if (buildMode !== 'none') return;
-    setTrainPress({ id: trainId, startCell: getGridPosFromEvent(e) });
-  };
-
   const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
-    if (buildMode === 'none') return;
+    if (buildMode === 'none') {
+      // 選択モード: 押下したセルに列車がいれば「掴んだ」状態にする(ドラッグ候補)。
+      // 実際のドラッグへの昇格はhandlePointerMoveで別セルへ動いた時点。
+      const pos = getGridPosFromEvent(e);
+      const trainId = trainAtCell(world.current, pos);
+      if (trainId) setTrainPress({ id: trainId, startCell: pos });
+      return;
+    }
     if (e.button === 0 && !e.shiftKey) setDragStartPos(getGridPosFromEvent(e));
   };
 
   const handlePointerUp = (e: ThreeEvent<PointerEvent>) => {
-    // 選択モードでの列車ドラッグ/クリックの決着はここで行う(建設モードのドラッグより先に処理する)。
+    // 選択モードでの列車ドラッグの決着はここで行う(建設モードのドラッグより先に処理する)。
+    // クリックによる選択はDynamicTrain側のonClickに任せる(ここではtrainPressをリセットするのみ)。
     if (buildMode === 'none') {
       if (draggingTrainId) {
         const pos = getGridPosFromEvent(e);
         onRelocateTrain?.(draggingTrainId, pos.x, pos.z);
         setDraggingTrainId(null);
         setTrainPress(null);
+        justDraggedRef.current = true;
       } else if (trainPress) {
-        onSelectTrain(trainPress.id);
         setTrainPress(null);
       }
       return;
@@ -390,8 +398,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
           key={train.id} data={train} runtimes={world.current.runtimes} type="commuter"
           isSelected={train.id === selectedTrainId}
           lineColour={findGroup(groups, train.groupId)?.colour}
-          onClick={() => {}}
-          onPointerDown={handleTrainPointerDown(train.id)}
+          onClick={() => {
+            if (buildMode !== 'none') return;
+            if (justDraggedRef.current) { justDraggedRef.current = false; return; }
+            onSelectTrain(train.id);
+          }}
           isDragging={draggingTrainId === train.id}
           dragCell={draggingTrainId === train.id ? cursorPos : null}
         />

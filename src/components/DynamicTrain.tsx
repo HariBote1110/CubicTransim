@@ -16,8 +16,6 @@ interface DynamicTrainProps {
   /** 所属する運用グループのラインカラー。未所属なら車種の既定色を使う。 */
   lineColour?: string;
   onClick: (e: any) => void;
-  /** 選択モードでの列車ドラッグ開始(プラレールを掴む操作)。 */
-  onPointerDown?: (e: any) => void;
   /** この列車をドラッグで持ち上げている最中かどうか。 */
   isDragging?: boolean;
   /** ドラッグ中に追従させるカーソル位置のセル。 */
@@ -35,7 +33,7 @@ const INITIAL_CAR_Y = 0.5;
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   data, runtimes, type, isSelected, lineColour: groupColour, onClick,
-  onPointerDown, isDragging, dragCell,
+  isDragging, dragCell,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const carRefs = useRef<(THREE.Group | null)[]>([]);
@@ -120,7 +118,6 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
         position={[data.x, INITIAL_CAR_Y, data.z]}
         scale={isDragging ? 0.94 : 1}
         onClick={(e) => { e.stopPropagation(); onClick(e); }}
-        onPointerDown={onPointerDown ? (e) => { e.stopPropagation(); onPointerDown(e); } : undefined}
       >
         <TrainCar variant="front" lineColour={lineColour} />
 
