@@ -17,7 +17,7 @@
 // 曲線にしてもセル間で線路が途切れない。分岐(3方向以上)と行き止まり(1方向)は
 // 従来どおり中心からの直線の腕で描く。
 import * as THREE from 'three';
-import { DIR } from '../utils';
+import { DIR, getVectorFromDir } from '../utils';
 import { angleFromVector } from './palette';
 import { mergeAndDispose } from './mergeGeometry';
 
@@ -87,7 +87,8 @@ const layTrackAlong = (
   points: Pt[],
   originX: number,
   originZ: number,
-  originY = 0
+  originY = 0,
+  withBallast = true
 ): void => {
   if (points.length < 2) return;
 
@@ -106,10 +107,12 @@ const layTrackAlong = (
     // 継ぎ目を隠すため、両端を少しずつ伸ばす
     const len = segLen + JOIN_OVERLAP * 2;
 
-    const ballast = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, len);
-    ballast.rotateY(rotY);
-    ballast.translate(cx, originY + BALLAST_HEIGHT / 2, cz);
-    parts.ballast.push(ballast);
+    if (withBallast) {
+      const ballast = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, len);
+      ballast.rotateY(rotY);
+      ballast.translate(cx, originY + BALLAST_HEIGHT / 2, cz);
+      parts.ballast.push(ballast);
+    }
 
     for (const side of [-1, 1]) {
       const rail = new THREE.BoxGeometry(RAIL_WIDTH, RAIL_HEIGHT, len);
@@ -155,7 +158,13 @@ const layTrackAlong = (
  * connections が 0(建設プレビューなど)の場合は南北方向の直線1本ぶんを返す。
  * originY を渡すと立体交差の高架側(OVERPASS_HEIGHTぶん上)を描ける。
  */
-export function buildCellTrackParts(connections: number, originX = 0, originZ = 0, originY = 0): TrackParts {
+export function buildCellTrackParts(
+  connections: number,
+  originX = 0,
+  originZ = 0,
+  originY = 0,
+  withBallast = true
+): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
 
   const arms: Pt[] = connections === 0
@@ -172,7 +181,7 @@ export function buildCellTrackParts(connections: number, originX = 0, originZ = 
     const isStraight = ua.x * ub.x + ua.z * ub.z < -0.999;
 
     if (isStraight) {
-      layTrackAlong(parts, [a, b], originX, originZ, originY);
+      layTrackAlong(parts, [a, b], originX, originZ, originY, withBallast);
     } else {
       // 境界点A → セル中心(制御点) → 境界点B の2次ベジェ
       const centre: Pt = { x: 0, z: 0 };
@@ -180,53 +189,126 @@ export function buildCellTrackParts(connections: number, originX = 0, originZ = 
       for (let i = 0; i <= CURVE_SEGMENTS; i++) {
         points.push(quad(a, centre, b, i / CURVE_SEGMENTS));
       }
-      layTrackAlong(parts, points, originX, originZ, originY);
+      layTrackAlong(parts, points, originX, originZ, originY, withBallast);
     }
     return parts;
   }
 
   // 分岐(3方向以上)と行き止まり(1方向): 中心から各境界点へ直線の腕を伸ばす。
   // 中心のバラストで腕どうしの継ぎ目を埋める。
-  const pad = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, BALLAST_WIDTH);
-  pad.translate(originX, originY + BALLAST_HEIGHT / 2, originZ);
-  parts.ballast.push(pad);
+  if (withBallast) {
+    const pad = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, BALLAST_WIDTH);
+    pad.translate(originX, originY + BALLAST_HEIGHT / 2, originZ);
+    parts.ballast.push(pad);
+  }
 
   for (const arm of arms) {
-    layTrackAlong(parts, [{ x: 0, z: 0 }, arm], originX, originZ, originY);
+    layTrackAlong(parts, [{ x: 0, z: 0 }, arm], originX, originZ, originY, withBallast);
   }
   return parts;
 }
 
-// --- 高架の橋脚(ピア)と桁(デッキ) ---
-const PIER_RADIUS = 0.07;
-const DECK_THICKNESS = 0.1;
-const DECK_SIZE = 0.94;
+// --- 橋の桁(ガーダー)・橋脚(ピア)・橋台(アバットメント) ---
+// ガーダー橋らしく、桁はレール幅程度の細い板が軸方向に連続して見えるようにし、
+// 橋脚は間引いて数セルおきに、両端は橋台の擁壁で地面に取り付ける。
+const PIER_RADIUS = 0.045;
+const DECK_THICKNESS = 0.08;
+// デッキの幅はバラスト幅よりわずかに狭くして、レールの下に収まる細い桁に見せる。
+const DECK_WIDTH = BALLAST_WIDTH * 0.82;
+const ABUTMENT_LENGTH = 0.34;
+const ABUTMENT_WIDTH = BALLAST_WIDTH * 1.3;
 
 export interface SupportParts {
   piers: THREE.BufferGeometry[];
   decks: THREE.BufferGeometry[];
 }
 
+const DIR_BITS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
+
+/** connections に立っている最初の方向ビットを返す(橋桁は必ず軸1本ぶんの2ビット)。 */
+const firstDirBit = (connections: number): number => {
+  for (const bit of DIR_BITS) if (connections & bit) return bit;
+  return DIR.E;
+};
+
 /**
- * 高架セル1つぶんの橋脚・桁を、セル中心を原点としたローカル座標で生成する。
- * 桁はセル全域を覆う板(デッキ)にして、その下に地面から桁下面まで伸びる
- * 円柱の橋脚をセル中心付近に1本立てる。バラスト(originY + BALLAST_HEIGHT/2 が底)
- * のすぐ下にデッキ上面が来るよう高さを合わせる。
+ * 橋脚を間引く判定。橋の軸方向に沿ったセル整数インデックスの偶奇で判定するので、
+ * 軸が斜めでも(x, z)いずれかが変化しない方向でも、隣接セル間で必ず交互になる。
  */
-export function buildOverpassSupportParts(originX = 0, originZ = 0, originY = 0): SupportParts {
+export function shouldPlacePier(x: number, z: number, dir: number): boolean {
+  const { x: dx, z: dz } = getVectorFromDir(dir);
+  const normSq = dx * dx + dz * dz || 1;
+  const idx = Math.round((x * dx + z * dz) / normSq);
+  return idx % 2 === 0;
+}
+
+/**
+ * 橋桁セル1つぶんの桁・橋脚を、セル中心を原点としたワールド座標(x, z)で生成する。
+ * 桁は境界点A→境界点Bへ真っすぐ渡す細長い板で、trackPath.ts と同じ中心線の
+ * 直線区間(橋は必ず直線)に一致させているので、レールの真下に来る。
+ * 橋脚はshouldPlacePierがtrueのセルだけに1本、地面から桁下面まで立てる。
+ */
+export function buildOverpassSupportParts(connections: number, x = 0, z = 0, originY = 0): SupportParts {
   const deckTop = originY; // バラストの底(=originY)にちょうど接するようにする
   const deckCentreY = deckTop - DECK_THICKNESS / 2;
+  const decks: THREE.BufferGeometry[] = [];
 
-  const deck = new THREE.BoxGeometry(DECK_SIZE, DECK_THICKNESS, DECK_SIZE);
-  deck.translate(originX, deckCentreY, originZ);
+  const arms = BOUNDARY_OFFSETS.filter(o => connections & o.bit);
+  if (arms.length === 2) {
+    const [a, b] = arms;
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const segLen = Math.hypot(dx, dz);
+    if (segLen > 1e-6) {
+      const rotY = angleFromVector(dx / segLen, dz / segLen);
+      const cx = x + (a.x + b.x) / 2;
+      const cz = z + (a.z + b.z) / 2;
+      const deck = new THREE.BoxGeometry(DECK_WIDTH, DECK_THICKNESS, segLen + JOIN_OVERLAP * 2);
+      deck.rotateY(rotY);
+      deck.translate(cx, deckCentreY, cz);
+      decks.push(deck);
+    }
+  }
 
-  const pierBottom = 0;
-  const pierTop = deckCentreY - DECK_THICKNESS / 2;
-  const pierHeight = Math.max(0.02, pierTop - pierBottom);
-  const pier = new THREE.CylinderGeometry(PIER_RADIUS, PIER_RADIUS * 1.3, pierHeight, 8);
-  pier.translate(originX, pierBottom + pierHeight / 2, originZ);
+  const piers: THREE.BufferGeometry[] = [];
+  const dir = firstDirBit(connections);
+  if (shouldPlacePier(x, z, dir)) {
+    const pierBottom = 0;
+    const pierTop = deckCentreY - DECK_THICKNESS / 2;
+    const pierHeight = Math.max(0.02, pierTop - pierBottom);
+    const pier = new THREE.CylinderGeometry(PIER_RADIUS, PIER_RADIUS * 1.3, pierHeight, 8);
+    pier.translate(x, pierBottom + pierHeight / 2, z);
+    piers.push(pier);
+  }
 
-  return { piers: [pier], decks: [deck] };
+  return { piers, decks };
+}
+
+/**
+ * 橋台(bridge head)の擁壁を1つ生成する。headX/headZ は橋台側(upperを持たない)
+ * セルの座標、dirTowardBridge はそのセルから見て橋桁がある方向のビット。
+ * 地平の高さ(y=0)から、隣接する橋桁セルの桁下面(originY - DECK_THICKNESS)までを
+ * 埋める箱を、2セルの境界点を中心に置く。
+ */
+export function buildBridgeAbutmentPart(
+  dirTowardBridge: number,
+  headX: number,
+  headZ: number,
+  originY: number
+): THREE.BufferGeometry | null {
+  const boundary = BOUNDARY_OFFSETS.find(o => o.bit === dirTowardBridge);
+  if (!boundary) return null;
+
+  const deckBottom = originY - DECK_THICKNESS;
+  if (deckBottom <= 0) return null;
+
+  const u = norm(boundary.x, boundary.z);
+  const rotY = angleFromVector(u.x, u.z);
+
+  const abutment = new THREE.BoxGeometry(ABUTMENT_WIDTH, deckBottom, ABUTMENT_LENGTH);
+  abutment.rotateY(rotY);
+  abutment.translate(headX + boundary.x, deckBottom / 2, headZ + boundary.z);
+  return abutment;
 }
 
 /** 部品配列をマージして1つのジオメトリにする(空なら null)。 */
