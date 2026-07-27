@@ -20,7 +20,7 @@ const MIN_CARS = 1;
 const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
-import { mulberry32, generateTowns, maybeSpawnTownForStation } from '../sim/towns';
+import { mulberry32, generateTowns, resolveTownSpawnForStation } from '../sim/towns';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
@@ -176,10 +176,11 @@ export const useGameLogic = () => {
         cost = costOfPath('station', path.length);
         if (money < cost) return;
         const stationPos = path[path.length - 1];
-        // 近くに町が無ければ一定確率で新しい町が湧く(maybeSpawnTownForStation)。
+        // 近くに町が無ければ一定確率で新しい町が湧く(resolveTownSpawnForStation)。
         // 駅名は後から使うため、町を決めてから applyStation に渡す。
-        const spawnedTown = maybeSpawnTownForStation(stationPos, towns, terrain, worldRef.current.rng);
-        const townsForNaming = spawnedTown ? [...towns, spawnedTown] : towns;
+        const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
+          stationPos, towns, terrain, worldRef.current.rng
+        );
         result = applyStation(state, stationPos, terrain, townsForNaming);
         // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
         if (spawnedTown && result.stations !== state.stations) {
@@ -229,16 +230,25 @@ export const useGameLogic = () => {
     if (!template) return;
 
     const state: ConstructionState = { railMap, stations };
-    const evaluation = evaluateStationTemplate(template, anchor, quarterTurns, railMap, stations, terrain, money, towns);
+    // 近くに町が無ければ一定確率で新しい町が湧く(resolveTownSpawnForStation)。
+    // テンプレートは複数セルを一度に置くため、判定はアンカー座標を基準に1回だけ行う。
+    const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
+      anchor, towns, terrain, worldRef.current.rng
+    );
+    const evaluation = evaluateStationTemplate(template, anchor, quarterTurns, railMap, stations, terrain, money, townsForNaming);
     if (evaluation.reason !== 'ok') return;
 
-    const result = applyStationTemplate(state, anchor, template, quarterTurns, towns, terrain);
+    const result = applyStationTemplate(state, anchor, template, quarterTurns, townsForNaming, terrain);
     const changed = result.railMap !== state.railMap || result.stations !== state.stations;
     if (!changed) return;
 
     if (evaluation.cost > 0) {
       setMoney(m => m - evaluation.cost);
       setCurrentLedger(l => ({ ...l, construction: l.construction + evaluation.cost }));
+    }
+    // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
+    if (spawnedTown) {
+      setTowns(townsForNaming);
     }
 
     setRailMap(result.railMap);

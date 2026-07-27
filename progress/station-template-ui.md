@@ -36,8 +36,13 @@
 - 十字駅の描画(ホーム・上屋)は交差セルでも破綻せず、既存の`StationBlock`が
   `connections`から屋根・柱を組み立てる実装のままで問題なかった。描画側の追加調整は不要。
 
-## 既知の制約
-- テンプレート設置時、`commitPath`の駅ケースにある「近くに町が無ければ一定確率で新しい
-  町を湧かせる」(`maybeSpawnTownForStation`)処理は移植していない。テンプレは複数セルを
-  一度に置くため、単一セル基準のこの仕組みをそのまま流用すると挙動が分かりにくくなるため。
-  必要になったら別途検討する。
+## 既知の制約(解消済み)
+- ~~テンプレート設置時、`commitPath`の駅ケースにある「近くに町が無ければ一定確率で新しい
+  町を湧かせる」(`maybeSpawnTownForStation`)処理は移植していない。~~
+  → `sim/towns.ts`に`resolveTownSpawnForStation`を切り出し(`maybeSpawnTownForStation`を
+  1回だけ呼び、命名用のtowns配列を返すラッパー)、`commitPath`・`commitTemplate`の両方から
+  同じ関数を呼ぶ形にした。テンプレートはアンカー座標を基準に1回だけ判定するため、セル数ぶん
+  何度も抽選することはない。駅名は判定→townsForNamingを確定させてからapplyStation/
+  applyStationTemplateに渡す順序なので、湧いた町の名前がそのまま駅名に反映される
+  (テンプレも通常駅と同じ処理順で、駅名がA駅のまま取り残される不整合はない)。
+  テストは`src/sim/towns.test.ts`の`resolveTownSpawnForStation`にRed→Greenで追加。
