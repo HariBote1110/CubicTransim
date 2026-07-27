@@ -147,4 +147,16 @@ describe('reservation: 立体交差での層ごとの予約キー分離', () => 
     expect(reservations.get(reservationKey(ground))).toBe('A');
     expect(reservations.get(reservationKey(upper))).toBe('B');
   });
+
+  it('十字乗換駅の交差セルは1つの予約資源であり、南北・東西の列車が同時に保持できない', () => {
+    const reservations = new Map<string, string>();
+    const crossCell = { x: 0, z: 0 };
+    // 南北方向の列車Aが先に交差セルを予約する
+    expect(tryReserve(reservations, 'A', [{ x: 0, z: -1 }, crossCell, { x: 0, z: 1 }])).toBe(true);
+    // 東西方向の列車Bが同じ交差セルを含む経路を予約しようとすると失敗する
+    expect(tryReserve(reservations, 'B', [{ x: -1, z: 0 }, crossCell])).toBe(false);
+    // 失敗した予約は部分的にも残らない(ロールバック)
+    expect(reservations.get(reservationKey({ x: -1, z: 0 }))).toBeUndefined();
+    expect(reservations.get(reservationKey(crossCell))).toBe('A');
+  });
 });

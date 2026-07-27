@@ -177,13 +177,10 @@ export function applyStation(
     return state;
   }
 
-  // バグ1/2対策: すでに駅・車庫があるセルへの再設置は no-op
-  if (existingBeforeUpdate && (existingBeforeUpdate.type === 'station' || existingBeforeUpdate.type === 'depot')) {
+  // 車庫があるセルへの設置は従来通り no-op(車庫が消えないように)
+  if (existingBeforeUpdate && existingBeforeUpdate.type === 'depot') {
     return state;
   }
-
-  const railMap = new Map(state.railMap);
-  const stations = new Map(state.stations);
 
   const neighbours = [
     { x: pos.x + 1, z: pos.z },
@@ -191,35 +188,79 @@ export function applyStation(
     { x: pos.x, z: pos.z + 1 },
     { x: pos.x, z: pos.z - 1 },
   ];
-  let foundStationId: string | null = null;
+
+  // 十字駅対応: 駅セルは他の駅セルと交差できる(ダイヤモンドクロッシングの駅版)。
+  // pos自身が既に駅セルの場合(横切られる側)と、隣接4セルに駅がある場合の両方から
+  // 関係する駅IDを集める。2つ以上の異なる駅IDが関わっていれば、それらは1つの駅に統合する
+  // (乗り換え駅なので同一駅として扱うのが自然)。
+  const crossingStationId = existingBeforeUpdate?.type === 'station' ? (existingBeforeUpdate.stationId ?? null) : null;
+
+  const involvedIds: string[] = [];
+  const pushId = (id: string | null | undefined) => {
+    if (id && !involvedIds.includes(id)) involvedIds.push(id);
+  };
+  pushId(crossingStationId);
   for (const n of neighbours) {
-    const nKey = toKey(n.x, n.z);
-    const cell = railMap.get(nKey);
-    if (cell && cell.type === 'station' && cell.stationId) {
-      foundStationId = cell.stationId;
-      break;
-    }
+    const cell = state.railMap.get(toKey(n.x, n.z));
+    if (cell && cell.type === 'station') pushId(cell.stationId ?? null);
   }
 
-  let targetId = foundStationId;
-  if (!targetId) {
-    targetId = Math.random().toString(36).substr(2, 9);
-    const newName = stationNameFor(pos, stations, towns);
-    stations.set(targetId, { id: targetId, name: newName, cells: [{ x: pos.x, z: pos.z }], center: { x: pos.x, z: pos.z }, platformDoors: 'none' });
-  } else {
-    const sid = targetId;
-    const st = stations.get(sid);
-    if (st) {
+  // 既に駅セルで、統合すべき別の駅IDが周囲に無ければ従来通り no-op(バグ1/2対策の再設置防止)
+  if (crossingStationId && involvedIds.length <= 1) {
+    return state;
+  }
+
+  const railMap = new Map(state.railMap);
+  const stations = new Map(state.stations);
+  let targetId: string;
+
+  if (involvedIds.length >= 2) {
+    // 十字駅: 複数の駅にまたがるセル → 先に存在した(stations Mapで挿入順が最も早い)駅へ統合する
+    const order = Array.from(state.stations.keys());
+    involvedIds.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const keepId = involvedIds[0];
+    const keepSt = stations.get(keepId)!;
+    const cellMap = new Map<string, { x: number; z: number }>();
+    keepSt.cells.forEach(c => cellMap.set(toKey(c.x, c.z), c));
+    for (let i = 1; i < involvedIds.length; i++) {
+      const removeId = involvedIds[i];
+      const removeSt = stations.get(removeId);
+      if (!removeSt) continue;
+      removeSt.cells.forEach(c => {
+        cellMap.set(toKey(c.x, c.z), c);
+        const ck = toKey(c.x, c.z);
+        const cell = railMap.get(ck);
+        if (cell && cell.type === 'station' && cell.stationId === removeId) {
+          railMap.set(ck, { ...cell, stationId: keepId });
+        }
+      });
+      stations.delete(removeId);
+    }
+    cellMap.set(key, { x: pos.x, z: pos.z });
+    const mergedCells = Array.from(cellMap.values());
+    const cx = mergedCells.reduce((sum, c) => sum + c.x, 0) / mergedCells.length;
+    const cz = mergedCells.reduce((sum, c) => sum + c.z, 0) / mergedCells.length;
+    stations.set(keepId, { ...keepSt, cells: mergedCells, center: { x: cx, z: cz } });
+    targetId = keepId;
+  } else if (involvedIds.length === 1) {
+    targetId = involvedIds[0];
+    const st = stations.get(targetId)!;
+    if (!st.cells.some(c => c.x === pos.x && c.z === pos.z)) {
       const newCells = [...st.cells, { x: pos.x, z: pos.z }];
       const cx = newCells.reduce((sum, c) => sum + c.x, 0) / newCells.length;
       const cz = newCells.reduce((sum, c) => sum + c.z, 0) / newCells.length;
-      stations.set(sid, { ...st, cells: newCells, center: { x: cx, z: cz } });
+      stations.set(targetId, { ...st, cells: newCells, center: { x: cx, z: cz } });
     }
+  } else {
+    targetId = Math.random().toString(36).substr(2, 9);
+    const newName = stationNameFor(pos, stations, towns);
+    stations.set(targetId, { id: targetId, name: newName, cells: [{ x: pos.x, z: pos.z }], center: { x: pos.x, z: pos.z }, platformDoors: 'none' });
   }
 
-  // バグ3対策: 既存の rail セルを駅化する場合は connections を維持する。
+  // バグ3対策: 既存の rail/station セルを駅化する場合は connections を維持する
+  // (十字駅の交差セルは既にN|E|S|Wを持っているので、そのまま維持すれば4方向とも通行可)。
   // 空セルに新規設置する場合のみ N|E|S|W で初期化する。
-  const connections = existingBeforeUpdate && existingBeforeUpdate.type === 'rail'
+  const connections = existingBeforeUpdate && (existingBeforeUpdate.type === 'rail' || existingBeforeUpdate.type === 'station')
     ? (existingBeforeUpdate.connections || 0)
     : (DIR.N | DIR.E | DIR.S | DIR.W);
 

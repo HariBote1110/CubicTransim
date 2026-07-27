@@ -96,6 +96,55 @@ describe('applyStation（特性テスト）', () => {
     expect(cell.connections! & DIR.SE).toBe(DIR.SE);
     expect(cell.connections! & DIR.N).toBe(0);
   });
+
+  // 十字乗換駅: 別々に建設された2つの駅が交差セルで1つに統合される
+  it('別の駅IDの駅セルを横切ると1つの駅に統合される（十字駅）', () => {
+    let state = emptyState();
+    // 東西方向の駅(H)を先に建設する
+    state = applyStation(state, { x: -1, z: 0 });
+    const hId = Array.from(state.stations.keys())[0];
+    state = applyStation(state, { x: 0, z: 0 });
+    state = applyStation(state, { x: 1, z: 0 });
+    expect(state.stations.get(hId)!.cells).toHaveLength(3);
+
+    // 南北方向の駅(V)を、Hに触れないところから独立に建設し、
+    // 最後にHの交差セル(0,0)へ向けて延伸させる(十字駅の形成)
+    state = applyStation(state, { x: 0, z: -3 });
+    const vId = Array.from(state.stations.keys()).find(id => id !== hId)!;
+    state = applyStation(state, { x: 0, z: -2 });
+    expect(state.stations.get(vId)!.cells).toHaveLength(2);
+
+    // (0,-1)はHの交差セル(0,0)に隣接するため、この時点で統合される
+    state = applyStation(state, { x: 0, z: -1 });
+    expect(state.stations.size).toBe(1);
+    const merged = state.stations.get(hId)!; // 先に存在したHの駅IDが残る
+    expect(merged.cells).toHaveLength(6);
+    expect(state.stations.has(vId)).toBe(false);
+
+    // 交差セル自体(0,0)は既に統合済みの駅であり、再設置しても no-op
+    const before = state;
+    state = applyStation(state, { x: 0, z: 0 });
+    expect(state).toBe(before);
+
+    const crossCell = state.railMap.get(toKey(0, 0))!;
+    expect(crossCell.type).toBe('station');
+    expect(crossCell.stationId).toBe(hId);
+    expect(crossCell.connections).toBe(DIR.N | DIR.E | DIR.S | DIR.W);
+
+    // Vをさらに南へ延伸すると、統合済みの駅として増える
+    state = applyStation(state, { x: 0, z: 1 });
+    expect(state.stations.get(hId)!.cells).toHaveLength(7);
+    expect(state.railMap.get(toKey(0, 1))!.stationId).toBe(hId);
+  });
+
+  it('車庫のセルは駅の交差を許可しても従来通り拒否される', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 0, z: 0 });
+    const before = state;
+    state = applyStation(state, { x: 0, z: 0 });
+    expect(state).toBe(before);
+    expect(state.railMap.get(toKey(0, 0))!.type).toBe('depot');
+  });
 });
 
 describe('applyStation（町名からの駅名採用）', () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DIR, toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData } from '../types';
 import { calculateRoute, calculateRouteWithStop } from './pathfinding';
-import { applyRailPath, applyBridge, type ConstructionState } from './construction';
+import { applyRailPath, applyBridge, applyStation, type ConstructionState } from './construction';
 
 const noOccupied = new Set<string>();
 const noReserved = new Set<string>();
@@ -618,6 +618,57 @@ describe('橋(applyBridge)の経路探索', () => {
     expect(groundRoute.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
       { x: 2, z: 0, layer: undefined },
       { x: 2, z: 1, layer: undefined },
+    ]);
+  });
+});
+
+describe('十字乗換駅(交差セル)の経路探索', () => {
+  // 十字駅: (0,0)を交差セルとして東西・南北の駅セル列が交わる1つの駅を作る。
+  const buildCrossStation = () => {
+    let state: ConstructionState = { railMap: new Map<string, CellData>(), stations: new Map() };
+    // 南北方向を先に敷設
+    state = applyStation(state, { x: 0, z: -1 });
+    state = applyStation(state, { x: 0, z: 0 });
+    state = applyStation(state, { x: 0, z: 1 });
+    // 東西方向を敷設(交差セル(0,0)を通って統合される)
+    state = applyStation(state, { x: -1, z: 0 });
+    state = applyStation(state, { x: 1, z: 0 });
+    const stationId = state.railMap.get(toKey(0, 0))!.stationId!;
+    expect(state.stations.size).toBe(1); // 十字全体が1つの駅に統合されている
+    return { railMap: state.railMap, stations: state.stations, stationId };
+  };
+
+  it('南北の列車が交差セルを通過して目的駅に到達できる', () => {
+    let { railMap, stations, stationId } = buildCrossStation();
+    const state = applyRailPath({ railMap, stations }, [{ x: 0, z: -3 }, { x: 0, z: -2 }, { x: 0, z: -1 }]);
+    railMap = state.railMap;
+    stations = state.stations;
+
+    const route = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: -3 },
+      prev: null,
+      targetStationId: stationId,
+      cars: 1,
+    });
+    expect(route.map(c => ({ x: c.x, z: c.z }))).toEqual([
+      { x: 0, z: -2 }, { x: 0, z: -1 }, { x: 0, z: 0 },
+    ]);
+  });
+
+  it('東西の列車も同じ交差セルを通過して目的駅に到達できる', () => {
+    let { railMap, stations, stationId } = buildCrossStation();
+    const state = applyRailPath({ railMap, stations }, [{ x: -3, z: 0 }, { x: -2, z: 0 }, { x: -1, z: 0 }]);
+    railMap = state.railMap;
+    stations = state.stations;
+
+    const route = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: -3, z: 0 },
+      prev: null,
+      targetStationId: stationId,
+      cars: 1,
+    });
+    expect(route.map(c => ({ x: c.x, z: c.z }))).toEqual([
+      { x: -2, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 0 },
     ]);
   });
 });
