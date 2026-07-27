@@ -1,7 +1,9 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
-import type { PlatformDoorType, TerrainType, TownData } from '../types';
+import { toKey } from '../utils';
+import type { CellData, PlatformDoorType, TerrainType, TownData } from '../types';
 import { terrainAt } from './terrain';
+import { applyRailPathDetailed } from './construction';
 import type { SimWorld } from './simulation';
 
 export const STARTING_MONEY = 50_000;
@@ -86,6 +88,8 @@ export const CAR_REFUND = 1_000; // 解結1両あたりの払い戻し
 // 水上は「橋」、山岳は「トンネル」としてRAIL_COSTに乗算する倍率
 export const BRIDGE_COST_MULTIPLIER = 5;
 export const TUNNEL_COST_MULTIPLIER = 8;
+// 立体交差(upper)になるセルに乗算する倍率。橋・トンネルと同じ枠組み。
+export const OVERPASS_COST_MULTIPLIER = 4;
 
 export const PASSENGER_SPAWN_RATE = 0.5; // 人/秒/駅(demandFactor=1のときの基準値)
 export const STATION_WAITING_CAP = 200;
@@ -136,20 +140,27 @@ export function calculateAccidentChance(doorType: PlatformDoorType, waiting: num
 // rail はセル数に比例、station/depot/signal は単セル操作なので単価固定。
 // rail について path と terrain を渡すと、セルごとの地形(水域=橋/山岳=トンネル)を
 // 反映した倍率込みの合計コストを返す。渡さない場合は従来通り平地扱いの単純計算。
+// railMap も渡すと、この path適用で立体交差(upper)になるセルにも
+// OVERPASS_COST_MULTIPLIERを掛ける(applyRailPathDetailedの判定をそのまま使う)。
 export function costOfPath(
   mode: ConstructionMode,
   cellCount: number,
   path?: { x: number; z: number }[],
-  terrain?: Map<string, TerrainType>
+  terrain?: Map<string, TerrainType>,
+  railMap?: Map<string, CellData>
 ): number {
   switch (mode) {
     case 'rail': {
       if (path && terrain) {
+        const overpassCells = railMap
+          ? applyRailPathDetailed({ railMap, stations: new Map() }, path, terrain).overpassCells
+          : new Set<string>();
         return path.reduce((sum, cell) => {
           const t = terrainAt(terrain, cell.x, cell.z);
-          const multiplier =
+          const terrainMultiplier =
             t === 'water' ? BRIDGE_COST_MULTIPLIER : t === 'mountain' ? TUNNEL_COST_MULTIPLIER : 1;
-          return sum + RAIL_COST * multiplier;
+          const overpassMultiplier = overpassCells.has(toKey(cell.x, cell.z)) ? OVERPASS_COST_MULTIPLIER : 1;
+          return sum + RAIL_COST * terrainMultiplier * overpassMultiplier;
         }, 0);
       }
       return cellCount * RAIL_COST;

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { toKey } from '../utils';
 import type { CellData, StationData, TerrainType } from '../types';
+import { DIR } from '../utils';
 import { evaluateBuild } from './buildPreview';
-import { RAIL_COST, STATION_COST, BRIDGE_COST_MULTIPLIER, TUNNEL_COST_MULTIPLIER } from './economy';
+import { RAIL_COST, STATION_COST, BRIDGE_COST_MULTIPLIER, TUNNEL_COST_MULTIPLIER, OVERPASS_COST_MULTIPLIER } from './economy';
 
 const emptyMaps = () => ({
   railMap: new Map<string, CellData>(),
@@ -83,5 +84,14 @@ describe('evaluateBuild', () => {
     const p = evaluateBuild('rail', [], railMap, stations, terrain, 100_000);
     expect(p.cellCount).toBe(0);
     expect(p.cost).toBe(0);
+  });
+
+  it('立体交差になるセルはOVERPASS_COST_MULTIPLIER倍のコストになる', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    railMap.set(toKey(1, 1), { type: 'rail', connections: DIR.E | DIR.W });
+    const path = [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }];
+    const p = evaluateBuild('rail', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('ok');
+    expect(p.cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER);
   });
 });
