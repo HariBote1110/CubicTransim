@@ -4,6 +4,15 @@ import { curvedTrainPolyline } from './trackPath';
 export interface CarPosition {
   x: number;
   z: number;
+  /**
+   * 描画高さ。立体交差の高架を走行中はrt.renderPos.yが底上げされる(simulation.tsの
+   * heightForLayer/interpHeightForLayerを参照)。ここでは編成全体で同じ高さを使う
+   * 簡略化をしている(各車両ごとの層をpathHistoryへ持たせていないため)。立体交差は
+   * 1セルだけの短い区間なので、実用上は編成中央付近が高架に乗っている間だけ
+   * 全車両が一括で持ち上がる/下がる形になる。より精密に台車ごとの高さを
+   * 出したい場合は、pathHistoryに層情報を追加してこの関数を拡張すること。
+   */
+  y: number;
   heading: { x: number; z: number };
 }
 
@@ -110,6 +119,7 @@ export function carPositions(rt: TrainRuntime, cars: number, spacing = 1.0): Car
     result.push({
       x: centre.x,
       z: centre.z,
+      y: rt.renderPos.y,
       heading: normalize(front.x - rear.x, front.z - rear.z),
     });
   }
