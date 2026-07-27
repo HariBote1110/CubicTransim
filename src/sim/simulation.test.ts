@@ -849,3 +849,38 @@ describe('stepWorld: 旅客の行き先と経路検索', () => {
     expect(atB.find(c => c.destinationId === 'stC')?.count).toBe(10);
   });
 });
+
+describe('stepWorld: 町の成長', () => {
+  const buildTownScenario = () => {
+    const { railMap, stations } = buildTwoStationLine(30, 'stA', 'stB');
+    // stA(x=0)の町は駅前、stB側から遠い位置にもう1つ町を置く(鉄道が無い町)
+    const towns: TownData[] = [
+      { id: 'served', name: '駅前町', centre: { x: 0, z: 0 }, population: 1000 },
+      { id: 'isolated', name: '孤立村', centre: { x: 0, z: 40 }, population: 1000 },
+    ];
+    return { railMap, stations, towns };
+  };
+
+  it('月末に、列車が停まる駅がある町の人口が増える', () => {
+    const { railMap, stations, towns } = buildTownScenario();
+    const train = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'] });
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
+
+    // 1ヶ月ぶん進める
+    const events = stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH + 1);
+
+    expect(events.some(e => e.type === 'townGrowth')).toBe(true);
+    expect(world.towns!.find(t => t.id === 'served')!.population).toBeGreaterThan(1000);
+    expect(world.towns!.find(t => t.id === 'isolated')!.population).toBe(1000);
+  });
+
+  it('列車が1本も走っていなければどの町も成長しない', () => {
+    const { railMap, stations, towns } = buildTownScenario();
+    const stored = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'], status: 'stored' });
+    const world = makeWorld(railMap, stations, [stored], () => 1, towns);
+
+    stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH + 1);
+
+    expect(world.towns!.every(t => t.population === 1000)).toBe(true);
+  });
+});
