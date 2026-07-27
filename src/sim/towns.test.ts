@@ -6,6 +6,7 @@ import {
   TOWN_STATION_RADIUS,
   nearestTownWithinRadius, stationNameForTown, maybeSpawnTownForStation,
   NEW_TOWN_CHANCE, NEW_TOWN_POPULATION_MIN, NEW_TOWN_POPULATION_MAX,
+  resolveTownSpawnForStation,
 } from './towns';
 
 describe('mulberry32', () => {
@@ -286,5 +287,32 @@ describe('maybeSpawnTownForStation', () => {
     const a = maybeSpawnTownForStation({ x: 100, z: 100 }, [], emptyTerrain, mulberry32(42));
     const b = maybeSpawnTownForStation({ x: 100, z: 100 }, [], emptyTerrain, mulberry32(42));
     expect(a).toEqual(b);
+  });
+});
+
+describe('resolveTownSpawnForStation', () => {
+  const emptyTerrain: Map<string, TerrainType> = new Map();
+
+  it('湧いた場合はtownsに追加された配列とspawnedTownを返す', () => {
+    const alwaysZero = () => 0;
+    const result = resolveTownSpawnForStation({ x: 100, z: 100 }, [], emptyTerrain, alwaysZero);
+    expect(result.spawnedTown).not.toBeNull();
+    expect(result.towns).toEqual([result.spawnedTown]);
+  });
+
+  it('湧かなかった場合はtownsを変更せず(同一参照)、spawnedTownはnull', () => {
+    const alwaysHigh = () => NEW_TOWN_CHANCE;
+    const towns: TownData[] = [];
+    const result = resolveTownSpawnForStation({ x: 100, z: 100 }, towns, emptyTerrain, alwaysHigh);
+    expect(result.spawnedTown).toBeNull();
+    expect(result.towns).toBe(towns);
+  });
+
+  it('近くに既に町があれば湧かない(maybeSpawnTownForStationと同じ判定を1回だけ使う)', () => {
+    const existing: TownData[] = [{ id: 'town-0', name: '南宮市', centre: { x: 100, z: 100 }, population: 1000 }];
+    const alwaysZero = () => 0;
+    const result = resolveTownSpawnForStation({ x: 100, z: 100 }, existing, emptyTerrain, alwaysZero);
+    expect(result.spawnedTown).toBeNull();
+    expect(result.towns).toBe(existing);
   });
 });
