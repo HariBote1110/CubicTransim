@@ -17,6 +17,35 @@ export type Pt = { x: number; z: number };
 // 地平/高架の境界セルではセル内の進捗で線形補間する。
 export const OVERPASS_HEIGHT = 1.2;
 
+// 坂(ramp)の高さプロファイルを表す正規化位置(0=地平、1=橋桁)。
+// 地平→坂(level1)→坂(level2)→桁 という並びを、セル中心が等間隔(1/3刻み)で
+// 並ぶものとして1本の連続パラメータに写像する。level自体はどのセルかを表す
+// 離散値のままだが、高さの計算はこのposを介した連続関数(rampHeightAtPos)に
+// 一本化することで、セルをまたいでも折れ角のない縦曲線になる。
+export const RAMP_POS_GROUND = 0;
+export const RAMP_POS_LEVEL1 = 1 / 3;
+export const RAMP_POS_LEVEL2 = 2 / 3;
+export const RAMP_POS_DECK = 1;
+
+/**
+ * Hermite の smoothstep(3x²-2x³)。x<=0で0、x>=1で1、両端で傾き0に漸近する
+ * ease-in-outカーブ。橋の取り付き部を折れ角なく滑らかにするための基本形。
+ */
+export function smoothstep01(x: number): number {
+  const c = x < 0 ? 0 : x > 1 ? 1 : x;
+  return c * c * (3 - 2 * c);
+}
+
+/**
+ * 正規化位置pos(0=地平, 1=橋桁)における坂の高さ(地平からの上乗せ分)。
+ * 地平から桁までを1本のsmoothstepカーブとして扱うので、地平側・桁側どちらの
+ * 端でも勾配が0に漸近し、level1/level2境界での折れ角が生じない。
+ * sim(列車の高さ)とrender(線路ジオメトリ)は必ずこの関数を経由すること。
+ */
+export function rampHeightAtPos(pos: number): number {
+  return OVERPASS_HEIGHT * smoothstep01(pos);
+}
+
 const midpoint = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
