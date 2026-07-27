@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [platform-blocking-and-depot-departure.md](platform-blocking-and-depot-departure.md) — v0.3.0-Alpha-8: 終端駅の同じホームに後続列車が進入できてしまった不具合。停車中の列車が車体ぶんのセルしか予約しておらず、ホームの残りが空きに見えていたのが原因。停車時にホーム全体を予約し(reservePlatform)、発車時に車体と新経路のぶんだけ残して解放する。あわせて車庫からの出庫を「次の信号まで、信号が無ければ目的駅のホームまで」一括予約できたときだけに変更(findDepartureSegmentEnd、OpenTTDの車庫発車と同じ)
 - [lines-and-timetable.md](lines-and-timetable.md) — v0.3.0-Alpha-6: 運用グループを「路線」に昇格。運行モード(環状/折返し、TrainGroupData.mode と TrainData.scheduleDirection)を追加し、乗車判定を stopsOnCurrentRun で「今の片道で停まる駅」に限定して、旅客が目的地と逆向きの列車に乗る問題を解消。路線パネルにモード切替・停車駅ごとの待ち人数・所属列車の割り当てを追加。時刻表ではなく運転間隔(headway)方式を選んだ理由つき
 - [town-names-and-growth.md](town-names-and-growth.md) — v0.3.0-Alpha-5: 町名の決定的生成(前部＋中部＋接尾、重複なし)と、鉄道アクセスに応じた月次の人口成長(townServiceLevel/growTown、最良で月+3%、鉄道が来ていない町は横ばい)。stepWorldがtownGrowthイベントでReactのtowns stateを差し替える。TownData.nameを必須にしたためv11以前のセーブはfallbackTownNameで移行
 - [passenger-routing.md](passenger-routing.md) — v0.3.0-Alpha-4: 旅客に行き先と経路を持たせた。走行中の列車の運行表から作るサービス網の上を「乗換の少なさ→駅数」で探索し(sim/passengers.ts)、経路は駅ペアごとに1回だけ引いて同じ行き先の旅客(コホート)で使い回す。行き先は集客力÷距離の重力モデルで抽選し、列車が行けない駅ゆきの客は湧かない。待ち客(SimWorld.demand)も車内客(TrainRuntime.load)も行き先つきの塊で保持し、途中駅では降りず目的地で降りて乗車駅→降車駅の運賃になる。SaveData v11。列車の進行方向を見ていない(逆向きの列車にも乗る)という既知の穴つき
