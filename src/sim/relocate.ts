@@ -1,5 +1,5 @@
 import { toKey, DIR } from '../utils';
-import type { CellData, TrainData } from '../types';
+import type { CellData } from '../types';
 import type { SimWorld } from './simulation';
 import { releaseAllOf, tryReserve, reservationKey } from './reservation';
 

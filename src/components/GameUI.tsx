@@ -124,6 +124,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
   const [passengers, setPassengers] = useState(0);
+  // 選択中の列車が経路待ちで動けていない秒数(TrainRuntime.waitTimer)。長時間ならUIで警告する。
+  const [stuckSeconds, setStuckSeconds] = useState(0);
   const [stationWaiting, setStationWaiting] = useState(0);
   const [stationDemand, setStationDemand] = useState(0);
   // 選択中の駅の待ち客の行き先内訳(多い順)。
@@ -146,6 +148,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   useEffect(() => {
     const id = setInterval(() => {
       setPassengers(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.passengers ?? 0) : 0);
+      setStuckSeconds(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.waitTimer ?? 0) : 0);
       setWaitingByStation(new Map(world.current?.waiting ?? []));
       const samples = world.current?.groupIntervals;
       setActualIntervals(new Map(
@@ -242,6 +245,7 @@ export const GameUI: React.FC<GameUIProps> = ({
               train={selectedTrain}
               stations={stations}
               passengers={passengers}
+              stuckSeconds={stuckSeconds}
               money={money}
               isEditingSchedule={isEditingSchedule}
               setIsEditingSchedule={setIsEditingSchedule}
@@ -468,10 +472,15 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
 };
 
 // --- 列車インスペクタ ---
+// 経路待ちでこの秒数以上動けていない列車は、デッドロックしている可能性が高いとみなし
+// 列車インスペクタで警告する(ドラッグでの置き直しを案内する)。
+const STUCK_WARNING_SECONDS = 60;
+
 const TrainInspector: React.FC<{
   train: TrainData;
   stations: Map<string, StationData>;
   passengers: number;
+  stuckSeconds: number;
   money: number;
   isEditingSchedule: boolean;
   setIsEditingSchedule: (v: boolean) => void;
@@ -485,7 +494,7 @@ const TrainInspector: React.FC<{
   onCreateGroup: (seedTrainId?: string) => string;
   onAssignGroup: (trainId: string, groupId: string | null) => void;
 }> = ({
-  train, stations, passengers, money, isEditingSchedule, setIsEditingSchedule,
+  train, stations, passengers, stuckSeconds, money, isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar, scheduleClipboard, onCopySchedule, onPasteSchedule,
   groups, onCreateGroup, onAssignGroup,
 }) => {
@@ -508,6 +517,16 @@ const TrainInspector: React.FC<{
           {stored ? '車庫' : '運行中'}
         </div>
       </div>
+
+      {!stored && stuckSeconds >= STUCK_WARNING_SECONDS && (
+        <div style={{
+          marginTop: 9, padding: '7px 9px', borderRadius: T.radius, fontSize: 11.5, lineHeight: 1.5,
+          background: 'rgba(248,113,113,0.14)', border: `1px solid ${T.danger}`, color: T.danger,
+        }}>
+          立ち往生しています(約{Math.floor(stuckSeconds)}秒)。地図上でこの列車をドラッグして
+          別の線路へ移すと、経路を探し直します。
+        </div>
+      )}
 
       {/* 乗車率 */}
       <div style={{ marginTop: 9 }}>

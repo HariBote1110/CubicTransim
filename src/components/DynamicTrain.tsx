@@ -16,7 +16,16 @@ interface DynamicTrainProps {
   /** 所属する運用グループのラインカラー。未所属なら車種の既定色を使う。 */
   lineColour?: string;
   onClick: (e: any) => void;
+  /** 選択モードでの列車ドラッグ開始(プラレールを掴む操作)。 */
+  onPointerDown?: (e: any) => void;
+  /** この列車をドラッグで持ち上げている最中かどうか。 */
+  isDragging?: boolean;
+  /** ドラッグ中に追従させるカーソル位置のセル。 */
+  dragCell?: { x: number; z: number } | null;
 }
+
+// ドラッグ中に列車を持ち上げる高さ(m相当)。地平の描画基準0.5からの上乗せ分。
+const DRAG_LIFT_Y = 1.1;
 
 // 車両の高さ基準。sim層のrenderPos.yは通常0.5(高架では0.5+OVERPASS_HEIGHT)で、
 // TrainCarはこのyを車体中心付近として組んである(台車が概ねレール上面に接する)。
@@ -25,7 +34,8 @@ interface DynamicTrainProps {
 const INITIAL_CAR_Y = 0.5;
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
-  data, runtimes, type, isSelected, lineColour: groupColour, onClick
+  data, runtimes, type, isSelected, lineColour: groupColour, onClick,
+  onPointerDown, isDragging, dragCell,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const carRefs = useRef<(THREE.Group | null)[]>([]);
@@ -38,6 +48,18 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   useFrame(() => {
     const runtime = runtimes.get(data.id);
     if (!runtime || !groupRef.current) return;
+
+    // ドラッグ中(プラレールを掴んで移動中)は、通常の走行位置計算を無視してカーソル位置に
+    // 持ち上げて追従させる。編成全体をまとめて一塊として動かす(凝った連結表現はしない)。
+    if (isDragging && dragCell) {
+      groupRef.current.position.set(dragCell.x, DRAG_LIFT_Y, dragCell.z);
+      for (let i = 1; i < carRefs.current.length; i++) {
+        const carGroup = carRefs.current[i];
+        if (!carGroup) continue;
+        carGroup.position.set(dragCell.x, DRAG_LIFT_Y, dragCell.z - 0.92 * i);
+      }
+      return;
+    }
 
     // 全車両を carPositions の結果で配置する。先頭車も renderTarget への lookAt ではなく
     // 前後台車から求めた heading を使う:
@@ -96,7 +118,9 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       <group
         ref={(el) => { groupRef.current = el; carRefs.current[0] = el; }}
         position={[data.x, INITIAL_CAR_Y, data.z]}
+        scale={isDragging ? 0.94 : 1}
         onClick={(e) => { e.stopPropagation(); onClick(e); }}
+        onPointerDown={onPointerDown ? (e) => { e.stopPropagation(); onPointerDown(e); } : undefined}
       >
         <TrainCar variant="front" lineColour={lineColour} />
 

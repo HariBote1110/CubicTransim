@@ -21,6 +21,7 @@ import { mulberry32, generateTowns, maybeSpawnTownForStation } from '../sim/town
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
+import { relocateTrain } from '../sim/relocate';
 
 const SAVE_KEY = 'cubictransim-save-v1';
 
@@ -417,6 +418,14 @@ export const useGameLogic = () => {
     setSelectedStationId(null);
   };
 
+  // ★追加: デッドロック救済用、列車のドラッグ置き直し(プラレールを掴んで動かす操作)。
+  // 無料(コストは取らない)。置ければ次のstepWorldで経路が再検索される。
+  // DynamicTrain/StationLabelがrunTimes Mapのインスタンス参照を保持し続けているため、
+  // ここではworldRef上のMapを直接書き換える(setTrainsでの差し替えは不要)。
+  const relocateTrainAt = (trainId: string, x: number, z: number): boolean => {
+    return relocateTrain(worldRef.current, trainId, { x, z });
+  };
+
   // ★追加: 駅選択(列車選択とは排他)。列車未選択かつスケジュール編集中でない場合のみ
   // GameScene側から呼ばれる。
   const selectStation = (id: string | null) => {
@@ -532,6 +541,7 @@ export const useGameLogic = () => {
     addCar, removeCar,
     addSchedule,
     worldRef,
+    relocateTrainAt,
     // 公開
     scheduleClipboard,
     copySchedule,

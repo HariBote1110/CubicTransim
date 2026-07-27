@@ -18,6 +18,7 @@ import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownDa
 import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
+import { canPlaceTrainAt } from '../sim/relocate';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import { T } from '../ui/theme';
@@ -99,15 +100,29 @@ interface GameSceneProps {
   onPreviewChange?: (path: { x: number; z: number }[]) => void;
   // ★追加: 運用グループ。所属列車の帯をグループのラインカラーで塗る。
   groups?: TrainGroupData[];
+  // ★追加: デッドロック救済用、列車のドラッグ置き直し(プラレールを掴んで動かす操作)。
+  // 成否に関わらずGameScene側で状態をリセットするため、戻り値は使わない。
+  onRelocateTrain?: (trainId: string, x: number, z: number) => void;
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
-  onPreviewChange, groups = [],
+  onPreviewChange, groups = [], onRelocateTrain,
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
+
+  // 列車ドラッグ(プラレールを掴んで移動する操作)。押下したセルから動くまでは
+  // 「押しているだけ」(=クリック候補)とみなし、選択モード(buildMode==='none')の
+  // クリックによる列車選択と競合しないようにする。
+  const [trainPress, setTrainPress] = useState<{ id: string; startCell: { x: number; z: number } } | null>(null);
+  const [draggingTrainId, setDraggingTrainId] = useState<string | null>(null);
+
+  const canDropTrainHere = useMemo(() => {
+    if (!draggingTrainId || !cursorPos) return false;
+    return !!canPlaceTrainAt(world.current, draggingTrainId, cursorPos);
+  }, [draggingTrainId, cursorPos, world]);
 
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
@@ -130,7 +145,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
     z: Math.round(e.point.z),
   });
 
-  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => setCursorPos(getGridPosFromEvent(e));
+  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
+    const pos = getGridPosFromEvent(e);
+    setCursorPos(pos);
+    // 列車を押下したまま別セルへ動いたら、そこでクリック候補からドラッグへ昇格する。
+    if (trainPress && !draggingTrainId && (pos.x !== trainPress.startCell.x || pos.z !== trainPress.startCell.z)) {
+      setDraggingTrainId(trainPress.id);
+    }
+  };
+
+  const handleTrainPointerDown = (trainId: string) => (e: ThreeEvent<PointerEvent>) => {
+    if (buildMode !== 'none') return;
+    setTrainPress({ id: trainId, startCell: getGridPosFromEvent(e) });
+  };
 
   const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
@@ -139,7 +166,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
   };
 
   const handlePointerUp = (e: ThreeEvent<PointerEvent>) => {
-    if (buildMode === 'none') return;
+    // 選択モードでの列車ドラッグ/クリックの決着はここで行う(建設モードのドラッグより先に処理する)。
+    if (buildMode === 'none') {
+      if (draggingTrainId) {
+        const pos = getGridPosFromEvent(e);
+        onRelocateTrain?.(draggingTrainId, pos.x, pos.z);
+        setDraggingTrainId(null);
+        setTrainPress(null);
+      } else if (trainPress) {
+        onSelectTrain(trainPress.id);
+        setTrainPress(null);
+      }
+      return;
+    }
     if (e.button === 0 && dragStartPos) {
       const pos = getGridPosFromEvent(e);
       const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
@@ -335,12 +374,26 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       <SimulationDriver world={world} onSimEvent={onSimEvent} speed={simSpeed} />
 
+      {/* 列車ドラッグ中の置き先プレビュー(置ける=緑、置けない=赤。建設プレビューと同じ表現) */}
+      {draggingTrainId && cursorPos && (
+        <mesh position={[cursorPos.x, 0.2, cursorPos.z]}>
+          <boxGeometry args={[0.92, 0.4, 0.92]} />
+          <meshBasicMaterial
+            color={canDropTrainHere ? '#3ddc6f' : REMOVE_COLOUR}
+            transparent opacity={0.5} depthWrite={false}
+          />
+        </mesh>
+      )}
+
       {trains.map(train => (
         <DynamicTrain
           key={train.id} data={train} runtimes={world.current.runtimes} type="commuter"
           isSelected={train.id === selectedTrainId}
           lineColour={findGroup(groups, train.groupId)?.colour}
-          onClick={() => buildMode === 'none' && onSelectTrain(train.id)}
+          onClick={() => {}}
+          onPointerDown={handleTrainPointerDown(train.id)}
+          isDragging={draggingTrainId === train.id}
+          dragCell={draggingTrainId === train.id ? cursorPos : null}
         />
       ))}
     </>

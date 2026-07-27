@@ -28,7 +28,7 @@ export default function App() {
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
     addCar, removeCar,
-    addSchedule, worldRef,
+    addSchedule, worldRef, relocateTrainAt,
     scheduleClipboard, copySchedule, pasteSchedule,
     saveGame, loadGame,
     money, addIncome,
@@ -71,6 +71,7 @@ export default function App() {
           onSelectStation={selectStation}
           onPreviewChange={handlePreviewChange}
           groups={groups}
+          onRelocateTrain={relocateTrainAt}
         />
       </Canvas>
 
