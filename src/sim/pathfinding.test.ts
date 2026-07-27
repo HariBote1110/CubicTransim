@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DIR, toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData } from '../types';
-import { calculateRoute } from './pathfinding';
+import { calculateRoute, calculateRouteWithStop } from './pathfinding';
 
 const noOccupied = new Set<string>();
 const noReserved = new Set<string>();
@@ -424,5 +424,78 @@ describe('calculateRoute', () => {
 
       expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
     });
+  });
+});
+
+describe('立体交差(upper)の経路探索', () => {
+  // 十字に交差する線路。地平は (0,0)-(4,0) の東西直線。
+  // 南北の線は (2,-2)-(2,2) で、実際の建設(applyRailPath)と同じ規則により
+  // 交差セル(2,0)だけが upper(地平のE|Wとは合流しない)になり、それ以外は地平。
+  const buildCrossing = () => {
+    const railMap = buildRailMap([
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+
+    const addGroundLink = (a: { x: number; z: number }, b: { x: number; z: number }) => {
+      const dir = getDirFromVector(b.x - a.x, b.z - a.z);
+      const opp = getOppositeDir(dir);
+      const ak = toKey(a.x, a.z);
+      const ac = railMap.get(ak) || { type: 'rail' as const, connections: 0 };
+      railMap.set(ak, { ...ac, connections: (ac.connections || 0) | dir });
+      const bk = toKey(b.x, b.z);
+      const bc = railMap.get(bk) || { type: 'rail' as const, connections: 0 };
+      railMap.set(bk, { ...bc, connections: (bc.connections || 0) | opp });
+    };
+    addGroundLink({ x: 2, z: -2 }, { x: 2, z: -1 });
+    addGroundLink({ x: 2, z: 1 }, { x: 2, z: 2 });
+
+    // 交差セル(2,0)は既存のE|Wと合流しないため upper 側にN|Sを持つ。
+    // (2,-1)→(2,0)、(2,0)→(2,1) の南北接続はどちらも upper に入る。
+    const cell20 = railMap.get(toKey(2, 0))!;
+    railMap.set(toKey(2, 0), { ...cell20, upper: { connections: DIR.N | DIR.S } });
+    const cell2m1 = railMap.get(toKey(2, -1))!;
+    railMap.set(toKey(2, -1), { ...cell2m1, connections: (cell2m1.connections || 0) | DIR.S });
+    const cell21 = railMap.get(toKey(2, 1))!;
+    railMap.set(toKey(2, 1), { ...cell21, connections: (cell21.connections || 0) | DIR.N });
+
+    railMap.set(toKey(4, 0), { ...railMap.get(toKey(4, 0))!, type: 'station', stationId: 'stA' });
+    railMap.set(toKey(2, 2), { ...railMap.get(toKey(2, 2))!, type: 'station', stationId: 'stB' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 }, platformDoors: 'none' }],
+      ['stB', { id: 'stB', name: 'B', cells: [{ x: 2, z: 2 }], center: { x: 2, z: 2 }, platformDoors: 'none' }],
+    ]);
+    return { railMap, stations };
+  };
+
+  it('地平を直進する経路は交差セルで高架側へ曲がらない', () => {
+    const { railMap, stations } = buildCrossing();
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+    });
+    expect(result).toEqual([
+      { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+  });
+
+  it('南北の経路は交差セルを高架として通過し、layerが付与される', () => {
+    const { railMap, stations } = buildCrossing();
+    const result = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
+      start: { x: 2, z: -2 }, prev: null, targetStationId: 'stB', cars: 1,
+    });
+    expect(result.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
+      { x: 2, z: -1, layer: undefined },
+      { x: 2, z: 0, layer: 1 },
+      { x: 2, z: 1, layer: undefined },
+      { x: 2, z: 2, layer: undefined },
+    ]);
+  });
+
+  it('交差セル上では曲がれない(地平からの直進が高架の南北方向へ分岐しない)', () => {
+    const { railMap, stations } = buildCrossing();
+    // (2,0)まで地平で来た列車が、そこから南(高架側)へ曲がれずstAへ直進すること。
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 1, z: 0 }, prev: { x: 0, z: 0 }, targetStationId: 'stA', cars: 1,
+    });
+    expect(result).toEqual([{ x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
   });
 });

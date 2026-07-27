@@ -15,6 +15,12 @@ export interface CellData {
   // applyRailPathがterrainを見て設定する。
   bridge?: boolean;
   tunnel?: boolean;
+  /**
+   * 立体交差の高架側の線路。地平側(connections)とは接続しない別の線路。
+   * 列車には層を持たせない。「そのセルにどちら向きで入ったか」(進入元へ戻るビットが
+   * connectionsとupper.connectionsのどちらに立っているか)で一意に決まるため。
+   */
+  upper?: { connections: number };
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
