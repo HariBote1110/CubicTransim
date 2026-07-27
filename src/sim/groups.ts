@@ -80,3 +80,58 @@ export function headwayHoldSeconds(
 export function membersOf(trains: TrainData[], groupId: string): TrainData[] {
   return trains.filter(t => t.groupId === groupId);
 }
+
+// --- 運行モード(路線の走らせ方) ---
+
+/**
+ * 路線の走らせ方。
+ *  - 'loop':    環状運転。運行表の末尾まで行ったら先頭に戻る(従来の挙動)。
+ *  - 'shuttle': 折返し運転。終端で向きを反転して来た道を戻る。行き止まりの
+ *               路線で「終端から先頭へワープするような経路」を組まなくて済む。
+ */
+export type LineMode = 'loop' | 'shuttle';
+
+/** 運行表上の現在位置(何番目の停車駅を、どちら向きに辿っているか)。 */
+export interface StopCursor {
+  index: number;
+  /** 1なら運行表の順方向、-1なら逆方向(折返し運転でのみ-1になる)。 */
+  direction: 1 | -1;
+}
+
+/** 次の停車駅の位置。停車駅が1つ以下なら動かない。 */
+export function nextStop(cursor: StopCursor, stopCount: number, mode: LineMode): StopCursor {
+  if (stopCount <= 1) return cursor;
+
+  if (mode === 'loop') {
+    return { index: (cursor.index + 1) % stopCount, direction: 1 };
+  }
+
+  // 折返し: 端に着いたら向きを反転してから1つ進む。
+  const direction: 1 | -1 =
+    (cursor.direction === 1 && cursor.index >= stopCount - 1) ? -1 :
+    (cursor.direction === -1 && cursor.index <= 0) ? 1 :
+    cursor.direction;
+
+  return { index: cursor.index + direction, direction };
+}
+
+/**
+ * 現在位置から見た「この先の停車駅」の並び(現在地は含まない)。
+ * 旅客が「この列車に乗れば目的地に着くか」を判断するのに使う。
+ */
+export function upcomingStops(schedule: string[], cursor: StopCursor, mode: LineMode): string[] {
+  if (schedule.length <= 1) return [];
+
+  const stops: string[] = [];
+  let current = cursor;
+  // 全ての停車駅を1度ずつ通った時点で打ち切る(折返しでは同じ駅を再訪するため)。
+  const seen = new Set<string>([schedule[cursor.index]]);
+  const maxSteps = schedule.length * 2;
+
+  for (let i = 0; i < maxSteps && seen.size < new Set(schedule).size; i++) {
+    current = nextStop(current, schedule.length, mode);
+    stops.push(schedule[current.index]);
+    seen.add(schedule[current.index]);
+  }
+  return stops;
+}

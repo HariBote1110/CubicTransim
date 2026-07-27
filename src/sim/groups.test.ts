@@ -5,7 +5,7 @@ import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 import {
   effectiveSchedule, headwayHoldSeconds, nextGroupName, nextGroupColour,
-  departureKey, membersOf, GROUP_COLOURS,,
+  departureKey, membersOf, GROUP_COLOURS,
   nextStop,
   upcomingStops,
 } from './groups';
