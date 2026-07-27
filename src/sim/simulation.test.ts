@@ -884,3 +884,61 @@ describe('stepWorld: 町の成長', () => {
     expect(world.towns!.every(t => t.population === 1000)).toBe(true);
   });
 });
+
+describe('stepWorld: 折返し運転と乗車の向き', () => {
+  // stA --- stB --- stC の3駅を1本の折返し路線が走る
+  const buildShuttleLine = () => {
+    const cells = Array.from({ length: 11 }, (_, i) => ({ x: i, z: 0 }));
+    const railMap = buildRailMap(cells);
+    const stations = new Map<string, StationData>();
+    const place = (id: string, x: number) => {
+      railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: id });
+      stations.set(id, { id, name: id, cells: [{ x, z: 0 }], center: { x, z: 0 }, platformDoors: 'none' });
+    };
+    place('stA', 0); place('stB', 5); place('stC', 10);
+    return { railMap, stations };
+  };
+
+  const shuttleWorld = () => {
+    const { railMap, stations } = buildShuttleLine();
+    const train = makeTrain({ x: 5, z: 0, schedule: [], groupId: 'g1', scheduleIndex: 1 });
+    const world = makeWorld(railMap, stations, [train], () => 1, []);
+    world.groups = [{
+      id: 'g1', name: '1系統', schedule: ['stA', 'stB', 'stC'],
+      headwaySeconds: 0, colour: '#fff', mode: 'shuttle',
+    }];
+    return { world, train };
+  };
+
+  it('目的地と逆向きに発車する列車には乗らない', () => {
+    const { world, train } = shuttleWorld();
+    // 列車はstBに居て、次はstC(順方向)へ向かう。stAへ行きたい客は乗らずに待つ。
+    train.scheduleDirection = 1;
+    seedWaiting(world, 'stB', 'stA', 10);
+
+    for (let i = 0; i < 3000; i++) {
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.load ?? []).toEqual([]);
+    expect(world.waiting.get('stB')).toBe(10);
+  });
+
+  it('目的地と同じ向きに発車する列車には乗る', () => {
+    const { world, train } = shuttleWorld();
+    train.scheduleDirection = 1;
+    seedWaiting(world, 'stB', 'stC', 10);
+
+    for (let i = 0; i < 3000; i++) {
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.load?.map(c => [c.destinationId, c.count])).toEqual([['stC', 10]]);
+  });
+});
