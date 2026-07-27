@@ -1,6 +1,69 @@
 # 立体交差(sim層のみ)
 
-## 決定
+## 2026-07-28 追記: 自動高架(直角に敷くと自動でupperになる仕様)を廃止し、橋方式にした
+
+以下の「決定」節に書かれている「直交する線路を敷くと自動的にupper(立体交差)になる」
+仕様は**廃止した**。理由は、この仕様だと平面上で線路が直角に交わる
+**ダイヤモンドクロッシング**を作れなくなるため(直角に敷いた瞬間に必ず
+立体交差化されてしまい、平面のまま交差させる選択肢が無かった)。
+
+新仕様はTTD/OpenTTD流の「橋」方式:
+- 直角(あるいはどんな角度)に線路を敷いても、常に地平の`connections`へOR
+  するだけになった(`construction.classifyConnectionPlacement`・
+  `canMergeSmoothly`・`popcount`は削除。`addConnectionToCell`は単純にORするだけの
+  実装に戻した)。直角に交差する線路は4方向接続を持つ1セル(ダイヤモンド
+  クロッシング)になり、`pathfinding.ts`の急カーブ制限(内積0.5未満は移動不可、
+  `calculateRouteWithStop`内)によって直進のみ通過可能・直角には曲がれない
+  (`pathfinding.test.ts`の「平面交差(ダイヤモンドクロッシング)の経路探索」で確認)。
+- 立体交差(`CellData.upper`)は`construction.applyBridge(state, path, terrain)`で
+  明示的に架ける「橋」でのみ作られるようになった。ドラッグの始点・終点セルが
+  **橋台**(地平の通常線路。既存線路があれば接続を足すだけ)、間のセルが
+  **橋桁**(`upper.connections`にのみ軸方向の接続を持ち、地平の`connections`は
+  一切変更しない)になる。
+- 建設可否: 始点〜終点が8方向直線上に等間隔で並んでいること(`getDirFromVector`+
+  `getVectorFromDir`で刻み幅を求め、全セルがその直線上にあるか検証)、
+  全長(`path.length`、橋台含む)が`MIN_BRIDGE_LENGTH=3`以上
+  `MAX_BRIDGE_LENGTH=10`(`construction.ts`で定義、`economy.ts`が再エクスポート)
+  以下、橋桁セルが駅・車庫でないこと、橋桁セルに既に`upper`が無いこと(二重架け
+  禁止)、橋台セルが水域・山岳でないこと。いずれか1つでも該当すればstateをそのまま
+  返すno-op。橋桁の下(地平)は線路・水域・山岳・空地、何であっても関知しない。
+- コスト: `economy.costOfPath('bridge', ...)`は、pathの両端2セルを橋台
+  (`RAIL_COST`)、残りを橋桁(`RAIL_COST × OVERPASS_COST_MULTIPLIER`)として計算
+  する(橋台・橋桁の内訳をpathの位置だけから機械的に決めている)。
+  `evaluateBuild`はbridgeモード時に`applyBridge`のdry runで成立可否を判定し、
+  成立時のみ`overpassCells`(橋桁セル数)を返す。
+- 撤去: `removePath`で橋桁セル(`upper`があり、かつ地平の`connections`も
+  独立して存在する=下に別の地平線路が通っている)をpath指定で撤去すると、
+  `upper`だけを`undefined`にして地平の線路は残す。隣接セルの接続ビットを
+  掃除する既存ロジックについても、掃除した結果`upper.connections`が0になったら
+  `upper`プロパティ自体を`undefined`にするよう調整した(以前は
+  `{ connections: 0 }`という空のupperが残っていた)。
+- UI: `GameUI.tsx`の`BUILD_TOOLS`に「橋」(ショートカット`7`、コスト表記
+  `¥400/マス`=`RAIL_COST(100)×OVERPASS_COST_MULTIPLIER(4)`)を追加した。
+  色は`ui/theme.ts`に`T.bridge`トークンを追加して経由させている。建設
+  フィードバックの表示文言は「立体交差 N(4倍)」から「橋桁 N(4倍)」に変更した。
+- `CellData.bridge?: boolean`(水上を渡る線路の見た目・コスト倍率フラグ)と
+  `CellData.upper`(立体交差=橋桁)は名前が紛らわしいが別物、という点を
+  `types.ts`のコメントに明記した。
+
+### 迷った点・妥協した点
+
+- 橋のコスト計算(`costOfPath('bridge', ...)`)は「pathの先頭・末尾2セルが
+  橋台」という位置だけの機械的な判定にしている。`applyBridge`の実際の
+  建設可否判定(直線チェック・駅車庫チェック等)とは独立した簡易計算のため、
+  no-opになるはずのpathを渡した場合でもコスト自体は計算できてしまう
+  (実際の課金は`evaluateBuild`/`commitPath`側で`applyBridge`の結果が
+  no-opなら0円のまま、という既存の「変化が無ければ課金しない」仕組みに
+  乗っているため実害は無い)。
+- 橋の下を通る地平線路との「混線しない」ことの確認は、pathfinding.tsの
+  既存の層解決ロジック(`resolveEntryLayer`)がそのまま使えたため、
+  橋固有の追加実装は不要だった(橋も立体交差の一種であり、層の概念に
+  差はないため)。
+- 橋台セル自体が既に駅・車庫だった場合の扱いは明示的な禁止ルールが
+  仕様に無かったため、既存の`addConnectionToCell`の挙動(駅・車庫セルへの
+  線路接続は既存の`connections`へORするだけ)にそのまま委ねている。
+
+## 決定(旧仕様、履歴として残す。上記の追記により実質廃止)
 - `CellData.upper?: { connections: number }` を追加し、地平(`connections`)と別の
   第2の線路を1セルに持てるようにした。列車には層を持たせない。「そのセルに
   どちら向きで入ったか」(進入方向の逆ビットが地平/upperのどちらのconnectionsに
