@@ -6,7 +6,7 @@ import type { SimWorld, SimEvent } from './simulation';
 import { carPositions } from './consist';
 import { computeAcceleration, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
 import { applyBridge, type ConstructionState } from './construction';
-import { OVERPASS_HEIGHT } from './trackPath';
+import { OVERPASS_HEIGHT, rampHeightAtPos, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2 } from './trackPath';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
@@ -1053,31 +1053,50 @@ describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高�
 
     let prevY = 0.5;
     let maxJump = 0;
+    let maxY = 0;
     let sawLevel1Height = false;
     let sawLevel2Height = false;
     let sawDeckHeight = false;
+    const yHistory: number[] = [];
     for (let i = 0; i < 800; i++) {
       stepWorld(world, 0.1);
       const rt = world.runtimes.get('t1')!;
       const jump = Math.abs(rt.renderPos.y - prevY);
       maxJump = Math.max(maxJump, jump);
+      maxY = Math.max(maxY, rt.renderPos.y);
       prevY = rt.renderPos.y;
+      yHistory.push(rt.renderPos.y);
 
       if (rt.grid.x === 4 || rt.grid.x === 9) {
-        if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT / 3)) < 1e-6) sawLevel1Height = true;
+        if (Math.abs(rt.renderPos.y - (0.5 + rampHeightAtPos(RAMP_POS_LEVEL1))) < 1e-6) sawLevel1Height = true;
       }
       if (rt.grid.x === 5 || rt.grid.x === 8) {
-        if (Math.abs(rt.renderPos.y - (0.5 + (OVERPASS_HEIGHT * 2) / 3)) < 1e-6) sawLevel2Height = true;
+        if (Math.abs(rt.renderPos.y - (0.5 + rampHeightAtPos(RAMP_POS_LEVEL2))) < 1e-6) sawLevel2Height = true;
       }
       if (rt.grid.x === 6 || rt.grid.x === 7) {
         if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT)) < 1e-6) sawDeckHeight = true;
       }
     }
 
-    // 1tickあたりの高さの跳びが小さいこと(段差が無いこと)
-    expect(maxJump).toBeLessThan(0.3);
+    // 1tickあたりの高さの跳びが小さいこと(段差が無いこと)。
+    // 折れ線から曲線化したことで、旧仕様(0.3)より厳しい上限でも段差が出ないはず。
+    expect(maxJump).toBeLessThan(0.2);
+    expect(maxY).toBeCloseTo(0.5 + OVERPASS_HEIGHT, 5);
     expect(sawLevel1Height).toBe(true);
     expect(sawLevel2Height).toBe(true);
     expect(sawDeckHeight).toBe(true);
+
+    // 往路(地平→桁)のあいだ、高さは単調増加であること(折れ角による逆転が無い)。
+    let prev = -Infinity;
+    let peakIndex = 0;
+    for (let i = 0; i < yHistory.length; i++) {
+      if (yHistory[i] >= prev) {
+        prev = yHistory[i];
+        peakIndex = i;
+      } else {
+        break;
+      }
+    }
+    expect(peakIndex).toBeGreaterThan(0);
   });
 });

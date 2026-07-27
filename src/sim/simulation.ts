@@ -13,7 +13,10 @@ import {
 import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { growTown, townServiceLevel } from './towns';
 import { calculateRouteWithStop } from './pathfinding';
-import { pathPointAt, OVERPASS_HEIGHT } from './trackPath';
+import {
+  pathPointAt, rampHeightAtPos,
+  RAMP_POS_GROUND, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2, RAMP_POS_DECK,
+} from './trackPath';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
 import type { IntervalSamples } from './groups';
 import { tryReserve, releaseCell, findSafeSegmentEnd, findDepartureSegmentEnd, reservationKey } from './reservation';
@@ -60,38 +63,46 @@ export const RESERVE_EXTEND_SLACK_M = 1.0;
 // pathfindingが解決した層をルート/現在地セルにそのまま載せて運ぶ。
 type Grid = { x: number; z: number; layer?: 0 | 1 };
 
-// 坂(ramp)のlevelごとの上乗せ高さ。level1が地平寄りの下段、level2が桁寄りの上段。
-// 旧セーブ(levelが無いramp)は桁側に近いlevel2として扱う(移行処理は行わない)。
-const rampLevelHeight = (level: 1 | 2 | undefined): number =>
-  (level ?? 2) === 1 ? OVERPASS_HEIGHT / 3 : (OVERPASS_HEIGHT * 2) / 3;
+// 坂(ramp)のlevelを、地平(0)〜桁(1)を1本のsmoothstep曲線として結ぶための
+// 正規化位置(RAMP_POS_*)に写像する。level1が地平寄りの下段、level2が桁寄りの
+// 上段。旧セーブ(levelが無いramp)は桁側に近いlevel2として扱う(移行処理は行わない)。
+const rampPos = (level: 1 | 2 | undefined): number =>
+  (level ?? 2) === 1 ? RAMP_POS_LEVEL1 : RAMP_POS_LEVEL2;
 
-// セル中心の描画高さ(renderPos.y)を求める。
-//   - 高架(layer===1): OVERPASS_HEIGHTぶん上乗せ
-//   - 坂(railMap上のセルにrampが付いている): levelに応じて OVERPASS_HEIGHT/3 か
-//     OVERPASS_HEIGHT*2/3 を上乗せ(地平→level1→level2→桁と3段階でつながる)
-//   - それ以外の地平: 上乗せ無し
+// セルの正規化ramp位置(RAMP_POS_GROUND〜RAMP_POS_DECK)を求める。
+//   - 高架(layer===1): 桁として RAMP_POS_DECK
+//   - 坂(railMap上のセルにrampが付いている): levelに応じたRAMP_POS_LEVEL1/2
+//   - それ以外の地平: RAMP_POS_GROUND
 // railMapを見るのは、坂かどうかがGrid(x,z,layer)だけでは分からず、セルデータ
-// (CellData.ramp)に依存するため。地平の基準高さ0.5は既存の車両モデルの原点合わせ。
-const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1): number => {
-  if (layer === 1) return 0.5 + OVERPASS_HEIGHT;
+// (CellData.ramp)に依存するため。
+const cellRampPos = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1): number => {
+  if (layer === 1) return RAMP_POS_DECK;
   const cell = railMap.get(toKey(x, z));
-  if (cell?.ramp) return 0.5 + rampLevelHeight(cell.ramp.level);
-  return 0.5;
+  if (cell?.ramp) return rampPos(cell.ramp.level);
+  return RAMP_POS_GROUND;
 };
 
-// fromセル→toセルの区間をtで線形補間した描画高さ(tは0..1にクランプ)。
-// 立体交差・坂はどちらも1セルだけの短い区間なので、境界での高さの飛びを
-// セル内補間でなだらかにする。
+// セル中心の描画高さ(renderPos.y)を求める。地平の基準高さ0.5は既存の車両モデルの
+// 原点合わせ。坂の上乗せぶんはrampHeightAtPos(=1本のsmoothstep曲線)で求めるので、
+// 地平→level1→level2→桁のどの境界でも折れ角が生じない。
+const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1): number =>
+  0.5 + rampHeightAtPos(cellRampPos(railMap, x, z, layer));
+
+// fromセル→toセルの区間をtで補間した描画高さ(tは0..1にクランプ)。
+// 単に両端の高さを線形補間するのではなく、それぞれの正規化ramp位置(pos)を
+// 線形補間してから同じrampHeightAtPos(smoothstep)に通す。こうすることで
+// 地平→坂→桁の全区間が「1本の連続したsmoothstep曲線をposで辿る」ことになり、
+// セル境界(level1/level2の切り替わり)でも折れ角のない縦曲線になる。
 const interpCellHeight = (
   railMap: Map<string, CellData>,
   from: { x: number; z: number; layer?: 0 | 1 },
   to: { x: number; z: number; layer?: 0 | 1 },
   t: number
 ): number => {
-  const a = cellCentreHeight(railMap, from.x, from.z, from.layer);
-  const b = cellCentreHeight(railMap, to.x, to.z, to.layer);
+  const posA = cellRampPos(railMap, from.x, from.z, from.layer);
+  const posB = cellRampPos(railMap, to.x, to.z, to.layer);
   const ct = t < 0 ? 0 : t > 1 ? 1 : t;
-  return a + (b - a) * ct;
+  return 0.5 + rampHeightAtPos(posA + (posB - posA) * ct);
 };
 
 export interface TrainRuntime {
