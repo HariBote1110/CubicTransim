@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [single-track-deadlock-avoidance.md](single-track-deadlock-avoidance.md) — safe waiting pointの「分岐点の手前は安全」ルールを廃止(単線の共有区間で対向列車が互いに相手側へ予約を延長できず睨み合うデッドロックの原因だったため)。待機は信号・駅・車庫・行き止まりのみに限定(OpenTTDのPBSと同じ方針)。交換設備は分岐・合流の両方の入口に信号が必要になり、既存の受け入れテストのレイアウトへ信号を1つ追加(合流点の手前、合流点自体ではない位置)。信号が一切無い単線の両端に対向列車が最初から在線しているケースは、旧ルールでも新ルールでも変わらず恒久デッドロックすることを確認(既存の「頑健性」テストと同じ基準)
 - [platform-blocking-and-depot-departure.md](platform-blocking-and-depot-departure.md) — v0.3.0-Alpha-8: 終端駅の同じホームに後続列車が進入できてしまった不具合。停車中の列車が車体ぶんのセルしか予約しておらず、ホームの残りが空きに見えていたのが原因。停車時にホーム全体を予約し(reservePlatform)、発車時に車体と新経路のぶんだけ残して解放する。あわせて車庫からの出庫を「次の信号まで、信号が無ければ目的駅のホームまで」一括予約できたときだけに変更(findDepartureSegmentEnd、OpenTTDの車庫発車と同じ)
 - [lines-and-timetable.md](lines-and-timetable.md) — v0.3.0-Alpha-6: 運用グループを「路線」に昇格。運行モード(環状/折返し、TrainGroupData.mode と TrainData.scheduleDirection)を追加し、乗車判定を stopsOnCurrentRun で「今の片道で停まる駅」に限定して、旅客が目的地と逆向きの列車に乗る問題を解消。路線パネルにモード切替・停車駅ごとの待ち人数・所属列車の割り当てを追加。時刻表ではなく運転間隔(headway)方式を選んだ理由つき
 - [town-names-and-growth.md](town-names-and-growth.md) — v0.3.0-Alpha-5: 町名の決定的生成(前部＋中部＋接尾、重複なし)と、鉄道アクセスに応じた月次の人口成長(townServiceLevel/growTown、最良で月+3%、鉄道が来ていない町は横ばい)。stepWorldがtownGrowthイベントでReactのtowns stateを差し替える。TownData.nameを必須にしたためv11以前のセーブはfallbackTownNameで移行

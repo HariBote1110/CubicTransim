@@ -58,16 +58,19 @@ const isJunction = (cell: CellData | undefined): boolean => popcount(cell?.conne
 
 // セルcellがsafe waiting point(そこで安全に停止して次の予約取得を待てる地点)かどうかを
 // 判定する。nextはcellの次に進むセル(route上の次要素。終端ならnull)。
-// 条件(openttd-source-notes A-1 / 設計文書 準拠、1セル粒度への簡略化):
+// 条件(OpenTTDのPBSと同じ方針: 待機が許されるのは信号・駅・車庫・行き止まりのみ):
 //   - 分岐点そのもの -> 不可(分岐点上で待たない)
 //   - 車庫セル -> 可
 //   - 駅セル -> 可(目的駅の停止位置。経路末尾は必ず駅セルまたはホーム延長セルになる)
-//   - 次セルが信号セル(=信号の手前。信号は分岐点の直後に置かれることもあるため、
-//     分岐点の直前でも信号が守っていれば安全点として扱う)-> 可
+//   - 次セルが信号セル(=信号の手前。信号がその先を防護している)-> 可
 //   - 次セルが無い(行き止まり) -> 可
-//   - それ以外(次セルも分岐点でなく、信号も無いただの直線区間)-> 不可
-//     (次セルが分岐点の場合、信号が無ければ不可のまま=分岐点の直前で漫然と
-//     待つことは避ける)
+//   - それ以外 -> 不可
+//
+// 「次セルが分岐点なら手前は安全点」という規則は廃止した。単線の共有区間の
+// 両端で対向列車がそれぞれ分岐点の手前まで予約を取り、互いに相手の区間へ
+// 予約を延長できずに永久に睨み合う(デッドロックする)ため。信号の無い交換設備
+// では待機できず、その手前で足止めされたままになる— これは意図した挙動で、
+// 交換設備(passing loop)には両端に信号を置く必要がある(OpenTTDと同じ仕様)。
 export function isSafeWaitingPoint(
   railMap: Map<string, CellData>,
   cell: Grid,
@@ -82,10 +85,6 @@ export function isSafeWaitingPoint(
   if (cellData?.type === 'depot') return true;
   if (cellData?.type === 'station') return true;
   if (!next) return true;
-  // 次セルが分岐点の手前で待つ(分岐点自体には進入・停止しない)。分岐を1区間ごとに
-  // 細かく区切ることで、対向列車と予約区間が丸ごと衝突するのを避け、双方が
-  // 順番に分岐点を通過できるようにする。
-  if (isJunction(nextData)) return true;
   return false;
 }
 

@@ -22,7 +22,13 @@ const connect = (map: Map<string, CellData>, a: { x: number; z: number }, b: { x
 
 // 受け入れシナリオのレイアウトを構築する:
 // 駅W(0,0) - 単線(1..9,0) - 交換設備(本線10..15,0 / 待避線11..14,1) - 単線(16..24,0) - 駅E(25,0)
-// 信号: (11,0)に東向き(東行きのみ本線へ進入可)、(14,1)に西向き(西行きのみ待避線から本線へ進入可)
+// 信号: (11,0)に東向き(東行きのみ本線へ進入可)、(14,1)に西向き(西行きのみ待避線から本線へ進入可)、
+// (14,0)に東向き(合流点(15,0)の手前を防護)。
+// 「分岐点の手前は安全点」ルールを廃止したため、交換設備の合流点(15,0)そのものへ
+// 停止することはできない。信号の無いまま合流点の手前まで来ると、そこで停止すると
+// 合流点自体を塞いでしまい対向列車の待避線経路まで塞いでしまうため、合流点の
+// 手前(14,0)に明示的な信号を置いて防護する(OpenTTDと同じく、交換設備の両端に
+// 信号が必要)。
 const buildPassingLoopWorld = () => {
   const railMap = new Map<string, CellData>();
 
@@ -57,6 +63,9 @@ const buildPassingLoopWorld = () => {
   // (14,1)は西向き(東行きの進入を禁止=待避線は西行き専用)
   const s2Key = toKey(14, 1);
   railMap.set(s2Key, { ...railMap.get(s2Key)!, signalDir: DIR.W });
+  // (14,0)は東向き(東行きのみ進入可=合流点(15,0)の手前を防護)
+  const s3Key = toKey(14, 0);
+  railMap.set(s3Key, { ...railMap.get(s3Key)!, signalDir: DIR.E });
 
   const stations = new Map<string, StationData>([
     ['stW', { id: 'stW', name: 'W', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
