@@ -14,7 +14,8 @@ import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { growTown, townServiceLevel } from './towns';
 import { calculateRouteWithStop } from './pathfinding';
 import { pathPointAt } from './trackPath';
-import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun } from './groups';
+import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
+import type { IntervalSamples } from './groups';
 import { tryReserve, releaseCell, findSafeSegmentEnd, reservationKey } from './reservation';
 import {
   computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
@@ -134,6 +135,8 @@ export interface SimWorld {
   groups?: TrainGroupData[];
   // 「グループ×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。
   groupDepartures?: Map<string, number>;
+  // 「路線×駅」ごとの実測の発車間隔。設定値どおりに走れているかの表示に使う(セーブ対象外)。
+  groupIntervals?: IntervalSamples;
   // 駅ごとの待ち客(行き先つきの塊)。waitingはこの合計を写したもので、表示・セーブ用。
   demand?: Map<string, PassengerCohort[]>;
   // 旅客が移動できるサービス網と経路キャッシュ。運行表が変わるまで使い回す(セーブ対象外)。
@@ -488,7 +491,13 @@ const recordDeparture = (world: SimWorld, train: TrainData, rt: TrainRuntime): v
   const group = findGroup(world.groups ?? [], train.groupId);
   if (!group) return;
   if (!world.groupDepartures) world.groupDepartures = new Map();
-  world.groupDepartures.set(departureKey(group.id, stationId), world.clock?.elapsed ?? 0);
+  if (!world.groupIntervals) world.groupIntervals = new Map();
+
+  const now = world.clock?.elapsed ?? 0;
+  const key = departureKey(group.id, stationId);
+  // 設定した発車間隔どおりに走れているかを見るため、実測値も残す。
+  recordInterval(world.groupIntervals, group.id, stationId, world.groupDepartures.get(key), now);
+  world.groupDepartures.set(key, now);
 };
 
 const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: number, events: SimEvent[]) => {
