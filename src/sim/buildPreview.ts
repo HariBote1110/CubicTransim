@@ -56,7 +56,13 @@ export function evaluateBuild(
 
   const cost = mode === 'remove'
     ? 0
-    : costOfPath(mode, path.length, mode === 'rail' ? path : undefined, mode === 'rail' ? terrain : undefined);
+    : costOfPath(
+        mode,
+        path.length,
+        mode === 'rail' ? path : undefined,
+        mode === 'rail' ? terrain : undefined,
+        mode === 'rail' ? railMap : undefined
+      );
 
   // 実際に適用してみて、変化が生じるか(=建設が成立するか)を確かめる。
   const state: ConstructionState = { railMap, stations };
