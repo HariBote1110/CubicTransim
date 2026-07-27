@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { toKey, DIR } from '../utils';
 import type { CellData } from '../types';
 import { tryReserve, releaseCell, releaseAllOf, isSafeWaitingPoint, findSafeSegmentEnd, reservationKey } from './reservation';
+import { applyRailPath, applyBridge } from './construction';
 
 describe('reservation: 予約テーブルの基本操作', () => {
   it('未予約セル群は取得でき、以後は別列車の取得を拒否する', () => {
@@ -125,5 +126,23 @@ describe('reservation: 立体交差での層ごとの予約キー分離', () => 
 
   it('地平(layer省略)は従来通り"x,z"のキーになる', () => {
     expect(reservationKey({ x: 2, z: 5 })).toBe('2,5');
+  });
+
+  it('橋桁セルとその下の地平セルは別の予約キーになり、2列車が同時に保持できる', () => {
+    let state = { railMap: new Map<string, CellData>(), stations: new Map() };
+    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 }]);
+    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    const bridgeCell = state.railMap.get(toKey(1, 0))!;
+    expect(bridgeCell.upper?.connections).toBeDefined();
+    expect(bridgeCell.connections).toBeDefined(); // 下を通る地平線路のconnections
+
+    const reservations = new Map<string, string>();
+    const ground = { x: 1, z: 0 };
+    const upper = { x: 1, z: 0, layer: 1 as const };
+    expect(reservationKey(ground)).not.toBe(reservationKey(upper));
+    expect(tryReserve(reservations, 'A', [ground])).toBe(true);
+    expect(tryReserve(reservations, 'B', [upper])).toBe(true);
+    expect(reservations.get(reservationKey(ground))).toBe('A');
+    expect(reservations.get(reservationKey(upper))).toBe('B');
   });
 });

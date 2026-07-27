@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DIR, toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData } from '../types';
 import { calculateRoute, calculateRouteWithStop } from './pathfinding';
+import { applyRailPath, applyBridge, type ConstructionState } from './construction';
 
 const noOccupied = new Set<string>();
 const noReserved = new Set<string>();
@@ -497,5 +498,115 @@ describe('立体交差(upper)の経路探索', () => {
       start: { x: 1, z: 0 }, prev: { x: 0, z: 0 }, targetStationId: 'stA', cars: 1,
     });
     expect(result).toEqual([{ x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+  });
+});
+
+describe('平面交差(ダイヤモンドクロッシング)の経路探索', () => {
+  const emptyState = (): ConstructionState => ({
+    railMap: new Map<string, CellData>(),
+    stations: new Map<string, StationData>(),
+  });
+
+  // applyRailPathで実際にダイヤモンドクロッシング(4方向接続の1セル)を作り、
+  // 直進はできるが直角には曲がれないことを確認する。
+  const buildDiamondCrossing = () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+    state = applyRailPath(state, [{ x: 2, z: -2 }, { x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 }]);
+
+    const crossing = state.railMap.get(toKey(2, 0))!;
+    expect(crossing.connections).toBe(DIR.N | DIR.E | DIR.S | DIR.W);
+    expect(crossing.upper).toBeUndefined();
+
+    const railMap = new Map(state.railMap);
+    railMap.set(toKey(4, 0), { ...railMap.get(toKey(4, 0))!, type: 'station', stationId: 'stA' });
+    railMap.set(toKey(2, 2), { ...railMap.get(toKey(2, 2))!, type: 'station', stationId: 'stB' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 }, platformDoors: 'none' }],
+      ['stB', { id: 'stB', name: 'B', cells: [{ x: 2, z: 2 }], center: { x: 2, z: 2 }, platformDoors: 'none' }],
+    ]);
+    return { railMap, stations };
+  };
+
+  it('東西方向へ直進する経路はクロッシングを通過できる', () => {
+    const { railMap, stations } = buildDiamondCrossing();
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+    });
+    expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+  });
+
+  it('南北方向へ直進する経路もクロッシングを通過できる', () => {
+    const { railMap, stations } = buildDiamondCrossing();
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 2, z: -2 }, prev: null, targetStationId: 'stB', cars: 1,
+    });
+    expect(result).toEqual([{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 }]);
+  });
+
+  it('クロッシング上では直角に曲がれない(東進中の列車は南のstBへ到達できない)', () => {
+    const { railMap, stations } = buildDiamondCrossing();
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 1, z: 0 }, prev: { x: 0, z: 0 }, targetStationId: 'stB', cars: 1,
+    });
+    // 直進(東)しか許されないため、南北のstBへは到達できず経路なし(空配列)になる
+    expect(result).toEqual([]);
+  });
+});
+
+describe('橋(applyBridge)の経路探索', () => {
+  const emptyState = (): ConstructionState => ({
+    railMap: new Map<string, CellData>(),
+    stations: new Map<string, StationData>(),
+  });
+
+  it('橋の上を通る経路が引ける', () => {
+    let state = emptyState();
+    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    const railMap = new Map(state.railMap);
+    railMap.set(toKey(3, 0), { ...railMap.get(toKey(3, 0))!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 3, z: 0 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+    });
+    expect(result.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
+      { x: 1, z: 0, layer: 1 },
+      { x: 2, z: 0, layer: 1 },
+      { x: 3, z: 0, layer: undefined },
+    ]);
+  });
+
+  it('橋の下の地平経路と混線しない(橋を渡る経路と、下を通る地平経路が別々に成立する)', () => {
+    let state = emptyState();
+    // 橋の下に南北の地平線路を通す
+    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 }]);
+    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+
+    const railMap = new Map(state.railMap);
+    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stBridge' });
+    railMap.set(toKey(1, 1), { ...railMap.get(toKey(1, 1))!, type: 'station', stationId: 'stGround' });
+    const stations = new Map<string, StationData>([
+      ['stBridge', { id: 'stBridge', name: 'Bridge', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+      ['stGround', { id: 'stGround', name: 'Ground', cells: [{ x: 1, z: 1 }], center: { x: 1, z: 1 }, platformDoors: 'none' }],
+    ]);
+
+    const bridgeRoute = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stBridge', cars: 1,
+    });
+    expect(bridgeRoute.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
+      { x: 1, z: 0, layer: 1 },
+      { x: 2, z: 0, layer: undefined },
+    ]);
+
+    const groundRoute = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
+      start: { x: 1, z: -1 }, prev: null, targetStationId: 'stGround', cars: 1,
+    });
+    expect(groundRoute.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
+      { x: 1, z: 0, layer: undefined },
+      { x: 1, z: 1, layer: undefined },
+    ]);
   });
 });

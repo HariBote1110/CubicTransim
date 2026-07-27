@@ -86,12 +86,46 @@ describe('evaluateBuild', () => {
     expect(p.cost).toBe(0);
   });
 
-  it('立体交差になるセルはOVERPASS_COST_MULTIPLIER倍のコストになる', () => {
+  it('直交する線路は平面交差(ダイヤモンドクロッシング)になり、倍率は掛からない', () => {
     const { railMap, stations, terrain } = emptyMaps();
     railMap.set(toKey(1, 1), { type: 'rail', connections: DIR.E | DIR.W });
     const path = [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }];
     const p = evaluateBuild('rail', path, railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('ok');
-    expect(p.cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER);
+    expect(p.cost).toBe(RAIL_COST * 3);
+    expect(p.overpassCells).toBe(0);
+  });
+});
+
+describe('evaluateBuild(bridge)', () => {
+  it('橋台+橋桁のコストと橋桁セル数を返す', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('ok');
+    expect(p.overpassCells).toBe(2);
+    expect(p.cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER * 2);
+  });
+
+  it('直線でない指定はno-op', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 1 }];
+    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('no-effect');
+  });
+
+  it('橋桁が駅セルの場合はno-op', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    railMap.set(toKey(1, 0), { type: 'station', connections: 0, stationId: 'st1' });
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('no-effect');
+  });
+
+  it('資金が足りなければinsufficient-funds', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 1);
+    expect(p.reason).toBe('insufficient-funds');
   });
 });

@@ -15,6 +15,7 @@ import {
   BRIDGE_COST_MULTIPLIER,
   TUNNEL_COST_MULTIPLIER,
   OVERPASS_COST_MULTIPLIER,
+  MAX_BRIDGE_LENGTH,
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
   FARE_PER_TILE,
@@ -159,16 +160,28 @@ describe('economy: costOfPath', () => {
     expect(OVERPASS_COST_MULTIPLIER).toBe(4);
   });
 
-  it('railMapを渡すと立体交差になるセルにOVERPASS_COST_MULTIPLIERを掛ける', () => {
+  it('railMapを渡しても平面交差(自動高架は廃止)になるだけでOVERPASS_COST_MULTIPLIERはかからない', () => {
     const railMap = new Map<string, CellData>();
     // 東西の既存線路
     railMap.set(toKey(1, 1), { type: 'rail', connections: DIR.E | DIR.W });
-    // 南北に交差させる新規path: (1,0)-(1,1)-(1,2)。(1,1)だけ立体交差になる。
+    // 南北に交差させる新規path: (1,0)-(1,1)-(1,2)。平面交差になり倍率は掛からない。
     const path = [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }];
     const terrain = new Map<string, 'water' | 'mountain'>();
 
     const cost = costOfPath('rail', path.length, path, terrain, railMap);
-    expect(cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER);
+    expect(cost).toBe(RAIL_COST * 3);
+  });
+});
+
+describe('economy: costOfPath(bridge)', () => {
+  it('橋桁(中間セル)はOVERPASS_COST_MULTIPLIER倍、橋台(始点・終点)は通常のRAIL_COST', () => {
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const cost = costOfPath('bridge', path.length, path);
+    expect(cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER * 2);
+  });
+
+  it('MAX_BRIDGE_LENGTHが仕様通り(10)', () => {
+    expect(MAX_BRIDGE_LENGTH).toBe(10);
   });
 });
 
