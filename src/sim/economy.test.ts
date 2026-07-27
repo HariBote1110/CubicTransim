@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DIR, toKey } from '../utils';
 import type { CellData, StationData, TownData, TrainData } from '../types';
 import type { SimWorld } from './simulation';
 import {
@@ -13,6 +14,7 @@ import {
   TRAIN_COST,
   BRIDGE_COST_MULTIPLIER,
   TUNNEL_COST_MULTIPLIER,
+  OVERPASS_COST_MULTIPLIER,
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
   FARE_PER_TILE,
@@ -151,6 +153,22 @@ describe('economy: costOfPath', () => {
 
   it('pathを渡さない場合は従来通りcellCount×RAIL_COSTのまま', () => {
     expect(costOfPath('rail', 5)).toBe(5 * RAIL_COST);
+  });
+
+  it('OVERPASS_COST_MULTIPLIERが仕様通り(4倍)', () => {
+    expect(OVERPASS_COST_MULTIPLIER).toBe(4);
+  });
+
+  it('railMapを渡すと立体交差になるセルにOVERPASS_COST_MULTIPLIERを掛ける', () => {
+    const railMap = new Map<string, CellData>();
+    // 東西の既存線路
+    railMap.set(toKey(1, 1), { type: 'rail', connections: DIR.E | DIR.W });
+    // 南北に交差させる新規path: (1,0)-(1,1)-(1,2)。(1,1)だけ立体交差になる。
+    const path = [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }];
+    const terrain = new Map<string, 'water' | 'mountain'>();
+
+    const cost = costOfPath('rail', path.length, path, terrain, railMap);
+    expect(cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER);
   });
 });
 
