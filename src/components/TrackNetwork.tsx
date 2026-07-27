@@ -5,6 +5,7 @@ import { DIR, fromKey, getOppositeDir } from '../utils';
 import { MATERIALS } from '../render/palette';
 import {
   buildBridgeAbutmentPart, buildCellTrackParts, buildOverpassSupportParts, mergeParts,
+  buildRampTrackParts, buildRampAbutmentPart,
   type TrackParts, type SupportParts,
 } from '../render/trackGeometry';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -46,10 +47,27 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       // 車庫セルは建屋を描くため線路は敷かない(建屋側で床を描く)。
       if (data.type === 'depot') continue;
       const { x, z } = fromKey(key);
-      const parts = buildCellTrackParts(data.connections ?? 0, x, z);
+
+      // 坂(ramp)セルは、桁側へ向かう軸ビットだけ地平の平坦な部品から除外し、
+      // 代わりに斜めに登る専用パーツ(buildRampTrackParts)で描く。
+      // 交差する別方向の接続(あれば)は平坦なままでよいので軸ビットだけ除く。
+      const rampAxisBits = data.ramp ? (data.ramp.dir | getOppositeDir(data.ramp.dir)) : 0;
+      const flatConnections = (data.connections ?? 0) & ~rampAxisBits;
+
+      const parts = buildCellTrackParts(flatConnections, x, z);
       all.ballast.push(...parts.ballast);
       all.sleepers.push(...parts.sleepers);
       all.rails.push(...parts.rails);
+
+      if (data.ramp) {
+        const rampParts = buildRampTrackParts(data.ramp.dir, x, z, OVERPASS_HEIGHT);
+        all.ballast.push(...rampParts.ballast);
+        all.sleepers.push(...rampParts.sleepers);
+        all.rails.push(...rampParts.rails);
+
+        const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, OVERPASS_HEIGHT);
+        if (wedge) abutments.push(wedge);
+      }
 
       if (data.upper) {
         // 高架側はバラストを敷かず、枕木とレールだけを桁の上に置く。
@@ -63,8 +81,12 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       } else {
         // 橋台候補: upperを持たない線路セルから見て、隣が橋桁(upper)なら
         // その方向へ擁壁を置く(地平の高さから桁下面までを埋める)。
+        // ramp(坂)を持つ方向は、上のbuildRampAbutmentPartがくさび状の擁壁を
+        // 既に置いているので、段差の直方体擁壁は重ねて描かない
+        // (rampが無い旧セーブの橋台は従来どおりここで段差の擁壁を描く)。
         for (const bit of DIR_BITS) {
           if (!((data.connections ?? 0) & bit)) continue;
+          if (data.ramp?.dir === bit) continue;
           const v = DIR_VECTORS[bit];
           const neighbour = railMap.get(`${x + v.x},${z + v.z}`);
           if (!neighbour?.upper) continue;

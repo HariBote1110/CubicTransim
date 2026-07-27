@@ -26,6 +26,15 @@ export interface CellData {
    * connectionsとupper.connectionsのどちらに立っているか)で一意に決まるため。
    */
   upper?: { connections: number };
+  /**
+   * 橋台セル(applyBridgeのpath[0]/path末尾)が「坂」であることを示す。
+   * dirは登り方向(桁のあるupperセル側へ向かう8方向ビット)。
+   * セル自体は従来どおり地平のconnectionsを持ったまま、この坂情報が付く。
+   * 高さは simulation.ts 側で 0(地平)→OVERPASS_HEIGHT/2(坂)→OVERPASS_HEIGHT(桁)
+   * として解決する。旧セーブにはrampが無く、その橋台は従来どおり段差のまま描かれる
+   * (移行処理は行わない)。
+   */
+  ramp?: { dir: number };
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';

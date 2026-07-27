@@ -60,15 +60,30 @@ export const RESERVE_EXTEND_SLACK_M = 1.0;
 // pathfindingが解決した層をルート/現在地セルにそのまま載せて運ぶ。
 type Grid = { x: number; z: number; layer?: 0 | 1 };
 
-// 層から描画高さ(renderPos.y)を求める。地平は0.5、高架はOVERPASS_HEIGHTぶん上乗せする。
-const heightForLayer = (layer?: 0 | 1): number => 0.5 + (layer === 1 ? OVERPASS_HEIGHT : 0);
+// セル中心の描画高さ(renderPos.y)を求める。
+//   - 高架(layer===1): OVERPASS_HEIGHTぶん上乗せ
+//   - 坂(railMap上のセルにrampが付いている): その半分(OVERPASS_HEIGHT/2)上乗せ
+//   - それ以外の地平: 上乗せ無し
+// railMapを見るのは、坂かどうかがGrid(x,z,layer)だけでは分からず、セルデータ
+// (CellData.ramp)に依存するため。地平の基準高さ0.5は既存の車両モデルの原点合わせ。
+const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1): number => {
+  if (layer === 1) return 0.5 + OVERPASS_HEIGHT;
+  const cell = railMap.get(toKey(x, z));
+  if (cell?.ramp) return 0.5 + OVERPASS_HEIGHT / 2;
+  return 0.5;
+};
 
-// fromLayer→toLayerの区間をtで線形補間した描画高さ(tは0..1にクランプ)。
-// 立体交差セルはその1セルだけ層が変わる短い区間なので、境界での高さの飛びを
+// fromセル→toセルの区間をtで線形補間した描画高さ(tは0..1にクランプ)。
+// 立体交差・坂はどちらも1セルだけの短い区間なので、境界での高さの飛びを
 // セル内補間でなだらかにする。
-const interpHeightForLayer = (fromLayer: 0 | 1 | undefined, toLayer: 0 | 1 | undefined, t: number): number => {
-  const a = heightForLayer(fromLayer);
-  const b = heightForLayer(toLayer);
+const interpCellHeight = (
+  railMap: Map<string, CellData>,
+  from: { x: number; z: number; layer?: 0 | 1 },
+  to: { x: number; z: number; layer?: 0 | 1 },
+  t: number
+): number => {
+  const a = cellCentreHeight(railMap, from.x, from.z, from.layer);
+  const b = cellCentreHeight(railMap, to.x, to.z, to.layer);
   const ct = t < 0 ? 0 : t > 1 ? 1 : t;
   return a + (b - a) * ct;
 };
@@ -907,7 +922,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       // 描画位置は線路の中心線(セル曲線)上に置く。カーブではセル中心を直線で
       // 結んだ位置とレールの実形状が最大0.125セル(≒3.7m)ずれるため。
       const head = pathPointAt(oldCurrent, arrivedGrid, rt.route[0] ?? null, rt.route[1] ?? null, 0);
-      rt.renderPos = { x: head.x, y: heightForLayer(arrivedGrid.layer), z: head.z };
+      rt.renderPos = { x: head.x, y: cellCentreHeight(world.railMap, arrivedGrid.x, arrivedGrid.z, arrivedGrid.layer), z: head.z };
       // renderTargetを更新せずに放置すると、この1tickだけ renderPos と renderTarget が
       // 同じ点になり、描画側の lookAt が縮退して向きが飛ぶ。次のセルがあればそこを、
       // 無ければ進入方向の延長線上を向かせる。
@@ -924,7 +939,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     // セル中心間の線形補間ではなく、線路の中心線(セル曲線)上の点を描画位置にする。
     // 直線区間ではこの2つは厳密に一致するので、従来の挙動は変わらない。
     const head = pathPointAt(rt.prevGrid, rt.grid, nextTile, rt.route[1] ?? null, newProgress);
-    rt.renderPos = { x: head.x, y: interpHeightForLayer(rt.grid.layer, nextTile.layer, newProgress), z: head.z };
+    rt.renderPos = { x: head.x, y: interpCellHeight(world.railMap, rt.grid, nextTile, newProgress), z: head.z };
     rt.renderTarget = { x: nextTile.x, y: 0.5, z: nextTile.z };
   }
 };

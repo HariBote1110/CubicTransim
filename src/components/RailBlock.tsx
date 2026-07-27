@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo } from 'react';
 import { MATERIALS } from '../render/palette';
 import { buildCellTrackParts, mergeParts } from '../render/trackGeometry';
+import { DIR } from '../utils';
 
 interface RailBlockProps {
   position: [number, number, number];
@@ -17,7 +18,12 @@ interface RailBlockProps {
  */
 export const RailBlock: React.FC<RailBlockProps> = ({ position, connections = 0, isPreview = false }) => {
   const merged = useMemo(() => {
-    const parts = buildCellTrackParts(connections);
+    // connections=0(未接続の建設プレビュー)は buildCellTrackParts が空を返すため、
+    // プレースホルダーとして南北の直線を明示的に指定する
+    // (buildCellTrackParts自体の「接続0→何も生成しない」という挙動は
+    // 敷設済みの線路の幽霊描画を防ぐためのものなので、ここでは変えない)。
+    const effectiveConnections = connections === 0 ? (DIR.N | DIR.S) : connections;
+    const parts = buildCellTrackParts(effectiveConnections);
     return {
       ballast: mergeParts(parts.ballast),
       sleepers: mergeParts(parts.sleepers),

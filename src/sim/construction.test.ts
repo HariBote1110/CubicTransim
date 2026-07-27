@@ -461,4 +461,30 @@ describe('橋（applyBridge）', () => {
     expect(cell.connections! & DIR.N).toBe(DIR.N);
     expect(cell.connections! & DIR.S).toBe(DIR.S);
   });
+
+  it('橋台セル(始点・終点)に、桁のある側へ向かうrampが付く', () => {
+    const state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const result = applyBridge(state, path);
+
+    const start = result.railMap.get(toKey(0, 0))!;
+    const end = result.railMap.get(toKey(3, 0))!;
+    // 始点は東(桁の方向)へ登る
+    expect(start.ramp).toEqual({ dir: DIR.E });
+    // 終点は西(桁の方向、始点側)へ登る
+    expect(end.ramp).toEqual({ dir: DIR.W });
+    // 橋桁(中間セル)にはrampは付かない
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
+  });
+
+  it('撤去で橋台セルごと消えるとrampも消える', () => {
+    let state = emptyState();
+    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    expect(state.railMap.get(toKey(0, 0))!.ramp).toBeDefined();
+
+    const result = removePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    expect(result.railMap.get(toKey(0, 0))).toBeUndefined();
+    expect(result.railMap.get(toKey(2, 0))).toBeUndefined();
+  });
 });

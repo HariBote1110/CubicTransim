@@ -61,7 +61,7 @@ export interface TrackParts {
   rails: THREE.BufferGeometry[];
 }
 
-type Pt = { x: number; z: number };
+type Pt = { x: number; z: number; y?: number };
 
 const norm = (x: number, z: number): Pt => {
   const len = Math.hypot(x, z) || 1;
@@ -81,6 +81,10 @@ const quad = (p0: Pt, p1: Pt, p2: Pt, t: number): Pt => {
  * 中心線ポリラインに沿ってバラスト・レール・枕木を敷く。
  * points はセル中心を原点としたローカル座標。origin でワールドへ移す。
  * originY を渡すと立体交差の高架ぶん(OVERPASS_HEIGHT)だけ全体を持ち上げられる。
+ *
+ * 各点の y(省略時0)が異なる場合、その区間は水平のyawに加えて縦方向のpitchも
+ * 掛けて傾ける(坂セルの線路をレール・枕木ごと斜めに登らせるため)。
+ * yが全点0のときはpitch=0(no-op)になるので、既存の平坦な呼び出しの結果は変わらない。
  */
 const layTrackAlong = (
   parts: TrackParts,
@@ -96,35 +100,46 @@ const layTrackAlong = (
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i];
     const b = points[i + 1];
+    const ay = a.y ?? 0;
+    const by = b.y ?? 0;
     const dx = b.x - a.x;
     const dz = b.z - a.z;
-    const segLen = Math.hypot(dx, dz);
-    if (segLen < 1e-6) continue;
+    const horizLen = Math.hypot(dx, dz);
+    const dy = by - ay;
+    const segLen3D = Math.hypot(horizLen, dy);
+    if (segLen3D < 1e-6) continue;
 
-    const rotY = angleFromVector(dx / segLen, dz / segLen);
+    const rotY = horizLen > 1e-6 ? angleFromVector(dx / horizLen, dz / horizLen) : 0;
+    const pitch = horizLen > 1e-6 ? -Math.atan2(dy, horizLen) : 0;
     const cx = originX + (a.x + b.x) / 2;
     const cz = originZ + (a.z + b.z) / 2;
+    const cy = originY + (ay + by) / 2;
     // 継ぎ目を隠すため、両端を少しずつ伸ばす
-    const len = segLen + JOIN_OVERLAP * 2;
+    const len = segLen3D + JOIN_OVERLAP * 2;
 
     if (withBallast) {
       const ballast = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, len);
+      ballast.rotateX(pitch);
       ballast.rotateY(rotY);
-      ballast.translate(cx, originY + BALLAST_HEIGHT / 2, cz);
+      ballast.translate(cx, cy + BALLAST_HEIGHT / 2, cz);
       parts.ballast.push(ballast);
     }
 
     for (const side of [-1, 1]) {
       const rail = new THREE.BoxGeometry(RAIL_WIDTH, RAIL_HEIGHT, len);
       rail.translate((side * RAIL_SPACING) / 2, 0, 0);
+      rail.rotateX(pitch);
       rail.rotateY(rotY);
-      rail.translate(cx, originY + RAIL_TOP - RAIL_HEIGHT / 2, cz);
+      rail.translate(cx, cy + RAIL_TOP - RAIL_HEIGHT / 2, cz);
       parts.rails.push(rail);
     }
   }
 
   // --- 弧長を等分して枕木を置く(直線でも斜めでも同じ間隔になる) ---
-  const segLengths = points.slice(0, -1).map((p, i) => Math.hypot(points[i + 1].x - p.x, points[i + 1].z - p.z));
+  const segLengths = points.slice(0, -1).map((p, i) => {
+    const next = points[i + 1];
+    return Math.hypot(next.x - p.x, next.z - p.z, (next.y ?? 0) - (p.y ?? 0));
+  });
   const total = segLengths.reduce((s, l) => s + l, 0);
   if (total < 1e-6) return;
 
@@ -138,13 +153,19 @@ const layTrackAlong = (
         const t = segLengths[i] > 1e-9 ? (target - acc) / segLengths[i] : 0;
         const a = points[i];
         const b = points[i + 1];
+        const ay = a.y ?? 0;
+        const by = b.y ?? 0;
         const px = a.x + (b.x - a.x) * t;
         const pz = a.z + (b.z - a.z) * t;
+        const py = ay + (by - ay) * t;
+        const horizLen = Math.hypot(b.x - a.x, b.z - a.z);
         const dir = norm(b.x - a.x, b.z - a.z);
+        const pitch = horizLen > 1e-6 ? -Math.atan2(by - ay, horizLen) : 0;
 
         const sleeper = new THREE.BoxGeometry(SLEEPER_WIDTH, SLEEPER_HEIGHT, SLEEPER_THICKNESS);
+        sleeper.rotateX(pitch);
         sleeper.rotateY(angleFromVector(dir.x, dir.z));
-        sleeper.translate(originX + px, originY + SLEEPER_TOP - SLEEPER_HEIGHT / 2, originZ + pz);
+        sleeper.translate(originX + px, originY + py + SLEEPER_TOP - SLEEPER_HEIGHT / 2, originZ + pz);
         parts.sleepers.push(sleeper);
         break;
       }
@@ -155,7 +176,10 @@ const layTrackAlong = (
 
 /**
  * 1セルぶんの線路部品を、セル中心を原点としたローカル座標で生成する。
- * connections が 0(建設プレビューなど)の場合は南北方向の直線1本ぶんを返す。
+ * connections が 0 の場合は何も生成しない(空を返す)。橋桁の下(applyBridgeが
+ * 軸ビットを取り除いた地平セル)など、接続が実際に無いセルに幽霊の線路を
+ * 描かせないため。建設プレビューで直線プレースホルダーが欲しい場合は、
+ * 呼び出し側で明示的に connections(例: DIR.N | DIR.S)を渡すこと。
  * originY を渡すと立体交差の高架側(OVERPASS_HEIGHTぶん上)を描ける。
  */
 export function buildCellTrackParts(
@@ -167,9 +191,7 @@ export function buildCellTrackParts(
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
 
-  const arms: Pt[] = connections === 0
-    ? [{ x: 0, z: -0.5 }, { x: 0, z: 0.5 }]
-    : BOUNDARY_OFFSETS.filter(o => connections & o.bit).map(o => ({ x: o.x, z: o.z }));
+  const arms: Pt[] = BOUNDARY_OFFSETS.filter(o => connections & o.bit).map(o => ({ x: o.x, z: o.z }));
 
   if (arms.length === 0) return parts;
 
@@ -206,6 +228,94 @@ export function buildCellTrackParts(
     layTrackAlong(parts, [{ x: 0, z: 0 }, arm], originX, originZ, originY, withBallast);
   }
   return parts;
+}
+
+/**
+ * 坂(ramp)セルの線路を、低い側の境界(y=0)から高い側の境界(y=rampHeight)へ
+ * 斜めに登る形で生成する。dir は登る方向(高い側=桁のある側)のビット。
+ * 境界オフセットは方向ビットの正反対どうしで必ず点対称(BOUNDARY_OFFSETS参照)
+ * なので、低い側は高い側の符号を反転するだけで求まる。
+ */
+export function buildRampTrackParts(
+  dir: number,
+  originX = 0,
+  originZ = 0,
+  rampHeight = 0
+): TrackParts {
+  const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
+  const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
+  if (!high) return parts;
+  const low = { x: -high.x, z: -high.z };
+
+  const points: Pt[] = [
+    { x: low.x, z: low.z, y: 0 },
+    { x: high.x, z: high.z, y: rampHeight },
+  ];
+  layTrackAlong(parts, points, originX, originZ, 0, true);
+  return parts;
+}
+
+/**
+ * 三角柱(くさび)ジオメトリを作る。zが「進行方向」の軸で、z=-length/2で高さ0、
+ * z=+length/2で高さheightまで、幅widthのまま底面から斜めに立ち上がる。
+ * 頂点をインデックス無しで積むので、面ごとにフラットシェーディングされる
+ * (他のBoxGeometry製パーツと馴染むローポリの見た目)。
+ */
+function makeWedgeGeometry(length: number, width: number, height: number): THREE.BufferGeometry {
+  const hw = width / 2;
+  const hl = length / 2;
+  const lowL = [-hw, 0, -hl];
+  const lowR = [hw, 0, -hl];
+  const highBL = [-hw, 0, hl];
+  const highBR = [hw, 0, hl];
+  const highTL = [-hw, height, hl];
+  const highTR = [hw, height, hl];
+
+  const positions: number[] = [];
+  const push = (a: number[], b: number[], c: number[]) => positions.push(...a, ...b, ...c);
+
+  // 底面(y=0)
+  push(lowL, lowR, highBR);
+  push(lowL, highBR, highBL);
+  // 高い側の垂直面
+  push(highBL, highBR, highTR);
+  push(highBL, highTR, highTL);
+  // 斜めの上面(低い側の底辺 → 高い側の上辺)
+  push(lowR, lowL, highTL);
+  push(lowR, highTL, highTR);
+  // 左右の三角の側面
+  push(lowL, highTL, highBL);
+  push(lowR, highBR, highTR);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * 坂(ramp)セルを支えるくさび状の橋台ブロックを1つ生成する。
+ * 低い側(地面)で高さ0、桁側(dir方向)でrampHeightに達する。
+ */
+export function buildRampAbutmentPart(
+  dir: number,
+  x = 0,
+  z = 0,
+  rampHeight = 0
+): THREE.BufferGeometry | null {
+  const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
+  if (!high) return null;
+  const low = { x: -high.x, z: -high.z };
+  const dx = high.x - low.x;
+  const dz = high.z - low.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6 || rampHeight <= 0) return null;
+
+  const rotY = angleFromVector(dx / len, dz / len);
+  const wedge = makeWedgeGeometry(len, ABUTMENT_WIDTH, rampHeight);
+  wedge.rotateY(rotY);
+  wedge.translate(x, 0, z);
+  return wedge;
 }
 
 // --- 橋の桁(ガーダー)・橋脚(ピア)・橋台(アバットメント) ---

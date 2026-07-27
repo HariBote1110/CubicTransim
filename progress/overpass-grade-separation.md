@@ -188,6 +188,103 @@
   底面にちょうど接するよう高さを合わせているため、地平の線路とは
   `OVERPASS_HEIGHT`(1.2)ぶん明確に離れて見え、重なりや貫通は生じない。
 
+## 2026-07-28 追記2: 橋桁下の幽霊線路の原因特定と、橋台の「坂」化
+
+ユーザーから「桁の下になぜか線路が出てくる、坂も作れていない」との再指摘。
+
+### 幽霊線路の実際の原因(仮説どおりだった)
+
+`render/trackGeometry.ts` の `buildCellTrackParts` は、`connections === 0` の
+セルに対して**南北方向の直線1本ぶんのプレースホルダー**を返す実装になっていた
+(コメントには「建設プレビューなど」向けとあった)。ところが `applyBridge` は
+橋桁(中間セル)の地平 `connections` から橋の軸ビットを取り除くため、
+何も無い平地に架けた橋や、橋と直交する線路の下では、地平の `connections` が
+**ちょうど0になる**。`components/TrackNetwork.tsx` は `railMap` の全セルに対して
+無条件に `buildCellTrackParts(data.connections ?? 0, x, z)` を呼んでいたため、
+このプレースホルダー(南北の短い直線)が桁の真下に実際に描画されてしまっていた。
+仮説どおりで、それ以外の原因は無かった。
+
+直し方:
+- `buildCellTrackParts` は `connections === 0` のとき何も生成しない(空を返す)よう変更。
+  プレビュー(`components/RailBlock.tsx`)側で表示していた南北のプレースホルダーは、
+  `connections=0` のときに呼び出し側で明示的に `DIR.N | DIR.W` ではなく
+  `DIR.N | DIR.S` を渡すよう変更し、見た目を維持した(buildCellTrackParts自体の
+  「未接続は何も描かない」という契約を汚さないため)。
+- `TrackNetwork.tsx` 側でも、坂(ramp)の軸ビットを地平の平坦な部品生成から除外する
+  処理のついでに、二重の安全策として `flatConnections`(rampの軸ビットを除いた
+  connections)を明示的に計算してから渡すようにした。
+- `render/trackGeometry.test.ts` を新規作成し、`connections=0` で空になること・
+  通常の接続では従来どおり生成されることをテストした。
+
+### 橋台を「坂」にした(設計どおり実装)
+
+- `types.ts`: `CellData.ramp?: { dir: number }` を追加。`dir` は登り方向
+  (桁のあるupperセル側へ向かう8方向ビット)。橋台セルは従来どおり地平の
+  `connections` を持ったまま、この情報が付く。
+- `construction.ts`: `applyBridge` が橋台セル(`path[0]`・`path`末尾)に
+  `ramp: { dir }` を設定するようにした(始点は桁の方向、終点はその逆=始点側)。
+  `removePath` は、橋台セルごと撤去されれば `railMap.delete` で自然に消える。
+  さらに、隣接セルの接続ビットを掃除するループで「消したビットがちょうど
+  そのセルの `ramp.dir` と一致する」場合は `ramp` も消すようにした(桁だけ
+  部分的に撤去されて橋台が孤立した場合に、坂の情報が残留しないようにするため)。
+- 高さの解決(`sim/simulation.ts`): 従来の `heightForLayer(layer)` / 
+  `interpHeightForLayer(fromLayer, toLayer, t)` を、`railMap` のセルを見て
+  高さを返す `cellCentreHeight(railMap, x, z, layer)` / `interpCellHeight(...)`
+  に置き換えた。高さは「地平0 / 坂(ramp)は`OVERPASS_HEIGHT/2` / 高架
+  (`layer===1`)は`OVERPASS_HEIGHT`」とし、セル中心どうしを線形補間するだけで
+  地平→坂→桁→坂→地平が2セルかけてなめらかに繋がる設計にした。
+  `consist.ts` の `carPositions` はもともと `rt.renderPos.y` を編成全体で
+  共用する実装だったため、この置き換えだけで自動的に坂にも追従する
+  (コメントの関数名参照だけ更新した)。
+- 描画(`render/trackGeometry.ts`):
+  - `layTrackAlong` を、各点が `y`(省略時0)を持てるように一般化した。
+    2点の `y` が異なる区間では、水平方向のyaw回転に加えて `rotateX(pitch)`
+    (`pitch = -atan2(dy, horizLen)`)で縦方向にも傾けてからyaw回転する。
+    全点 `y=0` のときは `pitch=0` の no-op になるため、既存の平坦な呼び出し
+    (通常の地平線路・高架の桁上)の挙動は一切変わらない。
+    枕木も同様に区間ごとのpitchを計算して傾けている。
+  - `buildRampTrackParts(dir, originX, originZ, rampHeight)` を追加。
+    境界オフセット(`BOUNDARY_OFFSETS`)は正反対の方向どうしで必ず点対称
+    (例: Nは`(0,-0.5)`、Sは`(0,0.5)`)という性質を使い、低い側の境界点は
+    高い側の符号を反転するだけで求めている。低い側 `y=0` → 高い側
+    `y=rampHeight` の2点だけを `layTrackAlong` に渡し、バラスト・レール・
+    枕木を斜めに登る形で生成する(バラストも敷く=盛土の見た目)。
+  - `buildRampAbutmentPart(dir, x, z, rampHeight)` を追加。低い側で高さ0、
+    桁側で `rampHeight` に達するくさび(三角柱)を `makeWedgeGeometry` で
+    生成し、`rotateY` で軸方向に向ける。頂点はインデックス無しで積んで
+    いるので面ごとにフラットシェーディングされ、既存のBox製パーツと
+    ローポリの見た目が揃う。
+  - `components/TrackNetwork.tsx`: セルに `ramp` があれば、橋の軸ビットを
+    地平の平坦な部品から除外して代わりに `buildRampTrackParts` で描き、
+    `buildRampAbutmentPart` のくさびを追加する。旧来の「段差の直方体擁壁」
+    ロジック(`buildBridgeAbutmentPart`)は、`ramp` を持たない橋台(旧セーブ)
+    にのみ引き続き適用されるよう、`data.ramp?.dir === bit` の方向はスキップ
+    するガードを追加した。
+
+### 動作検証で分かったこと
+
+- 一時的なデバッグフック(`App.tsx` に `window.__setRailMap` /
+  `__setStations` / `__setTrains` を仕込む)で、`applyBridge` 相当のデータ
+  (橋台=ramp付き、橋桁=upper、地平connectionsから軸ビットを除去済み)を
+  直接 railMap に反映し、以下3構図をブラウザで実機スクリーンショット確認した。
+  1. 何も無い平地に架けた橋
+  2. 別方向(南北)の地平線路を跨ぐ橋
+  3. 既に東西の直線が敷いてある区間の上に架けた橋
+  いずれも桁の下に幽霊の線路は無く、両端が斜めの坂(くさび状の擁壁つき)で
+  地面に取り付いていることを確認した。検証用のフックは確認後にすべて削除し、
+  `git diff` で `App.tsx` に差分が残っていないことを確認した。
+- 列車を1本走らせ `window.__dbgStep(0.1, 1)` を繰り返して `renderPos.y` を
+  サンプリングしたところ、地平(0.5)→坂(1.1)→桁(1.7)→坂(1.1)→地平(0.5)と
+  段差なく変化し、1tickあたりの最大変化量は約0.05(dt=0.1sでの最大値、
+  600tick中)で、跳びは確認されなかった。
+- 妥協した点: 坂の勾配は `OVERPASS_HEIGHT=1.2` を2セル(斜辺長1.0〜1.414)で
+  登る設計上、見た目の傾斜角はかなり急(directによって40°〜50°程度)になる。
+  実物の鉄道橋のアプローチ盛土としては非現実的に急だが、セル単位のグリッド
+  ゲームでこれ以上緩やかにするには坂を複数セルに分割する必要があり、
+  今回のスコープ外(既存のOVERPASS_HEIGHT・2セル設計を変えない)とした。
+  くさび状の擁壁も単純な三角柱(側面が平ら)で、実際の盛土のような曲面や
+  法面の表現はしていない。
+
 ## 2026-07-28 追記: 橋(applyBridge)の見た目をガーダー橋らしく作り直した
 
 ユーザーから「橋がおかしい(桁の下に地平の線路が二重に見える・桁が太いスラブ・

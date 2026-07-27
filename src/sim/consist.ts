@@ -5,8 +5,8 @@ export interface CarPosition {
   x: number;
   z: number;
   /**
-   * 描画高さ。立体交差の高架を走行中はrt.renderPos.yが底上げされる(simulation.tsの
-   * heightForLayer/interpHeightForLayerを参照)。ここでは編成全体で同じ高さを使う
+   * 描画高さ。立体交差の高架・坂を走行中はrt.renderPos.yが底上げされる(simulation.tsの
+   * cellCentreHeight/interpCellHeightを参照)。ここでは編成全体で同じ高さを使う
    * 簡略化をしている(各車両ごとの層をpathHistoryへ持たせていないため)。立体交差は
    * 1セルだけの短い区間なので、実用上は編成中央付近が高架に乗っている間だけ
    * 全車両が一括で持ち上がる/下がる形になる。より精密に台車ごとの高さを

@@ -5,6 +5,8 @@ import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH } from './simulati
 import type { SimWorld, SimEvent } from './simulation';
 import { carPositions } from './consist';
 import { computeAcceleration, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
+import { applyBridge, type ConstructionState } from './construction';
+import { OVERPASS_HEIGHT } from './trackPath';
 import {
   PASSENGER_SPAWN_RATE,
   STATION_WAITING_CAP,
@@ -1029,5 +1031,45 @@ describe('stepWorld: 立体交差(upper)を走行中の描画高さ', () => {
     expect(maxY).toBeGreaterThan(0.5);
     expect(yAtOverpassEntry).toBeGreaterThan(0.5);
     expect(yAfterOverpass).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高さ', () => {
+  it('地平→坂→桁→坂→地平と段差なく滑らかに変化する', () => {
+    const { railMap, stations } = buildStraightLine(12, 'stA');
+    // (4,0)〜(7,0)に橋を架ける: (4,0)と(7,0)が坂(ramp)の橋台、(5,0)(6,0)が橋桁。
+    const state: ConstructionState = { railMap, stations };
+    const bridged = applyBridge(state, [
+      { x: 4, z: 0 }, { x: 5, z: 0 }, { x: 6, z: 0 }, { x: 7, z: 0 },
+    ]);
+    expect(bridged.railMap.get(toKey(4, 0))!.ramp).toBeDefined();
+    expect(bridged.railMap.get(toKey(7, 0))!.ramp).toBeDefined();
+
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(bridged.railMap, bridged.stations, [train]);
+
+    let prevY = 0.5;
+    let maxJump = 0;
+    let sawRampHeight = false;
+    let sawDeckHeight = false;
+    for (let i = 0; i < 600; i++) {
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      const jump = Math.abs(rt.renderPos.y - prevY);
+      maxJump = Math.max(maxJump, jump);
+      prevY = rt.renderPos.y;
+
+      if (rt.grid.x === 4 || rt.grid.x === 7) {
+        if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT / 2)) < 1e-6) sawRampHeight = true;
+      }
+      if (rt.grid.x === 5 || rt.grid.x === 6) {
+        if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT)) < 1e-6) sawDeckHeight = true;
+      }
+    }
+
+    // 1tickあたりの高さの跳びが小さいこと(段差が無いこと)
+    expect(maxJump).toBeLessThan(0.3);
+    expect(sawRampHeight).toBe(true);
+    expect(sawDeckHeight).toBe(true);
   });
 });

@@ -343,6 +343,10 @@ export function applyBridge(
   if (railMap.get(startKey)?.type === 'depot') updateDepotRotation(railMap, start.x, start.z);
   if (railMap.get(endKey)?.type === 'depot') updateDepotRotation(railMap, end.x, end.z);
 
+  // 橋台は「坂」にする。dirは桁のある側(登り方向)。
+  railMap.set(startKey, { ...railMap.get(startKey)!, ramp: { dir } });
+  railMap.set(endKey, { ...railMap.get(endKey)!, ramp: { dir: oppDir } });
+
   // 橋桁: upper.connectionsに軸方向の接続(dir|oppDir)を入れる。
   // 地平に同じ軸の線路が既にあれば、橋がそれを置き換えるので該当ビットは取り除く
   // (交差する別方向のビットはそのまま残す)。
@@ -415,6 +419,11 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
         if (nCell.upper?.connections) {
           const remainingUpper = nCell.upper.connections & ~n.opp;
           updated = { ...updated, upper: remainingUpper === 0 ? undefined : { connections: remainingUpper } };
+        }
+        // 隣が坂(ramp)で、その登り方向がちょうど今消したビットなら、
+        // 桁側が無くなったのでrampも消す(段差の橋台に戻す)。
+        if (nCell.ramp && nCell.ramp.dir === n.opp) {
+          updated = { ...updated, ramp: undefined };
         }
         if (updated !== nCell) railMap.set(nKey, updated);
         if (nCell.type === 'depot') updateDepotRotation(railMap, n.x, n.z);
