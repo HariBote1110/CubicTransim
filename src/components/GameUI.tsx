@@ -9,7 +9,11 @@ import {
 import type { MonthlyLedger } from '../sim/economy';
 import { ANNUAL_INTEREST_RATE, LOAN_LIMIT, LOAN_STEP, maxAdditionalLoan, monthlyInterest } from '../sim/loans';
 import type { PassengerCohort } from '../sim/passengers';
-import { evaluateBuild } from '../sim/buildPreview';
+import { evaluateBuild, evaluateStationTemplate } from '../sim/buildPreview';
+import { STATION_TEMPLATES } from '../sim/stationTemplates';
+import type { StationTemplate } from '../sim/stationTemplates';
+import { cycleQuarterTurns, QUARTER_TURN_LABEL } from '../ui/templateRotation';
+import type { QuarterTurns } from '../ui/templateRotation';
 import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES, averageInterval, suggestsShuttle } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
@@ -24,7 +28,7 @@ const CLOCK_POLL_INTERVAL_MS = 500;
 // 選択中列車の乗客数・駅の待ち人数の更新間隔(ms)。
 const POLL_INTERVAL_MS = 400;
 
-export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'bridge';
+export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'bridge' | 'template';
 
 interface GameUIProps {
   buildMode: BuildMode;
@@ -61,6 +65,11 @@ interface GameUIProps {
   onSetStopLocation: (loc: 'near' | 'middle' | 'far') => void;
   /** 建設プレビュー中のセル列(GameSceneのカーソル/ドラッグから流れてくる) */
   previewPath: { x: number; z: number }[];
+  // ★追加: 駅テンプレート(選択中のテンプレートと向き)
+  selectedTemplateId: string;
+  setSelectedTemplateId: (id: string) => void;
+  quarterTurns: QuarterTurns;
+  setQuarterTurns: (q: QuarterTurns) => void;
   // ★追加: 運用グループ(共有運行表＋発車間隔)
   groups: TrainGroupData[];
   onCreateGroup: (seedTrainId?: string) => string;
@@ -88,6 +97,7 @@ const BUILD_TOOLS: {
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
   { mode: 'bridge', label: '橋', key: '7', accent: T.bridge, cost: `¥${RAIL_COST * OVERPASS_COST_MULTIPLIER}/マス`, hint: 'ドラッグで始点と終点を指定。既存の線路や水路をまたぐ' },
+  { mode: 'template', label: '駅テンプレ', key: '8', accent: T.station, hint: 'クリック1回で定型の駅を設置。Rキーで回転' },
 ];
 
 const SPEEDS: (0 | 1 | 2 | 4)[] = [0, 1, 2, 4];
@@ -118,6 +128,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   loan, onBorrow, onRepay,
   stopLocation, onSetStopLocation,
   previewPath,
+  selectedTemplateId, setSelectedTemplateId, quarterTurns, setQuarterTurns,
   groups, onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup,
   onClearGroupSchedule, onDeleteGroup,
 }) => {
@@ -190,20 +201,27 @@ export const GameUI: React.FC<GameUIProps> = ({
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
       if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); }
+      if (buildMode === 'template' && (e.key === 'r' || e.key === 'R')) {
+        setQuarterTurns(cycleQuarterTurns(quarterTurns));
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setBuildMode, setSimSpeed, simSpeed]);
+  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, quarterTurns, setQuarterTurns]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
   const activeTool = BUILD_TOOLS.find(t => t.mode === buildMode);
+  const selectedTemplate = STATION_TEMPLATES.find(t => t.id === selectedTemplateId) ?? STATION_TEMPLATES[0];
 
   // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
   const preview = useMemo(() => {
     if (buildMode === 'none' || previewPath.length === 0) return null;
+    if (buildMode === 'template') {
+      return evaluateStationTemplate(selectedTemplate, previewPath[0], quarterTurns, railMap, stations, terrain, money);
+    }
     return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money);
-  }, [buildMode, previewPath, railMap, stations, terrain, money]);
+  }, [buildMode, previewPath, railMap, stations, terrain, money, selectedTemplate, quarterTurns]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(
@@ -407,6 +425,15 @@ export const GameUI: React.FC<GameUIProps> = ({
       }}>
         <BuildFeedback preview={preview} toolLabel={activeTool?.label ?? ''} />
 
+        {buildMode === 'template' && (
+          <TemplatePicker
+            selectedTemplateId={selectedTemplate.id}
+            setSelectedTemplateId={setSelectedTemplateId}
+            quarterTurns={quarterTurns}
+            setQuarterTurns={setQuarterTurns}
+          />
+        )}
+
         <div style={panel({ display: 'flex', gap: 4, padding: 5 })}>
           {BUILD_TOOLS.map(tool => (
             <button
@@ -436,6 +463,40 @@ export const GameUI: React.FC<GameUIProps> = ({
     </>
   );
 };
+
+// --- 駅テンプレート選択(どの定型駅を置くか＋現在の向き) ---
+const TemplatePicker: React.FC<{
+  selectedTemplateId: string;
+  setSelectedTemplateId: (id: string) => void;
+  quarterTurns: QuarterTurns;
+  setQuarterTurns: (q: QuarterTurns) => void;
+}> = ({ selectedTemplateId, setSelectedTemplateId, quarterTurns, setQuarterTurns }) => (
+  <div style={panel({ display: 'flex', alignItems: 'center', gap: 6, padding: 6 })}>
+    {STATION_TEMPLATES.map((template: StationTemplate) => (
+      <button
+        key={template.id}
+        onClick={() => setSelectedTemplateId(template.id)}
+        style={{
+          ...button({ active: selectedTemplateId === template.id, accent: T.station, compact: true }),
+          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1, maxWidth: 168,
+        }}
+        title={template.description}
+      >
+        <span>{template.name}</span>
+        <span style={{ fontSize: 9.5, fontWeight: 500, opacity: 0.7, whiteSpace: 'normal', textAlign: 'left' }}>
+          {template.description}
+        </span>
+      </button>
+    ))}
+    <button
+      onClick={() => setQuarterTurns(cycleQuarterTurns(quarterTurns))}
+      style={button({ compact: true })}
+      title="Rキーでも回転できます"
+    >
+      向き: {QUARTER_TURN_LABEL[quarterTurns]} (R)
+    </button>
+  </div>
+);
 
 // --- 建設フィードバック(コストと可否) ---
 const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string }> = ({

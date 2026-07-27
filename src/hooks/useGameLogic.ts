@@ -6,6 +6,9 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistenc
 import type { SaveData } from '../sim/persistence';
 import { applyRailPath, applyStation, applyDepot, applySignal, applyBridge, removePath } from '../sim/construction';
 import type { ConstructionState } from '../sim/construction';
+import { evaluateStationTemplate } from '../sim/buildPreview';
+import { applyStationTemplate, STATION_TEMPLATES } from '../sim/stationTemplates';
+import type { QuarterTurns } from '../ui/templateRotation';
 import {
   STARTING_MONEY, TRAIN_COST, costOfPath,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
@@ -211,6 +214,31 @@ export const useGameLogic = () => {
     if (changed && cost > 0) {
       setMoney(m => m - cost);
       setCurrentLedger(l => ({ ...l, construction: l.construction + cost }));
+    }
+
+    setRailMap(result.railMap);
+    setStations(result.stations);
+  };
+
+  // --- Commit Station Template ---
+  // 駅テンプレート(stationTemplates.ts)の設置。commitPathと同じ考え方:
+  // 会計処理(コスト算出・所持金チェック・ledger記録)はここで行い、
+  // 設置可否そのものの判定はUIに書き写さずsim層(evaluateStationTemplate/applyStationTemplate)に委ねる。
+  const commitTemplate = (anchor: { x: number; z: number }, templateId: string, quarterTurns: QuarterTurns) => {
+    const template = STATION_TEMPLATES.find(t => t.id === templateId);
+    if (!template) return;
+
+    const state: ConstructionState = { railMap, stations };
+    const evaluation = evaluateStationTemplate(template, anchor, quarterTurns, railMap, stations, terrain, money, towns);
+    if (evaluation.reason !== 'ok') return;
+
+    const result = applyStationTemplate(state, anchor, template, quarterTurns, towns, terrain);
+    const changed = result.railMap !== state.railMap || result.stations !== state.stations;
+    if (!changed) return;
+
+    if (evaluation.cost > 0) {
+      setMoney(m => m - evaluation.cost);
+      setCurrentLedger(l => ({ ...l, construction: l.construction + evaluation.cost }));
     }
 
     setRailMap(result.railMap);
@@ -535,7 +563,7 @@ export const useGameLogic = () => {
     terrain,
     selectedTrainId, setSelectedTrainId: selectTrain,
     isEditingSchedule, setIsEditingSchedule,
-    commitPath, removeSignal,
+    commitPath, commitTemplate, removeSignal,
     handleTrainArrive,
     buyTrain, deployTrain,
     addCar, removeCar,

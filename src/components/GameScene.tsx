@@ -22,6 +22,10 @@ import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import { T } from '../ui/theme';
+import type { BuildMode } from './GameUI';
+import { STATION_TEMPLATES, templateAbsoluteCells } from '../sim/stationTemplates';
+import type { QuarterTurns } from '../ui/templateRotation';
+import { evaluateStationTemplate } from '../sim/buildPreview';
 
 const REMOVE_COLOUR = '#ff3b47';
 
@@ -83,12 +87,17 @@ interface GameSceneProps {
   towns: TownData[];
   terrain: Map<string, TerrainType>;
   world: React.RefObject<SimWorld>;
-  buildMode: CellType | 'none' | 'remove' | 'signal' | 'bridge';
+  buildMode: BuildMode;
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
   simSpeed: number;
+  money: number;
 
   onCommitPath: (path: { x: number; z: number }[], mode: CellType | 'none' | 'remove' | 'signal' | 'bridge') => void;
+  // ★追加: 駅テンプレート(選択中のテンプレートと向き。設置はクリック1回)
+  selectedTemplateId: string;
+  quarterTurns: QuarterTurns;
+  onCommitTemplate: (anchor: { x: number; z: number }) => void;
   removeSignal: (x: number, z: number) => void;
   onSimEvent: (event: SimEvent) => void;
   onSelectTrain: (id: string | null) => void;
@@ -106,8 +115,8 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
-  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
+  railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed, money,
+  onCommitPath, selectedTemplateId, quarterTurns, onCommitTemplate, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
@@ -131,10 +140,27 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
+    if (buildMode === 'template') return [cursorPos];
     if (!dragStartPos) return [cursorPos];
     if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal') return [cursorPos];
     return getConstrainedPath(dragStartPos, cursorPos);
   }, [dragStartPos, cursorPos, buildMode]);
+
+  // 選択中の駅テンプレート(未選択なら先頭)。テンプレ一覧は不変なのでidだけ見ればよい。
+  const selectedTemplate = useMemo(
+    () => STATION_TEMPLATES.find(t => t.id === selectedTemplateId) ?? STATION_TEMPLATES[0],
+    [selectedTemplateId]
+  );
+
+  // テンプレートのプレビュー(アンカー位置に占めるセル一覧と、設置可否)。
+  const templatePreview = useMemo(() => {
+    if (buildMode !== 'template' || !cursorPos) return null;
+    const cells = templateAbsoluteCells(cursorPos, selectedTemplate, quarterTurns);
+    const evaluation = evaluateStationTemplate(
+      selectedTemplate, cursorPos, quarterTurns, railMap, stations, terrain, money, towns
+    );
+    return { cells, ok: evaluation.reason === 'ok' };
+  }, [buildMode, cursorPos, selectedTemplate, quarterTurns, railMap, stations, terrain, money, towns]);
 
   // 建設プレビューの内容をUI(コスト・可否の表示)へ流す。
   React.useEffect(() => {
@@ -169,6 +195,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
       if (trainId) setTrainPress({ id: trainId, startCell: pos });
       return;
     }
+    // 駅テンプレートはドラッグ操作を持たない(クリック1回はonClickで処理する)。
+    if (buildMode === 'template') return;
     if (e.button === 0 && !e.shiftKey) setDragStartPos(getGridPosFromEvent(e));
   };
 
@@ -187,6 +215,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       }
       return;
     }
+    if (buildMode === 'template') return;
     if (e.button === 0 && dragStartPos) {
       const pos = getGridPosFromEvent(e);
       const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
@@ -204,6 +233,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
     if (buildMode === 'signal' && e.shiftKey) {
        removeSignal(pos.x, pos.z);
        return;
+    }
+
+    if (buildMode === 'template') {
+      onCommitTemplate(pos);
+      return;
     }
 
     if (buildMode === 'none') {
@@ -274,7 +308,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <OrbitControls makeDefault enableRotate={false} enableZoom={true} minZoom={20} maxZoom={100} mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }} />
 
       {/* 建設プレビュー */}
-      {previewPath.map((pos, i) => (
+      {buildMode !== 'template' && previewPath.map((pos, i) => (
         buildMode === 'rail'
           ? <RailBlock key={`preview-${i}`} position={[pos.x, 0.02, pos.z]} isPreview connections={0} />
           : (
@@ -283,6 +317,17 @@ export const GameScene: React.FC<GameSceneProps> = ({
               <meshBasicMaterial color={getPreviewColor()} transparent opacity={0.45} depthWrite={false} />
             </mesh>
           )
+      ))}
+
+      {/* 駅テンプレートのプレビュー(kindで色分け、置けない場合は警告色) */}
+      {templatePreview && templatePreview.cells.map((cell, i) => (
+        <mesh key={`template-preview-${i}`} position={[cell.x, 0.2, cell.z]}>
+          <boxGeometry args={[0.92, 0.4, 0.92]} />
+          <meshBasicMaterial
+            color={!templatePreview.ok ? REMOVE_COLOUR : cell.kind === 'station' ? T.station : T.accent}
+            transparent opacity={0.45} depthWrite={false}
+          />
+        </mesh>
       ))}
 
       <TerrainBlocks terrain={terrain} tunnelKeys={tunnelKeys} />

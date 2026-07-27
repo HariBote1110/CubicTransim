@@ -3,13 +3,19 @@ import { Canvas } from '@react-three/fiber';
 import { useGameLogic } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
 import { GameUI } from './components/GameUI';
-import type { CellType } from './types';
+import type { BuildMode } from './components/GameUI';
+import { STATION_TEMPLATES } from './sim/stationTemplates';
+import { defaultTemplateId } from './ui/templateRotation';
+import type { QuarterTurns } from './ui/templateRotation';
 
 export default function App() {
-  const [buildMode, setBuildMode] = useState<CellType | 'none' | 'remove' | 'signal' | 'bridge'>('none');
+  const [buildMode, setBuildMode] = useState<BuildMode>('none');
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
+  // ★追加: 駅テンプレート(どのテンプレートを、どの向きで置くか)
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(defaultTemplateId(STATION_TEMPLATES) ?? '');
+  const [quarterTurns, setQuarterTurns] = useState<QuarterTurns>(0);
 
   // GameScene側のuseEffect依存に入るため参照を固定し、内容が変わらないときは
   // stateを更新しない(毎フレームの再レンダリングを避ける)。
@@ -25,7 +31,7 @@ export default function App() {
   const {
     railMap, stations, trains, towns, terrain, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
-    commitPath, removeSignal, handleTrainArrive,
+    commitPath, commitTemplate, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
     addCar, removeCar,
     addSchedule, worldRef, relocateTrainAt,
@@ -56,7 +62,11 @@ export default function App() {
           selectedTrainId={selectedTrainId}
           isEditingSchedule={isEditingSchedule}
           simSpeed={simSpeed}
+          money={money}
           onCommitPath={commitPath}
+          selectedTemplateId={selectedTemplateId}
+          quarterTurns={quarterTurns}
+          onCommitTemplate={(anchor) => commitTemplate(anchor, selectedTemplateId, quarterTurns)}
           removeSignal={removeSignal}
           onSimEvent={(event) => {
             if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
@@ -108,6 +118,10 @@ export default function App() {
         stopLocation={stopLocation}
         onSetStopLocation={setStopLocation}
         previewPath={previewPath}
+        selectedTemplateId={selectedTemplateId}
+        setSelectedTemplateId={setSelectedTemplateId}
+        quarterTurns={quarterTurns}
+        setQuarterTurns={setQuarterTurns}
         groups={groups}
         onCreateGroup={createGroup}
         onAssignGroup={assignTrainToGroup}
