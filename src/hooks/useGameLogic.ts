@@ -17,7 +17,7 @@ const MIN_CARS = 1;
 const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
-import { mulberry32, generateTowns } from '../sim/towns';
+import { mulberry32, generateTowns, maybeSpawnTownForStation } from '../sim/towns';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
@@ -168,11 +168,21 @@ export const useGameLogic = () => {
         if (money < cost) return;
         result = applySignal(state, path, terrain);
         break;
-      case 'station':
+      case 'station': {
         cost = costOfPath('station', path.length);
         if (money < cost) return;
-        result = applyStation(state, path[path.length - 1], terrain);
+        const stationPos = path[path.length - 1];
+        // 近くに町が無ければ一定確率で新しい町が湧く(maybeSpawnTownForStation)。
+        // 駅名は後から使うため、町を決めてから applyStation に渡す。
+        const spawnedTown = maybeSpawnTownForStation(stationPos, towns, terrain, worldRef.current.rng);
+        const townsForNaming = spawnedTown ? [...towns, spawnedTown] : towns;
+        result = applyStation(state, stationPos, terrain, townsForNaming);
+        // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
+        if (spawnedTown && result.stations !== state.stations) {
+          setTowns(townsForNaming);
+        }
         break;
+      }
       case 'depot':
         cost = costOfPath('depot', path.length);
         if (money < cost) return;
