@@ -1,6 +1,7 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TerrainType } from '../types';
+import type { CellData, StationData, TerrainType, TownData } from '../types';
 import { terrainAt } from './terrain';
+import { nearestTownWithinRadius, stationNameForTown } from './towns';
 
 // 橋の全長(橋台含むセル数)の下限・上限。3未満は橋桁が0になり橋の意味が無く、
 // 10を超える長さは建設UIの想定外(コストも高額になりすぎる)としてno-opにする。
@@ -67,6 +68,19 @@ export const nextStationName = (stations: Map<string, StationData>): string => {
     }
     suffix++;
   }
+};
+
+// 駅名を決める: pos の近く(TOWN_STATION_RADIUS以内)に町があればその町名由来
+// (stationNameForTown、被り対策つき)にし、無ければ従来のA駅/B駅方式にフォールバックする。
+const stationNameFor = (
+  pos: Pos,
+  stations: Map<string, StationData>,
+  towns: TownData[]
+): string => {
+  const town = nearestTownWithinRadius(pos, towns);
+  if (!town) return nextStationName(stations);
+  const usedNames = new Set(Array.from(stations.values()).map(s => s.name));
+  return stationNameForTown(town, pos, usedNames);
 };
 
 // terrainに応じたbridge/tunnelフラグ(描画用)。平地ならどちらも付かない。
@@ -148,7 +162,12 @@ export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Ma
   return applyRailPathDetailed(state, path, terrain);
 }
 
-export function applyStation(state: ConstructionState, pos: Pos, terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
+export function applyStation(
+  state: ConstructionState,
+  pos: Pos,
+  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
+  towns: TownData[] = []
+): ConstructionState {
   const key = toKey(pos.x, pos.z);
   const existingBeforeUpdate = state.railMap.get(key);
 
@@ -184,7 +203,7 @@ export function applyStation(state: ConstructionState, pos: Pos, terrain: Map<st
   let targetId = foundStationId;
   if (!targetId) {
     targetId = Math.random().toString(36).substr(2, 9);
-    const newName = nextStationName(stations);
+    const newName = stationNameFor(pos, stations, towns);
     stations.set(targetId, { id: targetId, name: newName, cells: [{ x: pos.x, z: pos.z }], center: { x: pos.x, z: pos.z }, platformDoors: 'none' });
   } else {
     const sid = targetId;
