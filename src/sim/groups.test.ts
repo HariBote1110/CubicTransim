@@ -8,6 +8,9 @@ import {
   departureKey, membersOf, GROUP_COLOURS,
   nextStop,
   stopsOnCurrentRun,
+  recordInterval,
+  averageInterval,
+  INTERVAL_SAMPLE_LIMIT,
 } from './groups';
 
 const makeGroup = (over: Partial<TrainGroupData> = {}): TrainGroupData => ({
@@ -249,5 +252,37 @@ describe('この先(今の片道)の停車駅', () => {
 
   it('折返し運転で終端にいるときは、折り返した先の全駅が並ぶ', () => {
     expect(stopsOnCurrentRun(schedule, { index: 3, direction: 1 }, 'shuttle')).toEqual(['C', 'B', 'A']);
+  });
+});
+
+describe('実績の運転間隔', () => {
+  it('同じ駅を続けて発車した間隔を記録する', () => {
+    const intervals = new Map<string, number[]>();
+    recordInterval(intervals, 'g1', 'stA', 100, 160);
+    expect(intervals.get(departureKey('g1', 'stA'))).toEqual([60]);
+  });
+
+  it('初回の発車(前回の記録が無い)は間隔にならない', () => {
+    const intervals = new Map<string, number[]>();
+    recordInterval(intervals, 'g1', 'stA', undefined, 160);
+    expect(intervals.get(departureKey('g1', 'stA'))).toBeUndefined();
+  });
+
+  it('直近の数回ぶんだけを残す', () => {
+    const intervals = new Map<string, number[]>();
+    for (let i = 1; i <= INTERVAL_SAMPLE_LIMIT + 3; i++) {
+      recordInterval(intervals, 'g1', 'stA', i * 10, i * 10 + 10);
+    }
+    expect(intervals.get(departureKey('g1', 'stA'))!.length).toBe(INTERVAL_SAMPLE_LIMIT);
+  });
+
+  it('路線全体の平均運転間隔を出す(記録が無ければnull)', () => {
+    const intervals = new Map<string, number[]>([
+      [departureKey('g1', 'stA'), [60, 80]],
+      [departureKey('g1', 'stB'), [100]],
+      [departureKey('g2', 'stA'), [10]],
+    ]);
+    expect(averageInterval(intervals, 'g1')).toBeCloseTo(80, 5);
+    expect(averageInterval(intervals, 'g3')).toBeNull();
   });
 });
