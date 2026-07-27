@@ -343,13 +343,18 @@ export function applyBridge(
   if (railMap.get(startKey)?.type === 'depot') updateDepotRotation(railMap, start.x, start.z);
   if (railMap.get(endKey)?.type === 'depot') updateDepotRotation(railMap, end.x, end.z);
 
-  // 橋桁: upper.connectionsのみに軸方向の接続(dir|oppDir)を入れる。地平は不変。
+  // 橋桁: upper.connectionsに軸方向の接続(dir|oppDir)を入れる。
+  // 地平に同じ軸の線路が既にあれば、橋がそれを置き換えるので該当ビットは取り除く
+  // (交差する別方向のビットはそのまま残す)。
+  const axisBits = dir | oppDir;
   for (const cell of middle) {
     const key = toKey(cell.x, cell.z);
     const existing = railMap.get(key);
+    const groundConnections = (existing?.connections ?? 0) & ~axisBits;
     railMap.set(key, {
       ...(existing ?? { type: 'rail' }),
-      upper: { connections: dir | oppDir },
+      connections: groundConnections,
+      upper: { connections: axisBits },
     });
   }
 

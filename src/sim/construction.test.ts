@@ -381,6 +381,27 @@ describe('橋（applyBridge）', () => {
     expect(mid.upper?.connections).toBe(DIR.E | DIR.W);
   });
 
+  it('橋桁の下に同じ軸の地平線路がある場合、地平connectionsから橋の軸ビットが消え、交差する別方向は残る', () => {
+    let state = emptyState();
+    // 橋と同じ東西の直線線路を先に敷いておく
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    // さらに橋桁予定セル(1,0)に交差する南北方向の接続も足しておく
+    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }]);
+    const before = state.railMap.get(toKey(1, 0))!.connections!;
+    expect(before & DIR.E).toBe(DIR.E);
+    expect(before & DIR.W).toBe(DIR.W);
+    expect(before & DIR.N).toBe(DIR.N);
+
+    const result = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    const mid = result.railMap.get(toKey(1, 0))!;
+    // 橋の軸(東西)ビットは消える
+    expect((mid.connections ?? 0) & DIR.E).toBe(0);
+    expect((mid.connections ?? 0) & DIR.W).toBe(0);
+    // 交差する南北ビットは残る
+    expect((mid.connections ?? 0) & DIR.N).toBe(DIR.N);
+    expect(mid.upper?.connections).toBe(DIR.E | DIR.W);
+  });
+
   it('始点と終点が直線上にない場合はno-op', () => {
     const state = emptyState();
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 1 }];
