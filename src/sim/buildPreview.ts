@@ -4,11 +4,12 @@
 // UI側で条件を書き写すと本体のルール(水域・山岳のno-op、上書き防止など)と
 // ずれていくため、apply系が「変化が無ければ同じ参照を返す」性質を使って
 // 実際に適用してみた結果から判定する。
-import type { CellData, StationData, TerrainType } from '../types';
+import type { CellData, StationData, TerrainType, TownData } from '../types';
 import type { ConstructionState } from './construction';
 import { applyRailPathDetailed, applyStation, applyDepot, applySignal, applyBridge, removePath } from './construction';
-import { costOfPath, type ConstructionMode } from './economy';
+import { costOfPath, RAIL_COST, STATION_COST, type ConstructionMode } from './economy';
 import { terrainAt } from './terrain';
+import { applyStationTemplate, templateAbsoluteCells, type StationTemplate } from './stationTemplates';
 
 export type BuildMode = ConstructionMode | 'remove';
 
@@ -101,4 +102,36 @@ export function evaluateBuild(
   else if (cost > money) reason = 'insufficient-funds';
 
   return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells };
+}
+
+/**
+ * 駅テンプレート(stationTemplates.ts)の設置可否・コストを評価する。
+ * evaluateBuildと同じ考え方: 実際にapplyStationTemplateを適用してみて、
+ * 参照が変わらなければ(=all-or-nothingで拒否された)no-effectとする。
+ */
+export function evaluateStationTemplate(
+  template: StationTemplate,
+  anchor: { x: number; z: number },
+  quarterTurns: 0 | 1 | 2 | 3,
+  railMap: Map<string, CellData>,
+  stations: Map<string, StationData>,
+  terrain: Map<string, TerrainType>,
+  money: number,
+  towns: TownData[] = []
+): BuildPreview {
+  const cells = templateAbsoluteCells(anchor, template, quarterTurns);
+  const stationCellCount = cells.filter(c => c.kind === 'station').length;
+  const railCellCount = cells.length - stationCellCount;
+  const cellCount = cells.length;
+  const cost = stationCellCount * STATION_COST + railCellCount * RAIL_COST;
+
+  const state: ConstructionState = { railMap, stations };
+  const result = applyStationTemplate(state, anchor, template, quarterTurns, towns, terrain);
+  const effective = result.railMap !== state.railMap || result.stations !== state.stations;
+
+  let reason: BuildBlockReason = 'ok';
+  if (!effective) reason = 'no-effect';
+  else if (cost > money) reason = 'insufficient-funds';
+
+  return { mode: 'station', cellCount, cost, reason, bridgeCells: 0, tunnelCells: 0, overpassCells: 0 };
 }

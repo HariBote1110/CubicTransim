@@ -17,3 +17,11 @@
 ## Constraints / Gotchas
 - 統合の「先に存在した駅」の判定は、正確な作成時刻ではなく `stations` Map の挿入順(JSのMapは挿入順を保持する)で代用している。セーブ/ロード後もMapの構築順(persistence.tsのdeserialiseWorldでのMap生成順)が保たれる前提。
 - テンプレート適用(stationTemplates.ts、要件2)では、テンプレート内の複数セルを`applyStation`で1セルずつ適用する実装のため、上記の統合ロジックがそのまま働く(二重に判定ロジックを書いていない)。
+
+## 駅テンプレート(stationTemplates.ts)
+- `StationTemplate = { id, name, description, cells: { dx, dz, kind: 'station'|'rail' }[] }`。座標はアンカー(設置基準セル)からの相対値。
+- `rotateTemplate(template, quarterTurns)`: 時計回り90度刻みの純粋な回転。東(1,0)→(90度)→南(0,1)。`-0`がtoEqual比較やセルキー生成で紛れ込むため、回転後の値は`normalizeZero`で+0に正規化している。
+- `STATION_TEMPLATES`: `'cross'`(十字乗換駅、東西・南北それぞれ長さ5の駅セル列が中心(0,0)で交差、合計9セル)と `'through'`(相対式2面2線、平行な長さ4の駅セル列2本をdz=0,1の隣接する形で配置、合計8セル)。throughは2本が直接隣接しているため、設置すると要件1の交差統合ロジックにより自動的に1つの駅になる。
+- `applyStationTemplate(state, anchor, template, quarterTurns, towns, terrain)`: 判定を二重に書かないため、実際に`applyStation`/`applyRailPath`を1セルずつ適用してみて、駅セルなら`railMap.get(key)?.type === 'station'`になっているかを確認する方式(evaluateBuild.tsと同じ考え方)。1つでも設置できなければ(地形制約・車庫との衝突など)、元のstateをそのまま返す(all-or-nothing)。rail種別のセルは、テンプレート内で8方向隣接する他のセルへ`applyRailPath`で接続する(現時点の2テンプレートはstationのみで未使用だが、将来のテンプレート用に汎用実装している)。
+- `buildPreview.ts` に `evaluateStationTemplate(template, anchor, quarterTurns, railMap, stations, terrain, money, towns)` を追加。コストは駅セル数×STATION_COST + 線路セル数×RAIL_COST。可否判定はevaluateBuildと同じ「実際に適用してみて参照が変わるか」方式。
+- CellData/StationDataの型は変更していないため、SaveDataのバージョンは上げていない(persistence.tsは無改修)。

@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { toKey } from '../utils';
 import type { CellData, StationData, TerrainType } from '../types';
 import { DIR } from '../utils';
-import { evaluateBuild } from './buildPreview';
+import { evaluateBuild, evaluateStationTemplate } from './buildPreview';
 import { RAIL_COST, STATION_COST, BRIDGE_COST_MULTIPLIER, TUNNEL_COST_MULTIPLIER, OVERPASS_COST_MULTIPLIER } from './economy';
+import { STATION_TEMPLATES } from './stationTemplates';
+import { applyDepot } from './construction';
 
 const emptyMaps = () => ({
   railMap: new Map<string, CellData>(),
@@ -133,5 +135,37 @@ describe('evaluateBuild(bridge)', () => {
     ];
     const p = evaluateBuild('bridge', path, railMap, stations, terrain, 1);
     expect(p.reason).toBe('insufficient-funds');
+  });
+});
+
+describe('evaluateStationTemplate', () => {
+  const cross = STATION_TEMPLATES.find(t => t.id === 'cross')!;
+
+  it('crossテンプレートは駅セル数(9)×STATION_COST', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('ok');
+    expect(p.cellCount).toBe(9);
+    expect(p.cost).toBe(9 * STATION_COST);
+  });
+
+  it('資金が足りなければinsufficient-funds', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1);
+    expect(p.reason).toBe('insufficient-funds');
+  });
+
+  it('一部が車庫と重なる場合はno-effect', () => {
+    let { railMap, stations, terrain } = emptyMaps();
+    ({ railMap, stations } = applyDepot({ railMap, stations }, { x: 2, z: 0 }));
+    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('no-effect');
+  });
+
+  it('一部が水域の場合はno-effect', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    terrain.set(toKey(0, -2), 'water');
+    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('no-effect');
   });
 });
