@@ -5,7 +5,9 @@ import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 import {
   effectiveSchedule, headwayHoldSeconds, nextGroupName, nextGroupColour,
-  departureKey, membersOf, GROUP_COLOURS,
+  departureKey, membersOf, GROUP_COLOURS,,
+  nextStop,
+  upcomingStops,
 } from './groups';
 
 const makeGroup = (over: Partial<TrainGroupData> = {}): TrainGroupData => ({
@@ -201,5 +203,47 @@ describe('stepWorld: 運用グループ', () => {
       if (world.groupDepartures!.has(departureKey('g1', 'stA'))) break;
     }
     expect(world.groupDepartures!.has(departureKey('g1', 'stA'))).toBe(true);
+  });
+});
+
+describe('運行モード(環状/折返し)', () => {
+  it('環状運転では最後の駅の次は先頭の駅に戻る', () => {
+    expect(nextStop({ index: 0, direction: 1 }, 3, 'loop')).toEqual({ index: 1, direction: 1 });
+    expect(nextStop({ index: 2, direction: 1 }, 3, 'loop')).toEqual({ index: 0, direction: 1 });
+  });
+
+  it('折返し運転では終端で向きが反転する', () => {
+    expect(nextStop({ index: 1, direction: 1 }, 3, 'shuttle')).toEqual({ index: 2, direction: 1 });
+    // 終端(index=2)に着いたら折り返して1つ戻る
+    expect(nextStop({ index: 2, direction: 1 }, 3, 'shuttle')).toEqual({ index: 1, direction: -1 });
+    // 始端(index=0)でも同様に向きが戻る
+    expect(nextStop({ index: 0, direction: -1 }, 3, 'shuttle')).toEqual({ index: 1, direction: 1 });
+  });
+
+  it('折返し運転で駅が2つなら2駅を往復し続ける', () => {
+    let state = { index: 0, direction: 1 as 1 | -1 };
+    const visited: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      state = nextStop(state, 2, 'shuttle');
+      visited.push(state.index);
+    }
+    expect(visited).toEqual([1, 0, 1, 0]);
+  });
+
+  it('停車駅が1つ以下なら動かない', () => {
+    expect(nextStop({ index: 0, direction: 1 }, 1, 'shuttle')).toEqual({ index: 0, direction: 1 });
+    expect(nextStop({ index: 0, direction: 1 }, 0, 'loop')).toEqual({ index: 0, direction: 1 });
+  });
+});
+
+describe('この先の停車駅', () => {
+  const schedule = ['A', 'B', 'C', 'D'];
+
+  it('環状運転では現在地の次から一周ぶんが並ぶ', () => {
+    expect(upcomingStops(schedule, { index: 2, direction: 1 }, 'loop')).toEqual(['D', 'A', 'B']);
+  });
+
+  it('折返し運転では終端で折り返した並びになる', () => {
+    expect(upcomingStops(schedule, { index: 2, direction: 1 }, 'shuttle')).toEqual(['D', 'C', 'B', 'A']);
   });
 });
