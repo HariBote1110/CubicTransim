@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { TrainData, TrainGroupData } from '../types';
+import type { StationData, TownData, TrainData, TrainGroupData } from '../types';
 import {
   buildServiceGraph,
   findRoute,
@@ -7,6 +7,12 @@ import {
   routeBetween,
   invalidateRoutes,
   MAX_TRANSFERS,
+  destinationWeights,
+  pickDestination,
+  addWaiting,
+  totalWaiting,
+  boardFromStation,
+  type PassengerCohort,
 } from './passengers';
 
 const train = (id: string, schedule: string[], groupId?: string): TrainData => ({
@@ -128,5 +134,90 @@ describe('経路キャッシュ', () => {
     const after = routeBetween(cache, buildServiceGraph([train('t1', ['A', 'B', 'C'])], []), 'A', 'C');
     expect(after).not.toBe(before);
     expect(after).toEqual(before);
+  });
+});
+
+describe('行き先の選び方(重力モデル)', () => {
+  const stations = new Map<string, StationData>([
+    ['A', { id: 'A', name: 'A', cells: [], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+    ['near', { id: 'near', name: 'near', cells: [], center: { x: 5, z: 0 }, platformDoors: 'none' }],
+    ['far', { id: 'far', name: 'far', cells: [], center: { x: 30, z: 0 }, platformDoors: 'none' }],
+  ]);
+  const towns: TownData[] = [
+    { id: 'tn', centre: { x: 5, z: 0 }, population: 3000 },
+    { id: 'tf', centre: { x: 30, z: 0 }, population: 3000 },
+  ];
+
+  it('出発駅自身は行き先候補に入らない', () => {
+    const weights = destinationWeights('A', stations, towns, () => true);
+    expect(weights.map(w => w.stationId)).not.toContain('A');
+  });
+
+  it('同じ規模の街なら近い駅のほうが重みが大きい', () => {
+    const weights = destinationWeights('A', stations, towns, () => true);
+    const near = weights.find(w => w.stationId === 'near')!;
+    const far = weights.find(w => w.stationId === 'far')!;
+    expect(near.weight).toBeGreaterThan(far.weight);
+  });
+
+  it('経路が無い駅は行き先候補から外れる(列車が行かない駅には客が向かわない)', () => {
+    const weights = destinationWeights('A', stations, towns, dest => dest !== 'far');
+    expect(weights.map(w => w.stationId)).toEqual(['near']);
+  });
+
+  it('重みに応じて行き先を1つ選ぶ', () => {
+    const weights = [
+      { stationId: 'p', weight: 1 },
+      { stationId: 'q', weight: 3 },
+    ];
+    expect(pickDestination(weights, () => 0.1)).toBe('p'); // 先頭25%はp
+    expect(pickDestination(weights, () => 0.9)).toBe('q');
+    expect(pickDestination([], () => 0.5)).toBeNull();
+  });
+});
+
+describe('待ち客のコホート', () => {
+  it('同じ行き先の客は1つの塊にまとまる', () => {
+    const cohorts: PassengerCohort[] = [];
+    addWaiting(cohorts, 'C', 3);
+    addWaiting(cohorts, 'C', 2.5);
+    expect(cohorts).toEqual([{ destinationId: 'C', count: 5.5 }]);
+  });
+
+  it('待ち人数の合計を数える', () => {
+    expect(totalWaiting([{ destinationId: 'C', count: 2 }, { destinationId: 'D', count: 3 }])).toBe(5);
+  });
+
+  it('乗れる行き先の客だけを、定員の空きまで乗せる', () => {
+    const cohorts: PassengerCohort[] = [
+      { destinationId: 'C', count: 10 },
+      { destinationId: 'D', count: 10 },
+    ];
+    // Dへ向かう客だけがこの列車に乗れる。空きは4人。
+    const boarded = boardFromStation(cohorts, dest => dest === 'D', 4);
+    expect(boarded).toEqual([{ destinationId: 'D', count: 4 }]);
+    expect(cohorts).toEqual([
+      { destinationId: 'C', count: 10 },
+      { destinationId: 'D', count: 6 },
+    ]);
+  });
+
+  it('乗客は整数単位で乗り、端数は駅に残る', () => {
+    const cohorts: PassengerCohort[] = [{ destinationId: 'D', count: 3.7 }];
+    const boarded = boardFromStation(cohorts, () => true, 100);
+    expect(boarded).toEqual([{ destinationId: 'D', count: 3 }]);
+    expect(cohorts).toEqual([{ destinationId: 'D', count: 0.7 }]);
+  });
+
+  it('空きが無ければ誰も乗れない', () => {
+    const cohorts: PassengerCohort[] = [{ destinationId: 'D', count: 10 }];
+    expect(boardFromStation(cohorts, () => true, 0)).toEqual([]);
+    expect(totalWaiting(cohorts)).toBe(10);
+  });
+
+  it('乗り切った塊は消える', () => {
+    const cohorts: PassengerCohort[] = [{ destinationId: 'D', count: 2 }];
+    boardFromStation(cohorts, () => true, 100);
+    expect(cohorts).toEqual([]);
   });
 });
