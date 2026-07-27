@@ -970,7 +970,7 @@ describe('stepWorld: 終端駅のホームの閉塞と出庫', () => {
 
     runTo(world, 3000);
 
-    expect(world.runtimes.get('first')!.stopRemaining).toBeGreaterThan(0);
+    expect(world.runtimes.get('first')!.lastStopStationId).toBe('stEnd');
     for (const cell of platform) {
       expect(world.reservations!.get(toKey(cell.x, cell.z))).toBe('first');
     }

@@ -16,7 +16,7 @@ import { calculateRouteWithStop } from './pathfinding';
 import { pathPointAt } from './trackPath';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
 import type { IntervalSamples } from './groups';
-import { tryReserve, releaseCell, findSafeSegmentEnd, reservationKey } from './reservation';
+import { tryReserve, releaseCell, findSafeSegmentEnd, findDepartureSegmentEnd, reservationKey } from './reservation';
 import {
   computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
   permittedSpeedKmh, rampDecel, brakingDistanceM, BRAKE_JERK_MS3,
@@ -235,6 +235,44 @@ const ensureRuntime = (world: SimWorld, train: TrainData): TrainRuntime => {
   return rt;
 };
 
+/**
+ * 停車中の列車が、そのホーム(駅を構成するセル全体)を予約する。
+ *
+ * 車体ぶんのセルしか予約しないと、ホームの残りのセルが空きとして見えてしまい、
+ * 別の列車が同じホームに進入して並んでしまう。ホーム全体を押さえることで
+ * 「1ホームに1編成」を保証する(他列車が既に持っているセルは奪わない)。
+ */
+const reservePlatform = (world: SimWorld, trainId: string, stationId: string): void => {
+  const station = world.stations.get(stationId);
+  if (!station || !world.reservations) return;
+  for (const cell of station.cells) {
+    const key = reservationKey(cell);
+    const owner = world.reservations.get(key);
+    if (!owner || owner === trainId) world.reservations.set(key, trainId);
+  }
+};
+
+/**
+ * 発車時に、ホームの予約のうち「もう要らないセル」を解放する。
+ * 車体が乗っているセルとこれから走る経路上のセルは残す。
+ */
+const releasePlatformExcept = (
+  world: SimWorld,
+  trainId: string,
+  stationId: string | null,
+  keep: Set<string>
+): void => {
+  if (!stationId || !world.reservations) return;
+  const station = world.stations.get(stationId);
+  if (!station) return;
+  for (const cell of station.cells) {
+    const key = reservationKey(cell);
+    if (world.reservations.get(key) !== trainId) continue;
+    if (keep.has(key)) continue;
+    world.reservations.delete(key);
+  }
+};
+
 // 経路探索用: 自分以外の列車が予約している(物理占有+前方経路)セル集合を集める。
 // 予約テーブルが「占有」と「予約」を統合した単一の情報源になったため、
 // 以前のtrail(占有)/route(予約)を別々に集めるロジックは不要になった。
@@ -256,9 +294,17 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime) 
   if (!world.reservations) world.reservations = new Map();
 
   if (rt.reservedEndIndex < 0) {
-    const idx = findSafeSegmentEnd(world.railMap, rt.route, 0);
+    // 車庫から出るときだけは、途中の安全点ではなく「次の信号まで、信号が無ければ
+    // 目的駅のホームまで」を一括で予約できたときに限り出庫する。本線上に出てから
+    // 駅の手前で立ち往生して後続を塞ぐのを防ぐ。
+    const inDepot = world.railMap.get(toKey(rt.grid.x, rt.grid.z))?.type === 'depot';
+    const idx = inDepot
+      ? findDepartureSegmentEnd(world.railMap, rt.route)
+      : findSafeSegmentEnd(world.railMap, rt.route, 0);
     if (tryReserve(world.reservations, train.id, rt.route.slice(0, idx + 1))) {
       rt.reservedEndIndex = idx;
+    } else if (inDepot) {
+      rt.debugStatus = 'Waiting for departure path...';
     }
     return;
   }
@@ -439,6 +485,8 @@ const stopAtStation = (
   rt.passengers = rt.load.reduce((sum, c) => sum + c.count, 0);
   syncWaiting(world);
   rt.lastStopStationId = targetStationId;
+  // ホーム全体を押さえ、停車中に別の列車が同じホームへ入ってこないようにする。
+  reservePlatform(world, train.id, targetStationId);
 
   // 人身事故判定: 停車の瞬間、ホーム混雑度とドア種別に応じた確率で発生する
   const doorType = st?.platformDoors ?? 'none';
@@ -608,6 +656,13 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 
       rt.route = newPath;
       rt.stopProgress = routeResult.stopProgress;
+      // 停車中に押さえていたホームの予約を、車体と新しい経路のぶんだけ残して解放する。
+      releasePlatformExcept(
+        world,
+        train.id,
+        rt.lastStopStationId,
+        new Set([...rt.trail, ...newPath].map(reservationKey))
+      );
       // 実際に発車したので、グループの「その駅の最終発車時刻」を更新する。
       recordDeparture(world, train, rt);
       // 予約はここでは取得しない(=まだ何も予約できていない状態)。この直後の

@@ -103,3 +103,22 @@ export function findSafeSegmentEnd(
   }
   return route.length - 1;
 }
+
+// 経路のうち「出庫してよい」と言える末端のindex。
+//
+// 車庫から出るときは、途中の何でもない安全点(次が分岐点、など)で止まれることを
+// もって出庫してしまうと、駅の手前の本線上に居座って後続を塞ぐ。OpenTTDで
+// 車庫からの発車が「次の信号まで経路を取れたときだけ」なのと同じく、
+//   - 次のセルが信号セル(信号がその先を防護している)
+//   - 経路の末尾(目的駅の停止位置)
+// のどちらかに届くまでを一括で予約する。
+export function findDepartureSegmentEnd(
+  railMap: Map<string, CellData>,
+  route: Grid[]
+): number {
+  for (let i = 0; i < route.length - 1; i++) {
+    const next = route[i + 1];
+    if (railMap.get(toKey(next.x, next.z))?.signalDir) return i;
+  }
+  return route.length - 1;
+}
