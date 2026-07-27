@@ -25,6 +25,19 @@ const isRailLike = (cell: CellData | undefined): boolean =>
   !!cell && (cell.type === 'rail' || cell.type === 'station' || cell.type === 'depot');
 
 /**
+ * 指定セルを物理占有(trail)している列車のIDを返す。いなければnull。
+ *
+ * 選択モードでの地面プレーンpointerdownから「このセルに列車がいるか」を判定するために使う
+ * (列車メッシュ自身のonPointerDownに操作の起点を依存させないための切り出し)。
+ */
+export function trainAtCell(world: SimWorld, cell: Grid): string | null {
+  for (const [trainId, rt] of world.runtimes) {
+    if (rt.trail.some(c => c.x === cell.x && c.z === cell.z)) return trainId;
+  }
+  return null;
+}
+
+/**
  * headCellを先頭にして、trainId(train.cars両ぶん)を置ける連続した線路セル列を求める。
  * 置けなければnull。置ける場合は先頭から最後尾へ向かうセル列(length === cars)を返す。
  *
