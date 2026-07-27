@@ -14,6 +14,8 @@ import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES, averageInterv
 import type { LineMode } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
 import type { SimWorld } from '../sim/simulation';
+import { computeStationArrivals } from '../sim/arrivals';
+import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 
@@ -126,6 +128,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   const [stationDemand, setStationDemand] = useState(0);
   // 選択中の駅の待ち客の行き先内訳(多い順)。
   const [stationDestinations, setStationDestinations] = useState<PassengerCohort[]>([]);
+  // 選択中の駅の発車標(接近案内)。到着が早い順。
+  const [stationArrivals, setStationArrivals] = useState<StationArrival[]>([]);
   // 路線パネルで停車駅ごとの待ち人数を出すための、駅id→待ち人数。
   const [waitingByStation, setWaitingByStation] = useState<Map<string, number>>(new Map());
   // 路線id→実績の平均運転間隔(秒)。設定値どおりに走れているかを見るため。
@@ -155,6 +159,7 @@ export const GameUI: React.FC<GameUIProps> = ({
         setStationWaiting(0);
         setStationDemand(0);
         setStationDestinations([]);
+        setStationArrivals([]);
         return;
       }
       setStationWaiting(Math.floor(world.current?.waiting.get(selectedStationId) ?? 0));
@@ -162,6 +167,12 @@ export const GameUI: React.FC<GameUIProps> = ({
       setStationDestinations([...cohorts].sort((a, b) => b.count - a.count).slice(0, 5));
       const station = stations.get(selectedStationId);
       setStationDemand(station ? demandFactor(station.center, world.current?.towns ?? []) : 0);
+      // 発車標: 駅を選んでいるときだけ計算する(全駅ぶんを毎回計算しない)。
+      setStationArrivals(
+        world.current
+          ? computeStationArrivals(selectedStationId, world.current.trains, world.current.runtimes, groups)
+          : []
+      );
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [selectedTrainId, selectedStationId, world, stations, groups]);
@@ -249,6 +260,7 @@ export const GameUI: React.FC<GameUIProps> = ({
               station={selectedStation}
               waiting={stationWaiting}
               destinations={stationDestinations}
+              arrivals={stationArrivals}
               stations={stations}
               demand={stationDemand}
               money={money}
@@ -647,11 +659,12 @@ const StationInspector: React.FC<{
   station: StationData;
   waiting: number;
   destinations: PassengerCohort[];
+  arrivals: StationArrival[];
   stations: Map<string, StationData>;
   demand: number;
   money: number;
   onUpgradeDoors: (stationId: string, doorType: PlatformDoorType) => void;
-}> = ({ station, waiting, destinations, stations, demand, money, onUpgradeDoors }) => {
+}> = ({ station, waiting, destinations, arrivals, stations, demand, money, onUpgradeDoors }) => {
   const rows: [string, string][] = [
     ['待ち人数', `${waiting}人`],
     ['立地需要', `${demand.toFixed(1)}倍`],
@@ -675,6 +688,38 @@ const StationInspector: React.FC<{
             <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{v}</span>
           </div>
         ))}
+      </div>
+
+      <div style={{ marginTop: 13 }}>
+        <div style={sectionLabel}>発車標(接近案内)</div>
+        {arrivals.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: T.textFaint, lineHeight: 1.6 }}>
+            この駅に向かっている列車はありません。
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 5, marginBottom: 4 }}>
+            {arrivals.map(a => (
+              <div key={a.trainId} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: '50%', background: a.lineColour, flexShrink: 0,
+                }} />
+                <span style={{ color: T.textMuted, flexShrink: 0, maxWidth: 64, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {a.lineName}
+                </span>
+                <span style={{ flex: 1, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {(a.destinationStationId ? stations.get(a.destinationStationId)?.name : null) ?? a.trainId} ゆき
+                </span>
+                <span style={{ color: T.textFaint, fontSize: 11 }}>{a.cars}両</span>
+                <span style={{
+                  fontWeight: 700, fontVariantNumeric: 'tabular-nums', minWidth: 44, textAlign: 'right',
+                  color: a.isStopped ? T.positive : T.text,
+                }}>
+                  {a.isStopped ? '停車中' : a.secondsUntilArrival < 10 ? 'まもなく' : `約${Math.round(a.secondsUntilArrival)}秒`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 13 }}>
