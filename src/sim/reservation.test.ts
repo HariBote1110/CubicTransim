@@ -46,13 +46,20 @@ describe('reservation: safe waiting point判定', () => {
     expect(isSafeWaitingPoint(railMap, { x: 1, z: 0 }, { x: 2, z: 0 })).toBe(false);
   });
 
-  it('分岐セルの手前(次セルが分岐)は安全(分岐点自体には停止しない)', () => {
-    // 分岐点そのものの手前でだけ停止を許可することで、対向列車と予約区間が
-    // 分岐点を跨いで丸ごと衝突するのを避け、順番に分岐点を通過できるようにする
-    // (分岐点上に停止することはない=isJunction(cell)自体は引き続き不可のまま)。
+  it('分岐セルの手前でも、信号が無ければ安全ではない(単線でのデッドロックを避けるため)', () => {
+    // 「分岐点の手前は安全」というルールは、単線の共有区間の両端で対向列車が
+    // 互いに相手側へ予約を延長できず睨み合う(デッドロックする)ため廃止した。
+    // 待機が許されるのは信号・駅・車庫・行き止まりのみ(OpenTTDのPBSと同じ方針)。
     const railMap = new Map<string, CellData>();
     railMap.set(toKey(0, 0), { type: 'rail', connections: DIR.E });
     railMap.set(toKey(1, 0), { type: 'rail', connections: DIR.N | DIR.E | DIR.W });
+    expect(isSafeWaitingPoint(railMap, { x: 0, z: 0 }, { x: 1, z: 0 })).toBe(false);
+  });
+
+  it('分岐セルの手前でも、信号があれば安全(信号がその先を防護している)', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(0, 0), { type: 'rail', connections: DIR.E });
+    railMap.set(toKey(1, 0), { type: 'rail', connections: DIR.N | DIR.E | DIR.W, signalDir: DIR.E });
     expect(isSafeWaitingPoint(railMap, { x: 0, z: 0 }, { x: 1, z: 0 })).toBe(true);
   });
 
