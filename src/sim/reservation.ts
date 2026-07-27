@@ -1,13 +1,18 @@
 import { toKey } from '../utils';
 import type { CellData } from '../types';
 
-export type Grid = { x: number; z: number };
+// layer省略(または0)は地平、1は立体交差の高架側。列車自体には層を持たせず、
+// 「そのセルにどちら向きで入ったか」から導出した値をここに載せて使う。
+export type Grid = { x: number; z: number; layer?: 0 | 1 };
 
 // PBS(経路予約ベース運行)風の予約テーブル。1セル1列車の排他をセル単位で管理する
 // (トラック方向単位までは踏み込まず簡略化。既存の閉塞判定もセル単位のため整合する)。
+// 立体交差の地平と高架は別の閉塞資源になるよう、キーに層を含める(地平は従来通り
+// "x,z"、高架は"x,z:u")。これにより2本の列車が同じ(x,z)を異なる層で同時に
+// 予約できる(立体交差の要点)。
 export type ReservationMap = Map<string, string>;
 
-export const reservationKey = (c: Grid) => toKey(c.x, c.z);
+export const reservationKey = (c: Grid) => (c.layer === 1 ? `${c.x},${c.z}:u` : toKey(c.x, c.z));
 
 // 指定セル群をtrainIdのために取得する。1つでも他列車が保有していれば全体を諦める
 // (OpenTTDのTryReserveRailTrackが失敗時に途中まで取った予約をロールバックするのと同義)。
@@ -78,6 +83,9 @@ export function isSafeWaitingPoint(
 ): boolean {
   const cellData = railMap.get(toKey(cell.x, cell.z));
   const nextData = next ? railMap.get(toKey(next.x, next.z)) : undefined;
+  // 立体交差セル(upperを持つ)の上では待機させない。高架の上で止まると
+  // 下の線路も含めて配線が読みづらく、実用上も好ましくないため。
+  if (cellData?.upper) return false;
   // 次セルが信号セルなら、信号がその先を防護しているため、cell自身が分岐点で
   // あっても安全点として扱う(交換設備の分岐直後に信号を置く構成を想定)。
   if (nextData?.signalDir) return true;
