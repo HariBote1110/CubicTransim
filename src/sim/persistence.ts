@@ -53,6 +53,9 @@ export interface SaveDataV5 {
   terrain: [string, TerrainType][];
 }
 
+// v9以前の台帳には利息(interest)が無い。
+type LegacyLedger = Omit<MonthlyLedger, 'interest'> & { interest?: number };
+
 export interface SaveDataV6 {
   version: 6;
   railMap: [string, CellData][];
@@ -94,8 +97,8 @@ export interface SaveDataV8 {
   towns: TownData[];
   terrain: [string, TerrainType][];
   clock: { elapsed: number };
-  currentLedger: MonthlyLedger;
-  ledgerHistory: MonthlyLedger[];
+  currentLedger: LegacyLedger;
+  ledgerHistory: LegacyLedger[];
   stopLocation: 'near' | 'middle' | 'far';
 }
 
@@ -110,8 +113,8 @@ export interface SaveDataV9 {
   towns: TownData[];
   terrain: [string, TerrainType][];
   clock: { elapsed: number };
-  currentLedger: MonthlyLedger;
-  ledgerHistory: MonthlyLedger[];
+  currentLedger: LegacyLedger;
+  ledgerHistory: LegacyLedger[];
   stopLocation: 'near' | 'middle' | 'far';
   // 運用グループ(共有運行表と発車間隔)。
   groups: TrainGroupData[];
@@ -119,12 +122,23 @@ export interface SaveDataV9 {
   groupDepartures: [string, number][];
 }
 
+export interface SaveDataV10 extends Omit<SaveDataV9, 'version' | 'currentLedger' | 'ledgerHistory'> {
+  version: 10;
+  currentLedger: MonthlyLedger;
+  ledgerHistory: MonthlyLedger[];
+  /** 借入残高。 */
+  loan: number;
+}
+
 export type SaveData =
   | SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5
-  | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9;
+  | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
-export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 });
+export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
+
+// v9以前の台帳には利息(interest)が存在しないため、0で補う。
+const migrateLedger = (ledger: LegacyLedger): MonthlyLedger => ({ ...ledger, interest: ledger.interest ?? 0 });
 
 export function serialiseWorld(
   railMap: Map<string, CellData>,
@@ -140,10 +154,11 @@ export function serialiseWorld(
   ledgerHistory: MonthlyLedger[],
   stopLocation: 'near' | 'middle' | 'far' = 'middle',
   groups: TrainGroupData[] = [],
-  groupDepartures: Map<string, number> = new Map()
-): SaveDataV9 {
+  groupDepartures: Map<string, number> = new Map(),
+  loan = 0
+): SaveDataV10 {
   return {
-    version: 9,
+    version: 10,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -158,6 +173,7 @@ export function serialiseWorld(
     stopLocation,
     groups,
     groupDepartures: Array.from(groupDepartures.entries()),
+    loan,
   };
 }
 
@@ -176,6 +192,7 @@ export function deserialiseWorld(data: SaveData): {
   stopLocation: 'near' | 'middle' | 'far';
   groups: TrainGroupData[];
   groupDepartures: Map<string, number>;
+  loan: number;
 } {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -205,7 +222,7 @@ export function deserialiseWorld(data: SaveData): {
   const migrateTrains = (trains: TrainData[]) =>
     trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
-  if (data.version === 9) {
+  if (data.version === 10 || data.version === 9) {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
@@ -216,11 +233,13 @@ export function deserialiseWorld(data: SaveData): {
       towns: data.towns,
       terrain: new Map(data.terrain),
       clock: data.clock,
-      currentLedger: data.currentLedger,
-      ledgerHistory: data.ledgerHistory,
+      currentLedger: migrateLedger(data.currentLedger),
+      ledgerHistory: data.ledgerHistory.map(migrateLedger),
       stopLocation: data.stopLocation,
       groups: data.groups ?? [],
       groupDepartures: new Map(data.groupDepartures ?? []),
+      // v9以前には借入が存在しないため、無借金として移行する。
+      loan: data.version === 10 ? data.loan : 0,
     };
   }
 
@@ -235,11 +254,12 @@ export function deserialiseWorld(data: SaveData): {
       towns: data.towns,
       terrain: new Map(data.terrain),
       clock: data.clock,
-      currentLedger: data.currentLedger,
-      ledgerHistory: data.ledgerHistory,
+      currentLedger: migrateLedger(data.currentLedger),
+      ledgerHistory: data.ledgerHistory.map(migrateLedger),
       stopLocation: data.stopLocation,
       groups: [],
       groupDepartures: new Map(),
+      loan: 0,
     };
   }
 
@@ -254,12 +274,13 @@ export function deserialiseWorld(data: SaveData): {
       towns: data.towns,
       terrain: new Map(data.terrain),
       clock: data.clock,
-      currentLedger: data.currentLedger,
-      ledgerHistory: data.ledgerHistory,
+      currentLedger: migrateLedger(data.currentLedger),
+      ledgerHistory: data.ledgerHistory.map(migrateLedger),
       // v7以前にはstopLocationが存在しないため、既定値'middle'(既存の編成中央基準)で移行する。
       stopLocation: 'middle',
       groups: [],
       groupDepartures: new Map(),
+      loan: 0,
     };
   }
 
@@ -274,11 +295,12 @@ export function deserialiseWorld(data: SaveData): {
       towns: data.towns,
       terrain: new Map(data.terrain),
       clock: data.clock,
-      currentLedger: data.currentLedger,
-      ledgerHistory: data.ledgerHistory,
+      currentLedger: migrateLedger(data.currentLedger),
+      ledgerHistory: data.ledgerHistory.map(migrateLedger),
       stopLocation: 'middle',
       groups: [],
       groupDepartures: new Map(),
+      loan: 0,
     };
   }
 
@@ -299,6 +321,7 @@ export function deserialiseWorld(data: SaveData): {
       stopLocation: 'middle',
       groups: [],
       groupDepartures: new Map(),
+      loan: 0,
     };
   }
 
@@ -319,6 +342,7 @@ export function deserialiseWorld(data: SaveData): {
       stopLocation: 'middle',
       groups: [],
       groupDepartures: new Map(),
+      loan: 0,
     };
   }
 
@@ -339,6 +363,7 @@ export function deserialiseWorld(data: SaveData): {
       stopLocation: 'middle',
       groups: [],
       groupDepartures: new Map(),
+      loan: 0,
     };
   }
 
@@ -358,6 +383,7 @@ export function deserialiseWorld(data: SaveData): {
       stopLocation: 'middle',
       groups: [],
       groupDepartures: new Map(),
+      loan: 0,
     };
   }
 
@@ -377,5 +403,6 @@ export function deserialiseWorld(data: SaveData): {
     stopLocation: 'middle',
     groups: [],
     groupDepartures: new Map(),
+    loan: 0,
   };
 }

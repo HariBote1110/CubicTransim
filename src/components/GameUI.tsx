@@ -7,6 +7,7 @@ import {
   demandFactor, clockToDate,
 } from '../sim/economy';
 import type { MonthlyLedger } from '../sim/economy';
+import { ANNUAL_INTEREST_RATE, LOAN_LIMIT, LOAN_STEP, maxAdditionalLoan, monthlyInterest } from '../sim/loans';
 import { evaluateBuild } from '../sim/buildPreview';
 import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
@@ -48,6 +49,10 @@ interface GameUIProps {
   accidents: AccidentNotice[];
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
+  // ★追加: 借入(資金繰り)
+  loan: number;
+  onBorrow: (amount?: number) => void;
+  onRepay: (amount?: number) => void;
   stopLocation: 'near' | 'middle' | 'far';
   onSetStopLocation: (loc: 'near' | 'middle' | 'far') => void;
   /** 建設プレビュー中のセル列(GameSceneのカーソル/ドラッグから流れてくる) */
@@ -104,6 +109,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   money, world,
   selectedStationId, onUpgradeDoors, accidents,
   currentLedger, ledgerHistory,
+  loan, onBorrow, onRepay,
   stopLocation, onSetStopLocation,
   previewPath,
   groups, onCreateGroup, onAssignGroup, onSetHeadway, onRenameGroup,
@@ -165,7 +171,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   }, [buildMode, previewPath, railMap, stations, terrain, money]);
 
   const monthProfit =
-    currentLedger.fares - currentLedger.construction - currentLedger.upkeep - currentLedger.accidents;
+    currentLedger.fares - currentLedger.construction - currentLedger.upkeep
+    - currentLedger.accidents - currentLedger.interest;
 
   return (
     <>
@@ -184,6 +191,11 @@ export const GameUI: React.FC<GameUIProps> = ({
           <div style={{ fontSize: 11.5, color: monthProfit >= 0 ? T.positive : T.danger, marginTop: 1 }}>
             今月 {formatYen(monthProfit)}
           </div>
+          {loan > 0 && (
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 1 }}>
+              借入 {formatYen(loan)}（月利息 {formatYen(monthlyInterest(loan))}）
+            </div>
+          )}
         </div>
 
         <div style={{ padding: '11px 14px 13px' }}>
@@ -314,7 +326,10 @@ export const GameUI: React.FC<GameUIProps> = ({
         )}
 
         {openPanel === 'finance' && (
-          <FinancePanel currentLedger={currentLedger} ledgerHistory={ledgerHistory} />
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <LoanPanel loan={loan} money={money} onBorrow={onBorrow} onRepay={onRepay} />
+            <FinancePanel currentLedger={currentLedger} ledgerHistory={ledgerHistory} />
+          </div>
         )}
       </div>
 
@@ -654,6 +669,53 @@ const StationInspector: React.FC<{
   );
 };
 
+// --- 借入パネル ---
+// 序盤の資金切れで「線路はあるが列車が買えない」状態に陥るのを防ぐための資金繰り。
+const LoanPanel: React.FC<{
+  loan: number;
+  money: number;
+  onBorrow: (amount?: number) => void;
+  onRepay: (amount?: number) => void;
+}> = ({ loan, money, onBorrow, onRepay }) => {
+  const canBorrow = maxAdditionalLoan(loan) > 0;
+  const canRepay = loan > 0 && money > 0;
+  const ratio = loan / LOAN_LIMIT;
+
+  return (
+    <div style={panel({ padding: 14, width: 220 })}>
+      <div style={sectionLabel}>借入</div>
+      <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: loan > 0 ? T.danger : T.text }}>
+        {formatYen(loan)}
+      </div>
+      <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>
+        上限 {formatYen(LOAN_LIMIT)}・年利 {(ANNUAL_INTEREST_RATE * 100).toFixed(1)}%
+      </div>
+      <div style={{ height: 5, borderRadius: 3, background: T.line, marginTop: 8, overflow: 'hidden' }}>
+        <div style={{ width: `${Math.min(100, ratio * 100)}%`, height: '100%', background: T.danger }} />
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+        <button
+          style={{ ...button({ compact: true, disabled: !canBorrow }), flex: 1 }}
+          disabled={!canBorrow}
+          onClick={() => onBorrow()}
+        >
+          借りる +{(LOAN_STEP / 1000).toFixed(0)}k
+        </button>
+        <button
+          style={{ ...button({ compact: true, disabled: !canRepay }), flex: 1 }}
+          disabled={!canRepay}
+          onClick={() => onRepay()}
+        >
+          返す -{(LOAN_STEP / 1000).toFixed(0)}k
+        </button>
+      </div>
+      <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 8, lineHeight: 1.5 }}>
+        利息は月末に所持金から引かれます。返済は手持ちの範囲まで。
+      </div>
+    </div>
+  );
+};
+
 // --- 収支パネル ---
 const FinancePanel: React.FC<{ currentLedger: MonthlyLedger; ledgerHistory: MonthlyLedger[] }> = ({
   currentLedger, ledgerHistory,
@@ -676,13 +738,14 @@ const FinancePanel: React.FC<{ currentLedger: MonthlyLedger; ledgerHistory: Mont
             <th style={cell}>建設</th>
             <th style={cell}>維持</th>
             <th style={cell}>事故</th>
+            <th style={cell}>利息</th>
             <th style={cell}>損益</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => {
             const l = r.ledger;
-            const profit = l.fares - l.construction - l.upkeep - l.accidents;
+            const profit = l.fares - l.construction - l.upkeep - l.accidents - l.interest;
             return (
               <tr key={i} style={{
                 borderBottom: '1px solid rgba(255,255,255,0.06)',
@@ -693,6 +756,7 @@ const FinancePanel: React.FC<{ currentLedger: MonthlyLedger; ledgerHistory: Mont
                 <td style={cell}>{formatYen(l.construction)}</td>
                 <td style={cell}>{formatYen(l.upkeep)}</td>
                 <td style={cell}>{formatYen(l.accidents)}</td>
+                <td style={cell}>{formatYen(l.interest)}</td>
                 <td style={{ ...cell, fontWeight: 700, color: profit >= 0 ? T.positive : T.danger }}>
                   {formatYen(profit)}
                 </td>
@@ -701,7 +765,7 @@ const FinancePanel: React.FC<{ currentLedger: MonthlyLedger; ledgerHistory: Mont
           })}
           {ledgerHistory.length === 0 && (
             <tr>
-              <td colSpan={6} style={{ padding: 10, textAlign: 'center', color: T.textFaint, fontStyle: 'italic' }}>
+              <td colSpan={7} style={{ padding: 10, textAlign: 'center', color: T.textFaint, fontStyle: 'italic' }}>
                 確定済みの月次決算はまだありません
               </td>
             </tr>

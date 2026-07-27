@@ -32,6 +32,7 @@ export default function App() {
     scheduleClipboard, copySchedule, pasteSchedule,
     saveGame, loadGame,
     money, addIncome,
+    loan, borrow, repay,
     selectedStationId, selectStation, upgradeStationDoors,
     activeAccidents, handleAccident,
     currentLedger, ledgerHistory, handleMonthEnd,
@@ -98,6 +99,9 @@ export default function App() {
         accidents={activeAccidents}
         currentLedger={currentLedger}
         ledgerHistory={ledgerHistory}
+        loan={loan}
+        onBorrow={borrow}
+        onRepay={repay}
         stopLocation={stopLocation}
         onSetStopLocation={setStopLocation}
         previewPath={previewPath}

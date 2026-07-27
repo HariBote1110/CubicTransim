@@ -71,6 +71,8 @@ export interface MonthlyLedger {
   construction: number;
   upkeep: number;
   accidents: number;
+  /** 借入残高に対して月末に支払う利息。 */
+  interest: number;
 }
 
 export const RAIL_COST = 100; // 1セルあたり(平地)

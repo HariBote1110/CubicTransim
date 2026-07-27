@@ -16,6 +16,7 @@ import {
 const MIN_CARS = 1;
 const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
+import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
 import { mulberry32, generateTowns } from '../sim/towns';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
@@ -66,6 +67,10 @@ export const useGameLogic = () => {
 
   // ★追加: 所持金。建設・列車購入のたびに減算し、運賃収入で増加する。マイナスも許容する(赤字表示のみ)。
   const [money, setMoney] = useState<number>(STARTING_MONEY);
+
+  // ★追加: 借入残高。序盤に建設しすぎて列車を買えず詰むのを防ぐための資金繰り手段。
+  // 月末に残高に応じた利息を支払う(sim/loans.ts)。
+  const [loan, setLoan] = useState<number>(0);
 
   // ★追加: 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定。既定値'middle'。
   const [stopLocation, setStopLocation] = useState<'near' | 'middle' | 'far'>('middle');
@@ -264,14 +269,35 @@ export const useGameLogic = () => {
   // 新しい月の台帳を開始する。
   const handleMonthEnd = (event: Extract<SimEvent, { type: 'monthEnd' }>) => {
     const upkeep = calculateUpkeep(worldRef.current);
-    setMoney(m => m - upkeep);
-    setCurrentLedger(l => {
-      const finalised: MonthlyLedger = { ...l, year: event.year, month: event.month, upkeep };
-      setLedgerHistory(prev => [...prev, finalised].slice(-LEDGER_HISTORY_LIMIT));
-      const nextMonth = event.month === 12 ? 1 : event.month + 1;
-      const nextYear = event.month === 12 ? event.year + 1 : event.year;
-      return { year: nextYear, month: nextMonth, fares: 0, construction: 0, upkeep: 0, accidents: 0 };
+    const interest = monthlyInterest(loan);
+    setMoney(m => m - upkeep - interest);
+
+    // 確定した台帳。setCurrentLedgerのupdater内でsetLedgerHistoryを呼ぶと、
+    // StrictModeがupdaterを二重実行して履歴が重複するため、updaterの外で組み立てる。
+    const finalised: MonthlyLedger = {
+      ...currentLedger, year: event.year, month: event.month, upkeep, interest,
+    };
+    setLedgerHistory(prev => [...prev, finalised].slice(-LEDGER_HISTORY_LIMIT));
+
+    const nextMonth = event.month === 12 ? 1 : event.month + 1;
+    const nextYear = event.month === 12 ? event.year + 1 : event.year;
+    setCurrentLedger({
+      year: nextYear, month: nextMonth, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0,
     });
+  };
+
+  // ★追加: 借入(LOAN_STEP単位)。上限までしか借りられない。
+  const borrow = (amount: number = LOAN_STEP) => {
+    const after = takeLoan({ money, loan }, amount);
+    setMoney(after.money);
+    setLoan(after.loan);
+  };
+
+  // ★追加: 返済(LOAN_STEP単位)。手持ちと借入残高の少ないほうまで。
+  const repay = (amount: number = LOAN_STEP) => {
+    const after = repayLoan({ money, loan }, amount);
+    setMoney(after.money);
+    setLoan(after.loan);
   };
 
   const deployTrain = (trainId: string) => {
@@ -416,7 +442,7 @@ export const useGameLogic = () => {
     const saveData = serialiseWorld(
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, terrain,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
-      groups, worldRef.current.groupDepartures ?? new Map()
+      groups, worldRef.current.groupDepartures ?? new Map(), loan
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
@@ -434,6 +460,7 @@ export const useGameLogic = () => {
     setStations(restored.stations);
     setTrains(restored.trains);
     setMoney(restored.money);
+    setLoan(restored.loan);
     setTowns(restored.towns);
     setTerrain(restored.terrain);
     setCurrentLedger(restored.currentLedger);
@@ -476,6 +503,10 @@ export const useGameLogic = () => {
     // ★追加: 経済システム
     money,
     addIncome,
+    // ★追加: 借入
+    loan,
+    borrow,
+    repay,
     // ★追加: 人身事故とホームドア
     selectedStationId,
     selectStation,
