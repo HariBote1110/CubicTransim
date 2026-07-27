@@ -2,52 +2,10 @@ import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '
 import type { CellData, StationData, TerrainType } from '../types';
 import { terrainAt } from './terrain';
 
-const DIR_BITS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
-
-const popcount = (n: number): number => DIR_BITS.reduce((c, b) => c + ((n & b) ? 1 : 0), 0);
-
-// 新しく敷く方向dirが、既存の接続方向のどれか1つとでも「なだらかに繋がる」か
-// (内積の絶対値が0.5以上)を判定する。1つも無ければ立体交差の対象になる。
-//
-// connectionsのビットは「セルから見てその隣へ track が伸びている向き」を表す
-// 無方向の集合であり、直進(entry=W, exit=Eのように正反対のビットの組)がもっとも
-// 一般的なので、素の内積ではなく絶対値で見る。dot=-1(正反対=直進)は当然なだらか、
-// dot=0(直交)はなだらかでない、という境界が絶対値0.5でちょうど分かれる。
-const canMergeSmoothly = (existingConnections: number, dir: number): boolean => {
-  const dv = getVectorFromDir(dir);
-  for (const b of DIR_BITS) {
-    if (!(existingConnections & b)) continue;
-    const ev = getVectorFromDir(b);
-    if (Math.abs(ev.x * dv.x + ev.z * dv.z) >= 0.5) return true;
-  }
-  return false;
-};
-
-/**
- * 新しい接続dirを既存セルへ足すとき、どちらの層に入れるべきかを判定する。
- * - 駅・車庫: 常に地平(立体交差にしない)
- * - 何も接続が無いセル: 地平に新設
- * - 既存の地平接続となだらかに繋がる: 地平で合流
- * - 地平とは繋がらないが、既にupperがあり、それとなだらかに繋がる: upperで合流
- * - どちらとも繋がらない: 地平にupperが無ければ立体交差として新設、既にあればblocked(3層は作らない)
- */
-export function classifyConnectionPlacement(
-  existing: CellData | undefined,
-  dir: number
-): 'ground' | 'upper' | 'blocked' {
-  if (!existing) return 'ground';
-  if (existing.type === 'station' || existing.type === 'depot') return 'ground';
-
-  const groundConn = existing.connections || 0;
-  const upperConn = existing.upper?.connections ?? 0;
-
-  if (popcount(groundConn) === 0 && popcount(upperConn) === 0) return 'ground';
-  if (canMergeSmoothly(groundConn, dir)) return 'ground';
-  if (popcount(upperConn) > 0) {
-    return canMergeSmoothly(upperConn, dir) ? 'upper' : 'blocked';
-  }
-  return 'upper';
-}
+// 橋の全長(橋台含むセル数)の下限・上限。3未満は橋桁が0になり橋の意味が無く、
+// 10を超える長さは建設UIの想定外(コストも高額になりすぎる)としてno-opにする。
+export const MAX_BRIDGE_LENGTH = 10;
+const MIN_BRIDGE_LENGTH = 3;
 
 export interface ConstructionState {
   railMap: Map<string, CellData>;
@@ -119,12 +77,10 @@ const terrainFlags = (terrain: Map<string, TerrainType>, x: number, z: number): 
   return { bridge: undefined, tunnel: undefined };
 };
 
-// 既存セルにdir方向の接続を1つ足す。地平で合流できればconnectionsへ、
-// なだらかに繋がらなければupperへ(立体交差)。どちらとも繋がらなければno-op。
-// upperになったセルのキーをoverpassCellsへ記録する(コスト計算・プレビュー表示用)。
+// 既存セルにdir方向の接続を1つ足す。常に地平のconnectionsへOR(平面交差方式)。
+// 直角に交差する線路は4方向接続の1セル(ダイヤモンドクロッシング)になる。
 const addConnectionToCell = (
   railMap: Map<string, CellData>,
-  overpassCells: Set<string>,
   key: string,
   x: number,
   z: number,
@@ -132,34 +88,27 @@ const addConnectionToCell = (
   terrain: Map<string, TerrainType>
 ): void => {
   const existing = railMap.get(key);
-  const placement = classifyConnectionPlacement(existing, dir);
-  if (placement === 'blocked') return; // 3層は作らない: no-op
-
-  if (placement === 'ground') {
-    if (!existing) {
-      railMap.set(key, { type: 'rail', connections: dir, ...terrainFlags(terrain, x, z) });
-    } else if (existing.type !== 'rail') {
-      railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir });
-    } else {
-      railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...terrainFlags(terrain, x, z) });
-    }
-    return;
+  if (!existing) {
+    railMap.set(key, { type: 'rail', connections: dir, ...terrainFlags(terrain, x, z) });
+  } else if (existing.type !== 'rail') {
+    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir });
+  } else {
+    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...terrainFlags(terrain, x, z) });
   }
-
-  // placement === 'upper'
-  const upperConn = existing?.upper?.connections ?? 0;
-  railMap.set(key, { ...(existing as CellData), type: 'rail', upper: { connections: upperConn | dir } });
-  overpassCells.add(key);
 };
 
 export interface RailPathApplyResult extends ConstructionState {
-  /** このpath適用によって立体交差(upper)になった/拡張されたセルのキー集合。 */
+  /**
+   * このpath適用によって立体交差(upper)になった/拡張されたセルのキー集合。
+   * 自動高架は廃止したため、線路敷設(applyRailPath)では常に空集合になる。
+   * 橋(applyBridge)では別途橋桁セルの集合をoverpassCells相当として扱う
+   * (evaluateBuild側でbridge専用に計算する)。
+   */
   overpassCells: Set<string>;
 }
 
-// applyRailPathの詳細版。overpassCells(立体交差になったセル)も返す。
-// コスト計算(economy.costOfPath)がRAIL_COST×OVERPASS_COST_MULTIPLIERを
-// 適用すべきセルを判定するのに使う。
+// applyRailPathの詳細版。overpassCellsは自動高架の廃止により常に空集合。
+// 呼び出し側(economy.costOfPath等)との互換のため型は維持している。
 export function applyRailPathDetailed(
   state: ConstructionState,
   path: Pos[],
@@ -178,10 +127,10 @@ export function applyRailPathDetailed(
     const dir = getDirFromVector(dx, dz);
     const oppDir = getOppositeDir(dir);
 
-    addConnectionToCell(railMap, overpassCells, currKey, curr.x, curr.z, dir, terrain);
+    addConnectionToCell(railMap, currKey, curr.x, curr.z, dir, terrain);
     if (railMap.get(currKey)?.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
 
-    addConnectionToCell(railMap, overpassCells, nextKey, next.x, next.z, oppDir, terrain);
+    addConnectionToCell(railMap, nextKey, next.x, next.z, oppDir, terrain);
     if (railMap.get(nextKey)?.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
 
     const checkDepotNeighbours = (px: number, pz: number) => {
@@ -320,6 +269,74 @@ export function applySignal(state: ConstructionState, path: Pos[], terrain: Map<
   return { railMap, stations: state.stations };
 }
 
+// TTD/OpenTTD流の橋。始点(path[0])・終点(path末尾)が橋台(地平の通常線路)、
+// 中間セルが橋桁(upper.connectionsのみ。地平のconnectionsは一切変更しない)になる。
+// これにより橋の下に平面交差(ダイヤモンドクロッシング)や別の地平線路を通せる。
+//
+// 建設不可条件(いずれか1つでも該当すれば no-op、state をそのまま返す):
+// - 全長(path.length)が MIN_BRIDGE_LENGTH 未満 or MAX_BRIDGE_LENGTH 超
+// - 始点〜終点が8方向直線上に等間隔で並んでいない
+// - 橋台セル(始点・終点)が水域・山岳
+// - 橋桁セル(中間)が駅・車庫
+// - 橋桁セルに既にupperがある(二重架け禁止)
+export function applyBridge(
+  state: ConstructionState,
+  path: Pos[],
+  terrain: Map<string, TerrainType> = EMPTY_TERRAIN
+): ConstructionState {
+  if (path.length < MIN_BRIDGE_LENGTH || path.length > MAX_BRIDGE_LENGTH) return state;
+
+  const start = path[0];
+  const second = path[1];
+  const end = path[path.length - 1];
+  const dir = getDirFromVector(second.x - start.x, second.z - start.z);
+  if (dir === 0) return state; // 隣接しない/同一セル指定など
+
+  const oppDir = getOppositeDir(dir);
+  const step = getVectorFromDir(dir);
+
+  // 始点から終点までstep刻みの直線上に等間隔で並んでいるか(斜めも含む8方向)確認する
+  for (let i = 0; i < path.length; i++) {
+    const expectedX = start.x + step.x * i;
+    const expectedZ = start.z + step.z * i;
+    if (path[i].x !== expectedX || path[i].z !== expectedZ) return state;
+  }
+
+  // 橋台は水域・山岳に置けない
+  if (!isBuildableGround(terrain, start.x, start.z)) return state;
+  if (!isBuildableGround(terrain, end.x, end.z)) return state;
+
+  // 橋桁(中間セル)は駅・車庫でないこと、既にupperが無いこと
+  const middle = path.slice(1, -1);
+  for (const cell of middle) {
+    const existing = state.railMap.get(toKey(cell.x, cell.z));
+    if (existing && (existing.type === 'station' || existing.type === 'depot')) return state;
+    if (existing?.upper) return state;
+  }
+
+  const railMap = new Map(state.railMap);
+
+  // 橋台: 通常の地平線路として敷設する(既存線路があれば接続を足すだけ)
+  const startKey = toKey(start.x, start.z);
+  const endKey = toKey(end.x, end.z);
+  addConnectionToCell(railMap, startKey, start.x, start.z, dir, terrain);
+  addConnectionToCell(railMap, endKey, end.x, end.z, oppDir, terrain);
+  if (railMap.get(startKey)?.type === 'depot') updateDepotRotation(railMap, start.x, start.z);
+  if (railMap.get(endKey)?.type === 'depot') updateDepotRotation(railMap, end.x, end.z);
+
+  // 橋桁: upper.connectionsのみに軸方向の接続(dir|oppDir)を入れる。地平は不変。
+  for (const cell of middle) {
+    const key = toKey(cell.x, cell.z);
+    const existing = railMap.get(key);
+    railMap.set(key, {
+      ...(existing ?? { type: 'rail' }),
+      upper: { connections: dir | oppDir },
+    });
+  }
+
+  return { railMap, stations: state.stations };
+}
+
 export function removePath(state: ConstructionState, path: Pos[]): ConstructionState {
   const railMap = new Map(state.railMap);
   const stations = new Map(state.stations);
@@ -328,6 +345,13 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
     const key = toKey(pos.x, pos.z);
     const cell = railMap.get(key);
     if (!cell) return;
+
+    // 橋桁セル(upperを持ち、かつ地平のconnectionsも独立して存在する)をまるごと
+    // 撤去した場合は、upperだけを消して地平の線路(下を通る別の経路)を残す。
+    if (cell.upper?.connections && (cell.connections ?? 0) !== 0) {
+      railMap.set(key, { ...cell, upper: undefined });
+      return;
+    }
 
     railMap.delete(key);
     if (cell.type === 'station' && cell.stationId) {
@@ -365,7 +389,8 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
           updated = { ...updated, connections: nCell.connections & ~n.opp };
         }
         if (nCell.upper?.connections) {
-          updated = { ...updated, upper: { connections: nCell.upper.connections & ~n.opp } };
+          const remainingUpper = nCell.upper.connections & ~n.opp;
+          updated = { ...updated, upper: remainingUpper === 0 ? undefined : { connections: remainingUpper } };
         }
         if (updated !== nCell) railMap.set(nKey, updated);
         if (nCell.type === 'depot') updateDepotRotation(railMap, n.x, n.z);

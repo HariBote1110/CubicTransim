@@ -6,7 +6,7 @@
 // 実際に適用してみた結果から判定する。
 import type { CellData, StationData, TerrainType } from '../types';
 import type { ConstructionState } from './construction';
-import { applyRailPathDetailed, applyStation, applyDepot, applySignal, removePath } from './construction';
+import { applyRailPathDetailed, applyStation, applyDepot, applySignal, applyBridge, removePath } from './construction';
 import { costOfPath, type ConstructionMode } from './economy';
 import { terrainAt } from './terrain';
 
@@ -61,7 +61,7 @@ export function evaluateBuild(
     : costOfPath(
         mode,
         path.length,
-        mode === 'rail' ? path : undefined,
+        mode === 'rail' || mode === 'bridge' ? path : undefined,
         mode === 'rail' ? terrain : undefined,
         mode === 'rail' ? railMap : undefined
       );
@@ -81,6 +81,12 @@ export function evaluateBuild(
       overpassCells = detailed.overpassCells.size;
       break;
     }
+    case 'bridge': {
+      result = applyBridge(state, path, terrain);
+      // 成立した場合のみ、中間セル数(橋台を除いた橋桁数)を返す。
+      if (result.railMap !== state.railMap) overpassCells = Math.max(0, path.length - 2);
+      break;
+    }
   }
   // removePath は常に新しい Map を返すため参照比較では判定できない。
   // 撤去は「対象セルに何かある」ことをもって成立とする。
@@ -88,7 +94,7 @@ export function evaluateBuild(
     ? path.some(c => railMap.has(`${c.x},${c.z}`))
     : (result.railMap !== state.railMap || result.stations !== state.stations);
 
-  const cellCount = mode === 'rail' || mode === 'remove' ? path.length : 1;
+  const cellCount = mode === 'rail' || mode === 'remove' || mode === 'bridge' ? path.length : 1;
 
   let reason: BuildBlockReason = 'ok';
   if (!effective) reason = 'no-effect';

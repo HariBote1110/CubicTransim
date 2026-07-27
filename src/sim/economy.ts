@@ -3,7 +3,7 @@
 import { toKey } from '../utils';
 import type { CellData, PlatformDoorType, TerrainType, TownData } from '../types';
 import { terrainAt } from './terrain';
-import { applyRailPathDetailed } from './construction';
+import { applyRailPathDetailed, MAX_BRIDGE_LENGTH } from './construction';
 import type { SimWorld } from './simulation';
 
 export const STARTING_MONEY = 50_000;
@@ -88,8 +88,12 @@ export const CAR_REFUND = 1_000; // 解結1両あたりの払い戻し
 // 水上は「橋」、山岳は「トンネル」としてRAIL_COSTに乗算する倍率
 export const BRIDGE_COST_MULTIPLIER = 5;
 export const TUNNEL_COST_MULTIPLIER = 8;
-// 立体交差(upper)になるセルに乗算する倍率。橋・トンネルと同じ枠組み。
+// 立体交差(upper)になるセルに乗算する倍率。橋の橋桁にも同じ倍率を使う。
 export const OVERPASS_COST_MULTIPLIER = 4;
+
+// 橋の全長(橋台含むセル数)の上限。construction.tsのMAX_BRIDGE_LENGTHをそのまま再エクスポートする
+// (UI・経済計算側からはeconomy.tsを窓口にするため)。
+export { MAX_BRIDGE_LENGTH };
 
 export const PASSENGER_SPAWN_RATE = 0.5; // 人/秒/駅(demandFactor=1のときの基準値)
 export const STATION_WAITING_CAP = 200;
@@ -128,7 +132,7 @@ export const ACCIDENT_DOOR_MODIFIER = {
 export const ACCIDENT_HALT_DURATION = 60; // シミュレーション秒
 export const ACCIDENT_PENALTY = 5_000;
 
-export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal';
+export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal' | 'bridge';
 
 // 事故発生確率 = 基本確率 × ドア種別による係数 × 混雑係数(待ち0で0.5倍、満杯で1.5倍)
 export function calculateAccidentChance(doorType: PlatformDoorType, waiting: number): number {
@@ -164,6 +168,16 @@ export function costOfPath(
         }, 0);
       }
       return cellCount * RAIL_COST;
+    }
+    case 'bridge': {
+      // 橋台(始点・終点)はRAIL_COST、橋桁(中間セル)はRAIL_COST×OVERPASS_COST_MULTIPLIER。
+      // pathが無い場合はcellCountだけでは橋台/橋桁の内訳が分からないため、
+      // 全セルを橋桁扱い(最も保守的な見積もり)にはせず、両端を橋台とみなして計算する。
+      const n = path ? path.length : cellCount;
+      if (n <= 0) return 0;
+      const pierCount = Math.max(0, n - 2);
+      const abutmentCount = n - pierCount;
+      return abutmentCount * RAIL_COST + pierCount * RAIL_COST * OVERPASS_COST_MULTIPLIER;
     }
     case 'station':
       return STATION_COST;
