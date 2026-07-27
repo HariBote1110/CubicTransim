@@ -1,5 +1,16 @@
 import { toKey } from '../utils';
 import type { CellData, StationData, TrainData, TrainGroupData, TownData, TerrainType } from '../types';
+import {
+  buildServiceGraph,
+  createRouteCache,
+  routeBetween,
+  destinationWeights,
+  pickDestination,
+  addWaiting,
+  totalWaiting,
+  boardFromStation,
+} from './passengers';
+import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { calculateRouteWithStop } from './pathfinding';
 import { pathPointAt } from './trackPath';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds } from './groups';
@@ -83,6 +94,19 @@ export interface TrainRuntime {
   // 停車を終えて発車待ちの駅id。発車間隔(グループダイヤ)の判定はこの間だけ行い、
   // 実際に発車した時点でクリアする。線路上で経路待ちをしている状態と区別するために持つ。
   pendingDepartureFrom?: string | null;
+  // 車内の旅客を行き先つきの塊で持つ。passengersはこの合計(質量計算と描画のために残している)。
+  // 旧セーブには存在しないため任意とし、persistenceの移行処理で空配列を補う。
+  load?: OnboardCohort[];
+}
+
+/** 車内の旅客の塊。alightAtで降りて、そこが目的地でなければ乗り換える。 */
+export interface OnboardCohort {
+  destinationId: string;
+  /** この列車を降りる駅(目的地、または乗換駅)。 */
+  alightAt: string;
+  /** 運賃計算に使う乗車駅。 */
+  boardedAt: string;
+  count: number;
 }
 
 export interface SimWorld {
@@ -109,7 +133,51 @@ export interface SimWorld {
   groups?: TrainGroupData[];
   // 「グループ×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。
   groupDepartures?: Map<string, number>;
+  // 駅ごとの待ち客(行き先つきの塊)。waitingはこの合計を写したもので、表示・セーブ用。
+  demand?: Map<string, PassengerCohort[]>;
+  // 旅客が移動できるサービス網と経路キャッシュ。運行表が変わるまで使い回す(セーブ対象外)。
+  serviceGraph?: ServiceGraph;
+  routeCache?: RouteCache;
+  serviceSignature?: string;
 }
+
+/**
+ * サービス網と経路キャッシュを最新に保つ。運行表・グループ・配備状況が変わったときだけ
+ * 組み直し、経路キャッシュを捨てる(走らなくなった区間へ旅客を送り続けないため)。
+ */
+const ensureService = (world: SimWorld): { graph: ServiceGraph; cache: RouteCache } => {
+  const groups = world.groups ?? [];
+  const signature = [
+    world.trains.map(t => `${t.id}:${t.status}:${t.groupId ?? ''}:${t.schedule.join('>')}`).join('|'),
+    groups.map(g => `${g.id}:${g.schedule.join('>')}`).join('|'),
+  ].join('#');
+
+  if (world.serviceSignature !== signature || !world.serviceGraph || !world.routeCache) {
+    world.serviceGraph = buildServiceGraph(world.trains, groups);
+    world.routeCache = createRouteCache();
+    world.serviceSignature = signature;
+  }
+  return { graph: world.serviceGraph, cache: world.routeCache };
+};
+
+/** 表示・セーブ用の待ち人数(world.waiting)を、行き先つきの待ち客から作り直す。 */
+const syncWaiting = (world: SimWorld) => {
+  world.waiting.clear();
+  for (const [stationId, cohorts] of world.demand ?? []) {
+    world.waiting.set(stationId, totalWaiting(cohorts));
+  }
+};
+
+/** 駅の待ち行列(無ければ作る)。 */
+const cohortsAt = (world: SimWorld, stationId: string): PassengerCohort[] => {
+  if (!world.demand) world.demand = new Map();
+  let cohorts = world.demand.get(stationId);
+  if (!cohorts) {
+    cohorts = [];
+    world.demand.set(stationId, cohorts);
+  }
+  return cohorts;
+};
 
 export type SimEvent =
   | { type: 'arrive'; trainId: string; scheduleIndex: number }
@@ -285,25 +353,70 @@ const stopAtStation = (
 ) => {
   const st = world.stations.get(targetStationId);
 
-  // 降車: 乗客がいれば直前駅からの距離×運賃で収入イベントを発行する
-  if (rt.passengers > 0 && rt.lastStopStationId) {
-    const prevSt = world.stations.get(rt.lastStopStationId);
-    if (prevSt && st) {
-      const dist = Math.sqrt((prevSt.center.x - st.center.x) ** 2 + (prevSt.center.z - st.center.z) ** 2);
-      const amount = dist * FARE_PER_TILE * rt.passengers;
-      events.push({ type: 'income', trainId: train.id, amount, passengers: rt.passengers });
+  const { graph, cache } = ensureService(world);
+  const waitingCohorts = cohortsAt(world, targetStationId);
+  const waitingCount = totalWaiting(waitingCohorts);
+  if (!rt.load) rt.load = [];
+
+  // 降車: この駅で降りる塊(目的地に着いた客と、ここで乗り換える客)を降ろす。
+  // 目的地に着いた客からは乗車駅→降車駅の距離ぶんの運賃を得る。乗換客はその駅の
+  // 待ち客に戻り、次の系統を待つ。
+  const staying: OnboardCohort[] = [];
+  let fare = 0;
+  let arrivedPassengers = 0;
+  for (const cohort of rt.load) {
+    if (cohort.alightAt !== targetStationId) {
+      staying.push(cohort);
+      continue;
     }
-    rt.passengers = 0;
+    if (cohort.destinationId === targetStationId) {
+      const boardedSt = world.stations.get(cohort.boardedAt);
+      if (boardedSt && st) {
+        const dist = Math.hypot(boardedSt.center.x - st.center.x, boardedSt.center.z - st.center.z);
+        fare += dist * FARE_PER_TILE * cohort.count;
+      }
+      arrivedPassengers += cohort.count;
+    } else {
+      addWaiting(waitingCohorts, cohort.destinationId, cohort.count);
+    }
+  }
+  rt.load = staying;
+  if (arrivedPassengers > 0) {
+    events.push({ type: 'income', trainId: train.id, amount: fare, passengers: arrivedPassengers });
   }
 
-  // 乗車: waitingから編成定員(cars×CAPACITY_PER_CAR)まで乗せる。waitingは小数で蓄積されるため、
-  // 乗車人数は整数に切り捨て、端数は駅に残す(passengersが常に整数であることを保証する)。
+  // 乗車: 待ち客のうち「この列車の系統に乗るのが経路上正しい」客だけを、編成定員
+  // (cars×CAPACITY_PER_CAR)の空きまで乗せる。待ち客は小数で蓄積されるため、乗車人数は
+  // 整数に切り捨て、端数は駅に残す(passengersが常に整数であることを保証する)。
   const carCount = train.cars ?? 2;
   const trainCapacity = carCount * CAPACITY_PER_CAR;
-  const waitingCount = world.waiting.get(targetStationId) ?? 0;
-  const boarding = Math.max(0, Math.min(Math.floor(waitingCount), trainCapacity - rt.passengers));
-  rt.passengers += boarding;
-  world.waiting.set(targetStationId, waitingCount - boarding);
+  const lineId = train.groupId ?? train.id;
+  const onboard = rt.load.reduce((sum, c) => sum + c.count, 0);
+
+  const firstLegOf = (destinationId: string) => {
+    const route = routeBetween(cache, graph, targetStationId, destinationId);
+    if (!route || route.legs.length === 0) return null;
+    return route.legs[0];
+  };
+
+  const boarded = boardFromStation(
+    waitingCohorts,
+    dest => firstLegOf(dest)?.lineId === lineId,
+    trainCapacity - onboard
+  );
+  for (const cohort of boarded) {
+    const leg = firstLegOf(cohort.destinationId);
+    if (!leg) continue;
+    rt.load.push({
+      destinationId: cohort.destinationId,
+      alightAt: leg.to,
+      boardedAt: targetStationId,
+      count: cohort.count,
+    });
+  }
+
+  rt.passengers = rt.load.reduce((sum, c) => sum + c.count, 0);
+  syncWaiting(world);
   rt.lastStopStationId = targetStationId;
 
   // 人身事故判定: 停車の瞬間、ホーム混雑度とドア種別に応じた確率で発生する
@@ -735,12 +848,33 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
 
   // 旅客需要: 各駅の待ち人数を PASSENGER_SPAWN_RATE×demandFactor×dt ずつ増やす(上限STATION_WAITING_CAP)。
   // demandFactorは周辺の街の人口と距離から決まり、街から離れた駅にはほぼ客が来ない。
+  //
+  // 旅客は湧いた時点で行き先を持つ。行き先は「列車で行ける駅」の中から、
+  // 行き先の集客力÷距離の重み(重力モデル)で抽選する。列車が走っていない駅、
+  // 経路が繋がっていない駅は候補に入らないので、そこ行きの客は湧かない。
   const towns = world.towns ?? [];
+  const { graph, cache } = ensureService(world);
   for (const station of world.stations.values()) {
-    const current = world.waiting.get(station.id) ?? 0;
+    const cohorts = cohortsAt(world, station.id);
+    const current = totalWaiting(cohorts);
+    if (current >= STATION_WAITING_CAP) continue;
+
     const factor = demandFactor(station.center, towns);
-    world.waiting.set(station.id, Math.min(STATION_WAITING_CAP, current + PASSENGER_SPAWN_RATE * factor * dt));
+    const spawn = PASSENGER_SPAWN_RATE * factor * dt;
+    if (spawn <= 0) continue;
+
+    const weights = destinationWeights(
+      station.id,
+      world.stations,
+      towns,
+      dest => routeBetween(cache, graph, station.id, dest) !== null
+    );
+    const destination = pickDestination(weights, world.rng);
+    if (!destination) continue;
+
+    addWaiting(cohorts, destination, Math.min(spawn, STATION_WAITING_CAP - current));
   }
+  syncWaiting(world);
 
   // 予約テーブルへのbootstrap(自列車の物理占有セルの予約登録)は、経路の予約取得より
   // 必ず先に全列車分終わらせる。同一tick内でrunning中の列車を先に処理してしまうと、

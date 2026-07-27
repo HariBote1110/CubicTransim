@@ -266,16 +266,21 @@ describe('stepWorld', () => {
 });
 
 describe('stepWorld: 立地需要(街との距離)', () => {
-  it('街が近い駅は waiting が増え、街が無い/遠い駅は増えない', () => {
-    // stA(x=0)の真上に街を置き、stB(x=19、影響半径10の外)には街の影響が届かない
+  it('大きな街の駅ほど待ち客が増える(小さな街の駅の増えかたは緩やか)', () => {
+    // stA(x=0)には大きな街、stB(x=19)には小さな街。旅客は行き先があって初めて湧くため、
+    // 両駅を結ぶ列車を走らせたうえで、出発地としての集客力の差を見る。
     const { railMap, stations } = buildTwoStationLine(20, 'stA', 'stB');
-    const towns: TownData[] = [{ id: 'town-near', centre: { x: 0, z: 0 }, population: 2000 }];
-    const world = makeWorld(railMap, stations, [], () => 1, towns);
+    const towns: TownData[] = [
+      { id: 'town-big', centre: { x: 0, z: 0 }, population: 2000 },
+      { id: 'town-small', centre: { x: 19, z: 0 }, population: 200 },
+    ];
+    const train = makeTrain({ x: 10, z: 0, schedule: ['stA', 'stB'] });
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
 
     stepWorld(world, 1.0);
 
-    expect(world.waiting.get('stA')).toBeGreaterThan(0);
-    expect(world.waiting.get('stB')).toBe(0);
+    expect(world.waiting.get('stA')!).toBeGreaterThan(world.waiting.get('stB')!);
+    expect(world.waiting.get('stB')!).toBeGreaterThan(0);
   });
 
   it('街が全く無ければどの駅も waiting は増えない', () => {
@@ -290,19 +295,30 @@ describe('stepWorld: 立地需要(街との距離)', () => {
 });
 
 describe('stepWorld: 旅客需要と運賃収入', () => {
-  it('waitingは毎tick PASSENGER_SPAWN_RATE×demandFactor×dt ずつ増え、STATION_WAITING_CAPで頭打ちになる', () => {
-    const { railMap, stations } = buildTwoStationLine(6, 'stA', 'stB');
+  it('waitingは毎tick PASSENGER_SPAWN_RATE×demandFactor×dt ずつ増える', () => {
+    // 列車が走っていないと行き先が無く旅客は湧かないため、両駅を結ぶ列車を1本走らせる。
+    // 1tick(1秒)では駅に到達しない位置(線の中ほど)に置き、乗車で待ち客が減らないようにする。
+    const { railMap, stations } = buildTwoStationLine(30, 'stA', 'stB');
     const towns = townsAtStations(Array.from(stations.values()));
-    const world = makeWorld(railMap, stations, [], () => 1, towns);
+    const train = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'] });
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
     const factorA = demandFactor(stations.get('stA')!.center, towns);
     const factorB = demandFactor(stations.get('stB')!.center, towns);
 
     stepWorld(world, 1.0);
     expect(world.waiting.get('stA')).toBeCloseTo(PASSENGER_SPAWN_RATE * factorA, 5);
     expect(world.waiting.get('stB')).toBeCloseTo(PASSENGER_SPAWN_RATE * factorB, 5);
+  });
 
-    // 大きなdtで一気に上限を超えさせる
-    stepWorld(world, 100000);
+  it('待ち客はSTATION_WAITING_CAPで頭打ちになる', () => {
+    const { railMap, stations } = buildTwoStationLine(30, 'stA', 'stB');
+    const towns = townsAtStations(Array.from(stations.values()));
+    const train = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'] });
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
+    seedWaiting(world, 'stA', 'stB', STATION_WAITING_CAP - 0.1);
+
+    stepWorld(world, 1.0);
+
     expect(world.waiting.get('stA')).toBe(STATION_WAITING_CAP);
   });
 
@@ -519,11 +535,9 @@ describe('stepWorld: 編成(consist)システム', () => {
       return world.runtimes.get('t1')!.passengers;
     };
 
-    // cars=1(定員50)はSTATION_WAITING_CAP(200)未満なのでそのまま定員まで乗車する。
+    // 待ち客が定員より多ければ、乗車数は編成定員 cars×CAPACITY_PER_CAR で頭打ちになる。
     expect(capacityFor(1)).toBe(1 * CAPACITY_PER_CAR);
-    // cars=8(定員400)はSTATION_WAITING_CAP(200)を超えるため、実際の乗車数は
-    // 駅の待ち上限に頭打ちされる(定員の計算式自体はcars×CAPACITY_PER_CARで正しく効いている)。
-    expect(capacityFor(8)).toBe(Math.min(8 * CAPACITY_PER_CAR, STATION_WAITING_CAP));
+    expect(capacityFor(8)).toBe(8 * CAPACITY_PER_CAR);
   });
 
   it('trailの物理長上限はtrain.carsに一致する(cars=1と8の境界)', () => {
