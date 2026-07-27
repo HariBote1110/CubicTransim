@@ -10,7 +10,7 @@ import type { MonthlyLedger } from '../sim/economy';
 import { ANNUAL_INTEREST_RATE, LOAN_LIMIT, LOAN_STEP, maxAdditionalLoan, monthlyInterest } from '../sim/loans';
 import type { PassengerCohort } from '../sim/passengers';
 import { evaluateBuild } from '../sim/buildPreview';
-import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES } from '../sim/groups';
+import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES, averageInterval, suggestsShuttle } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
 import type { SimWorld } from '../sim/simulation';
@@ -127,6 +127,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   const [stationDestinations, setStationDestinations] = useState<PassengerCohort[]>([]);
   // 路線パネルで停車駅ごとの待ち人数を出すための、駅id→待ち人数。
   const [waitingByStation, setWaitingByStation] = useState<Map<string, number>>(new Map());
+  // 路線id→実績の平均運転間隔(秒)。設定値どおりに走れているかを見るため。
+  const [actualIntervals, setActualIntervals] = useState<Map<string, number>>(new Map());
 
   // sim層が持つ値(時計・乗客数・待ち人数)は毎tick変わるため、UIからは低頻度でポーリングする。
   useEffect(() => {
@@ -140,6 +142,13 @@ export const GameUI: React.FC<GameUIProps> = ({
     const id = setInterval(() => {
       setPassengers(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.passengers ?? 0) : 0);
       setWaitingByStation(new Map(world.current?.waiting ?? []));
+      const samples = world.current?.groupIntervals;
+      setActualIntervals(new Map(
+        samples
+          ? groups.map(g => [g.id, averageInterval(samples, g.id)] as const)
+              .filter((entry): entry is readonly [string, number] => entry[1] !== null)
+          : []
+      ));
 
       if (!selectedStationId) {
         setStationWaiting(0);
@@ -154,7 +163,7 @@ export const GameUI: React.FC<GameUIProps> = ({
       setStationDemand(station ? demandFactor(station.center, world.current?.towns ?? []) : 0);
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [selectedTrainId, selectedStationId, world, stations]);
+  }, [selectedTrainId, selectedStationId, world, stations, groups]);
 
   // キーボードショートカット: 1〜6で建設モード、Spaceで一時停止、Escで選択解除。
   useEffect(() => {
@@ -180,6 +189,12 @@ export const GameUI: React.FC<GameUIProps> = ({
     if (buildMode === 'none' || previewPath.length === 0) return null;
     return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money);
   }, [buildMode, previewPath, railMap, stations, terrain, money]);
+
+  // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
+  const shuttleSuggestions = useMemo(
+    () => new Map(groups.map(g => [g.id, suggestsShuttle(g.schedule, railMap, stations)])),
+    [groups, railMap, stations]
+  );
 
   const monthProfit =
     currentLedger.fares - currentLedger.construction - currentLedger.upkeep
@@ -331,6 +346,8 @@ export const GameUI: React.FC<GameUIProps> = ({
             trains={trains}
             stations={stations}
             waitingByStation={waitingByStation}
+            actualIntervals={actualIntervals}
+            shuttleSuggestions={shuttleSuggestions}
             onCreateGroup={onCreateGroup}
             onAssignGroup={onAssignGroup}
             onSetHeadway={onSetHeadway}
@@ -820,6 +837,9 @@ const GroupPanel: React.FC<{
   trains: TrainData[];
   stations: Map<string, StationData>;
   waitingByStation: Map<string, number>;
+  actualIntervals: Map<string, number>;
+  /** 路線id→「折返しにしたほうがよい」か。経路探索を伴うので呼び出し側でメモ化する。 */
+  shuttleSuggestions: Map<string, boolean>;
   onCreateGroup: (seedTrainId?: string) => string;
   onAssignGroup: (trainId: string, groupId: string | null) => void;
   onSetHeadway: (groupId: string, headwaySeconds: number) => void;
@@ -828,7 +848,7 @@ const GroupPanel: React.FC<{
   onClearGroupSchedule: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
 }> = ({
-  groups, trains, stations, waitingByStation,
+  groups, trains, stations, waitingByStation, actualIntervals, shuttleSuggestions,
   onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup, onClearGroupSchedule, onDeleteGroup,
 }) => (
   <div style={panel({ padding: 14, width: 330, maxHeight: '64vh', overflowY: 'auto' })}>
@@ -871,7 +891,14 @@ const GroupPanel: React.FC<{
             </div>
 
             <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>発車間隔</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 11, color: T.textMuted }}>発車間隔</span>
+                <span style={{ fontSize: 11, color: T.textFaint, fontVariantNumeric: 'tabular-nums' }}>
+                  {actualIntervals.has(g.id)
+                    ? `実績 ${Math.round(actualIntervals.get(g.id)!)}秒`
+                    : '実績 計測中'}
+                </span>
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
                 {HEADWAY_CHOICES.map(sec => (
                   <button
@@ -899,6 +926,11 @@ const GroupPanel: React.FC<{
                   </button>
                 ))}
               </div>
+              {(g.mode ?? 'loop') === 'loop' && shuttleSuggestions.get(g.id) && (
+                <div style={{ fontSize: 10.5, color: T.warning, marginTop: 5, lineHeight: 1.5 }}>
+                  終端から始発まで来た道を丸ごと回送しています。折返しを選ぶと無駄がなくなります。
+                </div>
+              )}
             </div>
 
             <div style={{ marginTop: 9 }}>
