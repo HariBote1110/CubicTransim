@@ -14,7 +14,7 @@ import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { growTown, townServiceLevel } from './towns';
 import { calculateRouteWithStop } from './pathfinding';
 import { pathPointAt } from './trackPath';
-import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds } from './groups';
+import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun } from './groups';
 import { tryReserve, releaseCell, findSafeSegmentEnd, reservationKey } from './reservation';
 import {
   computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
@@ -402,9 +402,24 @@ const stopAtStation = (
     return route.legs[0];
   };
 
+  // この列車がこの先どの駅に停まるか(折返し運転なら折り返した先も含む)。
+  // 目的地と逆向きに発車する列車に乗ってしまわないよう、乗車判定に使う。
+  const line = findGroup(world.groups ?? [], train.groupId);
+  const schedule = effectiveSchedule(train, world.groups ?? []);
+  const ahead = new Set(
+    stopsOnCurrentRun(
+      schedule,
+      { index: train.scheduleIndex, direction: train.scheduleDirection ?? 1 },
+      line?.mode ?? 'loop'
+    )
+  );
+
   const boarded = boardFromStation(
     waitingCohorts,
-    dest => firstLegOf(dest)?.lineId === lineId,
+    dest => {
+      const leg = firstLegOf(dest);
+      return leg?.lineId === lineId && ahead.has(leg.to);
+    },
     trainCapacity - onboard
   );
   for (const cohort of boarded) {

@@ -1,3 +1,4 @@
+import type { LineMode } from './sim/groups';
 export type TrainType = 'commuter' | 'express';
 export type CellType = 'rail' | 'station' | 'depot';
 
@@ -43,6 +44,9 @@ export interface TrainData {
   status: 'stored' | 'running';
   // 編成両数(1〜8)。旧セーブ(v6以前)には存在しないため、persistenceの移行処理でcars=2を補う。
   cars: number;
+  // 折返し運転で運行表を辿る向き(1=順方向、-1=逆方向)。環状運転では常に1。
+  // 旧セーブには存在しないため、読み出しは常に (scheduleDirection ?? 1) で行う。
+  scheduleDirection?: 1 | -1;
   // 所属する運用グループのid。未所属(単独運用)はundefined。
   // グループに所属している間は schedule ではなくグループの運行表に従う。
   groupId?: string;
@@ -62,6 +66,11 @@ export interface TrainGroupData {
   headwaySeconds: number;
   /** ラインカラー(車両の帯とUIのバッジに使う) */
   colour: string;
+  /**
+   * 走らせ方。'loop'は環状運転(末尾の次は先頭)、'shuttle'は折返し運転(終端で向きを反転)。
+   * 旧セーブには存在しないため、読み出しは常に (mode ?? 'loop') で行う。
+   */
+  mode?: LineMode;
 }
 
 export const RAIL_COLOUR = '#555555';

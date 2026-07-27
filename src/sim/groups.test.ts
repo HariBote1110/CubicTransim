@@ -7,7 +7,7 @@ import {
   effectiveSchedule, headwayHoldSeconds, nextGroupName, nextGroupColour,
   departureKey, membersOf, GROUP_COLOURS,
   nextStop,
-  upcomingStops,
+  stopsOnCurrentRun,
 } from './groups';
 
 const makeGroup = (over: Partial<TrainGroupData> = {}): TrainGroupData => ({
@@ -236,14 +236,18 @@ describe('運行モード(環状/折返し)', () => {
   });
 });
 
-describe('この先の停車駅', () => {
+describe('この先(今の片道)の停車駅', () => {
   const schedule = ['A', 'B', 'C', 'D'];
 
   it('環状運転では現在地の次から一周ぶんが並ぶ', () => {
-    expect(upcomingStops(schedule, { index: 2, direction: 1 }, 'loop')).toEqual(['D', 'A', 'B']);
+    expect(stopsOnCurrentRun(schedule, { index: 2, direction: 1 }, 'loop')).toEqual(['D', 'A', 'B', 'C']);
   });
 
-  it('折返し運転では終端で折り返した並びになる', () => {
-    expect(upcomingStops(schedule, { index: 2, direction: 1 }, 'shuttle')).toEqual(['D', 'C', 'B', 'A']);
+  it('折返し運転では終端までで打ち切る(折り返した先は含めない)', () => {
+    expect(stopsOnCurrentRun(schedule, { index: 1, direction: 1 }, 'shuttle')).toEqual(['C', 'D']);
+  });
+
+  it('折返し運転で終端にいるときは、折り返した先の全駅が並ぶ', () => {
+    expect(stopsOnCurrentRun(schedule, { index: 3, direction: 1 }, 'shuttle')).toEqual(['C', 'B', 'A']);
   });
 });

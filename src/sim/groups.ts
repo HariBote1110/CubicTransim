@@ -116,22 +116,25 @@ export function nextStop(cursor: StopCursor, stopCount: number, mode: LineMode):
 }
 
 /**
- * 現在位置から見た「この先の停車駅」の並び(現在地は含まない)。
- * 旅客が「この列車に乗れば目的地に着くか」を判断するのに使う。
+ * 「この列車がこの先(今の片道で)停まる駅」の並び。現在地は含まない。
+ *
+ * 旅客の乗車判定に使う。折返し運転では終端で向きが変わるまで ── つまり今の片道ぶん ──
+ * だけを返す。折り返した先まで含めてしまうと、目的地と逆向きに発車する列車にも
+ * 乗ってしまい、わざわざ終端まで往復することになる。
+ * 環状運転では向きが変わらないので一周ぶんを返す。
  */
-export function upcomingStops(schedule: string[], cursor: StopCursor, mode: LineMode): string[] {
+export function stopsOnCurrentRun(schedule: string[], cursor: StopCursor, mode: LineMode): string[] {
   if (schedule.length <= 1) return [];
 
   const stops: string[] = [];
   let current = cursor;
-  // 全ての停車駅を1度ずつ通った時点で打ち切る(折返しでは同じ駅を再訪するため)。
-  const seen = new Set<string>([schedule[cursor.index]]);
-  const maxSteps = schedule.length * 2;
-
-  for (let i = 0; i < maxSteps && seen.size < new Set(schedule).size; i++) {
-    current = nextStop(current, schedule.length, mode);
-    stops.push(schedule[current.index]);
-    seen.add(schedule[current.index]);
+  for (let i = 0; i < schedule.length; i++) {
+    const next = nextStop(current, schedule.length, mode);
+    // 折返し: 1歩目で向きが反転する(=終端にいる)場合はその向きで走り切るので続行し、
+    // 途中で向きが変わったらそこが今の片道の終わり。
+    if (i > 0 && next.direction !== current.direction) break;
+    stops.push(schedule[next.index]);
+    current = next;
   }
   return stops;
 }

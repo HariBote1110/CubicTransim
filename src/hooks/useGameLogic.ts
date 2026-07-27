@@ -18,7 +18,7 @@ const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
 import { mulberry32, generateTowns } from '../sim/towns';
-import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup } from '../sim/groups';
+import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
 
 const SAVE_KEY = 'cubictransim-save-v1';
@@ -214,10 +214,16 @@ export const useGameLogic = () => {
   const handleTrainArrive = (trainId: string, currentIndex: number) => {
     setTrains(prev => prev.map(t => {
       if (t.id !== trainId) return t;
-      // グループ所属中は共有運行表の長さで巡回させる
+      // グループ所属中は共有運行表を使う。路線の運行モード(環状/折返し)に従って次の駅へ。
       const schedule = effectiveSchedule(t, worldRef.current.groups ?? []);
       if (schedule.length === 0) return t;
-      return { ...t, scheduleIndex: (currentIndex + 1) % schedule.length };
+      const line = findGroup(worldRef.current.groups ?? [], t.groupId);
+      const next = nextStop(
+        { index: currentIndex, direction: t.scheduleDirection ?? 1 },
+        schedule.length,
+        line?.mode ?? 'loop'
+      );
+      return { ...t, scheduleIndex: next.index, scheduleDirection: next.direction };
     }));
   };
 
