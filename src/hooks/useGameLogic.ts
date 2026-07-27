@@ -442,7 +442,8 @@ export const useGameLogic = () => {
     const saveData = serialiseWorld(
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, terrain,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
-      groups, worldRef.current.groupDepartures ?? new Map(), loan
+      groups, worldRef.current.groupDepartures ?? new Map(), loan,
+      worldRef.current.demand ?? new Map()
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
@@ -478,6 +479,9 @@ export const useGameLogic = () => {
     worldRef.current.stopLocation = restored.stopLocation;
     worldRef.current.groups = restored.groups;
     worldRef.current.groupDepartures = restored.groupDepartures;
+    worldRef.current.demand = restored.demand;
+    // 経路キャッシュは列車・運行表が入れ替わったので捨てる(次のstepWorldで組み直される)。
+    worldRef.current.serviceSignature = undefined;
   };
 
   return {

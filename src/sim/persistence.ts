@@ -1,6 +1,7 @@
 import type { CellData, StationData, TrainData, TrainGroupData, TownData, TerrainType } from '../types';
 import type { TrainRuntime } from './simulation';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
+import type { PassengerCohort } from './passengers';
 
 export interface SaveDataV1 {
   version: 1;
@@ -130,9 +131,15 @@ export interface SaveDataV10 extends Omit<SaveDataV9, 'version' | 'currentLedger
   loan: number;
 }
 
+export interface SaveDataV11 extends Omit<SaveDataV10, 'version'> {
+  version: 11;
+  /** 駅ごとの行き先つき待ち客。waitingはこの合計なので、こちらが正。 */
+  demand: [string, PassengerCohort[]][];
+}
+
 export type SaveData =
   | SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5
-  | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10;
+  | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10 | SaveDataV11;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -155,10 +162,11 @@ export function serialiseWorld(
   stopLocation: 'near' | 'middle' | 'far' = 'middle',
   groups: TrainGroupData[] = [],
   groupDepartures: Map<string, number> = new Map(),
-  loan = 0
-): SaveDataV10 {
+  loan = 0,
+  demand: Map<string, PassengerCohort[]> = new Map()
+): SaveDataV11 {
   return {
-    version: 10,
+    version: 11,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -174,6 +182,7 @@ export function serialiseWorld(
     groups,
     groupDepartures: Array.from(groupDepartures.entries()),
     loan,
+    demand: Array.from(demand.entries()),
   };
 }
 
@@ -193,6 +202,7 @@ export function deserialiseWorld(data: SaveData): {
   groups: TrainGroupData[];
   groupDepartures: Map<string, number>;
   loan: number;
+  demand: Map<string, PassengerCohort[]>;
 } {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -205,6 +215,8 @@ export function deserialiseWorld(data: SaveData): {
         lastStopStationId: rt.lastStopStationId ?? null,
         haltRemaining: rt.haltRemaining ?? 0,
         pathHistory: (rt as TrainRuntime).pathHistory ?? [...rt.trail],
+        // v10以前のセーブには車内の行き先つき旅客が無いため、空で補う。
+        load: (rt as TrainRuntime).load ?? [],
         // 予約(PBS)状態はセーブに含めない。ロード後の最初のstepWorldで
         // ensureRuntime/ensureReservationが再構築する(-1=未取得の状態から再開)。
         reservedEndIndex: -1,
@@ -222,7 +234,7 @@ export function deserialiseWorld(data: SaveData): {
   const migrateTrains = (trains: TrainData[]) =>
     trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
-  if (data.version === 10 || data.version === 9) {
+  if (data.version === 11 || data.version === 10 || data.version === 9) {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
@@ -239,7 +251,10 @@ export function deserialiseWorld(data: SaveData): {
       groups: data.groups ?? [],
       groupDepartures: new Map(data.groupDepartures ?? []),
       // v9以前には借入が存在しないため、無借金として移行する。
-      loan: data.version === 10 ? data.loan : 0,
+      loan: data.version === 9 ? 0 : data.loan,
+      // v10以前の待ち客は行き先を持たない。行き先の分からない客は運びようがないので
+      // 引き継がず(待ち客は改めて湧く)、空の需要から再開する。
+      demand: new Map(data.version === 11 ? data.demand : []),
     };
   }
 
@@ -260,6 +275,7 @@ export function deserialiseWorld(data: SaveData): {
       groups: [],
       groupDepartures: new Map(),
       loan: 0,
+      demand: new Map(),
     };
   }
 
@@ -281,6 +297,7 @@ export function deserialiseWorld(data: SaveData): {
       groups: [],
       groupDepartures: new Map(),
       loan: 0,
+      demand: new Map(),
     };
   }
 
@@ -301,6 +318,7 @@ export function deserialiseWorld(data: SaveData): {
       groups: [],
       groupDepartures: new Map(),
       loan: 0,
+      demand: new Map(),
     };
   }
 
@@ -322,6 +340,7 @@ export function deserialiseWorld(data: SaveData): {
       groups: [],
       groupDepartures: new Map(),
       loan: 0,
+      demand: new Map(),
     };
   }
 
@@ -343,6 +362,7 @@ export function deserialiseWorld(data: SaveData): {
       groups: [],
       groupDepartures: new Map(),
       loan: 0,
+      demand: new Map(),
     };
   }
 
@@ -364,6 +384,7 @@ export function deserialiseWorld(data: SaveData): {
       groups: [],
       groupDepartures: new Map(),
       loan: 0,
+      demand: new Map(),
     };
   }
 
@@ -384,6 +405,7 @@ export function deserialiseWorld(data: SaveData): {
       groups: [],
       groupDepartures: new Map(),
       loan: 0,
+      demand: new Map(),
     };
   }
 
@@ -404,5 +426,6 @@ export function deserialiseWorld(data: SaveData): {
     groups: [],
     groupDepartures: new Map(),
     loan: 0,
+    demand: new Map(),
   };
 }
