@@ -51,6 +51,16 @@ const makeTrain = (overrides: Partial<TrainData>): TrainData => ({
 
 const TRAIN_CAPACITY = 2 * CAPACITY_PER_CAR;
 
+// 待ち客を「行き先つき」で仕込む。旅客は行き先を持つようになったため、
+// world.waitingに直接数字を入れても列車には乗らない(乗る先が分からないため)。
+const seedWaiting = (world: SimWorld, stationId: string, destinationId: string, count: number) => {
+  if (!world.demand) world.demand = new Map();
+  const cohorts = world.demand.get(stationId) ?? [];
+  cohorts.push({ destinationId, count });
+  world.demand.set(stationId, cohorts);
+  world.waiting.set(stationId, (world.waiting.get(stationId) ?? 0) + count);
+};
+
 // rng省略時は常に1を返す(=事故が発生しない)ことで既存テストの決定性を保つ。
 // towns省略時は空(=旅客需要が発生しない、旧仕様のテストとの互換用)。
 const makeWorld = (
@@ -303,7 +313,7 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     const world = makeWorld(railMap, stations, [train], () => 1, towns);
     const factorB = demandFactor(stations.get('stB')!.center, towns);
     // stBに大量の待ち客がいる状態を用意(capacityを超える)
-    world.waiting.set('stB', TRAIN_CAPACITY + 50);
+    seedWaiting(world, 'stB', 'stA', TRAIN_CAPACITY + 50);
 
     // 停車する直前(dt適用前)のwaiting値を都度記録し、境界の1tickでの
     // 需要増加分を厳密に織り込んで期待値を計算する
@@ -350,7 +360,7 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     // stepWorldの旅客需要増加(demandFactor依存)による誤差を避けるため、townsを空にして
     // waitingが停車直前まで固定値のまま変化しないようにする
     world.towns = [];
-    world.waiting.set('stB', 38.7);
+    seedWaiting(world, 'stB', 'stA', 38.7);
 
     for (let i = 0; i < 5000; i++) {
       stepWorld(world, 0.1);
@@ -372,7 +382,7 @@ describe('stepWorld: 旅客需要と運賃収入', () => {
     const towns = townsAtStations(Array.from(stations.values()));
     const train = makeTrain({ x: Math.floor(length / 2), z: 0, schedule: ['stA', 'stB'] });
     const world = makeWorld(railMap, stations, [train], () => 1, towns);
-    world.waiting.set('stA', 10);
+    seedWaiting(world, 'stA', 'stB', 10);
 
     // 1駅目(stA)到着: 乗車のみ、income無し
     // (移動中もwaitingは増え続けるため、実際に乗車した人数を記録して以降の期待値に使う)
@@ -500,7 +510,7 @@ describe('stepWorld: 編成(consist)システム', () => {
       const towns = townsAtStations(Array.from(stations.values()));
       const train = makeTrain({ schedule: ['stB', 'stA'], cars });
       const world = makeWorld(railMap, stations, [train], () => 1, towns);
-      world.waiting.set('stB', 9999);
+      seedWaiting(world, 'stB', 'stA', 9999);
       for (let i = 0; i < 5000; i++) {
         stepWorld(world, 0.1);
         const rt = world.runtimes.get('t1')!;
@@ -723,5 +733,105 @@ describe('stepWorld: ゲーム内暦とmonthEndイベント', () => {
     const events = stepWorld(world, 1);
     const monthEnds = events.filter(e => e.type === 'monthEnd');
     expect(monthEnds).toHaveLength(1);
+  });
+});
+
+describe('stepWorld: 旅客の行き先と経路検索', () => {
+  // 3駅を1本の線で結ぶ(stA --- stB --- stC)。
+  const buildThreeStationLine = () => {
+    const cells = Array.from({ length: 11 }, (_, i) => ({ x: i, z: 0 }));
+    const railMap = buildRailMap(cells);
+    const stations = new Map<string, StationData>();
+    const place = (id: string, x: number) => {
+      railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: id });
+      stations.set(id, { id, name: id, cells: [{ x, z: 0 }], center: { x, z: 0 }, platformDoors: 'none' });
+    };
+    place('stA', 0);
+    place('stB', 5);
+    place('stC', 10);
+    return { railMap, stations };
+  };
+
+  it('列車が1本も走っていなければ、街が近くても待ち客は増えない', () => {
+    const { railMap, stations } = buildThreeStationLine();
+    const towns = townsAtStations(Array.from(stations.values()));
+    const stored = makeTrain({ schedule: ['stA', 'stC'], status: 'stored' });
+    const world = makeWorld(railMap, stations, [stored], () => 1, towns);
+
+    stepWorld(world, 10);
+
+    expect(world.waiting.get('stA') ?? 0).toBe(0);
+    expect(world.waiting.get('stC') ?? 0).toBe(0);
+  });
+
+  it('列車が行かない駅は行き先にならない(その駅ゆきの客は湧かない)', () => {
+    const { railMap, stations } = buildThreeStationLine();
+    const towns = townsAtStations(Array.from(stations.values()));
+    // stCには停まらない運行表
+    const train = makeTrain({ schedule: ['stA', 'stB'] });
+    const world = makeWorld(railMap, stations, [train], () => 1, towns);
+
+    stepWorld(world, 10);
+
+    const destinations = (world.demand?.get('stA') ?? []).map(c => c.destinationId);
+    expect(destinations).toContain('stB');
+    expect(destinations).not.toContain('stC');
+  });
+
+  it('旅客は途中駅では降りず、行き先の駅で降りて運賃収入になる', () => {
+    const { railMap, stations } = buildThreeStationLine();
+    const train = makeTrain({ x: 2, z: 0, schedule: ['stA', 'stB', 'stC'] });
+    // 需要の自然増を止めて、仕込んだ客だけを追跡する
+    const world = makeWorld(railMap, stations, [train], () => 1, []);
+    seedWaiting(world, 'stA', 'stC', 10);
+
+    const events: SimEvent[] = [];
+    let arrivals = 0;
+    for (let i = 0; i < 20000 && arrivals < 3; i++) {
+      const evs = stepWorld(world, 0.1);
+      events.push(...evs);
+      evs.forEach(e => {
+        if (e.type === 'arrive') {
+          arrivals++;
+          train.scheduleIndex = (train.scheduleIndex + 1) % train.schedule.length;
+        }
+      });
+    }
+
+    const incomes = events.filter(e => e.type === 'income') as Extract<SimEvent, { type: 'income' }>[];
+    // stB(途中駅)では降りないので、収入は行き先stCに着いた1回だけ
+    expect(incomes).toHaveLength(1);
+    expect(incomes[0].passengers).toBe(10);
+    // 運賃は乗車駅stA→降車駅stCの距離ぶん(途中駅までではない)
+    expect(incomes[0].amount).toBeCloseTo(10 * FARE_PER_TILE * 10, 5);
+  });
+
+  it('乗換が必要な行き先の客は、乗換駅で降りてその駅の待ち客になる', () => {
+    const { railMap, stations } = buildThreeStationLine();
+    // g1は stA-stB、g2は stB-stC。stA→stCはstBで乗換が要る。
+    const t1 = makeTrain({ id: 't1', x: 2, z: 0, schedule: [], groupId: 'g1' });
+    const t2 = makeTrain({ id: 't2', x: 7, z: 0, schedule: [], groupId: 'g2' });
+    const world = makeWorld(railMap, stations, [t1, t2], () => 1, []);
+    world.groups = [
+      { id: 'g1', name: 'g1', schedule: ['stA', 'stB'], headwaySeconds: 0, colour: '#fff' },
+      { id: 'g2', name: 'g2', schedule: ['stB', 'stC'], headwaySeconds: 0, colour: '#fff' },
+    ];
+    seedWaiting(world, 'stA', 'stC', 10);
+
+    for (let i = 0; i < 20000; i++) {
+      const evs = stepWorld(world, 0.1);
+      evs.forEach(e => {
+        if (e.type === 'arrive') {
+          const train = world.trains.find(t => t.id === e.trainId)!;
+          const schedule = world.groups!.find(g => g.id === train.groupId)!.schedule;
+          train.scheduleIndex = (train.scheduleIndex + 1) % schedule.length;
+        }
+      });
+      // stBでstCゆきの待ち客に化けたら成功
+      if ((world.demand?.get('stB') ?? []).some(c => c.destinationId === 'stC' && c.count > 0)) break;
+    }
+
+    const atB = world.demand?.get('stB') ?? [];
+    expect(atB.find(c => c.destinationId === 'stC')?.count).toBe(10);
   });
 });
