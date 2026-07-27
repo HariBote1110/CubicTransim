@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [station-arrivals-board.md](station-arrivals-board.md) — 駅パネルに発車標(接近案内)を追加。sim/arrivals.tsのcomputeStationArrivals()が、その駅を目的駅にしている走行中の列車を到着秒数順(停車中は0秒で先頭)に並べる純粋関数。行き先はgroups.tsのstopsOnCurrentRunで環状/折返しの走らせ方に対応。信号待ち・発車間隔待ちは意図的に未考慮(経路残距離÷速度の単純計算、下限20km/hでクランプ)という精度の妥協点つき
 - [overpass-grade-separation.md](overpass-grade-separation.md) — 立体交差(sim層のみ)。CellData.upperで地平と別の第2の線路を1セルに持てる仕組み(pathfindingの層ごとのBFS、reservationの層込みキー、simulation/trackPathの高さ補間)は流用したまま、「直角に敷くと自動でupperになる」旧仕様(ダイヤモンドクロッシングが作れない欠点あり)を廃止し、TTD/OpenTTD流の橋(construction.applyBridge、始点・終点が橋台=地平、中間セルが橋桁=upperのみ)方式に作り替えた。直角の線路は常に地平の4方向接続1セル(平面交差)になる。橋のUIはショートカット7、コストはRAIL_COST×OVERPASS_COST_MULTIPLIER(橋桁のみ)
 - [single-track-deadlock-avoidance.md](single-track-deadlock-avoidance.md) — safe waiting pointの「分岐点の手前は安全」ルールを廃止(単線の共有区間で対向列車が互いに相手側へ予約を延長できず睨み合うデッドロックの原因だったため)。待機は信号・駅・車庫・行き止まりのみに限定(OpenTTDのPBSと同じ方針)。交換設備は分岐・合流の両方の入口に信号が必要になり、既存の受け入れテストのレイアウトへ信号を1つ追加(合流点の手前、合流点自体ではない位置)。信号が一切無い単線の両端に対向列車が最初から在線しているケースは、旧ルールでも新ルールでも変わらず恒久デッドロックすることを確認(既存の「頑健性」テストと同じ基準)
 - [platform-blocking-and-depot-departure.md](platform-blocking-and-depot-departure.md) — v0.3.0-Alpha-8: 終端駅の同じホームに後続列車が進入できてしまった不具合。停車中の列車が車体ぶんのセルしか予約しておらず、ホームの残りが空きに見えていたのが原因。停車時にホーム全体を予約し(reservePlatform)、発車時に車体と新経路のぶんだけ残して解放する。あわせて車庫からの出庫を「次の信号まで、信号が無ければ目的駅のホームまで」一括予約できたときだけに変更(findDepartureSegmentEnd、OpenTTDの車庫発車と同じ)
