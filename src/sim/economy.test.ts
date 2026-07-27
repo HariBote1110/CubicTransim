@@ -81,7 +81,7 @@ describe('economy: calculateAccidentChance', () => {
 
 describe('economy: demandFactor', () => {
   const town = (overrides: Partial<TownData>): TownData => ({
-    id: 't1', centre: { x: 0, z: 0 }, population: 1000, ...overrides,
+    id: 't1', name: '試験町', centre: { x: 0, z: 0 }, population: 1000, ...overrides,
   });
 
   it('街の真上(distance=0)ではpopulation/1000になる', () => {

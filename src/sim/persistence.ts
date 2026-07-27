@@ -2,6 +2,7 @@ import type { CellData, StationData, TrainData, TrainGroupData, TownData, Terrai
 import type { TrainRuntime } from './simulation';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
+import { fallbackTownName } from './towns';
 
 export interface SaveDataV1 {
   version: 1;
@@ -230,6 +231,10 @@ export function deserialiseWorld(data: SaveData): {
       stations.map(([id, st]) => [id, { ...st, platformDoors: st.platformDoors ?? 'none' }])
     );
 
+  // v11以前のデータには町名が存在しないため、決定的な名前(街の位置から導く)で補う。
+  const migrateTowns = (towns: TownData[]) =>
+    towns.map((town, i) => (town.name ? town : { ...town, name: fallbackTownName(i) }));
+
   // v6以前のデータにはtrains[].carsが存在しないため、既定値2(新造時の編成両数)で補う。
   const migrateTrains = (trains: TrainData[]) =>
     trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
@@ -242,7 +247,7 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
-      towns: data.towns,
+      towns: migrateTowns(data.towns),
       terrain: new Map(data.terrain),
       clock: data.clock,
       currentLedger: migrateLedger(data.currentLedger),
@@ -266,7 +271,7 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
-      towns: data.towns,
+      towns: migrateTowns(data.towns),
       terrain: new Map(data.terrain),
       clock: data.clock,
       currentLedger: migrateLedger(data.currentLedger),
@@ -287,7 +292,7 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
-      towns: data.towns,
+      towns: migrateTowns(data.towns),
       terrain: new Map(data.terrain),
       clock: data.clock,
       currentLedger: migrateLedger(data.currentLedger),
@@ -309,7 +314,7 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
-      towns: data.towns,
+      towns: migrateTowns(data.towns),
       terrain: new Map(data.terrain),
       clock: data.clock,
       currentLedger: migrateLedger(data.currentLedger),
@@ -330,7 +335,7 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
-      towns: data.towns,
+      towns: migrateTowns(data.towns),
       terrain: new Map(data.terrain),
       // v5以前には暦・台帳が存在しないため、暦0(1年1月1日)・台帳空で移行する。
       clock: { elapsed: 0 },
@@ -352,7 +357,7 @@ export function deserialiseWorld(data: SaveData): {
       runtimes,
       waiting: new Map(data.waiting),
       money: data.money,
-      towns: data.towns,
+      towns: migrateTowns(data.towns),
       // v4以前にはterrainが存在しないため、地形なし(全て平地)として移行する。
       terrain: new Map(),
       clock: { elapsed: 0 },

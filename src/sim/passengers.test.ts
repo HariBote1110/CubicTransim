@@ -144,8 +144,8 @@ describe('行き先の選び方(重力モデル)', () => {
     ['far', { id: 'far', name: 'far', cells: [], center: { x: 30, z: 0 }, platformDoors: 'none' }],
   ]);
   const towns: TownData[] = [
-    { id: 'tn', centre: { x: 5, z: 0 }, population: 3000 },
-    { id: 'tf', centre: { x: 30, z: 0 }, population: 3000 },
+    { id: 'tn', name: '近町', centre: { x: 5, z: 0 }, population: 3000 },
+    { id: 'tf', name: '遠町', centre: { x: 30, z: 0 }, population: 3000 },
   ];
 
   it('出発駅自身は行き先候補に入らない', () => {

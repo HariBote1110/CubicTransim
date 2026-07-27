@@ -76,7 +76,7 @@ const makeWorld = (
 // 各駅の真上(distance=0)にpopulation=1000の街を置き、demandFactor=1として
 // 従来のPASSENGER_SPAWN_RATE固定の旅客需要テストと同じ挙動を再現するためのヘルパー。
 const townsAtStations = (stations: StationData[]): TownData[] =>
-  stations.map(st => ({ id: `town-${st.id}`, centre: { ...st.center }, population: 1000 }));
+  stations.map(st => ({ id: `town-${st.id}`, name: `${st.id}町`, centre: { ...st.center }, population: 1000 }));
 
 // 直線上に2駅(両端)を置く。列車が往復してincome/lastStopStationIdを検証するために使う。
 // railMap上の駅セルは1つのまま(経路探索・到着挙動を既存テストと同一に保つ)。
@@ -271,8 +271,8 @@ describe('stepWorld: 立地需要(街との距離)', () => {
     // 両駅を結ぶ列車を走らせたうえで、出発地としての集客力の差を見る。
     const { railMap, stations } = buildTwoStationLine(20, 'stA', 'stB');
     const towns: TownData[] = [
-      { id: 'town-big', centre: { x: 0, z: 0 }, population: 2000 },
-      { id: 'town-small', centre: { x: 19, z: 0 }, population: 200 },
+      { id: 'town-big', name: '大町', centre: { x: 0, z: 0 }, population: 2000 },
+      { id: 'town-small', name: '小村', centre: { x: 19, z: 0 }, population: 200 },
     ];
     const train = makeTrain({ x: 10, z: 0, schedule: ['stA', 'stB'] });
     const world = makeWorld(railMap, stations, [train], () => 1, towns);

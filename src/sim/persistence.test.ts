@@ -40,7 +40,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     ]);
     const waiting = new Map<string, number>([['stA', 34]]);
     const money = 42_300;
-    const towns: TownData[] = [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }];
+    const towns: TownData[] = [{ id: 'town-0', name: '試験町', centre: { x: 5, z: 5 }, population: 2500 }];
     const terrain = new Map<string, TerrainType>([['2,2', 'water'], ['3,3', 'mountain']]);
     const clock = { elapsed: 1234 };
     const currentLedger: MonthlyLedger = { year: 1, month: 5, fares: 1000, construction: 2000, upkeep: 0, accidents: 0, interest: 0 };
@@ -190,7 +190,7 @@ describe('persistence: v6→v7 移行', () => {
       }]] as unknown as [string, TrainRuntime][],
       waiting: [['stA', 12]] as [string, number][],
       money: 12_345,
-      towns: [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
+      towns: [{ id: 'town-0', name: '試験町', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
       terrain: [['2,2', 'water']] as [string, TerrainType][],
       clock: { elapsed: 999 },
       currentLedger: { year: 1, month: 3, fares: 0, construction: 0, upkeep: 0, accidents: 0 } as MonthlyLedger,
@@ -234,7 +234,7 @@ describe('persistence: v5→v6 移行', () => {
       }]] as unknown as [string, TrainRuntime][],
       waiting: [['stA', 12]] as [string, number][],
       money: 12_345,
-      towns: [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
+      towns: [{ id: 'town-0', name: '試験町', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
       terrain: [['2,2', 'water']] as [string, TerrainType][],
     };
 
@@ -276,7 +276,7 @@ describe('persistence: v4→v5 移行', () => {
       }]] as unknown as [string, TrainRuntime][],
       waiting: [['stA', 12]] as [string, number][],
       money: 12_345,
-      towns: [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
+      towns: [{ id: 'town-0', name: '試験町', centre: { x: 5, z: 5 }, population: 2500 }] as TownData[],
     };
 
     const restored = deserialiseWorld(v4Data as never);

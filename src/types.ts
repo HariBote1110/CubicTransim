@@ -28,6 +28,8 @@ export interface StationData {
 
 export interface TownData {
   id: string;
+  /** 町名(生成時に決まる。旧セーブには無いため移行処理で補う)。 */
+  name: string;
   centre: { x: number, z: number };
   population: number;
 }

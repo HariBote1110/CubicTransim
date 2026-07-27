@@ -286,6 +286,12 @@ export const useGameLogic = () => {
     });
   };
 
+  // ★追加: 町の成長(sim層の'townGrowth'イベントを受けて呼ばれる)。
+  // sim側は world.towns を差し替え済みなので、Reactのstateを同じ配列に合わせるだけ。
+  const handleTownGrowth = (event: Extract<SimEvent, { type: 'townGrowth' }>) => {
+    setTowns(event.towns);
+  };
+
   // ★追加: 借入(LOAN_STEP単位)。上限までしか借りられない。
   const borrow = (amount: number = LOAN_STEP) => {
     const after = takeLoan({ money, loan }, amount);
@@ -521,6 +527,7 @@ export const useGameLogic = () => {
     currentLedger,
     ledgerHistory,
     handleMonthEnd,
+    handleTownGrowth,
     // ★追加: 駅停車位置設定(Near/Middle/Far)
     stopLocation,
     setStopLocation,

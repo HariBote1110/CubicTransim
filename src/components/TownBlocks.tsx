@@ -97,6 +97,7 @@ const TownBlock: React.FC<{ town: TownData }> = ({ town }) => {
           borderRadius: '999px', fontSize: '10px', whiteSpace: 'nowrap',
           backdropFilter: 'blur(3px)', border: '1px solid rgba(255,255,255,0.14)',
         }}>
+          <span style={{ fontWeight: 700, marginRight: 5 }}>{town.name}</span>
           {formatPopulation(town.population)}
         </div>
       </Html>

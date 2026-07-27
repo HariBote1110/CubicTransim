@@ -36,6 +36,7 @@ export default function App() {
     selectedStationId, selectStation, upgradeStationDoors,
     activeAccidents, handleAccident,
     currentLedger, ledgerHistory, handleMonthEnd,
+    handleTownGrowth,
     stopLocation, setStopLocation,
     groups, createGroup, assignTrainToGroup, setGroupHeadway,
     renameGroup, clearGroupSchedule, deleteGroup,
@@ -62,6 +63,7 @@ export default function App() {
             if (event.type === 'income') addIncome(event.amount);
             if (event.type === 'accident') handleAccident(event);
             if (event.type === 'monthEnd') handleMonthEnd(event);
+            if (event.type === 'townGrowth') handleTownGrowth(event);
           }}
           onSelectTrain={setSelectedTrainId}
           onBuyTrain={buyTrain}

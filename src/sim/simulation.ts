@@ -11,6 +11,7 @@ import {
   boardFromStation,
 } from './passengers';
 import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
+import { growTown, townServiceLevel } from './towns';
 import { calculateRouteWithStop } from './pathfinding';
 import { pathPointAt } from './trackPath';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds } from './groups';
@@ -183,7 +184,9 @@ export type SimEvent =
   | { type: 'arrive'; trainId: string; scheduleIndex: number }
   | { type: 'income'; trainId: string; amount: number; passengers: number }
   | { type: 'accident'; trainId: string; stationId: string; penalty: number }
-  | { type: 'monthEnd'; year: number; month: number };
+  | { type: 'monthEnd'; year: number; month: number }
+  // 月末の町の成長。React側は towns state をこの配列で置き換える。
+  | { type: 'townGrowth'; towns: TownData[] };
 
 const normalize = (x: number, z: number) => {
   const len = Math.sqrt(x * x + z * z) || 1;
@@ -844,6 +847,15 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
   for (let m = prevMonthIndex; m < newMonthIndex; m++) {
     const { year, month } = yearMonthOfIndex(m);
     events.push({ type: 'monthEnd', year, month });
+
+    // 町の成長も月次で行う。列車が実際に停まる駅が近くにある町だけが育つ。
+    if (world.towns && world.towns.length > 0) {
+      const served = new Set(ensureService(world).graph.keys());
+      world.towns = world.towns.map(town =>
+        growTown(town, townServiceLevel(town, world.stations, served))
+      );
+      events.push({ type: 'townGrowth', towns: world.towns });
+    }
   }
 
   // 旅客需要: 各駅の待ち人数を PASSENGER_SPAWN_RATE×demandFactor×dt ずつ増やす(上限STATION_WAITING_CAP)。
