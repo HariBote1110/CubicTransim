@@ -11,6 +11,7 @@ import {
   recordInterval,
   averageInterval,
   INTERVAL_SAMPLE_LIMIT,
+  suggestsShuttle,
 } from './groups';
 
 const makeGroup = (over: Partial<TrainGroupData> = {}): TrainGroupData => ({
@@ -284,5 +285,60 @@ describe('実績の運転間隔', () => {
     ]);
     expect(averageInterval(intervals, 'g1')).toBeCloseTo(80, 5);
     expect(averageInterval(intervals, 'g3')).toBeNull();
+  });
+});
+
+// テスト用: セル列から線路を作り、指定インデックスのセルを駅にする。
+const buildTestLine = (
+  cells: { x: number; z: number }[],
+  places: [string, number][]
+) => {
+  const railMap = new Map<string, CellData>();
+  const connect = (a: { x: number; z: number }, b: { x: number; z: number }) => {
+    const dir = getDirFromVector(b.x - a.x, b.z - a.z);
+    const aKey = toKey(a.x, a.z);
+    const bKey = toKey(b.x, b.z);
+    const aCell = railMap.get(aKey) ?? { type: 'rail' as const, connections: 0 };
+    railMap.set(aKey, { ...aCell, connections: (aCell.connections ?? 0) | dir });
+    const bCell = railMap.get(bKey) ?? { type: 'rail' as const, connections: 0 };
+    railMap.set(bKey, { ...bCell, connections: (bCell.connections ?? 0) | getOppositeDir(dir) });
+  };
+  for (let i = 0; i + 1 < cells.length; i++) connect(cells[i], cells[i + 1]);
+
+  const stations = new Map<string, StationData>();
+  for (const [id, index] of places) {
+    const cell = cells[index];
+    const key = toKey(cell.x, cell.z);
+    railMap.set(key, { ...railMap.get(key)!, type: 'station', stationId: id });
+    stations.set(id, { id, name: id, cells: [cell], center: cell, platformDoors: 'none' });
+  }
+  return { railMap, stations };
+};
+
+describe('行き止まり路線の判定', () => {
+  // A --- B --- C の一直線(行き止まり)
+  const straight = () => {
+    const cells = Array.from({ length: 11 }, (_, i) => ({ x: i, z: 0 }));
+    return buildTestLine(cells, [['A', 0], ['B', 5], ['C', 10]]);
+  };
+
+  it('一直線の路線を環状運転にすると、終端から始発へ戻る回送が長いので折返しを勧める', () => {
+    const { railMap, stations } = straight();
+    expect(suggestsShuttle(['A', 'B', 'C'], railMap, stations)).toBe(true);
+  });
+
+  it('環状線(終端どうしが繋がっている)なら勧めない', () => {
+    const ring: { x: number; z: number }[] = [];
+    for (let x = 0; x <= 5; x++) ring.push({ x, z: 0 });
+    for (let z = 1; z <= 5; z++) ring.push({ x: 5, z });
+    for (let x = 4; x >= 0; x--) ring.push({ x, z: 5 });
+    for (let z = 4; z >= 0; z--) ring.push({ x: 0, z });
+    const { railMap, stations } = buildTestLine(ring, [['A', 0], ['B', 5], ['C', 10], ['D', 15]]);
+    expect(suggestsShuttle(['A', 'B', 'C', 'D'], railMap, stations)).toBe(false);
+  });
+
+  it('停車駅が2つ以下なら勧めない(どちらのモードでも同じ動きになる)', () => {
+    const { railMap, stations } = straight();
+    expect(suggestsShuttle(['A', 'B'], railMap, stations)).toBe(false);
   });
 });
