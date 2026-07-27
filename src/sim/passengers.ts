@@ -8,7 +8,8 @@
 //    同じ駅ペアの旅客全員(コホート)で使い回す(routeBetween のキャッシュ)。
 //  - 評価軸は「乗換の少なさ」が第一、次に「駅数の少なさ」。所要時間まで見ないのは、
 //    運転間隔や待ち時間を含めた実所要時間の推定が路線ダイヤの実装待ちのため。
-import type { TrainData, TrainGroupData } from '../types';
+import type { StationData, TownData, TrainData, TrainGroupData } from '../types';
+import { demandFactor } from './economy';
 import { effectiveSchedule } from './groups';
 
 /** 乗換の上限回数。これを超える経路は「乗らない」とみなす。 */
@@ -176,4 +177,118 @@ export function routeBetween(
  */
 export function invalidateRoutes(cache: RouteCache): void {
   cache.clear();
+}
+
+// --- 行き先の決め方(重力モデル) ---
+
+/** 行き先候補とその重み。 */
+export interface DestinationWeight {
+  stationId: string;
+  weight: number;
+}
+
+/**
+ * 出発駅から見た行き先の重み。
+ *
+ * 重力モデル: 「行き先の集客力(周辺の街の人口・距離から決まる demandFactor)」を
+ * 「駅間の距離」で割る。近くて栄えている駅ほど選ばれやすい。
+ * reachable が false を返す駅(列車で行けない駅)は候補から外す ── これにより
+ * 「線路が繋がっていない駅に客が湧く」ことがなくなる。
+ */
+export function destinationWeights(
+  originId: string,
+  stations: Map<string, StationData>,
+  towns: TownData[],
+  reachable: (destinationId: string) => boolean
+): DestinationWeight[] {
+  const origin = stations.get(originId);
+  if (!origin) return [];
+
+  const weights: DestinationWeight[] = [];
+  for (const station of stations.values()) {
+    if (station.id === originId) continue;
+    if (!reachable(station.id)) continue;
+
+    const pull = demandFactor(station.center, towns);
+    if (pull <= 0) continue;
+
+    const dist = Math.hypot(station.center.x - origin.center.x, station.center.z - origin.center.z);
+    // 隣接しすぎている駅で重みが発散しないよう、距離は最低1タイルとして扱う。
+    weights.push({ stationId: station.id, weight: pull / Math.max(1, dist) });
+  }
+  return weights;
+}
+
+/** 重みに比例した抽選で行き先を1つ選ぶ。候補が無ければ null。 */
+export function pickDestination(weights: DestinationWeight[], rng: () => number): string | null {
+  const total = weights.reduce((sum, w) => sum + w.weight, 0);
+  if (total <= 0) return null;
+
+  let threshold = rng() * total;
+  for (const w of weights) {
+    threshold -= w.weight;
+    if (threshold < 0) return w.stationId;
+  }
+  return weights[weights.length - 1].stationId;
+}
+
+// --- 待ち客のコホート ---
+
+/**
+ * 行き先を共有する旅客の塊。
+ * 1人ずつのエージェントを持たず、「同じ駅で同じ行き先を待っている人数」としてまとめる。
+ * 湧く量が小数で蓄積されるため count は小数を取りうる(乗車時に整数へ切り捨てる)。
+ */
+export interface PassengerCohort {
+  destinationId: string;
+  count: number;
+}
+
+/** 待ち行列に人数を足す(同じ行き先があればまとめる)。 */
+export function addWaiting(cohorts: PassengerCohort[], destinationId: string, count: number): void {
+  if (count <= 0) return;
+  const existing = cohorts.find(c => c.destinationId === destinationId);
+  if (existing) existing.count += count;
+  else cohorts.push({ destinationId, count });
+}
+
+/** 待ち人数の合計。 */
+export function totalWaiting(cohorts: PassengerCohort[]): number {
+  return cohorts.reduce((sum, c) => sum + c.count, 0);
+}
+
+/**
+ * 駅の待ち行列から、この列車に乗れる客を空席分だけ乗せる(cohortsを破壊的に減らす)。
+ *
+ * @param canBoard 行き先ごとに「この列車に乗るのが正しいか」を返す述語
+ * @param capacity 空席数
+ * @returns 乗車した塊(整数人数)
+ */
+export function boardFromStation(
+  cohorts: PassengerCohort[],
+  canBoard: (destinationId: string) => boolean,
+  capacity: number
+): PassengerCohort[] {
+  let remaining = Math.floor(Math.max(0, capacity));
+  const boarded: PassengerCohort[] = [];
+
+  for (const cohort of cohorts) {
+    if (remaining <= 0) break;
+    if (!canBoard(cohort.destinationId)) continue;
+
+    // 端数は駅に残す(車内の乗客数を常に整数に保つため)。
+    const take = Math.min(Math.floor(cohort.count), remaining);
+    if (take <= 0) continue;
+
+    cohort.count -= take;
+    remaining -= take;
+    boarded.push({ destinationId: cohort.destinationId, count: take });
+  }
+
+  // 乗り切って空になった塊は取り除く。
+  for (let i = cohorts.length - 1; i >= 0; i--) {
+    if (cohorts[i].count <= 0) cohorts.splice(i, 1);
+  }
+
+  return boarded;
 }

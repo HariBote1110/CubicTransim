@@ -206,7 +206,8 @@ describe('待ち客のコホート', () => {
     const cohorts: PassengerCohort[] = [{ destinationId: 'D', count: 3.7 }];
     const boarded = boardFromStation(cohorts, () => true, 100);
     expect(boarded).toEqual([{ destinationId: 'D', count: 3 }]);
-    expect(cohorts).toEqual([{ destinationId: 'D', count: 0.7 }]);
+    expect(cohorts).toHaveLength(1);
+    expect(cohorts[0].count).toBeCloseTo(0.7);
   });
 
   it('空きが無ければ誰も乗れない', () => {
