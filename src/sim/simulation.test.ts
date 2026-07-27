@@ -1035,41 +1035,49 @@ describe('stepWorld: 立体交差(upper)を走行中の描画高さ', () => {
 });
 
 describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高さ', () => {
-  it('地平→坂→桁→坂→地平と段差なく滑らかに変化する', () => {
-    const { railMap, stations } = buildStraightLine(12, 'stA');
-    // (4,0)〜(7,0)に橋を架ける: (4,0)と(7,0)が坂(ramp)の橋台、(5,0)(6,0)が橋桁。
+  it('地平→坂(level1)→坂(level2)→桁→坂(level2)→坂(level1)→地平と段差なく滑らかに変化する', () => {
+    const { railMap, stations } = buildStraightLine(14, 'stA');
+    // (4,0)〜(9,0)に橋を架ける: 4,5と8,9が坂(ramp、level1/level2)、6,7が橋桁。
     const state: ConstructionState = { railMap, stations };
     const bridged = applyBridge(state, [
-      { x: 4, z: 0 }, { x: 5, z: 0 }, { x: 6, z: 0 }, { x: 7, z: 0 },
+      { x: 4, z: 0 }, { x: 5, z: 0 }, { x: 6, z: 0 },
+      { x: 7, z: 0 }, { x: 8, z: 0 }, { x: 9, z: 0 },
     ]);
-    expect(bridged.railMap.get(toKey(4, 0))!.ramp).toBeDefined();
-    expect(bridged.railMap.get(toKey(7, 0))!.ramp).toBeDefined();
+    expect(bridged.railMap.get(toKey(4, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 1 });
+    expect(bridged.railMap.get(toKey(5, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 2 });
+    expect(bridged.railMap.get(toKey(8, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 2 });
+    expect(bridged.railMap.get(toKey(9, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 1 });
 
     const train = makeTrain({ schedule: ['stA'] });
     const world = makeWorld(bridged.railMap, bridged.stations, [train]);
 
     let prevY = 0.5;
     let maxJump = 0;
-    let sawRampHeight = false;
+    let sawLevel1Height = false;
+    let sawLevel2Height = false;
     let sawDeckHeight = false;
-    for (let i = 0; i < 600; i++) {
+    for (let i = 0; i < 800; i++) {
       stepWorld(world, 0.1);
       const rt = world.runtimes.get('t1')!;
       const jump = Math.abs(rt.renderPos.y - prevY);
       maxJump = Math.max(maxJump, jump);
       prevY = rt.renderPos.y;
 
-      if (rt.grid.x === 4 || rt.grid.x === 7) {
-        if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT / 2)) < 1e-6) sawRampHeight = true;
+      if (rt.grid.x === 4 || rt.grid.x === 9) {
+        if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT / 3)) < 1e-6) sawLevel1Height = true;
       }
-      if (rt.grid.x === 5 || rt.grid.x === 6) {
+      if (rt.grid.x === 5 || rt.grid.x === 8) {
+        if (Math.abs(rt.renderPos.y - (0.5 + (OVERPASS_HEIGHT * 2) / 3)) < 1e-6) sawLevel2Height = true;
+      }
+      if (rt.grid.x === 6 || rt.grid.x === 7) {
         if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT)) < 1e-6) sawDeckHeight = true;
       }
     }
 
     // 1tickあたりの高さの跳びが小さいこと(段差が無いこと)
     expect(maxJump).toBeLessThan(0.3);
-    expect(sawRampHeight).toBe(true);
+    expect(sawLevel1Height).toBe(true);
+    expect(sawLevel2Height).toBe(true);
     expect(sawDeckHeight).toBe(true);
   });
 });

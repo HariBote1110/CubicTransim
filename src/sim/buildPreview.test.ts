@@ -98,33 +98,39 @@ describe('evaluateBuild', () => {
 });
 
 describe('evaluateBuild(bridge)', () => {
-  it('橋台+橋桁のコストと橋桁セル数を返す', () => {
+  it('坂+橋桁のコストと橋桁セル数を返す', () => {
     const { railMap, stations, terrain } = emptyMaps();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
     const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('ok');
     expect(p.overpassCells).toBe(2);
-    expect(p.cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER * 2);
+    expect(p.cost).toBe(RAIL_COST * 4 + RAIL_COST * OVERPASS_COST_MULTIPLIER * 2);
   });
 
   it('直線でない指定はno-op', () => {
     const { railMap, stations, terrain } = emptyMaps();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 1 }];
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 1 }];
     const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('no-effect');
   });
 
   it('橋桁が駅セルの場合はno-op', () => {
     const { railMap, stations, terrain } = emptyMaps();
-    railMap.set(toKey(1, 0), { type: 'station', connections: 0, stationId: 'st1' });
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    railMap.set(toKey(2, 0), { type: 'station', connections: 0, stationId: 'st1' });
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('no-effect');
   });
 
   it('資金が足りなければinsufficient-funds', () => {
     const { railMap, stations, terrain } = emptyMaps();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
     const p = evaluateBuild('bridge', path, railMap, stations, terrain, 1);
     expect(p.reason).toBe('insufficient-funds');
   });

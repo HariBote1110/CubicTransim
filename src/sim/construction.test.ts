@@ -346,37 +346,62 @@ describe('平面交差（applyRailPath、ダイヤモンドクロッシング）
 });
 
 describe('橋（applyBridge）', () => {
-  it('直線の始点・終点が橋台(地平のconnections)、中間セルが橋桁(upper)になる', () => {
+  // 橋は両端2セルずつが坂(ramp)、残りが橋桁(upper)になる。長さ6なら
+  // 坂0,1 / 橋桁2,3 / 坂4,5 という構成(MIN_BRIDGE_LENGTH=5が最小)。
+  it('始点・終点それぞれ2セルが坂(地平のconnections)、中間セルが橋桁(upper)になる', () => {
     const state = emptyState();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
     const result = applyBridge(state, path);
 
-    // 橋台(始点・終点)は地平の通常線路
+    // 坂(両端2セルずつ)は地平の通常線路で、upperは持たない
+    for (const pos of [path[0], path[1], path[4], path[5]]) {
+      const cell = result.railMap.get(toKey(pos.x, pos.z))!;
+      expect(cell.type).toBe('rail');
+      expect(cell.upper).toBeUndefined();
+      expect(cell.ramp).toBeDefined();
+    }
     const start = result.railMap.get(toKey(0, 0))!;
-    const end = result.railMap.get(toKey(3, 0))!;
-    expect(start.type).toBe('rail');
+    const end = result.railMap.get(toKey(5, 0))!;
     expect(start.connections! & DIR.E).toBe(DIR.E);
-    expect(start.upper).toBeUndefined();
     expect(end.connections! & DIR.W).toBe(DIR.W);
-    expect(end.upper).toBeUndefined();
 
     // 橋桁(中間セル)はupperにのみ接続を持ち、地平のconnectionsは変化しない
-    const mid1 = result.railMap.get(toKey(1, 0))!;
-    const mid2 = result.railMap.get(toKey(2, 0))!;
+    const mid1 = result.railMap.get(toKey(2, 0))!;
+    const mid2 = result.railMap.get(toKey(3, 0))!;
     expect(mid1.connections ?? 0).toBe(0);
     expect(mid1.upper?.connections).toBe(DIR.E | DIR.W);
     expect(mid2.connections ?? 0).toBe(0);
     expect(mid2.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(mid1.ramp).toBeUndefined();
+    expect(mid2.ramp).toBeUndefined();
+  });
+
+  it('坂は外側(地平寄り)がlevel1、内側(桁寄り)がlevel2で、桁側へ向かうdirを持つ', () => {
+    const state = emptyState();
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
+    const result = applyBridge(state, path);
+
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1 });
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toEqual({ dir: DIR.E, level: 2 });
+    expect(result.railMap.get(toKey(4, 0))!.ramp).toEqual({ dir: DIR.W, level: 2 });
+    expect(result.railMap.get(toKey(5, 0))!.ramp).toEqual({ dir: DIR.W, level: 1 });
   });
 
   it('橋の下に既存の地平線路があっても地平connectionsは変化しない', () => {
     let state = emptyState();
-    // 橋桁の下に南北の地平線路を先に敷いておく
-    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 }]);
-    const beforeGround = state.railMap.get(toKey(1, 0))!.connections;
+    // 橋桁の下に南北の地平線路を先に敷いておく(橋桁予定セルは(2,0)の1セルのみ)
+    state = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }]);
+    const beforeGround = state.railMap.get(toKey(2, 0))!.connections;
 
-    const result = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
-    const mid = result.railMap.get(toKey(1, 0))!;
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyBridge(state, path);
+    const mid = result.railMap.get(toKey(2, 0))!;
     expect(mid.connections).toBe(beforeGround);
     expect(mid.upper?.connections).toBe(DIR.E | DIR.W);
   });
@@ -384,16 +409,19 @@ describe('橋（applyBridge）', () => {
   it('橋桁の下に同じ軸の地平線路がある場合、地平connectionsから橋の軸ビットが消え、交差する別方向は残る', () => {
     let state = emptyState();
     // 橋と同じ東西の直線線路を先に敷いておく
-    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
-    // さらに橋桁予定セル(1,0)に交差する南北方向の接続も足しておく
-    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }]);
-    const before = state.railMap.get(toKey(1, 0))!.connections!;
+    state = applyRailPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+    // さらに橋桁予定セル(2,0)に交差する南北方向の接続も足しておく
+    state = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }]);
+    const before = state.railMap.get(toKey(2, 0))!.connections!;
     expect(before & DIR.E).toBe(DIR.E);
     expect(before & DIR.W).toBe(DIR.W);
     expect(before & DIR.N).toBe(DIR.N);
 
-    const result = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
-    const mid = result.railMap.get(toKey(1, 0))!;
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyBridge(state, path);
+    const mid = result.railMap.get(toKey(2, 0))!;
     // 橋の軸(東西)ビットは消える
     expect((mid.connections ?? 0) & DIR.E).toBe(0);
     expect((mid.connections ?? 0) & DIR.W).toBe(0);
@@ -404,7 +432,9 @@ describe('橋（applyBridge）', () => {
 
   it('始点と終点が直線上にない場合はno-op', () => {
     const state = emptyState();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 1 }];
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 1 },
+    ];
     const result = applyBridge(state, path);
     expect(result.railMap).toBe(state.railMap);
   });
@@ -416,75 +446,97 @@ describe('橋（applyBridge）', () => {
     expect(result.railMap).toBe(state.railMap);
   });
 
-  it('全長が3未満(橋桁ゼロ)の場合はno-op', () => {
+  it('全長がMIN_BRIDGE_LENGTH(5)未満の場合はno-op', () => {
     const state = emptyState();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }];
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
     const result = applyBridge(state, path);
     expect(result.railMap).toBe(state.railMap);
   });
 
   it('橋桁になるセルが駅・車庫セルの場合はno-op', () => {
     let state = emptyState();
-    state = applyStation(state, { x: 1, z: 0 });
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    state = applyStation(state, { x: 2, z: 0 });
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const result = applyBridge(state, path);
     expect(result.railMap).toBe(state.railMap);
   });
 
   it('橋桁になるセルに既にupperがある場合はno-op(二重架け禁止)', () => {
     let state = emptyState();
-    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
-    expect(state.railMap.get(toKey(1, 0))!.upper).toBeDefined();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    state = applyBridge(state, path);
+    expect(state.railMap.get(toKey(2, 0))!.upper).toBeDefined();
 
-    const result = applyBridge(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 }]);
+    const crossing = [
+      { x: 2, z: -2 }, { x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 },
+    ];
+    const result = applyBridge(state, crossing);
     expect(result.railMap).toBe(state.railMap);
   });
 
-  it('橋台になるセルが水域・山岳の場合はno-op', () => {
+  it('坂になるセルが水域・山岳の場合はno-op', () => {
     const state = emptyState();
     const terrain = new Map<string, TerrainType>([[toKey(0, 0), 'water']]);
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const result = applyBridge(state, path, terrain);
     expect(result.railMap).toBe(state.railMap);
   });
 
-  it('撤去で橋桁セルのupperだけ消え、地平の線路は残る', () => {
+  it('撤去で橋桁セルのupperだけ消え、独立した地平の線路は残る(交差点以外の橋は消える)', () => {
     let state = emptyState();
-    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 }]);
-    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
-    expect(state.railMap.get(toKey(1, 0))!.upper).toBeDefined();
+    state = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }]);
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    state = applyBridge(state, path);
+    expect(state.railMap.get(toKey(2, 0))!.upper).toBeDefined();
 
-    const result = removePath(state, [{ x: 1, z: 0 }]);
-    const cell = result.railMap.get(toKey(1, 0))!;
+    // 橋桁セル(2,0)だけを撤去指定 → 橋全体(坂4枚+橋桁)が撤去対象になる
+    const result = removePath(state, [{ x: 2, z: 0 }]);
+
+    // 交差する南北の地平線路は残る(upperだけが消える)
+    const cell = result.railMap.get(toKey(2, 0))!;
     expect(cell).toBeDefined();
     expect(cell.upper).toBeUndefined();
     expect(cell.connections! & DIR.N).toBe(DIR.N);
     expect(cell.connections! & DIR.S).toBe(DIR.S);
+
+    // 坂セルはすべて消える
+    expect(result.railMap.get(toKey(0, 0))).toBeUndefined();
+    expect(result.railMap.get(toKey(1, 0))).toBeUndefined();
+    expect(result.railMap.get(toKey(3, 0))).toBeUndefined();
+    expect(result.railMap.get(toKey(4, 0))).toBeUndefined();
   });
 
-  it('橋台セル(始点・終点)に、桁のある側へ向かうrampが付く', () => {
-    const state = emptyState();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
-    const result = applyBridge(state, path);
-
-    const start = result.railMap.get(toKey(0, 0))!;
-    const end = result.railMap.get(toKey(3, 0))!;
-    // 始点は東(桁の方向)へ登る
-    expect(start.ramp).toEqual({ dir: DIR.E });
-    // 終点は西(桁の方向、始点側)へ登る
-    expect(end.ramp).toEqual({ dir: DIR.W });
-    // 橋桁(中間セル)にはrampは付かない
-    expect(result.railMap.get(toKey(1, 0))!.ramp).toBeUndefined();
-    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
-  });
-
-  it('撤去で橋台セルごと消えるとrampも消える', () => {
+  it('橋の坂セル1つだけを撤去指定しても橋全体(坂4枚+橋桁)が消える', () => {
     let state = emptyState();
-    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
+    state = applyBridge(state, path);
     expect(state.railMap.get(toKey(0, 0))!.ramp).toBeDefined();
 
-    const result = removePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
-    expect(result.railMap.get(toKey(0, 0))).toBeUndefined();
-    expect(result.railMap.get(toKey(2, 0))).toBeUndefined();
+    // 片方の坂セル(1,0)だけを撤去指定
+    const result = removePath(state, [{ x: 1, z: 0 }]);
+
+    for (const pos of path) {
+      expect(result.railMap.get(toKey(pos.x, pos.z))).toBeUndefined();
+    }
+  });
+
+  it('撤去した橋の外側にある通常線路は、橋台方向のconnectionsビットだけが落ちて残る', () => {
+    let state = emptyState();
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
+    state = applyBridge(state, path);
+    // 橋の外側(西側)に線路を継ぎ足す
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+
+    const result = removePath(state, [{ x: 2, z: 0 }]);
+
+    const outside = result.railMap.get(toKey(-1, 0))!;
+    expect(outside).toBeDefined();
+    expect((outside.connections ?? 0) & DIR.E).toBe(0);
   });
 });

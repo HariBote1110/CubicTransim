@@ -130,15 +130,17 @@ describe('reservation: 立体交差での層ごとの予約キー分離', () => 
 
   it('橋桁セルとその下の地平セルは別の予約キーになり、2列車が同時に保持できる', () => {
     let state = { railMap: new Map<string, CellData>(), stations: new Map() };
-    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 }]);
-    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
-    const bridgeCell = state.railMap.get(toKey(1, 0))!;
+    state = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }]);
+    state = applyBridge(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+    const bridgeCell = state.railMap.get(toKey(2, 0))!;
     expect(bridgeCell.upper?.connections).toBeDefined();
     expect(bridgeCell.connections).toBeDefined(); // 下を通る地平線路のconnections
 
     const reservations = new Map<string, string>();
-    const ground = { x: 1, z: 0 };
-    const upper = { x: 1, z: 0, layer: 1 as const };
+    const ground = { x: 2, z: 0 };
+    const upper = { x: 2, z: 0, layer: 1 as const };
     expect(reservationKey(ground)).not.toBe(reservationKey(upper));
     expect(tryReserve(reservations, 'A', [ground])).toBe(true);
     expect(tryReserve(reservations, 'B', [upper])).toBe(true);

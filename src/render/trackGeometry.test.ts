@@ -21,23 +21,23 @@ describe('buildCellTrackParts: 通常の接続', () => {
 });
 
 describe('buildRampTrackParts: 坂の線路', () => {
-  it('低い側(originY=0)から高い側(rampHeight)へ登る部品を生成する', () => {
-    const parts = buildRampTrackParts(DIR.E, 0, 0, 1.2);
+  it('低い側(lowY)から高い側(highY)へ登る部品を生成する', () => {
+    const parts = buildRampTrackParts(DIR.E, 0, 0, 0.4, 1.2);
     expect(parts.rails.length).toBeGreaterThan(0);
     expect(parts.sleepers.length).toBeGreaterThan(0);
     expect(parts.ballast.length).toBeGreaterThan(0);
 
-    // レールのバウンディングボックスが 0〜rampHeight の範囲にまたがっていること
+    // レールのバウンディングボックスが lowY〜highY の範囲にまたがっていること
     for (const rail of parts.rails) {
       rail.computeBoundingBox();
       const bb = rail.boundingBox!;
-      expect(bb.min.y).toBeLessThan(0.1);
+      expect(bb.min.y).toBeLessThan(0.5);
       expect(bb.max.y).toBeGreaterThan(1.0);
     }
   });
 
   it('不正な方向ビット(接続ではない値)には空を返す', () => {
-    const parts = buildRampTrackParts(0, 0, 0, 1.2);
+    const parts = buildRampTrackParts(0, 0, 0, 0, 1.2);
     expect(parts.rails.length).toBe(0);
   });
 });

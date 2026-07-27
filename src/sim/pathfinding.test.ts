@@ -562,51 +562,62 @@ describe('橋(applyBridge)の経路探索', () => {
 
   it('橋の上を通る経路が引ける', () => {
     let state = emptyState();
-    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    const bridgePath = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
+    state = applyBridge(state, bridgePath);
     const railMap = new Map(state.railMap);
-    railMap.set(toKey(3, 0), { ...railMap.get(toKey(3, 0))!, type: 'station', stationId: 'stA' });
+    railMap.set(toKey(5, 0), { ...railMap.get(toKey(5, 0))!, type: 'station', stationId: 'stA' });
     const stations = new Map<string, StationData>([
-      ['stA', { id: 'stA', name: 'A', cells: [{ x: 3, z: 0 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 5, z: 0 }], center: { x: 5, z: 0 }, platformDoors: 'none' }],
     ]);
 
     const result = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
       start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
     });
     expect(result.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
-      { x: 1, z: 0, layer: 1 },
+      { x: 1, z: 0, layer: undefined },
       { x: 2, z: 0, layer: 1 },
-      { x: 3, z: 0, layer: undefined },
+      { x: 3, z: 0, layer: 1 },
+      { x: 4, z: 0, layer: undefined },
+      { x: 5, z: 0, layer: undefined },
     ]);
   });
 
   it('橋の下の地平経路と混線しない(橋を渡る経路と、下を通る地平経路が別々に成立する)', () => {
     let state = emptyState();
     // 橋の下に南北の地平線路を通す
-    state = applyRailPath(state, [{ x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 }]);
-    state = applyBridge(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    state = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }]);
+    const bridgePath = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ];
+    state = applyBridge(state, bridgePath);
 
     const railMap = new Map(state.railMap);
-    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stBridge' });
-    railMap.set(toKey(1, 1), { ...railMap.get(toKey(1, 1))!, type: 'station', stationId: 'stGround' });
+    railMap.set(toKey(4, 0), { ...railMap.get(toKey(4, 0))!, type: 'station', stationId: 'stBridge' });
+    railMap.set(toKey(2, 1), { ...railMap.get(toKey(2, 1))!, type: 'station', stationId: 'stGround' });
     const stations = new Map<string, StationData>([
-      ['stBridge', { id: 'stBridge', name: 'Bridge', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
-      ['stGround', { id: 'stGround', name: 'Ground', cells: [{ x: 1, z: 1 }], center: { x: 1, z: 1 }, platformDoors: 'none' }],
+      ['stBridge', { id: 'stBridge', name: 'Bridge', cells: [{ x: 4, z: 0 }], center: { x: 4, z: 0 }, platformDoors: 'none' }],
+      ['stGround', { id: 'stGround', name: 'Ground', cells: [{ x: 2, z: 1 }], center: { x: 2, z: 1 }, platformDoors: 'none' }],
     ]);
 
     const bridgeRoute = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
       start: { x: 0, z: 0 }, prev: null, targetStationId: 'stBridge', cars: 1,
     });
     expect(bridgeRoute.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
-      { x: 1, z: 0, layer: 1 },
-      { x: 2, z: 0, layer: undefined },
+      { x: 1, z: 0, layer: undefined },
+      { x: 2, z: 0, layer: 1 },
+      { x: 3, z: 0, layer: undefined },
+      { x: 4, z: 0, layer: undefined },
     ]);
 
     const groundRoute = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
-      start: { x: 1, z: -1 }, prev: null, targetStationId: 'stGround', cars: 1,
+      start: { x: 2, z: -1 }, prev: null, targetStationId: 'stGround', cars: 1,
     });
     expect(groundRoute.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
-      { x: 1, z: 0, layer: undefined },
-      { x: 1, z: 1, layer: undefined },
+      { x: 2, z: 0, layer: undefined },
+      { x: 2, z: 1, layer: undefined },
     ]);
   });
 });

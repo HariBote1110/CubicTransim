@@ -174,14 +174,17 @@ describe('economy: costOfPath', () => {
 });
 
 describe('economy: costOfPath(bridge)', () => {
-  it('橋桁(中間セル)はOVERPASS_COST_MULTIPLIER倍、橋台(始点・終点)は通常のRAIL_COST', () => {
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+  it('橋桁(坂を除いた中間セル)はOVERPASS_COST_MULTIPLIER倍、坂(両端2セルずつ)は通常のRAIL_COST', () => {
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
     const cost = costOfPath('bridge', path.length, path);
-    expect(cost).toBe(RAIL_COST * 2 + RAIL_COST * OVERPASS_COST_MULTIPLIER * 2);
+    expect(cost).toBe(RAIL_COST * 4 + RAIL_COST * OVERPASS_COST_MULTIPLIER * 2);
   });
 
-  it('MAX_BRIDGE_LENGTHが仕様通り(10)', () => {
-    expect(MAX_BRIDGE_LENGTH).toBe(10);
+  it('MAX_BRIDGE_LENGTHが仕様通り(12)', () => {
+    expect(MAX_BRIDGE_LENGTH).toBe(12);
   });
 });
 
