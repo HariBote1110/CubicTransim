@@ -6,7 +6,7 @@ import { GameUI } from './components/GameUI';
 import type { CellType } from './types';
 
 export default function App() {
-  const [buildMode, setBuildMode] = useState<CellType | 'none' | 'remove' | 'signal'>('none');
+  const [buildMode, setBuildMode] = useState<CellType | 'none' | 'remove' | 'signal' | 'bridge'>('none');
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);

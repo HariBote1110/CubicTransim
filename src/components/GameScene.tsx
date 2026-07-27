@@ -20,6 +20,7 @@ import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
+import { T } from '../ui/theme';
 
 const REMOVE_COLOUR = '#ff3b47';
 
@@ -81,12 +82,12 @@ interface GameSceneProps {
   towns: TownData[];
   terrain: Map<string, TerrainType>;
   world: React.RefObject<SimWorld>;
-  buildMode: CellType | 'none' | 'remove' | 'signal';
+  buildMode: CellType | 'none' | 'remove' | 'signal' | 'bridge';
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
   simSpeed: number;
 
-  onCommitPath: (path: { x: number; z: number }[], mode: CellType | 'none' | 'remove' | 'signal') => void;
+  onCommitPath: (path: { x: number; z: number }[], mode: CellType | 'none' | 'remove' | 'signal' | 'bridge') => void;
   removeSignal: (x: number, z: number) => void;
   onSimEvent: (event: SimEvent) => void;
   onSelectTrain: (id: string | null) => void;
@@ -183,6 +184,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
     if (buildMode === 'depot') return DEPOT_COLOUR;
     if (buildMode === 'remove') return REMOVE_COLOUR;
     if (buildMode === 'signal') return SIGNAL_COLOUR;
+    if (buildMode === 'bridge') return T.bridge;
     return '#3ab6ff';
   };
 

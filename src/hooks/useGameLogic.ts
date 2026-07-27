@@ -4,7 +4,7 @@ import type { CellData, CellType, TrainData, TrainGroupData, StationData, Platfo
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
-import { applyRailPath, applyStation, applyDepot, applySignal, removePath } from '../sim/construction';
+import { applyRailPath, applyStation, applyDepot, applySignal, applyBridge, removePath } from '../sim/construction';
 import type { ConstructionState } from '../sim/construction';
 import {
   STARTING_MONEY, TRAIN_COST, costOfPath,
@@ -151,7 +151,7 @@ export const useGameLogic = () => {
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
   // ここでは現在の state を渡し、結果をまとめて setRailMap/setStations するだけの薄いラッパー。
   // 建設コストの算出・所持金チェック・課金もここで行う。
-  const commitPath = (path: { x: number; z: number }[], buildMode: CellType | 'none' | 'remove' | 'signal') => {
+  const commitPath = (path: { x: number; z: number }[], buildMode: CellType | 'none' | 'remove' | 'signal' | 'bridge') => {
     if (path.length === 0) return;
 
     const state: ConstructionState = { railMap, stations };
@@ -183,6 +183,12 @@ export const useGameLogic = () => {
         cost = costOfPath('rail', path.length, path, terrain);
         if (money < cost) return;
         result = applyRailPath(state, path, terrain);
+        break;
+      case 'bridge':
+        // 橋台(通常運賃)＋橋桁(OVERPASS_COST_MULTIPLIER倍)
+        cost = costOfPath('bridge', path.length, path);
+        if (money < cost) return;
+        result = applyBridge(state, path, terrain);
         break;
       default:
         return;

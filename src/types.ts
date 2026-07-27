@@ -13,10 +13,15 @@ export interface CellData {
   signalDir?: number;
   // ★追加: 水上の橋・山岳のトンネル(描画用のフラグ)。costOfPathの倍率とは別に、
   // applyRailPathがterrainを見て設定する。
+  // 注意: この`bridge`は「水上を渡る線路の見た目・コスト倍率」を表すフラグであり、
+  // 立体交差(橋桁)を表す`upper`とは別物(紛らわしいが命名の経緯上そのまま)。
   bridge?: boolean;
   tunnel?: boolean;
   /**
-   * 立体交差の高架側の線路。地平側(connections)とは接続しない別の線路。
+   * 立体交差(橋桁)の高架側の線路。地平側(connections)とは接続しない別の線路。
+   * construction.ts の applyBridge で橋の中間セル(橋桁)にのみ設定される
+   * (直角に線路を敷いただけでは自動生成されない。平面交差にする場合は
+   * connectionsへORするだけで済ませ、upperは作らない)。
    * 列車には層を持たせない。「そのセルにどちら向きで入ったか」(進入元へ戻るビットが
    * connectionsとupper.connectionsのどちらに立っているか)で一意に決まるため。
    */

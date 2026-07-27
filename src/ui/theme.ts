@@ -24,6 +24,7 @@ export const T = {
   station: '#f5a524',
   depot: '#4d90d8',
   signal: '#ef4444',
+  bridge: '#c98a4b',
 
   // --- 形 ---
   radius: 10,

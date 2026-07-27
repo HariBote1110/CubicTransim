@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TerrainType } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, CAPACITY_PER_CAR,
-  CAR_COST, CAR_REFUND,
+  CAR_COST, CAR_REFUND, OVERPASS_COST_MULTIPLIER,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   demandFactor, clockToDate,
 } from '../sim/economy';
@@ -22,7 +22,7 @@ const CLOCK_POLL_INTERVAL_MS = 500;
 // 選択中列車の乗客数・駅の待ち人数の更新間隔(ms)。
 const POLL_INTERVAL_MS = 400;
 
-export type BuildMode = CellType | 'none' | 'remove' | 'signal';
+export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'bridge';
 
 interface GameUIProps {
   buildMode: BuildMode;
@@ -85,6 +85,7 @@ const BUILD_TOOLS: {
   { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
+  { mode: 'bridge', label: '橋', key: '7', accent: T.bridge, cost: `¥${RAIL_COST * OVERPASS_COST_MULTIPLIER}/マス`, hint: 'ドラッグで始点と終点を指定。既存の線路や水路をまたぐ' },
 ];
 
 const SPEEDS: (0 | 1 | 2 | 4)[] = [0, 1, 2, 4];
@@ -434,10 +435,10 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
     : null;
 
   const detail: string[] = [];
-  if (mode === 'rail' || mode === 'remove') detail.push(`${cellCount}マス`);
+  if (mode === 'rail' || mode === 'remove' || mode === 'bridge') detail.push(`${cellCount}マス`);
   if (bridgeCells > 0) detail.push(`橋 ${bridgeCells}`);
   if (tunnelCells > 0) detail.push(`隧道 ${tunnelCells}`);
-  if (overpassCells > 0) detail.push(`立体交差 ${overpassCells}(4倍)`);
+  if (overpassCells > 0) detail.push(`橋桁 ${overpassCells}(4倍)`);
 
   return (
     <div style={panel({
