@@ -1,6 +1,53 @@
-import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
+import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
 import type { CellData, StationData, TerrainType } from '../types';
 import { terrainAt } from './terrain';
+
+const DIR_BITS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
+
+const popcount = (n: number): number => DIR_BITS.reduce((c, b) => c + ((n & b) ? 1 : 0), 0);
+
+// 新しく敷く方向dirが、既存の接続方向のどれか1つとでも「なだらかに繋がる」か
+// (内積の絶対値が0.5以上)を判定する。1つも無ければ立体交差の対象になる。
+//
+// connectionsのビットは「セルから見てその隣へ track が伸びている向き」を表す
+// 無方向の集合であり、直進(entry=W, exit=Eのように正反対のビットの組)がもっとも
+// 一般的なので、素の内積ではなく絶対値で見る。dot=-1(正反対=直進)は当然なだらか、
+// dot=0(直交)はなだらかでない、という境界が絶対値0.5でちょうど分かれる。
+const canMergeSmoothly = (existingConnections: number, dir: number): boolean => {
+  const dv = getVectorFromDir(dir);
+  for (const b of DIR_BITS) {
+    if (!(existingConnections & b)) continue;
+    const ev = getVectorFromDir(b);
+    if (Math.abs(ev.x * dv.x + ev.z * dv.z) >= 0.5) return true;
+  }
+  return false;
+};
+
+/**
+ * 新しい接続dirを既存セルへ足すとき、どちらの層に入れるべきかを判定する。
+ * - 駅・車庫: 常に地平(立体交差にしない)
+ * - 何も接続が無いセル: 地平に新設
+ * - 既存の地平接続となだらかに繋がる: 地平で合流
+ * - 地平とは繋がらないが、既にupperがあり、それとなだらかに繋がる: upperで合流
+ * - どちらとも繋がらない: 地平にupperが無ければ立体交差として新設、既にあればblocked(3層は作らない)
+ */
+export function classifyConnectionPlacement(
+  existing: CellData | undefined,
+  dir: number
+): 'ground' | 'upper' | 'blocked' {
+  if (!existing) return 'ground';
+  if (existing.type === 'station' || existing.type === 'depot') return 'ground';
+
+  const groundConn = existing.connections || 0;
+  const upperConn = existing.upper?.connections ?? 0;
+
+  if (popcount(groundConn) === 0 && popcount(upperConn) === 0) return 'ground';
+  if (canMergeSmoothly(groundConn, dir)) return 'ground';
+  if (popcount(upperConn) > 0) {
+    return canMergeSmoothly(upperConn, dir) ? 'upper' : 'blocked';
+  }
+  return 'upper';
+}
 
 export interface ConstructionState {
   railMap: Map<string, CellData>;
@@ -72,8 +119,54 @@ const terrainFlags = (terrain: Map<string, TerrainType>, x: number, z: number): 
   return { bridge: undefined, tunnel: undefined };
 };
 
-export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
+// 既存セルにdir方向の接続を1つ足す。地平で合流できればconnectionsへ、
+// なだらかに繋がらなければupperへ(立体交差)。どちらとも繋がらなければno-op。
+// upperになったセルのキーをoverpassCellsへ記録する(コスト計算・プレビュー表示用)。
+const addConnectionToCell = (
+  railMap: Map<string, CellData>,
+  overpassCells: Set<string>,
+  key: string,
+  x: number,
+  z: number,
+  dir: number,
+  terrain: Map<string, TerrainType>
+): void => {
+  const existing = railMap.get(key);
+  const placement = classifyConnectionPlacement(existing, dir);
+  if (placement === 'blocked') return; // 3層は作らない: no-op
+
+  if (placement === 'ground') {
+    if (!existing) {
+      railMap.set(key, { type: 'rail', connections: dir, ...terrainFlags(terrain, x, z) });
+    } else if (existing.type !== 'rail') {
+      railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir });
+    } else {
+      railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...terrainFlags(terrain, x, z) });
+    }
+    return;
+  }
+
+  // placement === 'upper'
+  const upperConn = existing?.upper?.connections ?? 0;
+  railMap.set(key, { ...(existing as CellData), type: 'rail', upper: { connections: upperConn | dir } });
+  overpassCells.add(key);
+};
+
+export interface RailPathApplyResult extends ConstructionState {
+  /** このpath適用によって立体交差(upper)になった/拡張されたセルのキー集合。 */
+  overpassCells: Set<string>;
+}
+
+// applyRailPathの詳細版。overpassCells(立体交差になったセル)も返す。
+// コスト計算(economy.costOfPath)がRAIL_COST×OVERPASS_COST_MULTIPLIERを
+// 適用すべきセルを判定するのに使う。
+export function applyRailPathDetailed(
+  state: ConstructionState,
+  path: Pos[],
+  terrain: Map<string, TerrainType> = EMPTY_TERRAIN
+): RailPathApplyResult {
   const railMap = new Map(state.railMap);
+  const overpassCells = new Set<string>();
 
   for (let i = 0; i < path.length - 1; i++) {
     const curr = path[i];
@@ -85,20 +178,12 @@ export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Ma
     const dir = getDirFromVector(dx, dz);
     const oppDir = getOppositeDir(dir);
 
-    const currCell = railMap.get(currKey) || { type: 'rail' as const, connections: 0 };
-    if (currCell.type !== 'rail') {
-      railMap.set(currKey, { ...currCell, connections: (currCell.connections || 0) | dir, ...terrainFlags(terrain, curr.x, curr.z) });
-      if (currCell.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
-    } else {
-      railMap.set(currKey, { type: 'rail', connections: (currCell.connections || 0) | dir, ...terrainFlags(terrain, curr.x, curr.z) });
-    }
-    const nextCell = railMap.get(nextKey) || { type: 'rail' as const, connections: 0 };
-    if (nextCell.type !== 'rail') {
-      railMap.set(nextKey, { ...nextCell, connections: (nextCell.connections || 0) | oppDir, ...terrainFlags(terrain, next.x, next.z) });
-      if (nextCell.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
-    } else {
-      railMap.set(nextKey, { type: 'rail', connections: (nextCell.connections || 0) | oppDir, ...terrainFlags(terrain, next.x, next.z) });
-    }
+    addConnectionToCell(railMap, overpassCells, currKey, curr.x, curr.z, dir, terrain);
+    if (railMap.get(currKey)?.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
+
+    addConnectionToCell(railMap, overpassCells, nextKey, next.x, next.z, oppDir, terrain);
+    if (railMap.get(nextKey)?.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
+
     const checkDepotNeighbours = (px: number, pz: number) => {
       const nbs = [{ x: 1, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 1 }, { x: 0, z: -1 }];
       nbs.forEach(n => updateDepotRotation(railMap, px + n.x, pz + n.z));
@@ -107,7 +192,11 @@ export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Ma
     checkDepotNeighbours(next.x, next.z);
   }
 
-  return { railMap, stations: state.stations };
+  return { railMap, stations: state.stations, overpassCells };
+}
+
+export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
+  return applyRailPathDetailed(state, path, terrain);
 }
 
 export function applyStation(state: ConstructionState, pos: Pos, terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
@@ -270,10 +359,15 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
       const nKey = toKey(n.x, n.z);
       const nCell = railMap.get(nKey);
       if (nCell) {
+        // 撤去は地平・高架の両方のconnectionsから該当ビットを消す。
+        let updated = nCell;
         if (nCell.connections) {
-          const newConn = nCell.connections & ~n.opp;
-          railMap.set(nKey, { ...nCell, connections: newConn });
+          updated = { ...updated, connections: nCell.connections & ~n.opp };
         }
+        if (nCell.upper?.connections) {
+          updated = { ...updated, upper: { connections: nCell.upper.connections & ~n.opp } };
+        }
+        if (updated !== nCell) railMap.set(nKey, updated);
         if (nCell.type === 'depot') updateDepotRotation(railMap, n.x, n.z);
       }
     });

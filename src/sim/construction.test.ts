@@ -245,3 +245,82 @@ describe('removePath（特性テスト）', () => {
     expect(st.center).toEqual({ x: 0, z: 0 });
   });
 });
+
+describe('立体交差（applyRailPath）', () => {
+  it('直交する線路を後から敷くとupperができ、既存のconnectionsは変化しない', () => {
+    let state = emptyState();
+    // 東西の直線を先に敷く
+    state = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }]);
+    const before = state.railMap.get(toKey(1, 1))!;
+    expect(before.connections).toBe(DIR.E | DIR.W);
+
+    // 南北の直線を交差させる(直交、内積0 < 0.5なので合流しない)
+    state = applyRailPath(state, [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }]);
+    const after = state.railMap.get(toKey(1, 1))!;
+
+    // 既存のconnectionsは変化しない
+    expect(after.connections).toBe(DIR.E | DIR.W);
+    // upperにN|Sができる
+    expect(after.upper?.connections).toBe(DIR.N | DIR.S);
+  });
+
+  it('ゆるやかに合流する角度(内積>=0.5)なら従来通り分岐点になる', () => {
+    let state = emptyState();
+    // 東西の直線
+    state = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }]);
+    // 北東方向から合流(E方向との内積が高い)
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 1 }]);
+
+    const cell = state.railMap.get(toKey(1, 1))!;
+    expect(cell.connections! & DIR.NW).toBe(DIR.NW);
+    expect(cell.upper).toBeUndefined();
+  });
+
+  it('駅セルの上には立体交差を作らない(no-op)', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 1, z: 1 });
+    // 駅を東西に貫通させる線路を敷く
+    state = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }]);
+    // 駅を南北に貫通させようとしても、upperは作られず既存connectionsに直接合流する
+    state = applyRailPath(state, [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }]);
+
+    const cell = state.railMap.get(toKey(1, 1))!;
+    expect(cell.type).toBe('station');
+    expect(cell.upper).toBeUndefined();
+  });
+
+  it('車庫セルの上には立体交差を作らない(no-op)', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 1, z: 1 });
+    state = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }]);
+    state = applyRailPath(state, [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }]);
+
+    const cell = state.railMap.get(toKey(1, 1))!;
+    expect(cell.type).toBe('depot');
+    expect(cell.upper).toBeUndefined();
+  });
+
+  it('既にupperを持つセルへさらに繋げると、地平は変化させずupper側にORされる(3層は作らない)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }]); // 地平E-W
+    // upperをNのみの片方だけ敷いておく(交差セルの北側だけ繋がった状態を人工的に作る)
+    const partial = state.railMap.get(toKey(1, 1))!;
+    state = { ...state, railMap: new Map(state.railMap).set(toKey(1, 1), { ...partial, upper: { connections: DIR.N } }) };
+
+    // 南側をさらに繋ぐと、地平(E|W)とは合流できないのでupperへORされる
+    state = applyRailPath(state, [{ x: 1, z: 1 }, { x: 1, z: 2 }]);
+    const after = state.railMap.get(toKey(1, 1))!;
+    expect(after.connections).toBe(DIR.E | DIR.W);
+    expect(after.upper?.connections).toBe(DIR.N | DIR.S);
+  });
+
+  it('撤去は地平と高架の両方を消す', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }]);
+    state = applyRailPath(state, [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }]);
+    expect(state.railMap.get(toKey(1, 1))!.upper).toBeDefined();
+
+    const result = removePath(state, [{ x: 1, z: 1 }]);
+    expect(result.railMap.has(toKey(1, 1))).toBe(false);
+  });
+});
