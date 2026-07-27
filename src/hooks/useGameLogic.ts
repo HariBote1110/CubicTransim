@@ -19,6 +19,7 @@ import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
 import { mulberry32, generateTowns } from '../sim/towns';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
+import type { LineMode } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
 
 const SAVE_KEY = 'cubictransim-save-v1';
@@ -366,6 +367,11 @@ export const useGameLogic = () => {
     }));
   };
 
+  // ★追加: 路線の運行モード(環状/折返し)を切り替える。
+  const setGroupMode = (groupId: string, mode: LineMode) => {
+    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, mode } : g)));
+  };
+
   const setGroupHeadway = (groupId: string, headwaySeconds: number) => {
     setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, headwaySeconds } : g)));
   };
@@ -542,6 +548,7 @@ export const useGameLogic = () => {
     createGroup,
     assignTrainToGroup,
     setGroupHeadway,
+    setGroupMode,
     renameGroup,
     clearGroupSchedule,
     deleteGroup,

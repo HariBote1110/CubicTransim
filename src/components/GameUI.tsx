@@ -11,6 +11,7 @@ import { ANNUAL_INTEREST_RATE, LOAN_LIMIT, LOAN_STEP, maxAdditionalLoan, monthly
 import type { PassengerCohort } from '../sim/passengers';
 import { evaluateBuild } from '../sim/buildPreview';
 import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES } from '../sim/groups';
+import type { LineMode } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
 import type { SimWorld } from '../sim/simulation';
 import type { AccidentNotice } from '../hooks/useGameLogic';
@@ -63,6 +64,7 @@ interface GameUIProps {
   onCreateGroup: (seedTrainId?: string) => string;
   onAssignGroup: (trainId: string, groupId: string | null) => void;
   onSetHeadway: (groupId: string, headwaySeconds: number) => void;
+  onSetMode: (groupId: string, mode: LineMode) => void;
   onRenameGroup: (groupId: string, name: string) => void;
   onClearGroupSchedule: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
@@ -113,7 +115,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   loan, onBorrow, onRepay,
   stopLocation, onSetStopLocation,
   previewPath,
-  groups, onCreateGroup, onAssignGroup, onSetHeadway, onRenameGroup,
+  groups, onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup,
   onClearGroupSchedule, onDeleteGroup,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
@@ -123,6 +125,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   const [stationDemand, setStationDemand] = useState(0);
   // 選択中の駅の待ち客の行き先内訳(多い順)。
   const [stationDestinations, setStationDestinations] = useState<PassengerCohort[]>([]);
+  // 路線パネルで停車駅ごとの待ち人数を出すための、駅id→待ち人数。
+  const [waitingByStation, setWaitingByStation] = useState<Map<string, number>>(new Map());
 
   // sim層が持つ値(時計・乗客数・待ち人数)は毎tick変わるため、UIからは低頻度でポーリングする。
   useEffect(() => {
@@ -135,6 +139,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   useEffect(() => {
     const id = setInterval(() => {
       setPassengers(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.passengers ?? 0) : 0);
+      setWaitingByStation(new Map(world.current?.waiting ?? []));
 
       if (!selectedStationId) {
         setStationWaiting(0);
@@ -325,8 +330,11 @@ export const GameUI: React.FC<GameUIProps> = ({
             groups={groups}
             trains={trains}
             stations={stations}
+            waitingByStation={waitingByStation}
             onCreateGroup={onCreateGroup}
+            onAssignGroup={onAssignGroup}
             onSetHeadway={onSetHeadway}
+            onSetMode={onSetMode}
             onRenameGroup={onRenameGroup}
             onClearGroupSchedule={onClearGroupSchedule}
             onDeleteGroup={onDeleteGroup}
@@ -805,19 +813,27 @@ const FinancePanel: React.FC<{ currentLedger: MonthlyLedger; ledgerHistory: Mont
 };
 
 // --- 運用グループのパネル ---
+const LINE_MODE_LABEL: Record<LineMode, string> = { loop: '環状', shuttle: '折返し' };
+
 const GroupPanel: React.FC<{
   groups: TrainGroupData[];
   trains: TrainData[];
   stations: Map<string, StationData>;
+  waitingByStation: Map<string, number>;
   onCreateGroup: (seedTrainId?: string) => string;
+  onAssignGroup: (trainId: string, groupId: string | null) => void;
   onSetHeadway: (groupId: string, headwaySeconds: number) => void;
+  onSetMode: (groupId: string, mode: LineMode) => void;
   onRenameGroup: (groupId: string, name: string) => void;
   onClearGroupSchedule: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
-}> = ({ groups, trains, stations, onCreateGroup, onSetHeadway, onRenameGroup, onClearGroupSchedule, onDeleteGroup }) => (
+}> = ({
+  groups, trains, stations, waitingByStation,
+  onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup, onClearGroupSchedule, onDeleteGroup,
+}) => (
   <div style={panel({ padding: 14, width: 330, maxHeight: '64vh', overflowY: 'auto' })}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <div style={sectionLabel}>運用グループ</div>
+      <div style={sectionLabel}>路線</div>
       <button onClick={() => onCreateGroup()} style={{ ...button({ compact: true }), marginBottom: 6 }}>
         ＋新規
       </button>
@@ -825,9 +841,8 @@ const GroupPanel: React.FC<{
 
     {groups.length === 0 ? (
       <div style={{ fontSize: 11.5, color: T.textMuted, lineHeight: 1.7 }}>
-        複数の列車を1つのグループにまとめると、運行表を共有できます。
-        発車間隔を決めておくと、駅で前続列車との間隔が空くまで待つので、
-        団子運転が自然にほどけて等間隔になります。
+        路線は「停車駅の並び」と「発車間隔」を決め、そこに列車を割り当てて運行します。
+        同じ路線の列車は運行表を共有するので、1本ずつ組み直す必要がありません。
         <br />
         列車を選んで「運用」から作成してください。
       </div>
@@ -870,11 +885,80 @@ const GroupPanel: React.FC<{
               </div>
             </div>
 
-            <div style={{ marginTop: 9, fontSize: 11.5, color: T.textMuted, lineHeight: 1.6 }}>
-              停車駅:{' '}
-              {g.schedule.length === 0
-                ? <span style={{ color: T.textFaint }}>未設定（列車を選び「運行表を編集」で駅をクリック）</span>
-                : g.schedule.map(sid => stations.get(sid)?.name ?? sid).join(' → ')}
+            <div style={{ marginTop: 9 }}>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>運行の仕方</div>
+              <div style={{ display: 'flex', gap: 3 }}>
+                {(['loop', 'shuttle'] as LineMode[]).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => onSetMode(g.id, m)}
+                    style={{ ...button({ active: (g.mode ?? 'loop') === m, accent: g.colour, compact: true }), flex: 1 }}
+                    title={m === 'loop' ? '最後の駅の次は先頭の駅へ戻る' : '終端で折り返して来た道を戻る'}
+                  >
+                    {LINE_MODE_LABEL[m]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 9 }}>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>停車駅</div>
+              {g.schedule.length === 0 ? (
+                <div style={{ fontSize: 11.5, color: T.textFaint, lineHeight: 1.6 }}>
+                  未設定（列車を選び「運行表を編集」で駅をクリック）
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: 2 }}>
+                  {g.schedule.map((sid, i) => (
+                    <div key={`${sid}-${i}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
+                      <span style={{ color: T.textMuted }}>
+                        {i + 1}. {stations.get(sid)?.name ?? sid}
+                      </span>
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {Math.floor(waitingByStation.get(sid) ?? 0)}人待ち
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginTop: 9 }}>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>所属列車</div>
+              {members.length === 0 ? (
+                <div style={{ fontSize: 11.5, color: T.textFaint }}>まだ割り当てられていません</div>
+              ) : (
+                <div style={{ display: 'grid', gap: 3 }}>
+                  {members.map(t => (
+                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5 }}>
+                      <span style={{ flex: 1, color: T.textMuted }}>
+                        {t.id}（{t.cars}両・{t.status === 'running' ? '運行中' : '車庫'}）
+                      </span>
+                      <button
+                        onClick={() => onAssignGroup(t.id, null)}
+                        style={button({ compact: true })}
+                        title="この路線から外す(運行表を引き継いで単独運用になります)"
+                      >
+                        外す
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {trains.filter(t => !t.groupId).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 5 }}>
+                  {trains.filter(t => !t.groupId).map(t => (
+                    <button
+                      key={t.id}
+                      onClick={() => onAssignGroup(t.id, g.id)}
+                      style={button({ compact: true, accent: g.colour })}
+                      title="この路線に割り当てる"
+                    >
+                      ＋{t.id}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'flex', gap: 5, marginTop: 9 }}>
@@ -890,7 +974,7 @@ const GroupPanel: React.FC<{
                 style={{ ...button({ compact: true, accent: T.danger }), flex: 1 }}
                 title="所属列車は運行表を引き継いで単独運用に戻ります"
               >
-                グループ削除
+                路線を削除
               </button>
             </div>
           </div>

@@ -38,7 +38,7 @@ export default function App() {
     currentLedger, ledgerHistory, handleMonthEnd,
     handleTownGrowth,
     stopLocation, setStopLocation,
-    groups, createGroup, assignTrainToGroup, setGroupHeadway,
+    groups, createGroup, assignTrainToGroup, setGroupHeadway, setGroupMode,
     renameGroup, clearGroupSchedule, deleteGroup,
   } = useGameLogic();
 
@@ -111,6 +111,7 @@ export default function App() {
         onCreateGroup={createGroup}
         onAssignGroup={assignTrainToGroup}
         onSetHeadway={setGroupHeadway}
+        onSetMode={setGroupMode}
         onRenameGroup={renameGroup}
         onClearGroupSchedule={clearGroupSchedule}
         onDeleteGroup={deleteGroup}
