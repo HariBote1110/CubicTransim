@@ -942,3 +942,62 @@ describe('stepWorld: 折返し運転と乗車の向き', () => {
     expect(rt.load?.map(c => [c.destinationId, c.count])).toEqual([['stC', 10]]);
   });
 });
+
+describe('stepWorld: 終端駅のホームの閉塞と出庫', () => {
+  // 車庫(x=0) --- 線路 --- 3セルのホームを持つ終端駅(stEnd, x=11..13) の一直線。
+  const buildTerminusLine = () => {
+    const cells = Array.from({ length: 14 }, (_, i) => ({ x: i, z: 0 }));
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, type: 'depot' });
+    const platform = [{ x: 11, z: 0 }, { x: 12, z: 0 }, { x: 13, z: 0 }];
+    for (const c of platform) {
+      railMap.set(toKey(c.x, c.z), { ...railMap.get(toKey(c.x, c.z))!, type: 'station', stationId: 'stEnd' });
+    }
+    const stations = new Map<string, StationData>([
+      ['stEnd', { id: 'stEnd', name: '終着', cells: platform, center: { x: 12, z: 0 }, platformDoors: 'none' }],
+    ]);
+    return { railMap, stations, platform };
+  };
+
+  const runTo = (world: SimWorld, ticks: number) => {
+    for (let i = 0; i < ticks; i++) stepWorld(world, 0.1);
+  };
+
+  it('駅に停車した列車はホーム全体を予約する(車体ぶんだけではない)', () => {
+    const { railMap, stations, platform } = buildTerminusLine();
+    const train = makeTrain({ id: 'first', x: 8, z: 0, schedule: ['stEnd'], cars: 1 });
+    const world = makeWorld(railMap, stations, [train], () => 1, []);
+
+    runTo(world, 3000);
+
+    expect(world.runtimes.get('first')!.stopRemaining).toBeGreaterThan(0);
+    for (const cell of platform) {
+      expect(world.reservations!.get(toKey(cell.x, cell.z))).toBe('first');
+    }
+  });
+
+  it('ホームが塞がっている間は、車庫から出庫しない', () => {
+    const { railMap, stations } = buildTerminusLine();
+    const first = makeTrain({ id: 'first', x: 8, z: 0, schedule: ['stEnd'], cars: 1 });
+    const waiting = makeTrain({ id: 'waiting', x: 0, z: 0, schedule: ['stEnd'], cars: 1 });
+    const world = makeWorld(railMap, stations, [first, waiting], () => 1, []);
+
+    runTo(world, 3000);
+
+    const waitingRt = world.runtimes.get('waiting')!;
+    // 車庫から1マスも出ていないこと(経路上に信号が無いので、駅まで予約できるまで待つ)
+    expect(waitingRt.grid).toEqual({ x: 0, z: 0 });
+    expect(waitingRt.speedKmh).toBe(0);
+  });
+
+  it('ホームが空けば出庫できる', () => {
+    const { railMap, stations } = buildTerminusLine();
+    const waiting = makeTrain({ id: 'waiting', x: 0, z: 0, schedule: ['stEnd'], cars: 1 });
+    const world = makeWorld(railMap, stations, [waiting], () => 1, []);
+
+    runTo(world, 3000);
+
+    const waitingRt = world.runtimes.get('waiting')!;
+    expect(waitingRt.grid.x).toBeGreaterThan(0);
+  });
+});
