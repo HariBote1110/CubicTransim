@@ -7,7 +7,7 @@ import type { TrainData, TrainGroupData } from '../types';
 const makeRuntime = (overrides: Partial<TrainRuntime> & { id: string }): TrainRuntime => ({
   grid: { x: 0, z: 0 },
   prevGrid: null,
-  progress: 1,
+  progress: 0,
   speedKmh: 0,
   route: [],
   reservedEndIndex: -1,
