@@ -1,6 +1,9 @@
 // 街(town)の生成ロジック。純粋関数のみ。React/THREE には依存しない。
 import type { StationData, TerrainType, TownData } from '../types';
 import { fromKey } from '../utils';
+import { terrainAt } from './terrain';
+
+type Pos = { x: number; z: number };
 
 export const TOWN_COORD_RANGE = 40; // 中心座標は -40..40
 export const TOWN_MIN_DISTANCE = 12; // 街同士の最低距離(タイル)
@@ -54,7 +57,7 @@ const NAME_SUFFIX = ['町', '市', '村'] as const;
 
 // 未使用の町名を1つ引く。組み合わせが尽きることは実際上ないが、
 // 万一すべて埋まった場合に無限ループしないよう試行回数で打ち切る。
-const nextTownName = (rng: () => number, used: Set<string>): string => {
+export const nextTownName = (rng: () => number, used: Set<string>): string => {
   const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rng() * xs.length)];
   for (let attempt = 0; attempt < 200; attempt++) {
     const name = `${pick(NAME_PREFIX)}${pick(NAME_STEM)}${pick(NAME_SUFFIX)}`;
@@ -136,4 +139,110 @@ export function generateTowns(
   }
 
   return towns;
+}
+
+// --- 駅名の町名採用 ---
+
+/** 町名末尾の「町」「市」「村」を落とす(駅名は「南宮市」→「南宮駅」のように使う)。 */
+const stripTownSuffix = (name: string): string => name.replace(/[町市村]$/, '');
+
+// 被り対策で試す接尾語(方角の次、「〜中央」「新〜」の次に試す)。
+const NAME_FALLBACK_SUFFIXES = ['台', '森', '谷', '浜', '橋'] as const;
+
+/**
+ * pos から半径 radius(既定は TOWN_STATION_RADIUS)以内で最も近い町を探す。
+ * 見つからなければ null(=駅名は町名由来にできない)。
+ */
+export function nearestTownWithinRadius(
+  pos: Pos,
+  towns: TownData[],
+  radius: number = TOWN_STATION_RADIUS
+): TownData | null {
+  let best: TownData | null = null;
+  let bestDist = Infinity;
+  for (const town of towns) {
+    const dist = Math.hypot(town.centre.x - pos.x, town.centre.z - pos.z);
+    if (dist <= radius && dist < bestDist) {
+      best = town;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+/**
+ * 町の名前から駅名を1つ決める(TTD流の被り対策つき)。
+ * 順に: 町名そのまま → 方角つき(町の中心から見た駅の方角、最も強い1方向) →
+ * 「〜中央」→「新〜」→「〜台/森/谷/浜/橋」→ それでも埋まっていたら「〜第N」。
+ * usedNames に無い最初の候補を返すため、必ず一意な名前になる。
+ */
+export function stationNameForTown(town: TownData, pos: Pos, usedNames: Set<string>): string {
+  const base = stripTownSuffix(town.name);
+  const dx = pos.x - town.centre.x;
+  const dz = pos.z - town.centre.z;
+  // 最も強い方角ひとつだけを使う(東西と南北が拮抗する場合は東西を優先)。
+  const direction = Math.abs(dx) >= Math.abs(dz) ? (dx >= 0 ? '東' : '西') : dz < 0 ? '北' : '南';
+
+  const candidates = [
+    `${base}駅`,
+    `${direction}${base}駅`,
+    `${base}中央駅`,
+    `新${base}駅`,
+    ...NAME_FALLBACK_SUFFIXES.map(suffix => `${base}${suffix}駅`),
+  ];
+  for (const name of candidates) {
+    if (!usedNames.has(name)) return name;
+  }
+
+  let n = 2;
+  while (usedNames.has(`${base}第${n}駅`)) n++;
+  return `${base}第${n}駅`;
+}
+
+// --- 何も無い所に駅を作ると町が発生する仕組み ---
+
+/** 駅の近くに町が無いときに新しい町が湧く確率。 */
+export const NEW_TOWN_CHANCE = 0.5;
+export const NEW_TOWN_POPULATION_MIN = 100;
+export const NEW_TOWN_POPULATION_MAX = 400;
+// 新しい町は駅からこの距離(タイル)の範囲に生まれる。
+const NEW_TOWN_SPAWN_RADIUS_MIN = 1;
+const NEW_TOWN_SPAWN_RADIUS_MAX = 3;
+
+/**
+ * 駅の建設をきっかけに新しい町が湧くかどうかを判定する純粋関数。
+ * 近くに既に町があれば必ず null。無ければ NEW_TOWN_CHANCE の確率で、
+ * 駅から1〜3タイル離れた平地(水域・山岳を除く)に小さな町を生成して返す。
+ * rng は呼び出し側から注入する(この関数自体は副作用を持たない)。
+ */
+export function maybeSpawnTownForStation(
+  pos: Pos,
+  towns: TownData[],
+  terrain: Map<string, TerrainType>,
+  rng: () => number
+): TownData | null {
+  if (nearestTownWithinRadius(pos, towns, TOWN_STATION_RADIUS)) return null;
+  if (rng() >= NEW_TOWN_CHANCE) return null;
+
+  const candidates: Pos[] = [];
+  for (let dz = -NEW_TOWN_SPAWN_RADIUS_MAX; dz <= NEW_TOWN_SPAWN_RADIUS_MAX; dz++) {
+    for (let dx = -NEW_TOWN_SPAWN_RADIUS_MAX; dx <= NEW_TOWN_SPAWN_RADIUS_MAX; dx++) {
+      const dist = Math.hypot(dx, dz);
+      if (dist < NEW_TOWN_SPAWN_RADIUS_MIN || dist > NEW_TOWN_SPAWN_RADIUS_MAX) continue;
+      const x = pos.x + dx;
+      const z = pos.z + dz;
+      if (terrainAt(terrain, x, z) !== 'grass') continue;
+      candidates.push({ x, z });
+    }
+  }
+  if (candidates.length === 0) return null;
+
+  const centre = candidates[Math.floor(rng() * candidates.length)];
+  const usedNames = new Set(towns.map(t => t.name));
+  const name = nextTownName(rng, usedNames);
+  const population = Math.round(
+    NEW_TOWN_POPULATION_MIN + rng() * (NEW_TOWN_POPULATION_MAX - NEW_TOWN_POPULATION_MIN)
+  );
+
+  return { id: `town-spawn-${pos.x}-${pos.z}`, name, centre, population };
 }

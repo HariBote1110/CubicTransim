@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { StationData, TownData } from '../types';
+import type { StationData, TerrainType, TownData } from '../types';
 import {
   mulberry32, generateTowns, growTown, townServiceLevel,
   TOWN_MIN_DISTANCE, TOWN_COORD_RANGE, TOWN_POPULATION_MIN, TOWN_POPULATION_MAX, TOWN_POPULATION_CAP,
+  TOWN_STATION_RADIUS,
+  nearestTownWithinRadius, stationNameForTown, maybeSpawnTownForStation,
+  NEW_TOWN_CHANCE, NEW_TOWN_POPULATION_MIN, NEW_TOWN_POPULATION_MAX,
 } from './towns';
 
 describe('mulberry32', () => {
@@ -166,5 +169,122 @@ describe('町の鉄道アクセス(serviceLevel)', () => {
 
   it('遠い駅しか無ければ0', () => {
     expect(townServiceLevel(town, stations, new Set(['far']))).toBe(0);
+  });
+});
+
+describe('nearestTownWithinRadius', () => {
+  const minamimiya: TownData = { id: 'town-0', name: '南宮市', centre: { x: 0, z: 0 }, population: 1000 };
+  const furusato: TownData = { id: 'town-1', name: '古里市', centre: { x: 30, z: 30 }, population: 1000 };
+  const towns = [minamimiya, furusato];
+
+  it('半径内に町があればそれを返す', () => {
+    expect(nearestTownWithinRadius({ x: 2, z: 0 }, towns)).toBe(minamimiya);
+  });
+
+  it('半径内に複数あれば最も近い町を返す', () => {
+    const close: TownData = { id: 'town-2', name: '近町', centre: { x: 1, z: 0 }, population: 1000 };
+    expect(nearestTownWithinRadius({ x: 2, z: 0 }, [minamimiya, close])).toBe(close);
+  });
+
+  it('半径外にしか町が無ければnull', () => {
+    expect(nearestTownWithinRadius({ x: TOWN_STATION_RADIUS + 5, z: 0 }, towns)).toBeNull();
+  });
+});
+
+describe('stationNameForTown', () => {
+  const minamimiya: TownData = { id: 'town-0', name: '南宮市', centre: { x: 0, z: 0 }, population: 1000 };
+
+  it('町の名前(接尾語を除く)＋駅、を返す', () => {
+    expect(stationNameForTown(minamimiya, { x: 2, z: 0 }, new Set())).toBe('南宮駅');
+  });
+
+  it('既に使われていれば東西南北つきの名前になる(町の東)', () => {
+    const used = new Set(['南宮駅']);
+    expect(stationNameForTown(minamimiya, { x: 5, z: 0 }, used)).toBe('東南宮駅');
+  });
+
+  it('町の北にあれば北南宮駅になる', () => {
+    const used = new Set(['南宮駅']);
+    expect(stationNameForTown(minamimiya, { x: 0, z: -5 }, used)).toBe('北南宮駅');
+  });
+
+  it('方角つきの名前も埋まっていれば中央→新→台/森/谷/浜/橋の順に進む', () => {
+    const used = new Set(['南宮駅', '東南宮駅']);
+    expect(stationNameForTown(minamimiya, { x: 5, z: 0 }, used)).toBe('南宮中央駅');
+
+    used.add('南宮中央駅');
+    expect(stationNameForTown(minamimiya, { x: 5, z: 0 }, used)).toBe('新南宮駅');
+
+    used.add('新南宮駅');
+    expect(stationNameForTown(minamimiya, { x: 5, z: 0 }, used)).toBe('南宮台駅');
+
+    used.add('南宮台駅');
+    expect(stationNameForTown(minamimiya, { x: 5, z: 0 }, used)).toBe('南宮森駅');
+  });
+
+  it('全部埋まっていれば番号付きになり、必ず一意な名前を返す', () => {
+    const used = new Set([
+      '南宮駅', '東南宮駅', '南宮中央駅', '新南宮駅',
+      '南宮台駅', '南宮森駅', '南宮谷駅', '南宮浜駅', '南宮橋駅',
+      '南宮第2駅',
+    ]);
+    const name = stationNameForTown(minamimiya, { x: 5, z: 0 }, used);
+    expect(name).toBe('南宮第3駅');
+    expect(used.has(name)).toBe(false);
+  });
+});
+
+describe('maybeSpawnTownForStation', () => {
+  const emptyTerrain: Map<string, TerrainType> = new Map();
+
+  it('近くに町があればnull', () => {
+    const towns = [{ id: 'town-0', name: '南宮市', centre: { x: 0, z: 0 }, population: 1000 }];
+    const rng = mulberry32(1);
+    expect(maybeSpawnTownForStation({ x: 2, z: 0 }, towns, emptyTerrain, rng)).toBeNull();
+  });
+
+  it('近くに町が無ければrngに応じて町を返すかnullを返す', () => {
+    // rngが常にNEW_TOWN_CHANCE以上を返せば湧かない
+    const alwaysHigh = () => NEW_TOWN_CHANCE;
+    expect(maybeSpawnTownForStation({ x: 100, z: 100 }, [], emptyTerrain, alwaysHigh)).toBeNull();
+
+    // rngが常に0を返せば必ず湧く(かつ以後の候補選択も先頭を選ぶ)
+    const alwaysZero = () => 0;
+    const spawned = maybeSpawnTownForStation({ x: 100, z: 100 }, [], emptyTerrain, alwaysZero);
+    expect(spawned).not.toBeNull();
+  });
+
+  it('返す町の名前は既存の町と重複しない', () => {
+    const existing = [{ id: 'town-0', name: '青野町', centre: { x: -50, z: -50 }, population: 1000 }];
+    const rng = mulberry32(2);
+    const spawned = maybeSpawnTownForStation({ x: 100, z: 100 }, existing, emptyTerrain, rng);
+    if (spawned) {
+      expect(existing.some(t => t.name === spawned.name)).toBe(false);
+    }
+  });
+
+  it('人口はNEW_TOWN_POPULATION_MIN〜MAXの範囲', () => {
+    const alwaysZero = () => 0;
+    const spawned = maybeSpawnTownForStation({ x: 100, z: 100 }, [], emptyTerrain, alwaysZero);
+    expect(spawned).not.toBeNull();
+    expect(spawned!.population).toBeGreaterThanOrEqual(NEW_TOWN_POPULATION_MIN);
+    expect(spawned!.population).toBeLessThanOrEqual(NEW_TOWN_POPULATION_MAX);
+  });
+
+  it('水域・山岳の上には町を作らない(駅周辺が全部水没していればnull)', () => {
+    const terrain: Map<string, TerrainType> = new Map();
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        terrain.set(`${100 + dx},${100 + dz}`, 'water');
+      }
+    }
+    const alwaysZero = () => 0;
+    expect(maybeSpawnTownForStation({ x: 100, z: 100 }, [], terrain, alwaysZero)).toBeNull();
+  });
+
+  it('同じrngシードなら決定的', () => {
+    const a = maybeSpawnTownForStation({ x: 100, z: 100 }, [], emptyTerrain, mulberry32(42));
+    const b = maybeSpawnTownForStation({ x: 100, z: 100 }, [], emptyTerrain, mulberry32(42));
+    expect(a).toEqual(b);
   });
 });
