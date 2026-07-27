@@ -246,3 +246,29 @@ export function maybeSpawnTownForStation(
 
   return { id: `town-spawn-${pos.x}-${pos.z}`, name, centre, population };
 }
+
+export interface TownSpawnForStationResult {
+  /** 命名に使う町の一覧。湧かなければ引数のtownsをそのまま返す(参照が変わらない)。 */
+  towns: TownData[];
+  /** 今回新たに湧いた町。湧かなければnull。 */
+  spawnedTown: TownData | null;
+}
+
+/**
+ * 駅建設1件につき1回だけ町生成判定を行う共通ヘルパー。
+ * 単一セルの駅(commitPath)・複数セルのテンプレート駅(commitTemplate)の両方から
+ * 同じ判定を呼べるようにし、判定ロジックの写経・二重実装を避けるために切り出した。
+ * pos には駅テンプレートの場合アンカー座標を渡す想定(セル数ぶん複数回抽選しない)。
+ */
+export function resolveTownSpawnForStation(
+  pos: Pos,
+  towns: TownData[],
+  terrain: Map<string, TerrainType>,
+  rng: () => number
+): TownSpawnForStationResult {
+  const spawnedTown = maybeSpawnTownForStation(pos, towns, terrain, rng);
+  return {
+    towns: spawnedTown ? [...towns, spawnedTown] : towns,
+    spawnedTown,
+  };
+}
