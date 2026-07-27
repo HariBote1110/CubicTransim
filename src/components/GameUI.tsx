@@ -8,6 +8,7 @@ import {
 } from '../sim/economy';
 import type { MonthlyLedger } from '../sim/economy';
 import { ANNUAL_INTEREST_RATE, LOAN_LIMIT, LOAN_STEP, maxAdditionalLoan, monthlyInterest } from '../sim/loans';
+import type { PassengerCohort } from '../sim/passengers';
 import { evaluateBuild } from '../sim/buildPreview';
 import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
@@ -120,6 +121,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   const [passengers, setPassengers] = useState(0);
   const [stationWaiting, setStationWaiting] = useState(0);
   const [stationDemand, setStationDemand] = useState(0);
+  // 選択中の駅の待ち客の行き先内訳(多い順)。
+  const [stationDestinations, setStationDestinations] = useState<PassengerCohort[]>([]);
 
   // sim層が持つ値(時計・乗客数・待ち人数)は毎tick変わるため、UIからは低頻度でポーリングする。
   useEffect(() => {
@@ -136,9 +139,12 @@ export const GameUI: React.FC<GameUIProps> = ({
       if (!selectedStationId) {
         setStationWaiting(0);
         setStationDemand(0);
+        setStationDestinations([]);
         return;
       }
       setStationWaiting(Math.floor(world.current?.waiting.get(selectedStationId) ?? 0));
+      const cohorts = world.current?.demand?.get(selectedStationId) ?? [];
+      setStationDestinations([...cohorts].sort((a, b) => b.count - a.count).slice(0, 5));
       const station = stations.get(selectedStationId);
       setStationDemand(station ? demandFactor(station.center, world.current?.towns ?? []) : 0);
     }, POLL_INTERVAL_MS);
@@ -221,6 +227,8 @@ export const GameUI: React.FC<GameUIProps> = ({
             <StationInspector
               station={selectedStation}
               waiting={stationWaiting}
+              destinations={stationDestinations}
+              stations={stations}
               demand={stationDemand}
               money={money}
               onUpgradeDoors={onUpgradeDoors}
@@ -611,10 +619,12 @@ const TrainInspector: React.FC<{
 const StationInspector: React.FC<{
   station: StationData;
   waiting: number;
+  destinations: PassengerCohort[];
+  stations: Map<string, StationData>;
   demand: number;
   money: number;
   onUpgradeDoors: (stationId: string, doorType: PlatformDoorType) => void;
-}> = ({ station, waiting, demand, money, onUpgradeDoors }) => {
+}> = ({ station, waiting, destinations, stations, demand, money, onUpgradeDoors }) => {
   const rows: [string, string][] = [
     ['待ち人数', `${waiting}人`],
     ['立地需要', `${demand.toFixed(1)}倍`],
@@ -638,6 +648,24 @@ const StationInspector: React.FC<{
             <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{v}</span>
           </div>
         ))}
+      </div>
+
+      <div style={{ marginTop: 13 }}>
+        <div style={sectionLabel}>待ち客の行き先</div>
+        {destinations.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: T.textFaint, lineHeight: 1.6 }}>
+            待っている客はいません。列車が走っていない駅、どこにも行けない駅には客が集まりません。
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 3, marginBottom: 4 }}>
+            {destinations.map(c => (
+              <div key={c.destinationId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                <span style={{ color: T.textMuted }}>{stations.get(c.destinationId)?.name ?? c.destinationId} ゆき</span>
+                <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{Math.floor(c.count)}人</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 13 }}>
