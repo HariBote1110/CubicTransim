@@ -6,7 +6,7 @@
 // 実際に適用してみた結果から判定する。
 import type { CellData, StationData, TerrainType } from '../types';
 import type { ConstructionState } from './construction';
-import { applyRailPath, applyStation, applyDepot, applySignal, removePath } from './construction';
+import { applyRailPathDetailed, applyStation, applyDepot, applySignal, removePath } from './construction';
 import { costOfPath, type ConstructionMode } from './economy';
 import { terrainAt } from './terrain';
 
@@ -29,6 +29,8 @@ export interface BuildPreview {
   bridgeCells: number;
   /** トンネルになるセル数(線路のみ) */
   tunnelCells: number;
+  /** 立体交差(4倍コスト)になるセル数(線路のみ) */
+  overpassCells: number;
 }
 
 export function evaluateBuild(
@@ -40,7 +42,7 @@ export function evaluateBuild(
   money: number
 ): BuildPreview {
   const empty: BuildPreview = {
-    mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0,
+    mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0,
   };
   if (path.length === 0) return empty;
 
@@ -67,12 +69,18 @@ export function evaluateBuild(
   // 実際に適用してみて、変化が生じるか(=建設が成立するか)を確かめる。
   const state: ConstructionState = { railMap, stations };
   let result: ConstructionState;
+  let overpassCells = 0;
   switch (mode) {
     case 'remove': result = removePath(state, path); break;
     case 'signal': result = applySignal(state, path, terrain); break;
     case 'station': result = applyStation(state, path[path.length - 1], terrain); break;
     case 'depot': result = applyDepot(state, path[path.length - 1], terrain); break;
-    case 'rail': result = applyRailPath(state, path, terrain); break;
+    case 'rail': {
+      const detailed = applyRailPathDetailed(state, path, terrain);
+      result = detailed;
+      overpassCells = detailed.overpassCells.size;
+      break;
+    }
   }
   // removePath は常に新しい Map を返すため参照比較では判定できない。
   // 撤去は「対象セルに何かある」ことをもって成立とする。
@@ -86,5 +94,5 @@ export function evaluateBuild(
   if (!effective) reason = 'no-effect';
   else if (cost > money) reason = 'insufficient-funds';
 
-  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells };
+  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells };
 }

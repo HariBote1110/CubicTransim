@@ -22,6 +22,10 @@ export const PALETTE = {
   sleeper: '#6b5a45',
   railSteel: '#8a8d92',
 
+  // --- 立体交差(高架の橋脚・桁) ---
+  overpassPier: '#7a7466',
+  overpassDeck: '#5f5a50',
+
   // --- 駅 ---
   platform: '#d8d5cd',
   platformSide: '#b9b5ab',
@@ -74,6 +78,8 @@ export const MATERIALS = {
   ballast: std(PALETTE.ballast, { roughness: 1 }),
   sleeper: std(PALETTE.sleeper, { roughness: 1 }),
   rail: std(PALETTE.railSteel, { roughness: 0.35, metalness: 0.6 }),
+  overpassPier: std(PALETTE.overpassPier, { roughness: 0.9 }),
+  overpassDeck: std(PALETTE.overpassDeck, { roughness: 0.8, metalness: 0.15 }),
 
   platform: std(PALETTE.platform, { roughness: 0.9 }),
   platformSide: std(PALETTE.platformSide, { roughness: 1 }),

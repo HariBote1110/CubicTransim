@@ -426,7 +426,7 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
 }) => {
   if (!preview || preview.cellCount === 0) return null;
 
-  const { reason, cost, cellCount, bridgeCells, tunnelCells, mode } = preview;
+  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, mode } = preview;
   const tone = reason === 'ok' ? T.positive : reason === 'insufficient-funds' ? T.danger : T.warning;
   const message =
     reason === 'insufficient-funds' ? '資金が足りません'
@@ -437,6 +437,7 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
   if (mode === 'rail' || mode === 'remove') detail.push(`${cellCount}マス`);
   if (bridgeCells > 0) detail.push(`橋 ${bridgeCells}`);
   if (tunnelCells > 0) detail.push(`隧道 ${tunnelCells}`);
+  if (overpassCells > 0) detail.push(`立体交差 ${overpassCells}(4倍)`);
 
   return (
     <div style={panel({

@@ -18,9 +18,11 @@ interface DynamicTrainProps {
   onClick: (e: any) => void;
 }
 
-// 車両の高さ基準。sim層のrenderPos.yは0.5固定で、TrainCarはこのyを車体中心付近として
-// 組んである(台車が概ねレール上面に接する)。
-const CAR_Y = 0.5;
+// 車両の高さ基準。sim層のrenderPos.yは通常0.5(高架では0.5+OVERPASS_HEIGHT)で、
+// TrainCarはこのyを車体中心付近として組んである(台車が概ねレール上面に接する)。
+// 先頭車はrenderPos.yを、2両目以降はcarPositionsが返すy(編成一律の近似値)を使う。
+// JSXの初期position(useFrameが一度も走る前)は地平の既定値0.5にしておく。
+const INITIAL_CAR_Y = 0.5;
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   data, runtimes, type, isSelected, lineColour: groupColour, onClick
@@ -61,8 +63,8 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       if (!carGroup) continue;
       const pos = positions[i];
       if (!pos) continue;
-      carGroup.position.set(pos.x, CAR_Y, pos.z);
-      carGroup.lookAt(pos.x + pos.heading.x, CAR_Y, pos.z + pos.heading.z);
+      carGroup.position.set(pos.x, pos.y, pos.z);
+      carGroup.lookAt(pos.x + pos.heading.x, pos.y, pos.z + pos.heading.z);
     }
 
     if (isSelected) {
@@ -93,7 +95,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
 
       <group
         ref={(el) => { groupRef.current = el; carRefs.current[0] = el; }}
-        position={[data.x, CAR_Y, data.z]}
+        position={[data.x, INITIAL_CAR_Y, data.z]}
         onClick={(e) => { e.stopPropagation(); onClick(e); }}
       >
         <TrainCar variant="front" lineColour={lineColour} />

@@ -80,8 +80,15 @@ const quad = (p0: Pt, p1: Pt, p2: Pt, t: number): Pt => {
 /**
  * 中心線ポリラインに沿ってバラスト・レール・枕木を敷く。
  * points はセル中心を原点としたローカル座標。origin でワールドへ移す。
+ * originY を渡すと立体交差の高架ぶん(OVERPASS_HEIGHT)だけ全体を持ち上げられる。
  */
-const layTrackAlong = (parts: TrackParts, points: Pt[], originX: number, originZ: number): void => {
+const layTrackAlong = (
+  parts: TrackParts,
+  points: Pt[],
+  originX: number,
+  originZ: number,
+  originY = 0
+): void => {
   if (points.length < 2) return;
 
   // --- セグメントごとにバラストとレールを置く ---
@@ -101,14 +108,14 @@ const layTrackAlong = (parts: TrackParts, points: Pt[], originX: number, originZ
 
     const ballast = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, len);
     ballast.rotateY(rotY);
-    ballast.translate(cx, BALLAST_HEIGHT / 2, cz);
+    ballast.translate(cx, originY + BALLAST_HEIGHT / 2, cz);
     parts.ballast.push(ballast);
 
     for (const side of [-1, 1]) {
       const rail = new THREE.BoxGeometry(RAIL_WIDTH, RAIL_HEIGHT, len);
       rail.translate((side * RAIL_SPACING) / 2, 0, 0);
       rail.rotateY(rotY);
-      rail.translate(cx, RAIL_TOP - RAIL_HEIGHT / 2, cz);
+      rail.translate(cx, originY + RAIL_TOP - RAIL_HEIGHT / 2, cz);
       parts.rails.push(rail);
     }
   }
@@ -134,7 +141,7 @@ const layTrackAlong = (parts: TrackParts, points: Pt[], originX: number, originZ
 
         const sleeper = new THREE.BoxGeometry(SLEEPER_WIDTH, SLEEPER_HEIGHT, SLEEPER_THICKNESS);
         sleeper.rotateY(angleFromVector(dir.x, dir.z));
-        sleeper.translate(originX + px, SLEEPER_TOP - SLEEPER_HEIGHT / 2, originZ + pz);
+        sleeper.translate(originX + px, originY + SLEEPER_TOP - SLEEPER_HEIGHT / 2, originZ + pz);
         parts.sleepers.push(sleeper);
         break;
       }
@@ -146,8 +153,9 @@ const layTrackAlong = (parts: TrackParts, points: Pt[], originX: number, originZ
 /**
  * 1セルぶんの線路部品を、セル中心を原点としたローカル座標で生成する。
  * connections が 0(建設プレビューなど)の場合は南北方向の直線1本ぶんを返す。
+ * originY を渡すと立体交差の高架側(OVERPASS_HEIGHTぶん上)を描ける。
  */
-export function buildCellTrackParts(connections: number, originX = 0, originZ = 0): TrackParts {
+export function buildCellTrackParts(connections: number, originX = 0, originZ = 0, originY = 0): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
 
   const arms: Pt[] = connections === 0
@@ -164,7 +172,7 @@ export function buildCellTrackParts(connections: number, originX = 0, originZ = 
     const isStraight = ua.x * ub.x + ua.z * ub.z < -0.999;
 
     if (isStraight) {
-      layTrackAlong(parts, [a, b], originX, originZ);
+      layTrackAlong(parts, [a, b], originX, originZ, originY);
     } else {
       // 境界点A → セル中心(制御点) → 境界点B の2次ベジェ
       const centre: Pt = { x: 0, z: 0 };
@@ -172,7 +180,7 @@ export function buildCellTrackParts(connections: number, originX = 0, originZ = 
       for (let i = 0; i <= CURVE_SEGMENTS; i++) {
         points.push(quad(a, centre, b, i / CURVE_SEGMENTS));
       }
-      layTrackAlong(parts, points, originX, originZ);
+      layTrackAlong(parts, points, originX, originZ, originY);
     }
     return parts;
   }
@@ -180,13 +188,45 @@ export function buildCellTrackParts(connections: number, originX = 0, originZ = 
   // 分岐(3方向以上)と行き止まり(1方向): 中心から各境界点へ直線の腕を伸ばす。
   // 中心のバラストで腕どうしの継ぎ目を埋める。
   const pad = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, BALLAST_WIDTH);
-  pad.translate(originX, BALLAST_HEIGHT / 2, originZ);
+  pad.translate(originX, originY + BALLAST_HEIGHT / 2, originZ);
   parts.ballast.push(pad);
 
   for (const arm of arms) {
-    layTrackAlong(parts, [{ x: 0, z: 0 }, arm], originX, originZ);
+    layTrackAlong(parts, [{ x: 0, z: 0 }, arm], originX, originZ, originY);
   }
   return parts;
+}
+
+// --- 高架の橋脚(ピア)と桁(デッキ) ---
+const PIER_RADIUS = 0.07;
+const DECK_THICKNESS = 0.1;
+const DECK_SIZE = 0.94;
+
+export interface SupportParts {
+  piers: THREE.BufferGeometry[];
+  decks: THREE.BufferGeometry[];
+}
+
+/**
+ * 高架セル1つぶんの橋脚・桁を、セル中心を原点としたローカル座標で生成する。
+ * 桁はセル全域を覆う板(デッキ)にして、その下に地面から桁下面まで伸びる
+ * 円柱の橋脚をセル中心付近に1本立てる。バラスト(originY + BALLAST_HEIGHT/2 が底)
+ * のすぐ下にデッキ上面が来るよう高さを合わせる。
+ */
+export function buildOverpassSupportParts(originX = 0, originZ = 0, originY = 0): SupportParts {
+  const deckTop = originY; // バラストの底(=originY)にちょうど接するようにする
+  const deckCentreY = deckTop - DECK_THICKNESS / 2;
+
+  const deck = new THREE.BoxGeometry(DECK_SIZE, DECK_THICKNESS, DECK_SIZE);
+  deck.translate(originX, deckCentreY, originZ);
+
+  const pierBottom = 0;
+  const pierTop = deckCentreY - DECK_THICKNESS / 2;
+  const pierHeight = Math.max(0.02, pierTop - pierBottom);
+  const pier = new THREE.CylinderGeometry(PIER_RADIUS, PIER_RADIUS * 1.3, pierHeight, 8);
+  pier.translate(originX, pierBottom + pierHeight / 2, originZ);
+
+  return { piers: [pier], decks: [deck] };
 }
 
 /** 部品配列をマージして1つのジオメトリにする(空なら null)。 */
