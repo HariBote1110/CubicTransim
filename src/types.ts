@@ -27,14 +27,16 @@ export interface CellData {
    */
   upper?: { connections: number };
   /**
-   * 橋台セル(applyBridgeのpath[0]/path末尾)が「坂」であることを示す。
+   * 坂セル(applyBridgeが橋の両端2セルずつに付ける)であることを示す。
    * dirは登り方向(桁のあるupperセル側へ向かう8方向ビット)。
    * セル自体は従来どおり地平のconnectionsを持ったまま、この坂情報が付く。
-   * 高さは simulation.ts 側で 0(地平)→OVERPASS_HEIGHT/2(坂)→OVERPASS_HEIGHT(桁)
-   * として解決する。旧セーブにはrampが無く、その橋台は従来どおり段差のまま描かれる
-   * (移行処理は行わない)。
+   * levelは地平からの高さの段階: 1=地平寄りの下段(OVERPASS_HEIGHT/3)、
+   * 2=桁寄りの上段(OVERPASS_HEIGHT*2/3)。橋は坂2セル+桁(最低1セル)+坂2セルの
+   * 構成になり、地平→level1→level2→桁(OVERPASS_HEIGHT)と高さが3段階でつながる。
+   * 旧セーブにはlevelが無く、読み出しは常に (cell.ramp?.level ?? 2) で行う
+   * (旧データは1セルの急な坂だったため、桁側の高さに近いlevel2扱いにする)。
    */
-  ramp?: { dir: number };
+  ramp?: { dir: number; level?: 1 | 2 };
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';

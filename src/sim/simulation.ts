@@ -60,16 +60,22 @@ export const RESERVE_EXTEND_SLACK_M = 1.0;
 // pathfindingが解決した層をルート/現在地セルにそのまま載せて運ぶ。
 type Grid = { x: number; z: number; layer?: 0 | 1 };
 
+// 坂(ramp)のlevelごとの上乗せ高さ。level1が地平寄りの下段、level2が桁寄りの上段。
+// 旧セーブ(levelが無いramp)は桁側に近いlevel2として扱う(移行処理は行わない)。
+const rampLevelHeight = (level: 1 | 2 | undefined): number =>
+  (level ?? 2) === 1 ? OVERPASS_HEIGHT / 3 : (OVERPASS_HEIGHT * 2) / 3;
+
 // セル中心の描画高さ(renderPos.y)を求める。
 //   - 高架(layer===1): OVERPASS_HEIGHTぶん上乗せ
-//   - 坂(railMap上のセルにrampが付いている): その半分(OVERPASS_HEIGHT/2)上乗せ
+//   - 坂(railMap上のセルにrampが付いている): levelに応じて OVERPASS_HEIGHT/3 か
+//     OVERPASS_HEIGHT*2/3 を上乗せ(地平→level1→level2→桁と3段階でつながる)
 //   - それ以外の地平: 上乗せ無し
 // railMapを見るのは、坂かどうかがGrid(x,z,layer)だけでは分からず、セルデータ
 // (CellData.ramp)に依存するため。地平の基準高さ0.5は既存の車両モデルの原点合わせ。
 const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1): number => {
   if (layer === 1) return 0.5 + OVERPASS_HEIGHT;
   const cell = railMap.get(toKey(x, z));
-  if (cell?.ramp) return 0.5 + OVERPASS_HEIGHT / 2;
+  if (cell?.ramp) return 0.5 + rampLevelHeight(cell.ramp.level);
   return 0.5;
 };
 

@@ -60,13 +60,22 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       all.rails.push(...parts.rails);
 
       if (data.ramp) {
-        const rampParts = buildRampTrackParts(data.ramp.dir, x, z, OVERPASS_HEIGHT);
+        // level1(地平寄り)は 0→H/3、level2(桁寄り)は H/3→2H/3 を斜めに登る。
+        // 旧セーブ(levelなし)はH/3→2H/3(桁側に近い段)として扱う。
+        const level = data.ramp.level ?? 2;
+        const lowY = level === 1 ? 0 : OVERPASS_HEIGHT / 3;
+        const highY = level === 1 ? OVERPASS_HEIGHT / 3 : (OVERPASS_HEIGHT * 2) / 3;
+        const rampParts = buildRampTrackParts(data.ramp.dir, x, z, lowY, highY);
         all.ballast.push(...rampParts.ballast);
         all.sleepers.push(...rampParts.sleepers);
         all.rails.push(...rampParts.rails);
 
-        const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, OVERPASS_HEIGHT);
-        if (wedge) abutments.push(wedge);
+        // 橋台のくさびは地平に接するlevel1側にだけ出す(level2は宙に浮いた坂なので
+        // 地面まで届くくさびを描くと不自然になる)。
+        if (level === 1) {
+          const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, OVERPASS_HEIGHT / 3);
+          if (wedge) abutments.push(wedge);
+        }
       }
 
       if (data.upper) {

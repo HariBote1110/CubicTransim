@@ -1,12 +1,13 @@
-import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
+import { toKey, fromKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
 import type { CellData, StationData, TerrainType, TownData } from '../types';
 import { terrainAt } from './terrain';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
 
-// 橋の全長(橋台含むセル数)の下限・上限。3未満は橋桁が0になり橋の意味が無く、
-// 10を超える長さは建設UIの想定外(コストも高額になりすぎる)としてno-opにする。
-export const MAX_BRIDGE_LENGTH = 10;
-const MIN_BRIDGE_LENGTH = 3;
+// 橋の全長(坂4セル含む)の下限・上限。坂は両端2セルずつ固定なので、
+// 5未満は橋桁が0になり橋の意味が無く、12を超える長さは建設UIの想定外
+// (コストも高額になりすぎる)としてno-opにする。
+export const MAX_BRIDGE_LENGTH = 12;
+const MIN_BRIDGE_LENGTH = 5;
 
 export interface ConstructionState {
   railMap: Map<string, CellData>;
@@ -288,15 +289,16 @@ export function applySignal(state: ConstructionState, path: Pos[], terrain: Map<
   return { railMap, stations: state.stations };
 }
 
-// TTD/OpenTTD流の橋。始点(path[0])・終点(path末尾)が橋台(地平の通常線路)、
-// 中間セルが橋桁(upper.connectionsのみ。地平のconnectionsは一切変更しない)になる。
+// TTD/OpenTTD流の橋。始点・終点それぞれから2セルずつが坂(地平の通常線路+ramp)、
+// 残る中間セルが橋桁(upper.connectionsのみ。地平のconnectionsは一切変更しない)になる。
+// 坂を2セル(level1→level2)にすることで、1セルで一気に登っていた急勾配を緩くする。
 // これにより橋の下に平面交差(ダイヤモンドクロッシング)や別の地平線路を通せる。
 //
 // 建設不可条件(いずれか1つでも該当すれば no-op、state をそのまま返す):
 // - 全長(path.length)が MIN_BRIDGE_LENGTH 未満 or MAX_BRIDGE_LENGTH 超
 // - 始点〜終点が8方向直線上に等間隔で並んでいない
-// - 橋台セル(始点・終点)が水域・山岳
-// - 橋桁セル(中間)が駅・車庫
+// - 坂になる4セル(両端2セルずつ)が水域・山岳
+// - 橋桁セル(坂を除いた中間)が駅・車庫
 // - 橋桁セルに既にupperがある(二重架け禁止)
 export function applyBridge(
   state: ConstructionState,
@@ -321,13 +323,15 @@ export function applyBridge(
     if (path[i].x !== expectedX || path[i].z !== expectedZ) return state;
   }
 
-  // 橋台は水域・山岳に置けない
-  if (!isBuildableGround(terrain, start.x, start.z)) return state;
-  if (!isBuildableGround(terrain, end.x, end.z)) return state;
+  // 坂になる4セル(両端2セルずつ)は水域・山岳に置けない
+  const rampPositions = [path[0], path[1], path[path.length - 2], path[path.length - 1]];
+  for (const cell of rampPositions) {
+    if (!isBuildableGround(terrain, cell.x, cell.z)) return state;
+  }
 
-  // 橋桁(中間セル)は駅・車庫でないこと、既にupperが無いこと
-  const middle = path.slice(1, -1);
-  for (const cell of middle) {
+  // 橋桁(坂を除いた中間セル)は駅・車庫でないこと、既にupperが無いこと
+  const spanCells = path.slice(2, path.length - 2);
+  for (const cell of spanCells) {
     const existing = state.railMap.get(toKey(cell.x, cell.z));
     if (existing && (existing.type === 'station' || existing.type === 'depot')) return state;
     if (existing?.upper) return state;
@@ -335,23 +339,33 @@ export function applyBridge(
 
   const railMap = new Map(state.railMap);
 
-  // 橋台: 通常の地平線路として敷設する(既存線路があれば接続を足すだけ)
-  const startKey = toKey(start.x, start.z);
-  const endKey = toKey(end.x, end.z);
-  addConnectionToCell(railMap, startKey, start.x, start.z, dir, terrain);
-  addConnectionToCell(railMap, endKey, end.x, end.z, oppDir, terrain);
-  if (railMap.get(startKey)?.type === 'depot') updateDepotRotation(railMap, start.x, start.z);
-  if (railMap.get(endKey)?.type === 'depot') updateDepotRotation(railMap, end.x, end.z);
+  // 坂・橋桁を通して、経路全体に通常の地平線路として接続を敷設する
+  // (橋桁セルはこの後upper化する際に軸ビットを取り除くので、最終的に
+  // 地平のconnectionsが残るのは坂の4セルだけになる)。
+  for (let i = 0; i < path.length - 1; i++) {
+    const curr = path[i];
+    const next = path[i + 1];
+    addConnectionToCell(railMap, toKey(curr.x, curr.z), curr.x, curr.z, dir, terrain);
+    addConnectionToCell(railMap, toKey(next.x, next.z), next.x, next.z, oppDir, terrain);
+  }
+  if (railMap.get(toKey(start.x, start.z))?.type === 'depot') updateDepotRotation(railMap, start.x, start.z);
+  if (railMap.get(toKey(end.x, end.z))?.type === 'depot') updateDepotRotation(railMap, end.x, end.z);
 
-  // 橋台は「坂」にする。dirは桁のある側(登り方向)。
-  railMap.set(startKey, { ...railMap.get(startKey)!, ramp: { dir } });
-  railMap.set(endKey, { ...railMap.get(endKey)!, ramp: { dir: oppDir } });
+  // 坂: 外側(地平寄り)がlevel1、内側(桁寄り)がlevel2。dirは桁側(登り方向)。
+  const setRamp = (cell: Pos, rampDir: number, level: 1 | 2) => {
+    const key = toKey(cell.x, cell.z);
+    railMap.set(key, { ...railMap.get(key)!, ramp: { dir: rampDir, level } });
+  };
+  setRamp(path[0], dir, 1);
+  setRamp(path[1], dir, 2);
+  setRamp(path[path.length - 2], oppDir, 2);
+  setRamp(path[path.length - 1], oppDir, 1);
 
   // 橋桁: upper.connectionsに軸方向の接続(dir|oppDir)を入れる。
   // 地平に同じ軸の線路が既にあれば、橋がそれを置き換えるので該当ビットは取り除く
   // (交差する別方向のビットはそのまま残す)。
   const axisBits = dir | oppDir;
-  for (const cell of middle) {
+  for (const cell of spanCells) {
     const key = toKey(cell.x, cell.z);
     const existing = railMap.get(key);
     const groundConnections = (existing?.connections ?? 0) & ~axisBits;
@@ -365,11 +379,63 @@ export function applyBridge(
   return { railMap, stations: state.stations };
 }
 
+// セルが橋の一部(橋桁のupper、または坂のramp)かどうかと、その軸(dir|oppDir)を返す。
+const bridgeAxisOf = (cell: CellData | undefined): number => {
+  if (!cell) return 0;
+  if (cell.upper?.connections) return cell.upper.connections;
+  if (cell.ramp) return cell.ramp.dir | getOppositeDir(cell.ramp.dir);
+  return 0;
+};
+
+const DIR_BITS_ALL = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
+
+// (x,z)から橋の軸方向へ両側にたどり、橋を構成するセル(坂4枚+橋桁)のキー集合を返す。
+const collectBridgeCellKeys = (
+  railMap: Map<string, CellData>,
+  x: number,
+  z: number,
+  axisBits: number
+): Set<string> => {
+  const result = new Set<string>([toKey(x, z)]);
+  let dirA = 0;
+  for (const b of DIR_BITS_ALL) {
+    if (axisBits & b) { dirA = b; break; }
+  }
+  if (!dirA) return result;
+  const dirB = getOppositeDir(dirA);
+
+  for (const dirBit of [dirA, dirB]) {
+    const step = getVectorFromDir(dirBit);
+    let cx = x;
+    let cz = z;
+    for (;;) {
+      cx += step.x;
+      cz += step.z;
+      const nCell = railMap.get(toKey(cx, cz));
+      if (bridgeAxisOf(nCell) !== axisBits) break;
+      result.add(toKey(cx, cz));
+    }
+  }
+  return result;
+};
+
 export function removePath(state: ConstructionState, path: Pos[]): ConstructionState {
   const railMap = new Map(state.railMap);
   const stations = new Map(state.stations);
 
-  path.forEach(pos => {
+  // 撤去対象セルが橋の一部(坂/橋桁)なら、橋全体(坂4枚+橋桁)を撤去対象に広げる。
+  // ユーザーが橋の一部だけを選んで消しても橋全体が消えるようにするため。
+  const targetKeys = new Set<string>(path.map(pos => toKey(pos.x, pos.z)));
+  for (const pos of path) {
+    const cell = state.railMap.get(toKey(pos.x, pos.z));
+    const axisBits = bridgeAxisOf(cell);
+    if (!axisBits) continue;
+    const bridgeKeys = collectBridgeCellKeys(state.railMap, pos.x, pos.z, axisBits);
+    bridgeKeys.forEach(k => targetKeys.add(k));
+  }
+  const targets: Pos[] = Array.from(targetKeys, k => fromKey(k));
+
+  targets.forEach(pos => {
     const key = toKey(pos.x, pos.z);
     const cell = railMap.get(key);
     if (!cell) return;
@@ -420,11 +486,8 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
           const remainingUpper = nCell.upper.connections & ~n.opp;
           updated = { ...updated, upper: remainingUpper === 0 ? undefined : { connections: remainingUpper } };
         }
-        // 隣が坂(ramp)で、その登り方向がちょうど今消したビットなら、
-        // 桁側が無くなったのでrampも消す(段差の橋台に戻す)。
-        if (nCell.ramp && nCell.ramp.dir === n.opp) {
-          updated = { ...updated, ramp: undefined };
-        }
+        // 橋(坂+橋桁)は撤去対象を橋全体に広げてまとめて消すため、ここで単独の
+        // rampだけを消すケアは不要になった(隣の坂セルも同時に撤去済みのはず)。
         if (updated !== nCell) railMap.set(nKey, updated);
         if (nCell.type === 'depot') updateDepotRotation(railMap, n.x, n.z);
       }

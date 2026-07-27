@@ -231,16 +231,19 @@ export function buildCellTrackParts(
 }
 
 /**
- * 坂(ramp)セルの線路を、低い側の境界(y=0)から高い側の境界(y=rampHeight)へ
+ * 坂(ramp)セルの線路を、低い側の境界(y=lowY)から高い側の境界(y=highY)へ
  * 斜めに登る形で生成する。dir は登る方向(高い側=桁のある側)のビット。
  * 境界オフセットは方向ビットの正反対どうしで必ず点対称(BOUNDARY_OFFSETS参照)
  * なので、低い側は高い側の符号を反転するだけで求まる。
+ * lowY/highYは呼び出し側がlevel(1段目/2段目)に応じて渡す
+ * (level1: 0→OVERPASS_HEIGHT/3、level2: OVERPASS_HEIGHT/3→OVERPASS_HEIGHT*2/3)。
  */
 export function buildRampTrackParts(
   dir: number,
   originX = 0,
   originZ = 0,
-  rampHeight = 0
+  lowY = 0,
+  highY = 0
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
   const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
@@ -248,8 +251,8 @@ export function buildRampTrackParts(
   const low = { x: -high.x, z: -high.z };
 
   const points: Pt[] = [
-    { x: low.x, z: low.z, y: 0 },
-    { x: high.x, z: high.z, y: rampHeight },
+    { x: low.x, z: low.z, y: lowY },
+    { x: high.x, z: high.z, y: highY },
   ];
   layTrackAlong(parts, points, originX, originZ, 0, true);
   return parts;

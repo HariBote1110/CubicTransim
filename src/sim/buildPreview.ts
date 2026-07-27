@@ -83,8 +83,8 @@ export function evaluateBuild(
     }
     case 'bridge': {
       result = applyBridge(state, path, terrain);
-      // 成立した場合のみ、中間セル数(橋台を除いた橋桁数)を返す。
-      if (result.railMap !== state.railMap) overpassCells = Math.max(0, path.length - 2);
+      // 成立した場合のみ、橋桁数(坂4セルを除いた中間セル数)を返す。
+      if (result.railMap !== state.railMap) overpassCells = Math.max(0, path.length - 4);
       break;
     }
   }

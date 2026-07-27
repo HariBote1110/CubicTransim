@@ -170,14 +170,15 @@ export function costOfPath(
       return cellCount * RAIL_COST;
     }
     case 'bridge': {
-      // 橋台(始点・終点)はRAIL_COST、橋桁(中間セル)はRAIL_COST×OVERPASS_COST_MULTIPLIER。
-      // pathが無い場合はcellCountだけでは橋台/橋桁の内訳が分からないため、
-      // 全セルを橋桁扱い(最も保守的な見積もり)にはせず、両端を橋台とみなして計算する。
+      // 坂(両端2セルずつ、計4セル)はRAIL_COST、橋桁(残りの中間セル)は
+      // RAIL_COST×OVERPASS_COST_MULTIPLIER。pathが無い場合はcellCountだけでは
+      // 坂/橋桁の内訳が分からないため、全セルを橋桁扱い(最も保守的な見積もり)には
+      // せず、両端2セルずつを坂とみなして計算する。
       const n = path ? path.length : cellCount;
       if (n <= 0) return 0;
-      const pierCount = Math.max(0, n - 2);
-      const abutmentCount = n - pierCount;
-      return abutmentCount * RAIL_COST + pierCount * RAIL_COST * OVERPASS_COST_MULTIPLIER;
+      const pierCount = Math.max(0, n - 4);
+      const rampCount = n - pierCount;
+      return rampCount * RAIL_COST + pierCount * RAIL_COST * OVERPASS_COST_MULTIPLIER;
     }
     case 'station':
       return STATION_COST;
