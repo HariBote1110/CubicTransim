@@ -4,7 +4,7 @@ import type { CellData, StationData, TrainData } from '../types';
 import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 import { reservationKey } from './reservation';
-import { canPlaceTrainAt, relocateTrain } from './relocate';
+import { canPlaceTrainAt, relocateTrain, trainAtCell } from './relocate';
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
   const map = new Map<string, CellData>();
@@ -97,6 +97,44 @@ describe('canPlaceTrainAt', () => {
     expect(canPlaceTrainAt(world, 't1', { x: 2, z: 0 })).toBeNull();
     // 予約の無い区間には置ける
     expect(canPlaceTrainAt(world, 't1', { x: 0, z: 0 })).toEqual([{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+  });
+});
+
+describe('trainAtCell', () => {
+  const setupTwoTrains = () => {
+    const railMap = buildRailMap([
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ]);
+    const t1 = makeTrain({ id: 't1', x: 0, z: 0, cars: 2 });
+    const t2 = makeTrain({ id: 't2', x: 3, z: 0, cars: 2 });
+    const world = makeWorld(railMap, new Map(), [t1, t2]);
+    world.runtimes.set('t1', {
+      id: 't1', grid: { x: 0, z: 0 }, prevGrid: null, progress: 0, speedKmh: 0,
+      route: [], reservedEndIndex: -1, trail: [{ x: 0, z: 0 }, { x: -1, z: 0 }],
+      pathHistory: [{ x: 0, z: 0 }, { x: -1, z: 0 }],
+      stopRemaining: 0, waitTimer: 0, debugStatus: '', renderPos: { x: 0, y: 0.5, z: 0 },
+      renderTarget: null, passengers: 0, lastStopStationId: null, haltRemaining: 0,
+    });
+    world.runtimes.set('t2', {
+      id: 't2', grid: { x: 3, z: 0 }, prevGrid: null, progress: 0, speedKmh: 0,
+      route: [], reservedEndIndex: -1, trail: [{ x: 3, z: 0 }, { x: 4, z: 0 }],
+      pathHistory: [{ x: 3, z: 0 }, { x: 4, z: 0 }],
+      stopRemaining: 0, waitTimer: 0, debugStatus: '', renderPos: { x: 3, y: 0.5, z: 0 },
+      renderTarget: null, passengers: 0, lastStopStationId: null, haltRemaining: 0,
+    });
+    return world;
+  };
+
+  it('列車の物理占有セル(trail)上ならその列車のIDを返す', () => {
+    const world = setupTwoTrains();
+    expect(trainAtCell(world, { x: 0, z: 0 })).toBe('t1');
+    expect(trainAtCell(world, { x: -1, z: 0 })).toBe('t1');
+    expect(trainAtCell(world, { x: 4, z: 0 })).toBe('t2');
+  });
+
+  it('どの列車も占有していないセルはnull', () => {
+    const world = setupTwoTrains();
+    expect(trainAtCell(world, { x: 2, z: 0 })).toBeNull();
   });
 });
 
