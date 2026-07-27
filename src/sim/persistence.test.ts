@@ -4,8 +4,8 @@ import type { TrainRuntime } from './simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v8)', () => {
-  it('railMap/stations(platformDoors含む)/trains/runtimes(haltRemaining含む)/waiting/money/towns/terrain/clock/台帳/stopLocation が JSON 経由でも復元できる', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v9)', () => {
+  it('railMap/stations/trains/runtimes/waiting/money/towns/terrain/clock/台帳/stopLocation/運用グループ が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
@@ -46,8 +46,16 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       { year: 1, month: 4, fares: 900, construction: 0, upkeep: 300, accidents: 5000 },
     ];
 
-    const saveData = serialiseWorld(railMap, stations, trains, runtimes, waiting, money, towns, terrain, clock, currentLedger, ledgerHistory, 'far');
-    expect(saveData.version).toBe(8);
+    const groups = [
+      { id: 'g1', name: '1系統', schedule: ['stA', 'stB'], headwaySeconds: 45, colour: '#1f8fd6' },
+    ];
+    const groupDepartures = new Map<string, number>([['g1|stA', 987]]);
+
+    const saveData = serialiseWorld(
+      railMap, stations, trains, runtimes, waiting, money, towns, terrain,
+      clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures
+    );
+    expect(saveData.version).toBe(9);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -65,6 +73,23 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored.towns).toEqual(towns);
     expect(restored.terrain).toEqual(terrain);
     expect(restored.stopLocation).toBe('far');
+    expect(restored.groups).toEqual(groups);
+    expect(restored.groupDepartures).toEqual(groupDepartures);
+  });
+
+  it('v8データ(運用グループが無い)を読み込むと空のグループが補われる', () => {
+    const v8 = {
+      version: 8 as const,
+      railMap: [], stations: [], trains: [], runtimes: [], waiting: [],
+      money: 1000, towns: [], terrain: [],
+      clock: { elapsed: 0 },
+      currentLedger: { year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 },
+      ledgerHistory: [],
+      stopLocation: 'middle' as const,
+    };
+    const restored = deserialiseWorld(v8);
+    expect(restored.groups).toEqual([]);
+    expect(restored.groupDepartures.size).toBe(0);
   });
 });
 

@@ -16,6 +16,8 @@ OpenTTD・A列車で行こう系を目指すインフラ整備ゲームのプロ
   - `persistence.ts` — セーブデータの serialise/deserialise
   - `physics.ts` — 加速モデルとジャーク制限つきの制動曲線（`permittedSpeedKmh` / `rampDecel` / `brakingDistanceM`）。速度制御と予約延長判定は必ず同じ制動距離の式を使うこと
   - `buildPreview.ts` — 建設のコスト・可否判定。UIに条件を書き写さず、construction.ts の apply系に問い合わせて判定する
+  - `trackPath.ts` — 線路の中心線（セルを通る2次ベジェ）。`renderPos` と `carPositions` の走行線はこれに載せる。描画側 `render/trackGeometry.ts` と同じ定義なので、レールと列車がずれない
+  - `groups.ts` — 運用グループ（共有運行表＋発車間隔による等間隔化）
 - `src/hooks/useGameLogic.ts` — React state（railMap/stations/trains）と `worldRef: SimWorld` の同期、建設・購入ロジック
 - `src/components/` — 描画専任。`SimulationDriver` が useFrame から stepWorld を呼ぶ。`DynamicTrain` は runtime.renderPos を反映するだけ
 - `src/render/` — 描画専用のパレット・共有マテリアル・ジオメトリ生成。sim層からは参照しない

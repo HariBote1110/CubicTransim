@@ -36,6 +36,8 @@ export default function App() {
     activeAccidents, handleAccident,
     currentLedger, ledgerHistory, handleMonthEnd,
     stopLocation, setStopLocation,
+    groups, createGroup, assignTrainToGroup, setGroupHeadway,
+    renameGroup, clearGroupSchedule, deleteGroup,
   } = useGameLogic();
 
   return (
@@ -65,6 +67,7 @@ export default function App() {
           onAddSchedule={addSchedule}
           onSelectStation={selectStation}
           onPreviewChange={handlePreviewChange}
+          groups={groups}
         />
       </Canvas>
 
@@ -98,6 +101,13 @@ export default function App() {
         stopLocation={stopLocation}
         onSetStopLocation={setStopLocation}
         previewPath={previewPath}
+        groups={groups}
+        onCreateGroup={createGroup}
+        onAssignGroup={assignTrainToGroup}
+        onSetHeadway={setGroupHeadway}
+        onRenameGroup={renameGroup}
+        onClearGroupSchedule={clearGroupSchedule}
+        onDeleteGroup={deleteGroup}
       />
     </div>
   );

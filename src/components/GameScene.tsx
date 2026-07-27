@@ -14,7 +14,8 @@ import { StationBlock, StationHouse, trackAngleFromConnections } from './Station
 import { TownBlocks } from './TownBlocks';
 import { Scenery } from './Scenery';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, CellType, TrainData, StationData, TownData, TerrainType } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData, TerrainType } from '../types';
+import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { TerrainBlocks } from './TerrainBlocks';
@@ -95,12 +96,14 @@ interface GameSceneProps {
   onSelectStation: (id: string | null) => void;
   // ★追加: 建設プレビュー(コスト・可否)をUIへ通知する
   onPreviewChange?: (path: { x: number; z: number }[]) => void;
+  // ★追加: 運用グループ。所属列車の帯をグループのラインカラーで塗る。
+  groups?: TrainGroupData[];
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
-  onPreviewChange,
+  onPreviewChange, groups = [],
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
@@ -334,6 +337,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         <DynamicTrain
           key={train.id} data={train} runtimes={world.current.runtimes} type="commuter"
           isSelected={train.id === selectedTrainId}
+          lineColour={findGroup(groups, train.groupId)?.colour}
           onClick={() => buildMode === 'none' && onSelectTrain(train.id)}
         />
       ))}

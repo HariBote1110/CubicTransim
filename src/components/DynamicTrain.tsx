@@ -13,6 +13,8 @@ interface DynamicTrainProps {
   runtimes: Map<string, TrainRuntime>;
   type: TrainType;
   isSelected: boolean;
+  /** 所属する運用グループのラインカラー。未所属なら車種の既定色を使う。 */
+  lineColour?: string;
   onClick: (e: any) => void;
 }
 
@@ -21,7 +23,7 @@ interface DynamicTrainProps {
 const CAR_Y = 0.5;
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
-  data, runtimes, type, isSelected, onClick
+  data, runtimes, type, isSelected, lineColour: groupColour, onClick
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const carRefs = useRef<(THREE.Group | null)[]>([]);
@@ -35,14 +37,25 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
     const runtime = runtimes.get(data.id);
     if (!runtime || !groupRef.current) return;
 
+    // 全車両を carPositions の結果で配置する。先頭車も renderTarget への lookAt ではなく
+    // 前後台車から求めた heading を使う:
+    //   - 到着tickでは renderPos と renderTarget が同じセル中心になり、lookAt が縮退して
+    //     1フレームだけワールド+Z方向を向いてしまう(向きがガクッと飛ぶ原因)
+    //   - セグメントの向きをそのまま使うとセル境界で階段状に飛ぶ
+    const positions = carPositions(runtime, data.cars, 1.0);
+
     groupRef.current.position.set(runtime.renderPos.x, runtime.renderPos.y, runtime.renderPos.z);
-    if (runtime.renderTarget) {
-      groupRef.current.lookAt(runtime.renderTarget.x, runtime.renderTarget.y, runtime.renderTarget.z);
+    const head = positions[0];
+    if (head) {
+      groupRef.current.lookAt(
+        runtime.renderPos.x + head.heading.x,
+        runtime.renderPos.y,
+        runtime.renderPos.z + head.heading.z
+      );
     }
 
     // 2両目以降: 先頭からの弧長ベースで連続的に後方配置する(carPositions)。
     // trailのようなセル単位の配置ではなくポリライン補間なので、セル境界を跨いでもカクつかない。
-    const positions = carPositions(runtime, data.cars, 1.0);
     for (let i = 1; i < carRefs.current.length; i++) {
       const carGroup = carRefs.current[i];
       if (!carGroup) continue;
@@ -63,7 +76,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
 
   const lineColour = isSelected
     ? PALETTE.carLineSelected
-    : (type === 'express' ? '#e2571f' : PALETTE.carLine);
+    : (groupColour ?? (type === 'express' ? '#e2571f' : PALETTE.carLine));
   const trailingCars = Math.max(0, data.cars - 1);
   // 1両編成なら先頭車のみ。それ以外は最後尾だけ 'rear'(尾灯つき)にする。
   const variantOf = (index: number): CarVariant =>

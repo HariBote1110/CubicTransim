@@ -41,6 +41,25 @@ export interface TrainData {
   status: 'stored' | 'running';
   // 編成両数(1〜8)。旧セーブ(v6以前)には存在しないため、persistenceの移行処理でcars=2を補う。
   cars: number;
+  // 所属する運用グループのid。未所属(単独運用)はundefined。
+  // グループに所属している間は schedule ではなくグループの運行表に従う。
+  groupId?: string;
+}
+
+/**
+ * 運用グループ(軽量なグループダイヤ)。
+ * 運行表をグループで共有し、発車間隔を設定すると駅で自動的に等間隔運転になる。
+ * 詳細は sim/groups.ts を参照。
+ */
+export interface TrainGroupData {
+  id: string;
+  name: string;
+  /** グループで共有する停車駅の並び */
+  schedule: string[];
+  /** 発車間隔(シミュレーション秒)。0なら等間隔化しない */
+  headwaySeconds: number;
+  /** ラインカラー(車両の帯とUIのバッジに使う) */
+  colour: string;
 }
 
 export const RAIL_COLOUR = '#555555';

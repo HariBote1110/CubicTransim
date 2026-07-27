@@ -1,8 +1,21 @@
 // 線路(バラスト・枕木・レール)のジオメトリ生成。
 //
-// セル数が数百規模になるため、セルごとに10個以上のmeshを作るとドローコールが破綻する。
+// セル数が数百規模になるため、セルごとに個別のmeshを作るとドローコールが破綻する。
 // ここでは1セルぶんの部品ジオメトリを作り、呼び出し側でネットワーク全体を
 // マテリアルごとに1つのBufferGeometryへマージして描画する(=線路全体で3ドローコール)。
+//
+// 【曲線化について】
+// 以前は「セル中心から各境界点へ伸びる直線の腕」を接続方向のぶんだけ並べていた。
+// この作り方だと、直線と斜めが切り替わるセル(例: W と NE が接続)で2本の腕が
+// セル中心で45°に折れ、内側のレールは重なり外側のレールには切り欠きができて
+// つなぎ目が汚くなる。さらに腕の長さが直交0.5・斜め0.707と違うため、
+// 枕木の間隔も直線と斜めで揃わなかった。
+//
+// そこで接続がちょうど2方向のセルでは、境界点Aからセル中心を制御点として
+// 境界点Bへ抜ける2次ベジェを中心線とし、その曲線に沿ってバラスト・レール・枕木を
+// 敷く。境界点は隣接セルと必ず共有される点(2セルの中心の中点)なので、
+// 曲線にしてもセル間で線路が途切れない。分岐(3方向以上)と行き止まり(1方向)は
+// 従来どおり中心からの直線の腕で描く。
 import * as THREE from 'three';
 import { DIR } from '../utils';
 import { angleFromVector } from './palette';
@@ -10,8 +23,8 @@ import { mergeAndDispose } from './mergeGeometry';
 
 // 各方向ビットに対応する「セル中心→隣接セルとの境界点」までのベクトル。
 // 上下左右は辺の中点(距離0.5)、斜めは隣接セルと接する角(距離√2/2)。
-// どちらも隣接セル側から見て同じ境界点を指すため、接続の組み合わせによらず
-// セル間で線路が途切れない。
+// どちらも隣接セル側から見て同じ境界点(= 2セルの中心の中点)を指すため、
+// 接続の組み合わせによらずセル間で線路が途切れない。
 export const BOUNDARY_OFFSETS: { bit: number; x: number; z: number }[] = [
   { bit: DIR.N, x: 0, z: -0.5 },
   { bit: DIR.NE, x: 0.5, z: -0.5 },
@@ -34,8 +47,13 @@ const SLEEPER_HEIGHT = 0.035;
 const RAIL_SPACING = 0.25;
 const RAIL_WIDTH = 0.045;
 const RAIL_HEIGHT = 0.05;
-// 1方向あたりの枕木本数。多いほど密に見えるがジオメトリも増える。
-const SLEEPERS_PER_ARM = 3;
+// 枕木の間隔(弧長)。直線でも斜めでも同じ間隔になるよう、腕ごとではなく
+// 中心線の弧長を基準に配る。
+const SLEEPER_PITCH = 0.24;
+// 曲線1本あたりの分割数。増やすほど滑らかになるがジオメトリも増える。
+const CURVE_SEGMENTS = 8;
+// セグメント同士の継ぎ目を隠すために各セグメントを前後へ伸ばす量。
+const JOIN_OVERLAP = 0.02;
 
 export interface TrackParts {
   ballast: THREE.BufferGeometry[];
@@ -43,15 +61,86 @@ export interface TrackParts {
   rails: THREE.BufferGeometry[];
 }
 
-const boxAt = (
-  w: number, h: number, d: number,
-  x: number, y: number, z: number,
-  rotY: number
-): THREE.BufferGeometry => {
-  const g = new THREE.BoxGeometry(w, h, d);
-  if (rotY !== 0) g.rotateY(rotY);
-  g.translate(x, y, z);
-  return g;
+type Pt = { x: number; z: number };
+
+const norm = (x: number, z: number): Pt => {
+  const len = Math.hypot(x, z) || 1;
+  return { x: x / len, z: z / len };
+};
+
+/** 2次ベジェ B(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2 */
+const quad = (p0: Pt, p1: Pt, p2: Pt, t: number): Pt => {
+  const u = 1 - t;
+  return {
+    x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
+    z: u * u * p0.z + 2 * u * t * p1.z + t * t * p2.z,
+  };
+};
+
+/**
+ * 中心線ポリラインに沿ってバラスト・レール・枕木を敷く。
+ * points はセル中心を原点としたローカル座標。origin でワールドへ移す。
+ */
+const layTrackAlong = (parts: TrackParts, points: Pt[], originX: number, originZ: number): void => {
+  if (points.length < 2) return;
+
+  // --- セグメントごとにバラストとレールを置く ---
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const segLen = Math.hypot(dx, dz);
+    if (segLen < 1e-6) continue;
+
+    const rotY = angleFromVector(dx / segLen, dz / segLen);
+    const cx = originX + (a.x + b.x) / 2;
+    const cz = originZ + (a.z + b.z) / 2;
+    // 継ぎ目を隠すため、両端を少しずつ伸ばす
+    const len = segLen + JOIN_OVERLAP * 2;
+
+    const ballast = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, len);
+    ballast.rotateY(rotY);
+    ballast.translate(cx, BALLAST_HEIGHT / 2, cz);
+    parts.ballast.push(ballast);
+
+    for (const side of [-1, 1]) {
+      const rail = new THREE.BoxGeometry(RAIL_WIDTH, RAIL_HEIGHT, len);
+      rail.translate((side * RAIL_SPACING) / 2, 0, 0);
+      rail.rotateY(rotY);
+      rail.translate(cx, RAIL_TOP - RAIL_HEIGHT / 2, cz);
+      parts.rails.push(rail);
+    }
+  }
+
+  // --- 弧長を等分して枕木を置く(直線でも斜めでも同じ間隔になる) ---
+  const segLengths = points.slice(0, -1).map((p, i) => Math.hypot(points[i + 1].x - p.x, points[i + 1].z - p.z));
+  const total = segLengths.reduce((s, l) => s + l, 0);
+  if (total < 1e-6) return;
+
+  const count = Math.max(1, Math.round(total / SLEEPER_PITCH));
+  for (let k = 0; k < count; k++) {
+    const target = ((k + 0.5) / count) * total;
+
+    let acc = 0;
+    for (let i = 0; i < segLengths.length; i++) {
+      if (acc + segLengths[i] >= target || i === segLengths.length - 1) {
+        const t = segLengths[i] > 1e-9 ? (target - acc) / segLengths[i] : 0;
+        const a = points[i];
+        const b = points[i + 1];
+        const px = a.x + (b.x - a.x) * t;
+        const pz = a.z + (b.z - a.z) * t;
+        const dir = norm(b.x - a.x, b.z - a.z);
+
+        const sleeper = new THREE.BoxGeometry(SLEEPER_WIDTH, SLEEPER_HEIGHT, SLEEPER_THICKNESS);
+        sleeper.rotateY(angleFromVector(dir.x, dir.z));
+        sleeper.translate(originX + px, SLEEPER_TOP - SLEEPER_HEIGHT / 2, originZ + pz);
+        parts.sleepers.push(sleeper);
+        break;
+      }
+      acc += segLengths[i];
+    }
+  }
 };
 
 /**
@@ -61,45 +150,42 @@ const boxAt = (
 export function buildCellTrackParts(connections: number, originX = 0, originZ = 0): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
 
-  const arms = connections === 0
+  const arms: Pt[] = connections === 0
     ? [{ x: 0, z: -0.5 }, { x: 0, z: 0.5 }]
     : BOUNDARY_OFFSETS.filter(o => connections & o.bit).map(o => ({ x: o.x, z: o.z }));
 
-  // 中心の継ぎ目を埋めるバラスト(どの接続の組み合わせでも中央は必ず敷く)
-  parts.ballast.push(
-    boxAt(BALLAST_WIDTH, BALLAST_HEIGHT, BALLAST_WIDTH, originX, BALLAST_HEIGHT / 2, originZ, 0)
-  );
+  if (arms.length === 0) return parts;
 
-  for (const arm of arms) {
-    const length = Math.sqrt(arm.x * arm.x + arm.z * arm.z);
-    const rotY = angleFromVector(arm.x / length, arm.z / length);
-    const cx = originX + arm.x / 2;
-    const cz = originZ + arm.z / 2;
+  if (arms.length === 2) {
+    const [a, b] = arms;
+    const ua = norm(a.x, a.z);
+    const ub = norm(b.x, b.z);
+    // 2方向が正反対なら直線。1セグメントで足りる。
+    const isStraight = ua.x * ub.x + ua.z * ub.z < -0.999;
 
-    // バラスト(中心→境界点)
-    parts.ballast.push(boxAt(BALLAST_WIDTH, BALLAST_HEIGHT, length, cx, BALLAST_HEIGHT / 2, cz, rotY));
-
-    // レール2本
-    for (const side of [-1, 1]) {
-      const ox = (side * RAIL_SPACING) / 2;
-      const g = new THREE.BoxGeometry(RAIL_WIDTH, RAIL_HEIGHT, length);
-      g.translate(ox, 0, 0);
-      g.rotateY(rotY);
-      g.translate(cx, RAIL_TOP - RAIL_HEIGHT / 2, cz);
-      parts.rails.push(g);
+    if (isStraight) {
+      layTrackAlong(parts, [a, b], originX, originZ);
+    } else {
+      // 境界点A → セル中心(制御点) → 境界点B の2次ベジェ
+      const centre: Pt = { x: 0, z: 0 };
+      const points: Pt[] = [];
+      for (let i = 0; i <= CURVE_SEGMENTS; i++) {
+        points.push(quad(a, centre, b, i / CURVE_SEGMENTS));
+      }
+      layTrackAlong(parts, points, originX, originZ);
     }
-
-    // 枕木(中心寄りは他の腕と重なるので、外側寄りに配置する)
-    for (let i = 0; i < SLEEPERS_PER_ARM; i++) {
-      const t = (i + 0.8) / (SLEEPERS_PER_ARM + 0.6); // 0.3〜0.9 あたり
-      const g = new THREE.BoxGeometry(SLEEPER_WIDTH, SLEEPER_HEIGHT, SLEEPER_THICKNESS);
-      g.translate(0, 0, (t - 0.5) * length);
-      g.rotateY(rotY);
-      g.translate(cx, SLEEPER_TOP - SLEEPER_HEIGHT / 2, cz);
-      parts.sleepers.push(g);
-    }
+    return parts;
   }
 
+  // 分岐(3方向以上)と行き止まり(1方向): 中心から各境界点へ直線の腕を伸ばす。
+  // 中心のバラストで腕どうしの継ぎ目を埋める。
+  const pad = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, BALLAST_WIDTH);
+  pad.translate(originX, BALLAST_HEIGHT / 2, originZ);
+  parts.ballast.push(pad);
+
+  for (const arm of arms) {
+    layTrackAlong(parts, [{ x: 0, z: 0 }, arm], originX, originZ);
+  }
   return parts;
 }
 

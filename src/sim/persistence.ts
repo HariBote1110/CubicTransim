@@ -1,4 +1,4 @@
-import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
+import type { CellData, StationData, TrainData, TrainGroupData, TownData, TerrainType } from '../types';
 import type { TrainRuntime } from './simulation';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 
@@ -99,7 +99,29 @@ export interface SaveDataV8 {
   stopLocation: 'near' | 'middle' | 'far';
 }
 
-export type SaveData = SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5 | SaveDataV6 | SaveDataV7 | SaveDataV8;
+export interface SaveDataV9 {
+  version: 9;
+  railMap: [string, CellData][];
+  stations: [string, StationData][];
+  trains: TrainData[];
+  runtimes: [string, TrainRuntime][];
+  waiting: [string, number][];
+  money: number;
+  towns: TownData[];
+  terrain: [string, TerrainType][];
+  clock: { elapsed: number };
+  currentLedger: MonthlyLedger;
+  ledgerHistory: MonthlyLedger[];
+  stopLocation: 'near' | 'middle' | 'far';
+  // 運用グループ(共有運行表と発車間隔)。
+  groups: TrainGroupData[];
+  // 「グループ×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。
+  groupDepartures: [string, number][];
+}
+
+export type SaveData =
+  | SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5
+  | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 });
@@ -116,10 +138,12 @@ export function serialiseWorld(
   clock: { elapsed: number },
   currentLedger: MonthlyLedger,
   ledgerHistory: MonthlyLedger[],
-  stopLocation: 'near' | 'middle' | 'far' = 'middle'
-): SaveDataV8 {
+  stopLocation: 'near' | 'middle' | 'far' = 'middle',
+  groups: TrainGroupData[] = [],
+  groupDepartures: Map<string, number> = new Map()
+): SaveDataV9 {
   return {
-    version: 8,
+    version: 9,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -132,6 +156,8 @@ export function serialiseWorld(
     currentLedger,
     ledgerHistory,
     stopLocation,
+    groups,
+    groupDepartures: Array.from(groupDepartures.entries()),
   };
 }
 
@@ -148,6 +174,8 @@ export function deserialiseWorld(data: SaveData): {
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
   stopLocation: 'near' | 'middle' | 'far';
+  groups: TrainGroupData[];
+  groupDepartures: Map<string, number>;
 } {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -177,6 +205,25 @@ export function deserialiseWorld(data: SaveData): {
   const migrateTrains = (trains: TrainData[]) =>
     trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
+  if (data.version === 9) {
+    return {
+      railMap: new Map(data.railMap),
+      stations: migrateStations(data.stations),
+      trains: migrateTrains(data.trains),
+      runtimes,
+      waiting: new Map(data.waiting),
+      money: data.money,
+      towns: data.towns,
+      terrain: new Map(data.terrain),
+      clock: data.clock,
+      currentLedger: data.currentLedger,
+      ledgerHistory: data.ledgerHistory,
+      stopLocation: data.stopLocation,
+      groups: data.groups ?? [],
+      groupDepartures: new Map(data.groupDepartures ?? []),
+    };
+  }
+
   if (data.version === 8) {
     return {
       railMap: new Map(data.railMap),
@@ -191,6 +238,8 @@ export function deserialiseWorld(data: SaveData): {
       currentLedger: data.currentLedger,
       ledgerHistory: data.ledgerHistory,
       stopLocation: data.stopLocation,
+      groups: [],
+      groupDepartures: new Map(),
     };
   }
 
@@ -209,6 +258,8 @@ export function deserialiseWorld(data: SaveData): {
       ledgerHistory: data.ledgerHistory,
       // v7以前にはstopLocationが存在しないため、既定値'middle'(既存の編成中央基準)で移行する。
       stopLocation: 'middle',
+      groups: [],
+      groupDepartures: new Map(),
     };
   }
 
@@ -226,6 +277,8 @@ export function deserialiseWorld(data: SaveData): {
       currentLedger: data.currentLedger,
       ledgerHistory: data.ledgerHistory,
       stopLocation: 'middle',
+      groups: [],
+      groupDepartures: new Map(),
     };
   }
 
@@ -244,6 +297,8 @@ export function deserialiseWorld(data: SaveData): {
       currentLedger: emptyLedger(),
       ledgerHistory: [],
       stopLocation: 'middle',
+      groups: [],
+      groupDepartures: new Map(),
     };
   }
 
@@ -262,6 +317,8 @@ export function deserialiseWorld(data: SaveData): {
       currentLedger: emptyLedger(),
       ledgerHistory: [],
       stopLocation: 'middle',
+      groups: [],
+      groupDepartures: new Map(),
     };
   }
 
@@ -280,6 +337,8 @@ export function deserialiseWorld(data: SaveData): {
       currentLedger: emptyLedger(),
       ledgerHistory: [],
       stopLocation: 'middle',
+      groups: [],
+      groupDepartures: new Map(),
     };
   }
 
@@ -297,6 +356,8 @@ export function deserialiseWorld(data: SaveData): {
       currentLedger: emptyLedger(),
       ledgerHistory: [],
       stopLocation: 'middle',
+      groups: [],
+      groupDepartures: new Map(),
     };
   }
 
@@ -314,5 +375,7 @@ export function deserialiseWorld(data: SaveData): {
     towns: [],
     terrain: new Map(),
     stopLocation: 'middle',
+    groups: [],
+    groupDepartures: new Map(),
   };
 }

@@ -1,6 +1,8 @@
 import { toKey } from '../utils';
-import type { CellData, StationData, TrainData, TownData, TerrainType } from '../types';
+import type { CellData, StationData, TrainData, TrainGroupData, TownData, TerrainType } from '../types';
 import { calculateRouteWithStop } from './pathfinding';
+import { pathPointAt } from './trackPath';
+import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds } from './groups';
 import { tryReserve, releaseCell, findSafeSegmentEnd, reservationKey } from './reservation';
 import {
   computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
@@ -78,6 +80,9 @@ export interface TrainRuntime {
   // (ジャーク余裕を織り込んだ包絡線)と実速度が交差し続け、込める/緩めるを毎tick
   // 繰り返して速度が脈動する。
   braking?: boolean;
+  // 停車を終えて発車待ちの駅id。発車間隔(グループダイヤ)の判定はこの間だけ行い、
+  // 実際に発車した時点でクリアする。線路上で経路待ちをしている状態と区別するために持つ。
+  pendingDepartureFrom?: string | null;
 }
 
 export interface SimWorld {
@@ -100,6 +105,10 @@ export interface SimWorld {
   // 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定として持つ。
   // 旧セーブ(v7以前)には存在しないため任意とし、既定値は'middle'(既存の編成中央基準)。
   stopLocation?: 'near' | 'middle' | 'far';
+  // 運用グループ(共有運行表と発車間隔)。旧セーブ(v8以前)には存在しないため任意。
+  groups?: TrainGroupData[];
+  // 「グループ×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。
+  groupDepartures?: Map<string, number>;
 }
 
 export type SimEvent =
@@ -322,11 +331,39 @@ const stopAtStation = (
   // こうしないとDynamicTrain側のlookAtが働かず、停車の瞬間に列車の向きが初期値へ戻ってしまう。
   const enterVec = normalize(arrivedGrid.x - oldCurrent.x, arrivedGrid.z - oldCurrent.z);
   rt.renderTarget = { x: headPos.x + enterVec.x, y: 0.5, z: headPos.z + enterVec.z };
+  rt.pendingDepartureFrom = targetStationId;
   rt.debugStatus = 'Arrived';
 };
 
+/**
+ * 発車間隔を満たすまであと何秒待つ必要があるか(0なら発車可)。
+ * 駅での停車を終えて発車待ちの間(pendingDepartureFrom が立っている間)だけ効く。
+ * 線路上で経路や予約を待っている状態には適用しない。
+ */
+const departureHoldSeconds = (world: SimWorld, train: TrainData, rt: TrainRuntime): number => {
+  const stationId = rt.pendingDepartureFrom;
+  if (!stationId) return 0;
+  const group = findGroup(world.groups ?? [], train.groupId);
+  if (!group) return 0;
+  const last = world.groupDepartures?.get(departureKey(group.id, stationId));
+  return headwayHoldSeconds(group.headwaySeconds, last, world.clock?.elapsed ?? 0);
+};
+
+/** 発車したことをグループの発車時刻表へ記録し、発車待ち状態を解除する。 */
+const recordDeparture = (world: SimWorld, train: TrainData, rt: TrainRuntime): void => {
+  const stationId = rt.pendingDepartureFrom;
+  rt.pendingDepartureFrom = null;
+  if (!stationId) return;
+  const group = findGroup(world.groups ?? [], train.groupId);
+  if (!group) return;
+  if (!world.groupDepartures) world.groupDepartures = new Map();
+  world.groupDepartures.set(departureKey(group.id, stationId), world.clock?.elapsed ?? 0);
+};
+
 const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: number, events: SimEvent[]) => {
-  const targetStationId = train.schedule.length > 0 ? train.schedule[train.scheduleIndex] : null;
+  // グループに所属している列車はグループの運行表に従う(共有運行表)。
+  const schedule = effectiveSchedule(train, world.groups ?? []);
+  const targetStationId = schedule.length > 0 ? schedule[train.scheduleIndex % schedule.length] : null;
 
   // 人身事故による運転見合わせ中: stopRemainingより優先して完全停止する
   if (rt.haltRemaining > 0) {
@@ -364,6 +401,15 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     if (rt.lastStopStationId === targetStationId) {
       rt.speedKmh = 0;
       rt.debugStatus = 'At destination';
+      return;
+    }
+
+    // 発車間隔(グループダイヤ)の判定。同じグループの列車が同じ駅を発車してから
+    // headway秒経つまでその場で待つ。これだけで団子運転がほどけて等間隔になる。
+    const hold = departureHoldSeconds(world, train, rt);
+    if (hold > 0) {
+      rt.speedKmh = 0;
+      rt.debugStatus = `Holding for headway (${hold.toFixed(0)}s)`;
       return;
     }
 
@@ -422,6 +468,8 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
 
       rt.route = newPath;
       rt.stopProgress = routeResult.stopProgress;
+      // 実際に発車したので、グループの「その駅の最終発車時刻」を更新する。
+      recordDeparture(world, train, rt);
       // 予約はここでは取得しない(=まだ何も予約できていない状態)。この直後の
       // ensureReservation呼び出しで、次のsafe waiting pointまでの区間を実際に取得する。
       rt.reservedEndIndex = -1;
@@ -646,15 +694,27 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     if (shouldStop) {
       stopAtStation(world, train, rt, targetStationId!, arrivedGrid, oldCurrent, events, headPos);
     } else {
-      rt.renderPos = { x: arrivedGrid.x, y: 0.5, z: arrivedGrid.z };
+      // 描画位置は線路の中心線(セル曲線)上に置く。カーブではセル中心を直線で
+      // 結んだ位置とレールの実形状が最大0.125セル(≒3.7m)ずれるため。
+      const head = pathPointAt(oldCurrent, arrivedGrid, rt.route[0] ?? null, rt.route[1] ?? null, 0);
+      rt.renderPos = { x: head.x, y: 0.5, z: head.z };
+      // renderTargetを更新せずに放置すると、この1tickだけ renderPos と renderTarget が
+      // 同じ点になり、描画側の lookAt が縮退して向きが飛ぶ。次のセルがあればそこを、
+      // 無ければ進入方向の延長線上を向かせる。
+      const following = rt.route[0];
+      if (following) {
+        rt.renderTarget = { x: following.x, y: 0.5, z: following.z };
+      } else {
+        const enterVec = normalize(arrivedGrid.x - oldCurrent.x, arrivedGrid.z - oldCurrent.z);
+        rt.renderTarget = { x: arrivedGrid.x + enterVec.x, y: 0.5, z: arrivedGrid.z + enterVec.z };
+      }
     }
   } else {
     rt.progress = newProgress;
-    rt.renderPos = {
-      x: rt.grid.x + (nextTile.x - rt.grid.x) * newProgress,
-      y: 0.5,
-      z: rt.grid.z + (nextTile.z - rt.grid.z) * newProgress,
-    };
+    // セル中心間の線形補間ではなく、線路の中心線(セル曲線)上の点を描画位置にする。
+    // 直線区間ではこの2つは厳密に一致するので、従来の挙動は変わらない。
+    const head = pathPointAt(rt.prevGrid, rt.grid, nextTile, rt.route[1] ?? null, newProgress);
+    rt.renderPos = { x: head.x, y: 0.5, z: head.z };
     rt.renderTarget = { x: nextTile.x, y: 0.5, z: nextTile.z };
   }
 };
