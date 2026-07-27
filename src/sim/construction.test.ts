@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DIR, toKey } from '../utils';
-import type { CellData, StationData, TerrainType } from '../types';
+import type { CellData, StationData, TerrainType, TownData } from '../types';
 import {
   applyRailPath,
   applyRailPathDetailed,
@@ -95,6 +95,41 @@ describe('applyStation（特性テスト）', () => {
     // 既存の斜め connections が維持されている（N|E|S|Wで上書きされていない）
     expect(cell.connections! & DIR.SE).toBe(DIR.SE);
     expect(cell.connections! & DIR.N).toBe(0);
+  });
+});
+
+describe('applyStation（町名からの駅名採用）', () => {
+  const minamimiya: TownData = { id: 'town-0', name: '南宮市', centre: { x: 0, z: 0 }, population: 1000 };
+
+  it('近くに町があれば町名由来の駅名になる', () => {
+    const state = emptyState();
+    const result = applyStation(state, { x: 2, z: 0 }, undefined, [minamimiya]);
+    const stationId = result.railMap.get(toKey(2, 0))!.stationId!;
+    expect(result.stations.get(stationId)!.name).toBe('南宮駅');
+  });
+
+  it('同じ町に2つ目の駅を建てると方角つきの名前になる', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 2, z: 0 }, undefined, [minamimiya]);
+    // 離れた場所に建てるので別の駅になる(町の東側)
+    state = applyStation(state, { x: 5, z: 0 }, undefined, [minamimiya]);
+
+    const names = Array.from(state.stations.values()).map(s => s.name).sort();
+    expect(names).toEqual(['南宮駅', '東南宮駅']);
+  });
+
+  it('近くに町が無ければ従来のA駅/B駅方式になる', () => {
+    const state = emptyState();
+    const result = applyStation(state, { x: 100, z: 100 }, undefined, [minamimiya]);
+    const stationId = result.railMap.get(toKey(100, 100))!.stationId!;
+    expect(result.stations.get(stationId)!.name).toBe('A駅');
+  });
+
+  it('townsを渡さなければ従来通りA駅/B駅方式になる(後方互換)', () => {
+    const state = emptyState();
+    const result = applyStation(state, { x: 0, z: 0 });
+    const stationId = result.railMap.get(toKey(0, 0))!.stationId!;
+    expect(result.stations.get(stationId)!.name).toBe('A駅');
   });
 });
 
