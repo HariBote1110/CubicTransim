@@ -12,6 +12,11 @@
 
 export type Pt = { x: number; z: number };
 
+// 立体交差の高架セルを走行中の列車の描画高さ(地平からの上乗せ分、renderPos.y相当の単位)。
+// simulation.tsのrenderPos.yは 0.5 + (layer===1 ? OVERPASS_HEIGHT : 0) を基準に、
+// 地平/高架の境界セルではセル内の進捗で線形補間する。
+export const OVERPASS_HEIGHT = 1.2;
+
 const midpoint = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);

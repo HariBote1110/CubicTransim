@@ -1001,3 +1001,33 @@ describe('stepWorld: 終端駅のホームの閉塞と出庫', () => {
     expect(waitingRt.grid.x).toBeGreaterThan(0);
   });
 });
+
+describe('stepWorld: 立体交差(upper)を走行中の描画高さ', () => {
+  it('高架セルを通過する間だけrenderPos.yが上がり、通過後は元に戻る', () => {
+    const { railMap, stations } = buildStraightLine(10, 'stA');
+    // (5,0)だけ立体交差にする: 地平のconnectionsを外し、upperにE|Wを持たせる。
+    // 進入方向から見た層の解決規則により、この1セルだけ高架として走行する。
+    const overpassX = 5;
+    const key = toKey(overpassX, 0);
+    const original = railMap.get(key)!;
+    railMap.set(key, { ...original, connections: 0, upper: { connections: original.connections! } });
+
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+
+    let maxY = 0;
+    let yAtOverpassEntry = 0;
+    let yAfterOverpass = 0;
+    for (let i = 0; i < 400; i++) {
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      maxY = Math.max(maxY, rt.renderPos.y);
+      if (rt.grid.x === overpassX) yAtOverpassEntry = rt.renderPos.y;
+      if (rt.grid.x === overpassX + 1) yAfterOverpass = rt.renderPos.y;
+    }
+
+    expect(maxY).toBeGreaterThan(0.5);
+    expect(yAtOverpassEntry).toBeGreaterThan(0.5);
+    expect(yAfterOverpass).toBeCloseTo(0.5, 5);
+  });
+});
