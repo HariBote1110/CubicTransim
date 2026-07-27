@@ -4,8 +4,8 @@ import type { TrainRuntime } from './simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v9)', () => {
-  it('railMap/stations/trains/runtimes/waiting/money/towns/terrain/clock/台帳/stopLocation/運用グループ が JSON 経由でも復元できる', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v10)', () => {
+  it('railMap/stations/trains/runtimes/waiting/money/towns/terrain/clock/台帳/stopLocation/運用グループ/借入残高 が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
@@ -41,9 +41,9 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const towns: TownData[] = [{ id: 'town-0', centre: { x: 5, z: 5 }, population: 2500 }];
     const terrain = new Map<string, TerrainType>([['2,2', 'water'], ['3,3', 'mountain']]);
     const clock = { elapsed: 1234 };
-    const currentLedger: MonthlyLedger = { year: 1, month: 5, fares: 1000, construction: 2000, upkeep: 0, accidents: 0 };
+    const currentLedger: MonthlyLedger = { year: 1, month: 5, fares: 1000, construction: 2000, upkeep: 0, accidents: 0, interest: 0 };
     const ledgerHistory: MonthlyLedger[] = [
-      { year: 1, month: 4, fares: 900, construction: 0, upkeep: 300, accidents: 5000 },
+      { year: 1, month: 4, fares: 900, construction: 0, upkeep: 300, accidents: 5000, interest: 417 },
     ];
 
     const groups = [
@@ -53,9 +53,9 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
 
     const saveData = serialiseWorld(
       railMap, stations, trains, runtimes, waiting, money, towns, terrain,
-      clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures
+      clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000
     );
-    expect(saveData.version).toBe(9);
+    expect(saveData.version).toBe(10);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -75,6 +75,24 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored.stopLocation).toBe('far');
     expect(restored.groups).toEqual(groups);
     expect(restored.groupDepartures).toEqual(groupDepartures);
+    expect(restored.loan).toBe(60_000);
+  });
+
+  it('v9データ(借入が無い)を読み込むと借入残高0・台帳の利息0が補われる', () => {
+    const v9 = {
+      version: 9 as const,
+      railMap: [], stations: [], trains: [], runtimes: [], waiting: [],
+      money: 1000, towns: [], terrain: [],
+      clock: { elapsed: 0 },
+      currentLedger: { year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 },
+      ledgerHistory: [{ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0 }],
+      stopLocation: 'middle' as const,
+      groups: [], groupDepartures: [],
+    };
+    const restored = deserialiseWorld(v9 as never);
+    expect(restored.loan).toBe(0);
+    expect(restored.currentLedger.interest).toBe(0);
+    expect(restored.ledgerHistory[0].interest).toBe(0);
   });
 
   it('v8データ(運用グループが無い)を読み込むと空のグループが補われる', () => {
