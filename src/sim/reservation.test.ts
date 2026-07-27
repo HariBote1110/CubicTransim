@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toKey, DIR } from '../utils';
 import type { CellData } from '../types';
-import { tryReserve, releaseCell, releaseAllOf, isSafeWaitingPoint, findSafeSegmentEnd } from './reservation';
+import { tryReserve, releaseCell, releaseAllOf, isSafeWaitingPoint, findSafeSegmentEnd, reservationKey } from './reservation';
 
 describe('reservation: 予約テーブルの基本操作', () => {
   it('未予約セル群は取得でき、以後は別列車の取得を拒否する', () => {
@@ -99,5 +99,31 @@ describe('reservation: safe waiting point判定', () => {
     expect(findSafeSegmentEnd(railMap, route, 0)).toBe(0);
     // index1以降で探すと、次に安全なのは駅セル(index3)
     expect(findSafeSegmentEnd(railMap, route, 1)).toBe(3);
+  });
+
+  it('upperを持つセルはsafe waiting pointにならない(高架の上では待機させない)', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(0, 0), { type: 'rail', connections: DIR.E, upper: { connections: DIR.N | DIR.S } });
+    // 次セルが信号でも、駅・車庫であっても、upperを持つ限りsafeにならない。
+    railMap.set(toKey(1, 0), { type: 'rail', connections: DIR.E | DIR.W, signalDir: DIR.E });
+    expect(isSafeWaitingPoint(railMap, { x: 0, z: 0 }, { x: 1, z: 0 })).toBe(false);
+  });
+});
+
+describe('reservation: 立体交差での層ごとの予約キー分離', () => {
+  it('地平と高架は別のキーになり、同じセルを別の列車が同時に予約できる', () => {
+    const reservations = new Map<string, string>();
+    const ground = { x: 3, z: 3 };
+    const upper = { x: 3, z: 3, layer: 1 as const };
+
+    expect(reservationKey(ground)).not.toBe(reservationKey(upper));
+    expect(tryReserve(reservations, 'A', [ground])).toBe(true);
+    expect(tryReserve(reservations, 'B', [upper])).toBe(true);
+    expect(reservations.get(reservationKey(ground))).toBe('A');
+    expect(reservations.get(reservationKey(upper))).toBe('B');
+  });
+
+  it('地平(layer省略)は従来通り"x,z"のキーになる', () => {
+    expect(reservationKey({ x: 2, z: 5 })).toBe('2,5');
   });
 });
