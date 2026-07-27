@@ -8,7 +8,16 @@ import {
   buildRampTrackParts, buildRampAbutmentPart,
   type TrackParts, type SupportParts,
 } from '../render/trackGeometry';
-import { OVERPASS_HEIGHT } from '../sim/trackPath';
+import {
+  OVERPASS_HEIGHT, RAMP_POS_GROUND, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2, RAMP_POS_DECK,
+} from '../sim/trackPath';
+
+// level1/level2境界どうしのposを、隣接セルの中間(=線路の境界点)として求める。
+// buildRampTrackParts/buildRampAbutmentPartへ渡すposLow/posHighはここで揃える
+// ことで、隣接セルのposがぴったり一致し、セルをまたいでも折れ角が出ない。
+const RAMP_BOUNDARY_GROUND_LEVEL1 = (RAMP_POS_GROUND + RAMP_POS_LEVEL1) / 2;
+const RAMP_BOUNDARY_LEVEL1_LEVEL2 = (RAMP_POS_LEVEL1 + RAMP_POS_LEVEL2) / 2;
+const RAMP_BOUNDARY_LEVEL2_DECK = (RAMP_POS_LEVEL2 + RAMP_POS_DECK) / 2;
 
 interface Props {
   railMap: Map<string, CellData>;
@@ -60,20 +69,24 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       all.rails.push(...parts.rails);
 
       if (data.ramp) {
-        // level1(地平寄り)は 0→H/3、level2(桁寄り)は H/3→2H/3 を斜めに登る。
-        // 旧セーブ(levelなし)はH/3→2H/3(桁側に近い段)として扱う。
+        // level1(地平寄り)は 地平/level1境界→level1/level2境界、level2(桁寄り)は
+        // level1/level2境界→level2/桁境界を、rampHeightAtPosの曲線に沿って登る。
+        // 旧セーブ(levelなし)はlevel2(桁側に近い段)として扱う。
+        // posLow/posHighはRAMP_POS_*から求めた境界値なので、隣接セルのposとぴったり
+        // 一致し、地平→level1→level2→桁のどのセル境界でも折れ角が生じない。
         const level = data.ramp.level ?? 2;
-        const lowY = level === 1 ? 0 : OVERPASS_HEIGHT / 3;
-        const highY = level === 1 ? OVERPASS_HEIGHT / 3 : (OVERPASS_HEIGHT * 2) / 3;
-        const rampParts = buildRampTrackParts(data.ramp.dir, x, z, lowY, highY);
+        const posLow = level === 1 ? RAMP_BOUNDARY_GROUND_LEVEL1 : RAMP_BOUNDARY_LEVEL1_LEVEL2;
+        const posHigh = level === 1 ? RAMP_BOUNDARY_LEVEL1_LEVEL2 : RAMP_BOUNDARY_LEVEL2_DECK;
+        const rampParts = buildRampTrackParts(data.ramp.dir, x, z, posLow, posHigh);
         all.ballast.push(...rampParts.ballast);
         all.sleepers.push(...rampParts.sleepers);
         all.rails.push(...rampParts.rails);
 
         // 橋台のくさびは地平に接するlevel1側にだけ出す(level2は宙に浮いた坂なので
-        // 地面まで届くくさびを描くと不自然になる)。
+        // 地面まで届くくさびを描くと不自然になる)。地平(pos=0)で高さ0に収束する
+        // ようbuildRampAbutmentPart側のposLowは0のまま渡す。
         if (level === 1) {
-          const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, OVERPASS_HEIGHT / 3);
+          const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, RAMP_BOUNDARY_LEVEL1_LEVEL2, RAMP_POS_GROUND);
           if (wedge) abutments.push(wedge);
         }
       }

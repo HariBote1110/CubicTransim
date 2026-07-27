@@ -20,6 +20,7 @@ import * as THREE from 'three';
 import { DIR, getVectorFromDir } from '../utils';
 import { angleFromVector } from './palette';
 import { mergeAndDispose } from './mergeGeometry';
+import { rampHeightAtPos } from '../sim/trackPath';
 
 // 各方向ビットに対応する「セル中心→隣接セルとの境界点」までのベクトル。
 // 上下左右は辺の中点(距離0.5)、斜めは隣接セルと接する角(距離√2/2)。
@@ -230,65 +231,106 @@ export function buildCellTrackParts(
   return parts;
 }
 
+// 坂の線路を何本の直線サブセグメントに分けて近似するか。増やすほど滑らかに
+// 見えるが、ジオメトリも比例して増える。
+const RAMP_CURVE_SEGMENTS = 4;
+
 /**
- * 坂(ramp)セルの線路を、低い側の境界(y=lowY)から高い側の境界(y=highY)へ
- * 斜めに登る形で生成する。dir は登る方向(高い側=桁のある側)のビット。
+ * 坂(ramp)セルの線路を、低い側の境界(正規化位置posLow)から高い側の境界
+ * (posHigh)へ登る形で生成する。dir は登る方向(高い側=桁のある側)のビット。
  * 境界オフセットは方向ビットの正反対どうしで必ず点対称(BOUNDARY_OFFSETS参照)
  * なので、低い側は高い側の符号を反転するだけで求まる。
- * lowY/highYは呼び出し側がlevel(1段目/2段目)に応じて渡す
- * (level1: 0→OVERPASS_HEIGHT/3、level2: OVERPASS_HEIGHT/3→OVERPASS_HEIGHT*2/3)。
+ *
+ * 1セルをRAMP_CURVE_SEGMENTS本の直線サブセグメントに分割し、各分割点の高さを
+ * rampHeightAtPos(sim/trackPath.ts)から求める。posLow/posHighの間をposで
+ * 線形補間してからこの1つの曲線関数に通すため、隣接セルとposがつながっている
+ * 限り(TrackNetwork.tsx側でRAMP_POS_*を使って揃える)、セルをまたいでも
+ * 折れ角の無い縦曲線として繋がる。sim(列車の高さ)と同じ関数を使うので
+ * レールと列車の高さがずれない。
  */
 export function buildRampTrackParts(
   dir: number,
   originX = 0,
   originZ = 0,
-  lowY = 0,
-  highY = 0
+  posLow = 0,
+  posHigh = 0,
+  segments = RAMP_CURVE_SEGMENTS
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
   const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
   if (!high) return parts;
   const low = { x: -high.x, z: -high.z };
 
-  const points: Pt[] = [
-    { x: low.x, z: low.z, y: lowY },
-    { x: high.x, z: high.z, y: highY },
-  ];
+  const n = Math.max(1, segments);
+  const points: Pt[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const pos = posLow + (posHigh - posLow) * t;
+    points.push({
+      x: low.x + (high.x - low.x) * t,
+      z: low.z + (high.z - low.z) * t,
+      y: rampHeightAtPos(pos),
+    });
+  }
   layTrackAlong(parts, points, originX, originZ, 0, true);
   return parts;
 }
 
 /**
- * 三角柱(くさび)ジオメトリを作る。zが「進行方向」の軸で、z=-length/2で高さ0、
- * z=+length/2で高さheightまで、幅widthのまま底面から斜めに立ち上がる。
+ * 縦断プロファイル(heights)に沿ったくさび状ジオメトリを作る。zが「進行方向」の軸で、
+ * z=-length/2〜+length/2をheights.length-1個のセグメントに等分し、各分割点の高さを
+ * heights[i]とする(heights[0]は低い側、heights[last]は高い側)。底面はy=0固定、
+ * 上面はheightsをそのまま結んだ折れ線(セグメントを増やせば曲線に近づく)。
  * 頂点をインデックス無しで積むので、面ごとにフラットシェーディングされる
  * (他のBoxGeometry製パーツと馴染むローポリの見た目)。
  */
-function makeWedgeGeometry(length: number, width: number, height: number): THREE.BufferGeometry {
+function makeCurvedWedgeGeometry(length: number, width: number, heights: number[]): THREE.BufferGeometry {
   const hw = width / 2;
   const hl = length / 2;
-  const lowL = [-hw, 0, -hl];
-  const lowR = [hw, 0, -hl];
-  const highBL = [-hw, 0, hl];
-  const highBR = [hw, 0, hl];
-  const highTL = [-hw, height, hl];
-  const highTR = [hw, height, hl];
+  const n = heights.length - 1;
 
   const positions: number[] = [];
   const push = (a: number[], b: number[], c: number[]) => positions.push(...a, ...b, ...c);
 
-  // 底面(y=0)
-  push(lowL, lowR, highBR);
-  push(lowL, highBR, highBL);
-  // 高い側の垂直面
-  push(highBL, highBR, highTR);
-  push(highBL, highTR, highTL);
-  // 斜めの上面(低い側の底辺 → 高い側の上辺)
-  push(lowR, lowL, highTL);
-  push(lowR, highTL, highTR);
-  // 左右の三角の側面
-  push(lowL, highTL, highBL);
-  push(lowR, highBR, highTR);
+  const zAt = (i: number) => -hl + (length * i) / n;
+
+  for (let i = 0; i < n; i++) {
+    const z0 = zAt(i);
+    const z1 = zAt(i + 1);
+    const h0 = heights[i];
+    const h1 = heights[i + 1];
+    const lowL = [-hw, 0, z0];
+    const lowR = [hw, 0, z0];
+    const highBL = [-hw, 0, z1];
+    const highBR = [hw, 0, z1];
+    const topL0 = [-hw, h0, z0];
+    const topR0 = [hw, h0, z0];
+    const topL1 = [-hw, h1, z1];
+    const topR1 = [hw, h1, z1];
+
+    // 底面(y=0)
+    push(lowL, lowR, highBR);
+    push(lowL, highBR, highBL);
+    // 上面(このセグメントの傾斜面)
+    push(topR0, topL0, topL1);
+    push(topR0, topL1, topR1);
+    // 左右の側面(このセグメント区間の三角)
+    push(lowL, topL1, topL0);
+    push(lowL, highBL, topL1);
+    push(lowR, topR0, topR1);
+    push(lowR, topR1, highBR);
+  }
+  // 高い側の端(z=+length/2)の垂直面(最後のheightぶんを閉じる)
+  const lastZ = zAt(n);
+  const lastH = heights[n];
+  if (lastH > 1e-6) {
+    const highBL = [-hw, 0, lastZ];
+    const highBR = [hw, 0, lastZ];
+    const highTL = [-hw, lastH, lastZ];
+    const highTR = [hw, lastH, lastZ];
+    push(highBL, highBR, highTR);
+    push(highBL, highTR, highTL);
+  }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -298,13 +340,18 @@ function makeWedgeGeometry(length: number, width: number, height: number): THREE
 
 /**
  * 坂(ramp)セルを支えるくさび状の橋台ブロックを1つ生成する。
- * 低い側(地面)で高さ0、桁側(dir方向)でrampHeightに達する。
+ * 低い側(地面、正規化位置posLow)で高さ0に収束し、高い側(桁寄り、posHigh)へ
+ * rampHeightAtPos(sim/trackPath.ts)の曲線に沿って立ち上がる。
+ * buildRampTrackParts と同じ高さ関数・分割数を使うので、線路の縦曲線と
+ * 橋台の見た目が揃う。
  */
 export function buildRampAbutmentPart(
   dir: number,
   x = 0,
   z = 0,
-  rampHeight = 0
+  posHigh = 0,
+  posLow = 0,
+  segments = RAMP_CURVE_SEGMENTS
 ): THREE.BufferGeometry | null {
   const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
   if (!high) return null;
@@ -312,10 +359,18 @@ export function buildRampAbutmentPart(
   const dx = high.x - low.x;
   const dz = high.z - low.z;
   const len = Math.hypot(dx, dz);
-  if (len < 1e-6 || rampHeight <= 0) return null;
+  if (len < 1e-6 || posHigh <= posLow) return null;
+
+  const n = Math.max(1, segments);
+  const heights: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const pos = posLow + (posHigh - posLow) * (i / n);
+    heights.push(rampHeightAtPos(pos));
+  }
+  if (heights[n] <= 0) return null;
 
   const rotY = angleFromVector(dx / len, dz / len);
-  const wedge = makeWedgeGeometry(len, ABUTMENT_WIDTH, rampHeight);
+  const wedge = makeCurvedWedgeGeometry(len, ABUTMENT_WIDTH, heights);
   wedge.rotateY(rotY);
   wedge.translate(x, 0, z);
   return wedge;
