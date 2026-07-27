@@ -1,5 +1,26 @@
-import { toKey, DIR, getVectorFromDir } from '../utils';
+import { toKey, DIR, getVectorFromDir, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData } from '../types';
+import { reservationKey } from './reservation';
+
+// 立体交差セルへ「どちら向きで入ったか」から層を一意に決める。
+// 進入元へ戻るビット(進入方向の逆ビット)が地平のconnectionsに立っていれば地平(0)、
+// upper.connectionsに立っていれば高架(1)。どちらにも無ければ移動不可(null)。
+const resolveEntryLayer = (
+  railMap: Map<string, CellData>,
+  cell: { x: number; z: number },
+  from: { x: number; z: number }
+): 0 | 1 | null => {
+  const dir = getDirFromVector(cell.x - from.x, cell.z - from.z);
+  const enterBit = getOppositeDir(dir);
+  const cellData = railMap.get(toKey(cell.x, cell.z));
+  if (cellData?.connections && (cellData.connections & enterBit)) return 0;
+  if (cellData?.upper?.connections && (cellData.upper.connections & enterBit)) return 1;
+  return null;
+};
+
+// あるセルの、指定した層で出られる方向のconnectionsビット集合。
+const activeConnections = (cell: CellData | undefined, layer: 0 | 1): number =>
+  layer === 1 ? (cell?.upper?.connections ?? 0) : (cell?.connections ?? 0);
 
 export interface RouteQuery {
   start: { x: number; z: number };
@@ -69,7 +90,7 @@ const findNextInLine = (
 };
 
 export interface RouteResult {
-  path: { x: number; z: number }[];
+  path: { x: number; z: number; layer?: 0 | 1 }[];
   /**
    * 経路末尾セルへの最終区間のうち、先頭車が実際に停止する位置(0<f<=1)。
    * 1 は従来どおり「末尾セルの中心で停車」、0.5 なら「末尾セル中心の半セル手前で停車」。
@@ -163,20 +184,29 @@ export function calculateRouteWithStop(
   if (!targetSt) return { path: [], stopProgress: 1 };
 
   const runSearch = (ignoreOccupied: boolean) => {
-      const queue = [{ curr: start, path: [] as { x: number; z: number }[], prev: prevGrid }];
+      // 開始セルの層は、直前セル(prevGrid)からの進入方向から解決する。
+      // prevGridが無い(車庫発車直後など)場合は地平(0)とみなす(車庫・駅は常に地平)。
+      const startLayer: 0 | 1 = prevGrid ? (resolveEntryLayer(railMap, start, prevGrid) ?? 0) : 0;
+      const queue = [{
+        curr: start,
+        path: [] as { x: number; z: number; layer?: 0 | 1 }[],
+        prev: prevGrid,
+        layer: startLayer,
+      }];
       const visited = new Set<string>();
-      visited.add(toKey(start.x, start.z));
+      visited.add(`${toKey(start.x, start.z)}:${startLayer}`);
       const MAX_DEPTH = 300;
 
       while (queue.length > 0) {
-          const { curr, path, prev } = queue.shift()!;
+          const { curr, path, prev, layer } = queue.shift()!;
           const currKey = toKey(curr.x, curr.z);
           const cell = railMap.get(currKey);
 
           if (cell && cell.stationId === targetId) return extendThroughPlatform(railMap, targetId, curr, prev, path, cars, stopLocation);
           if (path.length >= MAX_DEPTH) continue;
 
-          const myConnections = cell?.connections || 0;
+          // そのセルから出られる方向は「今いる層」のconnectionsのみ。
+          const myConnections = activeConnections(cell, layer);
           const directions = [
               { x: 0, z: -1, dir: DIR.N }, { x: 1, z: -1, dir: DIR.NE },
               { x: 1, z: 0, dir: DIR.E }, { x: 1, z: 1, dir: DIR.SE },
@@ -184,7 +214,7 @@ export function calculateRouteWithStop(
               { x: -1, z: 0, dir: DIR.W }, { x: -1, z: -1, dir: DIR.NW }
           ];
 
-          const validMoves = [];
+          const validMoves: { x: number; z: number; dx: number; dz: number; layer: 0 | 1 }[] = [];
           for (const d of directions) {
               if ((myConnections & d.dir) === 0) continue;
               const tx = curr.x + d.x;
@@ -197,20 +227,25 @@ export function calculateRouteWithStop(
                   if (dot(cv, nv) < 0.5) continue;
               }
 
-              const targetKey = toKey(tx, tz);
-              const targetCell = railMap.get(targetKey);
+              // 隣セルへ移るときの層は、進入方向から相手セルの層を決める。
+              // どちらの層にも進入元へ戻るビットが無ければ移動不可。
+              const nextLayer = resolveEntryLayer(railMap, { x: tx, z: tz }, curr);
+              if (nextLayer === null) continue;
+
+              const targetCell = railMap.get(toKey(tx, tz));
               if (targetCell && targetCell.signalDir) {
                   const sv = getVectorFromDir(targetCell.signalDir);
                   const dv = { x: d.x, z: d.z };
                   if ((sv.x * dv.x + sv.z * dv.z) < -0.1) continue;
               }
 
+              const targetResKey = reservationKey({ x: tx, z: tz, layer: nextLayer });
               if (!ignoreOccupied) {
-                  if (reserved.has(targetKey)) continue;
-                  if (occupied.has(targetKey)) continue;
+                  if (reserved.has(targetResKey)) continue;
+                  if (occupied.has(targetResKey)) continue;
               }
 
-              validMoves.push({ x: tx, z: tz, dx: d.x, dz: d.z });
+              validMoves.push({ x: tx, z: tz, dx: d.x, dz: d.z, layer: nextLayer });
           }
 
           // 進行方向がある(prevが存在する)場合、同距離のタイブレークで日本式左側通行を
@@ -222,15 +257,22 @@ export function calculateRouteWithStop(
           }
 
           if (validMoves.length === 0 && prev) {
-               queue.push({ curr: prev, path: [...path, prev], prev: curr });
+               const backLayer = resolveEntryLayer(railMap, prev, curr) ?? layer;
+               queue.push({
+                 curr: prev,
+                 path: [...path, { x: prev.x, z: prev.z, layer: backLayer === 1 ? 1 : undefined }],
+                 prev: curr,
+                 layer: backLayer,
+               });
           }
 
           for (const move of validMoves) {
-              const key = toKey(move.x, move.z);
-              if (!visited.has(key)) {
-                  visited.add(key);
-                  const cell = { x: move.x, z: move.z };
-                  queue.push({ curr: cell, path: [...path, cell], prev: curr });
+              const visitKey = `${toKey(move.x, move.z)}:${move.layer}`;
+              if (!visited.has(visitKey)) {
+                  visited.add(visitKey);
+                  const cellPos = { x: move.x, z: move.z };
+                  const pathCell = { x: move.x, z: move.z, layer: move.layer === 1 ? 1 as const : undefined };
+                  queue.push({ curr: cellPos, path: [...path, pathCell], prev: curr, layer: move.layer });
               }
           }
       }
