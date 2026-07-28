@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { DIR } from '../utils';
-import { buildCellTrackParts, buildRampTrackParts, buildRampAbutmentPart } from './trackGeometry';
+import {
+  buildCellTrackParts, buildRampTrackParts, buildRampAbutmentPart, buildTrackCentreLines,
+} from './trackGeometry';
 import { rampHeightAtPos } from '../sim/trackPath';
 
 describe('buildCellTrackParts: connections が 0 のセル', () => {
@@ -18,6 +20,23 @@ describe('buildCellTrackParts: 通常の接続', () => {
     expect(parts.rails.length).toBeGreaterThan(0);
     expect(parts.sleepers.length).toBeGreaterThan(0);
     expect(parts.ballast.length).toBeGreaterThan(0);
+  });
+});
+
+describe('buildTrackCentreLines: 分岐器の中心線', () => {
+  it('単線の交換設備で使う3方向分岐は、本線と分岐線の2本として組み立てる', () => {
+    const routes = buildTrackCentreLines(DIR.E | DIR.W | DIR.SE);
+
+    // 中心から3本の腕を放射状に伸ばすのではなく、直線の本線と片側から分かれる
+    // 分岐線にする。これによりレールがセル中心で三重に重ならない。
+    expect(routes).toHaveLength(2);
+    expect(routes[0]).toHaveLength(2);
+    expect(routes[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ x: -0.5, z: 0 }),
+      expect.objectContaining({ x: 0.5, z: 0 }),
+    ]));
+    expect(routes[1][0]).toEqual(expect.objectContaining({ x: 0.5, z: 0 }));
+    expect(routes[1][routes[1].length - 1]).toEqual(expect.objectContaining({ x: 0.5, z: 0.5 }));
   });
 });
 
