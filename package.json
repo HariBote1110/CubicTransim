@@ -1,7 +1,7 @@
 {
   "name": "cubictransim",
   "private": true,
-  "version": "0.3.0-Alpha-14c",
+  "version": "0.3.0-Alpha-15",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
