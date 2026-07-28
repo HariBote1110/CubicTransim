@@ -7,6 +7,7 @@ import {
   elevationAt,
   cornerElevation,
   cellCornerElevations,
+  dilateMountains,
   TERRAIN_COORD_RANGE,
   LAKE_COUNT_MIN,
   LAKE_COUNT_MAX,
@@ -34,7 +35,8 @@ describe('generateTerrain', () => {
     expect(waterCount).toBeGreaterThan(0);
     expect(waterCount).toBeLessThanOrEqual(LAKE_COUNT_MAX * LAKE_SIZE_MAX);
     expect(mountainCount).toBeGreaterThan(0);
-    expect(mountainCount).toBeLessThanOrEqual(MOUNTAIN_COUNT_MAX * MOUNTAIN_LENGTH_MAX * MOUNTAIN_WIDTH_MAX);
+    // 尾根の描画崩れ対策(dilateMountains)で4近傍ぶん膨張するため、元の上限の最大5倍まで許容する。
+    expect(mountainCount).toBeLessThanOrEqual(MOUNTAIN_COUNT_MAX * MOUNTAIN_LENGTH_MAX * MOUNTAIN_WIDTH_MAX * 5);
   });
 
   it('生成される座標はすべて-45..45の範囲に収まる', () => {
@@ -178,5 +180,59 @@ describe('cornerElevation / cellCornerElevations', () => {
     // 他の2隅は変わらずmin則
     expect(withCliff[2]).toBe(withoutCliff[2]);
     expect(withCliff[3]).toBe(withoutCliff[3]);
+  });
+});
+
+describe('dilateMountains', () => {
+  it('孤立した1セルは膨張後、自身+4近傍の十字5セルがmountainになる', () => {
+    const terrain = new Map<string, TerrainType>([[toKey(0, 0), 'mountain']]);
+    const dilated = dilateMountains(terrain);
+
+    expect(terrainAt(dilated, 0, 0)).toBe('mountain');
+    expect(terrainAt(dilated, 1, 0)).toBe('mountain');
+    expect(terrainAt(dilated, -1, 0)).toBe('mountain');
+    expect(terrainAt(dilated, 0, 1)).toBe('mountain');
+    expect(terrainAt(dilated, 0, -1)).toBe('mountain');
+    // 斜めは膨張対象ではない
+    expect(terrainAt(dilated, 1, 1)).toBe('grass');
+  });
+
+  it('膨張後、元の細片セルは4隅のコーナー標高がすべて0より大きくなる(平地化しない)', () => {
+    // z=16の一列だけの細片(尾根)を模す
+    const terrain = new Map<string, TerrainType>();
+    for (let x = -2; x <= 2; x++) {
+      terrain.set(toKey(x, 16), 'mountain');
+    }
+    const dilated = dilateMountains(terrain);
+    const elev = computeElevation(dilated);
+
+    for (let x = -2; x <= 2; x++) {
+      const corners = cellCornerElevations(elev, x, 16);
+      for (const c of corners) {
+        expect(c).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('生成範囲(TERRAIN_COORD_RANGE)の端セルを膨張しても範囲外座標は生成されない', () => {
+    const edge = TERRAIN_COORD_RANGE;
+    const terrain = new Map<string, TerrainType>([[toKey(edge, 0), 'mountain']]);
+    const dilated = dilateMountains(terrain);
+    for (const key of dilated.keys()) {
+      const { x, z } = fromKey(key);
+      expect(x).toBeGreaterThanOrEqual(-TERRAIN_COORD_RANGE);
+      expect(x).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
+      expect(z).toBeGreaterThanOrEqual(-TERRAIN_COORD_RANGE);
+      expect(z).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
+    }
+  });
+
+  it('mountainはwaterより優先される(後勝ちではなくmountain優先で上書き)', () => {
+    const terrain = new Map<string, TerrainType>([
+      [toKey(0, 0), 'mountain'],
+      [toKey(1, 0), 'water'],
+    ]);
+    const dilated = dilateMountains(terrain);
+    expect(terrainAt(dilated, 1, 0)).toBe('mountain');
   });
 });
