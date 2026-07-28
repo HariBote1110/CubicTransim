@@ -14,8 +14,8 @@ import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { growTown, townServiceLevel } from './towns';
 import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
 import {
-  pathPointAt, rampHeightAtPos,
-  RAMP_POS_GROUND, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2, RAMP_POS_DECK,
+  pathPointAt, rampHeightAtPos, OVERPASS_HEIGHT,
+  RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
 } from './trackPath';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
 import type { IntervalSamples } from './groups';
@@ -59,50 +59,49 @@ export const BRAKE_RELEASE_MARGIN_KMH = 3.0;
 // 必ず延長を再試行できるようにするための下駄。
 export const RESERVE_EXTEND_SLACK_M = 1.0;
 
-// layer省略(または0)は地平、1は立体交差の高架側。列車自体には層を持たせず、
-// pathfindingが解決した層をルート/現在地セルにそのまま載せて運ぶ。
-type Grid = { x: number; z: number; layer?: 0 | 1 };
+// layer省略(または0)は地平、1〜3は立体交差の高架側(レベル)。列車自体には層を
+// 持たせず、pathfindingが解決した層をルート/現在地セルにそのまま載せて運ぶ。
+type Grid = { x: number; z: number; layer?: 0 | 1 | 2 | 3 };
 
-// 坂(ramp)のlevelを、地平(0)〜桁(1)を1本のsmoothstep曲線として結ぶための
-// 正規化位置(RAMP_POS_*)に写像する。level1が地平寄りの下段、level2が桁寄りの
-// 上段。旧セーブ(levelが無いramp)は桁側に近いlevel2として扱う(移行処理は行わない)。
+// 坂(ramp)のlevelを、base〜base+1を1本のsmoothstep曲線として結ぶための
+// 正規化位置(RAMP_POS_*)に写像する。level1がbase寄りの下段、level2がbase+1寄りの
+// 上段。旧セーブ(levelが無いramp)は上段に近いlevel2として扱う(移行処理は行わない)。
 const rampPos = (level: 1 | 2 | undefined): number =>
   (level ?? 2) === 1 ? RAMP_POS_LEVEL1 : RAMP_POS_LEVEL2;
 
-// セルの正規化ramp位置(RAMP_POS_GROUND〜RAMP_POS_DECK)を求める。
-//   - 高架(layer===1): 桁として RAMP_POS_DECK
-//   - 坂(railMap上のセルにrampが付いている): levelに応じたRAMP_POS_LEVEL1/2
-//   - それ以外の地平: RAMP_POS_GROUND
+// セルの正規化ramp高さ(地平からの上乗せ分、rampHeightAtPos基準)を求める。
+//   - 高架(layer>0): そのレベルの桁として layer*OVERPASS_HEIGHT
+//   - 坂(railMap上のセルにrampが付いている): base + levelに応じた正規化位置
+//   - それ以外の地平: 0
 // railMapを見るのは、坂かどうかがGrid(x,z,layer)だけでは分からず、セルデータ
 // (CellData.ramp)に依存するため。
-const cellRampPos = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1): number => {
-  if (layer === 1) return RAMP_POS_DECK;
+const cellRampHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1 | 2 | 3): number => {
+  if (layer && layer > 0) return layer * OVERPASS_HEIGHT;
   const cell = railMap.get(toKey(x, z));
-  if (cell?.ramp) return rampPos(cell.ramp.level);
-  return RAMP_POS_GROUND;
+  if (cell?.ramp) return rampHeightAtPos(rampPos(cell.ramp.level), cell.ramp.base ?? 0);
+  return 0;
 };
 
 // セル中心の描画高さ(renderPos.y)を求める。地平の基準高さ0.5は既存の車両モデルの
 // 原点合わせ。坂の上乗せぶんはrampHeightAtPos(=1本のsmoothstep曲線)で求めるので、
-// 地平→level1→level2→桁のどの境界でも折れ角が生じない。
-const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1): number =>
-  0.5 + rampHeightAtPos(cellRampPos(railMap, x, z, layer));
+// base→level1→level2→base+1のどの境界でも折れ角が生じない。
+const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1 | 2 | 3): number =>
+  0.5 + cellRampHeight(railMap, x, z, layer);
 
 // fromセル→toセルの区間をtで補間した描画高さ(tは0..1にクランプ)。
-// 単に両端の高さを線形補間するのではなく、それぞれの正規化ramp位置(pos)を
-// 線形補間してから同じrampHeightAtPos(smoothstep)に通す。こうすることで
-// 地平→坂→桁の全区間が「1本の連続したsmoothstep曲線をposで辿る」ことになり、
-// セル境界(level1/level2の切り替わり)でも折れ角のない縦曲線になる。
+// 両端の高さそのものを線形補間する(rampHeightAtPosは区間ごとにbaseが異なり得るため、
+// 正規化posの補間ではなく高さ自体を補間する)。地平→坂→桁の各区間内ではcellRampHeight
+// 自体がrampHeightAtPos(smoothstep)を経由しているので、区間内は折れ角のない縦曲線になる。
 const interpCellHeight = (
   railMap: Map<string, CellData>,
-  from: { x: number; z: number; layer?: 0 | 1 },
-  to: { x: number; z: number; layer?: 0 | 1 },
+  from: { x: number; z: number; layer?: 0 | 1 | 2 | 3 },
+  to: { x: number; z: number; layer?: 0 | 1 | 2 | 3 },
   t: number
 ): number => {
-  const posA = cellRampPos(railMap, from.x, from.z, from.layer);
-  const posB = cellRampPos(railMap, to.x, to.z, to.layer);
+  const hA = cellRampHeight(railMap, from.x, from.z, from.layer);
+  const hB = cellRampHeight(railMap, to.x, to.z, to.layer);
   const ct = t < 0 ? 0 : t > 1 ? 1 : t;
-  return 0.5 + rampHeightAtPos(posA + (posB - posA) * ct);
+  return 0.5 + hA + (hB - hA) * ct;
 };
 
 export interface TrainRuntime {
@@ -733,7 +732,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       // 'At destination'として処理済みのため、ここに来るのは「まだ一度も停車していない
       // (lastStopStationIdがnullまたは別駅)のに、たまたま目的駅セル上にいる」場合のみ)
       const currentCell = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
-      const currentLayer: 0 | 1 = rt.grid.layer === 1 ? 1 : 0;
+      const currentLayer = rt.grid.layer ?? 0;
       if (stationIdAtLayer(currentCell, currentLayer) === targetStationId) {
         stopAtStation(world, train, rt, targetStationId, rt.grid, rt.prevGrid ?? rt.grid, events);
         return;

@@ -15,9 +15,9 @@ export interface StationLayerCell {
   connections: number;
 }
 
-/** 高架駅セルかどうか(upperを持ち、かつupper.stationIdがある)。 */
+/** 高架駅セルかどうか(uppers[1]を持ち、かつstationIdがある)。 */
 export const isElevatedStationCell = (cell: CellData | undefined): boolean =>
-  !!cell?.upper && !!cell.upper.stationId;
+  !!cell?.uppers?.[1] && !!cell.uppers[1].stationId;
 
 /** 地平の駅セル一覧(従来通りcell.type==='station')。 */
 export function groundStationCells(railMap: Map<string, CellData>): StationLayerCell[] {
@@ -36,7 +36,7 @@ export function elevatedStationCells(railMap: Map<string, CellData>): StationLay
   for (const [key, data] of railMap) {
     if (!isElevatedStationCell(data)) continue;
     const { x, z } = fromKey(key);
-    out.push({ key, x, z, stationId: data.upper!.stationId!, connections: data.upper!.connections });
+    out.push({ key, x, z, stationId: data.uppers![1]!.stationId!, connections: data.uppers![1]!.connections });
   }
   return out;
 }

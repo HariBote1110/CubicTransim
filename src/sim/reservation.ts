@@ -1,18 +1,18 @@
 import { toKey } from '../utils';
 import type { CellData } from '../types';
 
-// layer省略(または0)は地平、1は立体交差の高架側。列車自体には層を持たせず、
-// 「そのセルにどちら向きで入ったか」から導出した値をここに載せて使う。
-export type Grid = { x: number; z: number; layer?: 0 | 1 };
+// layer省略(または0)は地平、1〜3は立体交差の高架側(レベル)。列車自体には層を
+// 持たせず、「そのセルにどちら向きで入ったか」から導出した値をここに載せて使う。
+export type Grid = { x: number; z: number; layer?: 0 | 1 | 2 | 3 };
 
 // PBS(経路予約ベース運行)風の予約テーブル。1セル1列車の排他をセル単位で管理する
 // (トラック方向単位までは踏み込まず簡略化。既存の閉塞判定もセル単位のため整合する)。
 // 立体交差の地平と高架は別の閉塞資源になるよう、キーに層を含める(地平は従来通り
-// "x,z"、高架は"x,z:u")。これにより2本の列車が同じ(x,z)を異なる層で同時に
-// 予約できる(立体交差の要点)。
+// "x,z"、高架は"x,z:u1"〜"x,z:u3")。これにより複数の列車が同じ(x,z)を異なる層で
+// 同時に予約できる(立体交差の要点)。
 export type ReservationMap = Map<string, string>;
 
-export const reservationKey = (c: Grid) => (c.layer === 1 ? `${c.x},${c.z}:u` : toKey(c.x, c.z));
+export const reservationKey = (c: Grid) => (c.layer ? `${c.x},${c.z}:u${c.layer}` : toKey(c.x, c.z));
 
 // 指定セル群をtrainIdのために取得する。1つでも他列車が保有していれば全体を諦める
 // (OpenTTDのTryReserveRailTrackが失敗時に途中まで取った予約をロールバックするのと同義)。
@@ -59,9 +59,9 @@ const popcount = (n: number) => {
 
 // セルが分岐点(接続方向3以上)かどうか。分岐点そのものはsafe waiting pointにしない
 // (分岐点上に停止して塞いだまま待つことはない)。layerに応じて地平のconnections/
-// 高架のupper.connectionsのどちらを見るかを切り替える。
-const isJunction = (cell: CellData | undefined, layer: 0 | 1): boolean =>
-  popcount(layer === 1 ? (cell?.upper?.connections ?? 0) : (cell?.connections ?? 0)) >= 3;
+// 高架のuppers[layer].connectionsのどちらを見るかを切り替える。
+const isJunction = (cell: CellData | undefined, layer: 0 | 1 | 2 | 3): boolean =>
+  popcount(layer === 0 ? (cell?.connections ?? 0) : (cell?.uppers?.[layer]?.connections ?? 0)) >= 3;
 
 // セルcellがsafe waiting point(そこで安全に停止して次の予約取得を待てる地点)かどうかを
 // 判定する。nextはcellの次に進むセル(route上の次要素。終端ならnull)。
@@ -83,23 +83,23 @@ export function isSafeWaitingPoint(
   cell: Grid,
   next: Grid | null
 ): boolean {
-  const layer: 0 | 1 = cell.layer === 1 ? 1 : 0;
+  const layer: 0 | 1 | 2 | 3 = cell.layer ?? 0;
   const cellData = railMap.get(toKey(cell.x, cell.z));
   const nextData = next ? railMap.get(toKey(next.x, next.z)) : undefined;
 
-  if (layer === 1) {
-    // 高架側: upper.stationId(高架駅ホーム)がある場合だけ待機できる。
-    // 通過用の高架(upper.connectionsのみでstationIdが無い橋桁)では待機不可
+  if (layer > 0) {
+    // 高架側: uppers[layer].stationId(高架駅ホーム)がある場合だけ待機できる。
+    // 通過用の高架(uppers[layer].connectionsのみでstationIdが無い橋桁)では待機不可
     // (橋の上に列車を止めない)。
-    if (!cellData?.upper?.stationId) return false;
+    if (!cellData?.uppers?.[layer as 1 | 2 | 3]?.stationId) return false;
     if (nextData?.signalDir) return true;
     if (isJunction(cellData, layer)) return false;
     return true;
   }
 
-  // 地平側(従来通り)。立体交差セル(upperを持つ)の上では待機させない。高架の上で
+  // 地平側(従来通り)。立体交差セル(uppersを持つ)の上では待機させない。高架の上で
   // 止まると下の線路も含めて配線が読みづらく、実用上も好ましくないため。
-  if (cellData?.upper) return false;
+  if (cellData?.uppers) return false;
   // 次セルが信号セルなら、信号がその先を防護しているため、cell自身が分岐点で
   // あっても安全点として扱う(交換設備の分岐直後に信号を置く構成を想定)。
   if (nextData?.signalDir) return true;

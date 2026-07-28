@@ -2,40 +2,73 @@ import { toKey, DIR, getVectorFromDir, getDirFromVector, getOppositeDir } from '
 import type { CellData, StationData } from '../types';
 import { reservationKey } from './reservation';
 
+export type Layer = 0 | 1 | 2 | 3;
+
+// あるセルの、指定した層で出られる方向のconnectionsビット集合。
+// layer0は地平connections、layer≥1はuppers[layer].connections。
+const activeConnections = (cell: CellData | undefined, layer: Layer): number =>
+  layer === 0 ? (cell?.connections ?? 0) : (cell?.uppers?.[layer]?.connections ?? 0);
+
+// あるセルの、指定した層でのstationId。地平(layer0)はcell.stationId、
+// 高架(layer≥1)はcell.uppers?.[layer]?.stationId(高架駅ホームでなければundefined)。
+// 層を突き合わせずにcell.stationIdだけを見ると、地平駅の真上をただの橋桁
+// (uppersはあるがstationId無し)で通過するだけの列車を「到着した」と
+// 誤判定してしまうため、必ずこの関数を経由する。
+export const stationIdAtLayer = (cell: CellData | undefined, layer: Layer): string | undefined =>
+  layer === 0 ? cell?.stationId : cell?.uppers?.[layer]?.stationId;
+
+// セルのramp情報(base〜base+1を繋ぐ坂かどうか)。baseは省略時0(地平)。
+const rampBaseOf = (cell: CellData | undefined): number | null =>
+  cell?.ramp ? (cell.ramp.base ?? 0) : null;
+
 // 立体交差セルへ「どちら向きで入ったか」から層を一意に決める。
-// 進入元へ戻るビット(進入方向の逆ビット)が地平のconnectionsに立っていれば地平(0)、
-// upper.connectionsに立っていれば高架(1)。どちらにも無ければ移動不可(null)。
+// 進入元へ戻るビット(進入方向の逆ビット)が地平のconnectionsまたはいずれかの
+// uppers[L].connectionsに立っていれば、そのレベルが候補になる。候補が複数ある
+// (=ある層の桁の真上/真下に別の層の坂・桁が重なっている)場合は、
+//   (a) 直前の走行層(prevLayer)と同じ候補があれば最優先、
+//   (b) 無ければ坂による遷移(prevLayer±1で、遷移元/先のどちらかがそのbaseの
+//       ramp情報を持つ)を優先、
+//   (c) それも無ければ地平(0)優先、無ければ最小の候補を返す。
+// どの候補も無ければ移動不可(null)。
 const resolveEntryLayer = (
   railMap: Map<string, CellData>,
   cell: { x: number; z: number },
-  from: { x: number; z: number }
-): 0 | 1 | null => {
+  from: { x: number; z: number },
+  prevLayer?: Layer
+): Layer | null => {
   const dir = getDirFromVector(cell.x - from.x, cell.z - from.z);
   const enterBit = getOppositeDir(dir);
   const cellData = railMap.get(toKey(cell.x, cell.z));
-  if (cellData?.connections && (cellData.connections & enterBit)) return 0;
-  if (cellData?.upper?.connections && (cellData.upper.connections & enterBit)) return 1;
-  return null;
+
+  const candidates: Layer[] = [];
+  if (cellData?.connections && (cellData.connections & enterBit)) candidates.push(0);
+  for (const lvl of [1, 2, 3] as const) {
+    const u = cellData?.uppers?.[lvl];
+    if (u?.connections && (u.connections & enterBit)) candidates.push(lvl);
+  }
+  if (candidates.length === 0) return null;
+
+  if (prevLayer !== undefined && candidates.includes(prevLayer)) return prevLayer;
+
+  if (prevLayer !== undefined) {
+    const fromCellData = railMap.get(toKey(from.x, from.z));
+    for (const c of candidates) {
+      if (Math.abs(c - prevLayer) !== 1) continue;
+      const base = Math.min(c, prevLayer);
+      if (rampBaseOf(cellData) === base || rampBaseOf(fromCellData) === base) return c;
+    }
+  }
+
+  if (candidates.includes(0)) return 0;
+  return candidates[0];
 };
-
-// あるセルの、指定した層で出られる方向のconnectionsビット集合。
-const activeConnections = (cell: CellData | undefined, layer: 0 | 1): number =>
-  layer === 1 ? (cell?.upper?.connections ?? 0) : (cell?.connections ?? 0);
-
-// あるセルの、指定した層でのstationId。地平(layer0)はcell.stationId、
-// 高架(layer1)はcell.upper?.stationId(高架駅ホームでなければundefined)。
-// 層を突き合わせずにcell.stationIdだけを見ると、地平駅の真上をただの橋桁
-// (upperはあるがstationId無し)で通過するだけの列車を「到着した」と
-// 誤判定してしまうため、必ずこの関数を経由する。
-export const stationIdAtLayer = (cell: CellData | undefined, layer: 0 | 1): string | undefined =>
-  layer === 1 ? cell?.upper?.stationId : cell?.stationId;
 
 export interface RouteQuery {
   // layerは「prevが無い場合に既定として使う走行層」。停車直後の発車(simulation.tsの
   // stopAtStationがprevGridをnullにリセットする)では、この値が無いと高架専用セル
   // (地平connectionsを持たないセル)からの発車経路が一切見つからなくなる
   // (prevGrid無し=地平と誤認して探索してしまうため)。省略時は従来通り0。
-  start: { x: number; z: number; layer?: 0 | 1 };
+  start: { x: number; z: number; layer?: Layer };
   prev: { x: number; z: number } | null;
   targetStationId: string;
   // 編成両数。停車位置(先頭車の停止セル)を「編成中央がホーム中央に最も近づく位置」
@@ -78,7 +111,7 @@ const findNextInLine = (
   railMap: Map<string, CellData>,
   curr: { x: number; z: number },
   prev: { x: number; z: number },
-  layer: 0 | 1,
+  layer: Layer,
   accept: (cell: CellData | undefined) => boolean
 ): { x: number; z: number; score: number } | null => {
   const cellData = railMap.get(toKey(curr.x, curr.z));
@@ -105,7 +138,7 @@ const findNextInLine = (
 };
 
 export interface RouteResult {
-  path: { x: number; z: number; layer?: 0 | 1 }[];
+  path: { x: number; z: number; layer?: Layer }[];
   /**
    * 経路末尾セルへの最終区間のうち、先頭車が実際に停止する位置(0<f<=1)。
    * 1 は従来どおり「末尾セルの中心で停車」、0.5 なら「末尾セル中心の半セル手前で停車」。
@@ -134,9 +167,9 @@ const extendThroughPlatform = (
   targetId: string,
   lastCell: { x: number; z: number },
   prevCell: { x: number; z: number } | null,
-  path: { x: number; z: number; layer?: 0 | 1 }[],
+  path: { x: number; z: number; layer?: Layer }[],
   cars: number,
-  layer: 0 | 1,
+  layer: Layer,
   stopLocation: 'near' | 'middle' | 'far' = 'middle'
 ): RouteResult => {
   const extended = [...path];
@@ -206,10 +239,10 @@ export function calculateRouteWithStop(
   const runSearch = (ignoreOccupied: boolean) => {
       // 開始セルの層は、直前セル(prevGrid)からの進入方向から解決する。
       // prevGridが無い(車庫発車直後など)場合は地平(0)とみなす(車庫・駅は常に地平)。
-      const startLayer: 0 | 1 = prevGrid ? (resolveEntryLayer(railMap, start, prevGrid) ?? 0) : (start.layer ?? 0);
+      const startLayer: Layer = prevGrid ? (resolveEntryLayer(railMap, start, prevGrid) ?? 0) : (start.layer ?? 0);
       const queue = [{
         curr: start,
-        path: [] as { x: number; z: number; layer?: 0 | 1 }[],
+        path: [] as { x: number; z: number; layer?: Layer }[],
         prev: prevGrid,
         layer: startLayer,
       }];
@@ -236,7 +269,7 @@ export function calculateRouteWithStop(
               { x: -1, z: 0, dir: DIR.W }, { x: -1, z: -1, dir: DIR.NW }
           ];
 
-          const validMoves: { x: number; z: number; dx: number; dz: number; layer: 0 | 1 }[] = [];
+          const validMoves: { x: number; z: number; dx: number; dz: number; layer: Layer }[] = [];
           for (const d of directions) {
               if ((myConnections & d.dir) === 0) continue;
               const tx = curr.x + d.x;
@@ -251,7 +284,7 @@ export function calculateRouteWithStop(
 
               // 隣セルへ移るときの層は、進入方向から相手セルの層を決める。
               // どちらの層にも進入元へ戻るビットが無ければ移動不可。
-              const nextLayer = resolveEntryLayer(railMap, { x: tx, z: tz }, curr);
+              const nextLayer = resolveEntryLayer(railMap, { x: tx, z: tz }, curr, layer);
               if (nextLayer === null) continue;
 
               const targetCell = railMap.get(toKey(tx, tz));
@@ -279,10 +312,10 @@ export function calculateRouteWithStop(
           }
 
           if (validMoves.length === 0 && prev) {
-               const backLayer = resolveEntryLayer(railMap, prev, curr) ?? layer;
+               const backLayer = resolveEntryLayer(railMap, prev, curr, layer) ?? layer;
                queue.push({
                  curr: prev,
-                 path: [...path, { x: prev.x, z: prev.z, layer: backLayer === 1 ? 1 : undefined }],
+                 path: [...path, { x: prev.x, z: prev.z, layer: backLayer > 0 ? backLayer : undefined }],
                  prev: curr,
                  layer: backLayer,
                });
@@ -293,7 +326,7 @@ export function calculateRouteWithStop(
               if (!visited.has(visitKey)) {
                   visited.add(visitKey);
                   const cellPos = { x: move.x, z: move.z };
-                  const pathCell = { x: move.x, z: move.z, layer: move.layer === 1 ? 1 as const : undefined };
+                  const pathCell = { x: move.x, z: move.z, layer: move.layer > 0 ? move.layer : undefined };
                   queue.push({ curr: cellPos, path: [...path, pathCell], prev: curr, layer: move.layer });
               }
           }

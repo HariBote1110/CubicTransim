@@ -91,17 +91,20 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
         }
       }
 
-      if (data.upper) {
+      // 多レベル高架の見た目は当面レベル1相当のまま(後続タスクで多レベル対応する)。
+      // ここではuppers[1]だけを描画対象にする。
+      const upper1 = data.uppers?.[1];
+      if (upper1) {
         // 高架側はバラストを敷かず、枕木とレールだけを桁の上に置く。
-        const upperParts = buildCellTrackParts(data.upper.connections, x, z, OVERPASS_HEIGHT, false);
+        const upperParts = buildCellTrackParts(upper1.connections, x, z, OVERPASS_HEIGHT, false);
         all.sleepers.push(...upperParts.sleepers);
         all.rails.push(...upperParts.rails);
 
-        const support = buildOverpassSupportParts(data.upper.connections, x, z, OVERPASS_HEIGHT);
+        const support = buildOverpassSupportParts(upper1.connections, x, z, OVERPASS_HEIGHT);
         supports.piers.push(...support.piers);
         supports.decks.push(...support.decks);
       } else {
-        // 橋台候補: upperを持たない線路セルから見て、隣が橋桁(upper)なら
+        // 橋台候補: uppers[1]を持たない線路セルから見て、隣が橋桁(uppers[1])なら
         // その方向へ擁壁を置く(地平の高さから桁下面までを埋める)。
         // ramp(坂)を持つ方向は、上のbuildRampAbutmentPartがくさび状の擁壁を
         // 既に置いているので、段差の直方体擁壁は重ねて描かない
@@ -111,8 +114,8 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
           if (data.ramp?.dir === bit) continue;
           const v = DIR_VECTORS[bit];
           const neighbour = railMap.get(`${x + v.x},${z + v.z}`);
-          if (!neighbour?.upper) continue;
-          if (!(neighbour.upper.connections & getOppositeDir(bit))) continue;
+          if (!neighbour?.uppers?.[1]) continue;
+          if (!(neighbour.uppers[1]!.connections & getOppositeDir(bit))) continue;
           const abutment = buildBridgeAbutmentPart(bit, x, z, OVERPASS_HEIGHT);
           if (abutment) abutments.push(abutment);
         }

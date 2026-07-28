@@ -5,7 +5,7 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v12)', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v13)', () => {
   it('railMap/stations/trains/runtimes/waiting/money/towns/terrain/clock/台帳/stopLocation/運用グループ/借入残高/行き先つき待ち客 が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
@@ -58,7 +58,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       railMap, stations, trains, runtimes, waiting, money, towns, terrain,
       clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand
     );
-    expect(saveData.version).toBe(12);
+    expect(saveData.version).toBe(13);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -420,5 +420,53 @@ describe('persistence: v2→v3 移行', () => {
     expect(restored.stations.get('stA')!.platformDoors).toBe('none');
     expect(restored.runtimes.get('t1')!.haltRemaining).toBe(0);
     expect(restored.towns).toEqual([]);
+  });
+});
+
+describe('persistence: v12(upper形式)からv13(uppers形式)への移行', () => {
+  it('CellData.upperがuppers[1]へ移行され、ramp.baseが0で補われる', () => {
+    const v12Data = {
+      version: 12,
+      railMap: [
+        ['2,0', {
+          type: 'rail',
+          connections: 0,
+          upper: { connections: 3, stationId: 'stUP' },
+        }],
+        ['1,0', {
+          type: 'rail',
+          connections: 5,
+          ramp: { dir: 2, level: 1 },
+        }],
+      ],
+      stations: [
+        ['stUP', { id: 'stUP', name: 'UP', cells: [{ x: 2, z: 0, layer: 1 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+      ],
+      trains: [],
+      runtimes: [],
+      waiting: [],
+      money: 10_000,
+      towns: [],
+      terrain: [],
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
+      stopLocation: 'middle',
+      groups: [],
+      groupDepartures: [],
+      loan: 0,
+      demand: [],
+    };
+
+    const restored = deserialiseWorld(v12Data as never);
+
+    const migratedCell = restored.railMap.get('2,0')!;
+    expect(migratedCell.uppers).toEqual({ 1: { connections: 3, stationId: 'stUP' } });
+    expect((migratedCell as unknown as { upper?: unknown }).upper).toBeUndefined();
+
+    const rampCell = restored.railMap.get('1,0')!;
+    expect(rampCell.ramp).toEqual({ dir: 2, level: 1, base: 0 });
+
+    expect(restored.stations.get('stUP')!.cells).toEqual([{ x: 2, z: 0, layer: 1 }]);
   });
 });

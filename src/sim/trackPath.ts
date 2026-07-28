@@ -17,6 +17,9 @@ export type Pt = { x: number; z: number };
 // 地平/高架の境界セルではセル内の進捗で線形補間する。
 export const OVERPASS_HEIGHT = 1.2;
 
+// 高架の最大レベル(1〜3)。レベルLの桁の高さは L*OVERPASS_HEIGHT。
+export const MAX_ELEVATED_LEVEL = 3;
+
 // 坂(ramp)の高さプロファイルを表す正規化位置(0=地平、1=橋桁)。
 // 地平→坂(level1)→坂(level2)→桁 という並びを、セル中心が等間隔(1/3刻み)で
 // 並ぶものとして1本の連続パラメータに写像する。level自体はどのセルかを表す
@@ -37,13 +40,14 @@ export function smoothstep01(x: number): number {
 }
 
 /**
- * 正規化位置pos(0=地平, 1=橋桁)における坂の高さ(地平からの上乗せ分)。
- * 地平から桁までを1本のsmoothstepカーブとして扱うので、地平側・桁側どちらの
- * 端でも勾配が0に漸近し、level1/level2境界での折れ角が生じない。
- * sim(列車の高さ)とrender(線路ジオメトリ)は必ずこの関数を経由すること。
+ * 正規化位置pos(0=base側, 1=base+1側)における坂の高さ(地平からの上乗せ分)。
+ * base(坂の下側レベル。省略時0=地平)を足すことで、地平〜桁だけでなく任意の
+ * レベル間(base→base+1)の坂を同じ1本のsmoothstepカーブで表す。
+ * base〜base+1のどちらの端でも勾配が0に漸近し、level1/level2境界での
+ * 折れ角が生じない。sim(列車の高さ)とrender(線路ジオメトリ)は必ずこの関数を経由すること。
  */
-export function rampHeightAtPos(pos: number): number {
-  return OVERPASS_HEIGHT * smoothstep01(pos);
+export function rampHeightAtPos(pos: number, base: number = 0): number {
+  return (base + smoothstep01(pos)) * OVERPASS_HEIGHT;
 }
 
 const midpoint = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });

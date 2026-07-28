@@ -273,7 +273,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         // 候補を逆算して確認する(完璧な判定ではないが、高架ホームをクリックして駅を選べる)。
         const elevatedCandidate = elevatedCellCandidateFromGroundClick(pos);
         const elevatedCell = railMap.get(toKey(elevatedCandidate.x, elevatedCandidate.z));
-        const elevatedStationId = elevatedCell?.upper?.stationId;
+        const elevatedStationId = elevatedCell?.uppers?.[1]?.stationId;
         if (elevatedStationId && selectedTrainId) {
             if (isEditingSchedule) onAddSchedule(selectedTrainId, elevatedStationId);
             return;
@@ -403,12 +403,12 @@ export const GameScene: React.FC<GameSceneProps> = ({
           OVERPASS_HEIGHT分だけ持ち上げて描く。柱の端判定は高架層だけで独立に行う。 */}
       {elevatedCells.map(cell => {
         const data = railMap.get(cell.key);
-        if (!data?.upper) return null;
+        if (!data?.uppers?.[1]) return null;
         return (
           <StationBlock
             key={`${cell.key}-elevated`}
             position={[cell.x, OVERPASS_HEIGHT, cell.z]}
-            connections={data.upper.connections}
+            connections={data.uppers[1].connections}
             platformDoors={stations.get(cell.stationId)?.platformDoors ?? 'none'}
             isEnd={elevatedEndKeys.has(cell.key)}
           />
@@ -432,7 +432,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const centreCell = cellsForHouse[Math.floor(cellsForHouse.length / 2)] ?? station.center;
         const houseIsElevated = ownGroundCells.length === 0;
         const centreConnections = houseIsElevated
-          ? railMap.get(toKey(centreCell.x, centreCell.z))?.upper?.connections
+          ? railMap.get(toKey(centreCell.x, centreCell.z))?.uppers?.[1]?.connections
           : railMap.get(toKey(centreCell.x, centreCell.z))?.connections;
         const angle = trackAngleFromConnections(centreConnections);
         const houseY = houseIsElevated ? OVERPASS_HEIGHT : 0;

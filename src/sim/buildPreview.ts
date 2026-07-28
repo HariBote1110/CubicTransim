@@ -51,7 +51,9 @@ export function evaluateBuild(
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>,
   terrain: Map<string, TerrainType>,
-  money: number
+  money: number,
+  // 高架(elevated/elevated-station)の対象レベル。省略時は従来通り1。
+  level: 1 | 2 | 3 = 1
 ): BuildPreview {
   const empty: BuildPreview = {
     mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0,
@@ -74,9 +76,9 @@ export function evaluateBuild(
   let elevatedOverpassCount = 0;
   let elevatedRampCount = 0;
   if (mode === 'elevated' && path.length >= 2) {
-    const startInfo = resolveElevatedPathEnd(railMap, path[0]);
-    const endInfo = resolveElevatedPathEnd(railMap, path[path.length - 1]);
-    const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated);
+    const startInfo = resolveElevatedPathEnd(railMap, path[0], level);
+    const endInfo = resolveElevatedPathEnd(railMap, path[path.length - 1], level);
+    const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated, level);
     if (plan) {
       elevatedOverpassCount = plan.roles.filter(r => r.kind === 'span').length;
       elevatedRampCount = plan.roles.filter(r => r.kind === 'ramp').length;
@@ -106,7 +108,7 @@ export function evaluateBuild(
     case 'signal': result = applySignal(state, path, terrain); break;
     case 'station': result = applyStation(state, path[path.length - 1], terrain); break;
     case 'depot': result = applyDepot(state, path[path.length - 1], terrain); break;
-    case 'elevated-station': result = applyElevatedStation(state, path[path.length - 1]); break;
+    case 'elevated-station': result = applyElevatedStation(state, path[path.length - 1], [], level); break;
     case 'rail': {
       const detailed = applyRailPathDetailed(state, path, terrain);
       result = detailed;
@@ -115,7 +117,7 @@ export function evaluateBuild(
     }
     case 'bridge':
     case 'elevated': {
-      result = applyElevatedPath(state, path, terrain);
+      result = applyElevatedPath(state, path, terrain, mode === 'bridge' ? 1 : level);
       if (result.railMap !== state.railMap) overpassCells = elevatedOverpassCount;
       break;
     }

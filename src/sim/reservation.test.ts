@@ -104,7 +104,7 @@ describe('reservation: safe waiting point判定', () => {
 
   it('upperを持つセルはsafe waiting pointにならない(高架の上では待機させない)', () => {
     const railMap = new Map<string, CellData>();
-    railMap.set(toKey(0, 0), { type: 'rail', connections: DIR.E, upper: { connections: DIR.N | DIR.S } });
+    railMap.set(toKey(0, 0), { type: 'rail', connections: DIR.E, uppers: { 1: { connections: DIR.N | DIR.S } } });
     // 次セルが信号でも、駅・車庫であっても、upperを持つ限りsafeにならない。
     railMap.set(toKey(1, 0), { type: 'rail', connections: DIR.E | DIR.W, signalDir: DIR.E });
     expect(isSafeWaitingPoint(railMap, { x: 0, z: 0 }, { x: 1, z: 0 })).toBe(false);
@@ -114,7 +114,7 @@ describe('reservation: safe waiting point判定', () => {
     const railMap = new Map<string, CellData>();
     railMap.set(toKey(0, 0), {
       type: 'rail',
-      upper: { connections: DIR.N | DIR.S, stationId: 'stU' },
+      uppers: { 1: { connections: DIR.N | DIR.S, stationId: 'stU' } },
     });
     expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, { x: 0, z: 1, layer: 1 })).toBe(true);
     // 次セルが無い(行き止まり)場合も安全。
@@ -123,7 +123,7 @@ describe('reservation: safe waiting point判定', () => {
 
   it('高架セル(layer1)で、upper.stationIdが無い(単なる通過用の橋桁)なら待機不可', () => {
     const railMap = new Map<string, CellData>();
-    railMap.set(toKey(0, 0), { type: 'rail', upper: { connections: DIR.N | DIR.S } });
+    railMap.set(toKey(0, 0), { type: 'rail', uppers: { 1: { connections: DIR.N | DIR.S } } });
     expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, { x: 0, z: 1, layer: 1 })).toBe(false);
     expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, null)).toBe(false);
   });
@@ -132,7 +132,7 @@ describe('reservation: safe waiting point判定', () => {
     const railMap = new Map<string, CellData>();
     railMap.set(toKey(0, 0), {
       type: 'rail',
-      upper: { connections: DIR.N | DIR.S | DIR.E, stationId: 'stU' },
+      uppers: { 1: { connections: DIR.N | DIR.S | DIR.E, stationId: 'stU' } },
     });
     expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, { x: 0, z: 1, layer: 1 })).toBe(false);
   });
@@ -162,7 +162,7 @@ describe('reservation: 立体交差での層ごとの予約キー分離', () => 
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
     ]);
     const bridgeCell = state.railMap.get(toKey(2, 0))!;
-    expect(bridgeCell.upper?.connections).toBeDefined();
+    expect(bridgeCell.uppers?.[1]?.connections).toBeDefined();
     expect(bridgeCell.connections).toBeDefined(); // 下を通る地平線路のconnections
 
     const reservations = new Map<string, string>();

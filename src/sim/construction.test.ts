@@ -179,12 +179,12 @@ describe('applyStation（特性テスト）', () => {
       { x: -2, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
     ]);
     const before = state.railMap.get(toKey(0, 0))!;
-    expect(before.upper).toBeDefined();
+    expect(before.uppers?.[1]).toBeDefined();
 
     state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
     const after = state.railMap.get(toKey(0, 0))!;
     expect(after.type).toBe('station');
-    expect(after.upper).toEqual(before.upper);
+    expect(after.uppers?.[1]).toEqual(before.uppers?.[1]);
   });
 
   it('坂(ramp)のセルに駅を置いても ramp が消えない', () => {
@@ -401,7 +401,7 @@ describe('平面交差（applyRailPath、ダイヤモンドクロッシング）
 
     // ダイヤモンドクロッシング: 4方向すべてが地平のconnectionsに載る
     expect(after.connections).toBe(DIR.N | DIR.E | DIR.S | DIR.W);
-    expect(after.upper).toBeUndefined();
+    expect(after.uppers?.[1]).toBeUndefined();
   });
 
   it('ゆるやかに合流する角度でも従来通り分岐点になる', () => {
@@ -413,7 +413,7 @@ describe('平面交差（applyRailPath、ダイヤモンドクロッシング）
 
     const cell = state.railMap.get(toKey(1, 1))!;
     expect(cell.connections! & DIR.NW).toBe(DIR.NW);
-    expect(cell.upper).toBeUndefined();
+    expect(cell.uppers?.[1]).toBeUndefined();
   });
 
   it('駅セルは平面交差でも type が変化しない(既存の合流挙動のまま)', () => {
@@ -426,7 +426,7 @@ describe('平面交差（applyRailPath、ダイヤモンドクロッシング）
 
     const cell = state.railMap.get(toKey(1, 1))!;
     expect(cell.type).toBe('station');
-    expect(cell.upper).toBeUndefined();
+    expect(cell.uppers?.[1]).toBeUndefined();
   });
 
   it('車庫セルは平面交差でも type が変化しない(既存の合流挙動のまま)', () => {
@@ -437,7 +437,7 @@ describe('平面交差（applyRailPath、ダイヤモンドクロッシング）
 
     const cell = state.railMap.get(toKey(1, 1))!;
     expect(cell.type).toBe('depot');
-    expect(cell.upper).toBeUndefined();
+    expect(cell.uppers?.[1]).toBeUndefined();
   });
 
   it('applyRailPathDetailed の overpassCells は常に空(自動高架は廃止済み)', () => {
@@ -470,10 +470,10 @@ describe('planElevatedPath（高架線の坂/橋桁の役割割り当て・純�
     const plan = planElevatedPath(6, false, false);
     expect(plan).not.toBeNull();
     expect(plan!.roles.map(r => r.kind)).toEqual(['ramp', 'ramp', 'span', 'span', 'ramp', 'ramp']);
-    expect(plan!.roles[0]).toEqual({ kind: 'ramp', side: 'start', level: 1 });
-    expect(plan!.roles[1]).toEqual({ kind: 'ramp', side: 'start', level: 2 });
-    expect(plan!.roles[4]).toEqual({ kind: 'ramp', side: 'end', level: 2 });
-    expect(plan!.roles[5]).toEqual({ kind: 'ramp', side: 'end', level: 1 });
+    expect(plan!.roles[0]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 1 });
+    expect(plan!.roles[1]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 2 });
+    expect(plan!.roles[4]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 2 });
+    expect(plan!.roles[5]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 1 });
   });
 
   it('始点が既存の高架に継ぎ足す場合、始点側には坂を作らない', () => {
@@ -515,19 +515,19 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     for (const pos of [path[0], path[1], path[4], path[5]]) {
       const cell = result.railMap.get(toKey(pos.x, pos.z))!;
       expect(cell.type).toBe('rail');
-      expect(cell.upper).toBeUndefined();
+      expect(cell.uppers?.[1]).toBeUndefined();
       expect(cell.ramp).toBeDefined();
     }
-    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1 });
-    expect(result.railMap.get(toKey(1, 0))!.ramp).toEqual({ dir: DIR.E, level: 2 });
-    expect(result.railMap.get(toKey(4, 0))!.ramp).toEqual({ dir: DIR.W, level: 2 });
-    expect(result.railMap.get(toKey(5, 0))!.ramp).toEqual({ dir: DIR.W, level: 1 });
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1, base: 0 });
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toEqual({ dir: DIR.E, level: 2, base: 0 });
+    expect(result.railMap.get(toKey(4, 0))!.ramp).toEqual({ dir: DIR.W, level: 2, base: 0 });
+    expect(result.railMap.get(toKey(5, 0))!.ramp).toEqual({ dir: DIR.W, level: 1, base: 0 });
 
     const mid1 = result.railMap.get(toKey(2, 0))!;
     const mid2 = result.railMap.get(toKey(3, 0))!;
     expect(mid1.connections ?? 0).toBe(0);
-    expect(mid1.upper?.connections).toBe(DIR.E | DIR.W);
-    expect(mid2.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(mid1.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
+    expect(mid2.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
     expect(mid1.ramp).toBeUndefined();
   });
 
@@ -539,7 +539,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     const result = applyElevatedPath(state, path);
     // 曲がり角の橋桁セル(2,0)はE|W|Sの複数ビットを持つ
     const corner = result.railMap.get(toKey(2, 0))!;
-    expect(corner.upper?.connections).toBe(DIR.W | DIR.S);
+    expect(corner.uppers?.[1]?.connections).toBe(DIR.W | DIR.S);
     // 坂は両端2セルずつ
     expect(result.railMap.get(toKey(0, 0))!.ramp).toBeDefined();
     expect(result.railMap.get(toKey(2, 2))!.ramp).toBeDefined();
@@ -558,7 +558,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     const state = emptyState();
     const path = Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 }));
     const result = applyElevatedPath(state, path);
-    expect(result.railMap.get(toKey(10, 0))!.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(result.railMap.get(toKey(10, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
   });
 
   it('既存の高架の端に継ぎ足すと、継ぎ足し側には坂を作らず高架のまま延伸する', () => {
@@ -571,13 +571,13 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     state = applyElevatedPath(state, [
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
     ]);
-    expect(state.railMap.get(toKey(2, 0))!.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(state.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
 
     // (2,0)(橋桁)から東へ延伸する
     const extended = applyElevatedPath(state, [{ x: 2, z: 0 }, { x: 2, z: -1 }, { x: 2, z: -2 }]);
     // 継ぎ足し元(2,0)は既存の橋桁のまま(坂にならない)
     expect(extended.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
-    expect(extended.railMap.get(toKey(2, 0))!.upper?.connections).toBe(DIR.E | DIR.W | DIR.N);
+    expect(extended.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W | DIR.N);
     // 行き止まり側(2,-2)は坂になる
     expect(extended.railMap.get(toKey(2, -2))!.ramp).toBeDefined();
   });
@@ -600,7 +600,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     let state = emptyState();
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     state = applyElevatedPath(state, path);
-    expect(state.railMap.get(toKey(2, 0))!.upper).toBeDefined();
+    expect(state.railMap.get(toKey(2, 0))!.uppers?.[1]).toBeDefined();
 
     const crossing = [{ x: 2, z: -2 }, { x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 }];
     const result = applyElevatedPath(state, crossing);
@@ -624,7 +624,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     const result = applyElevatedPath(state, path);
     const mid = result.railMap.get(toKey(2, 0))!;
     expect(mid.connections).toBe(beforeGround);
-    expect(mid.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(mid.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
   });
 
   it('橋桁の下に後から地平の線路を敷ける(高架は既存のまま)', () => {
@@ -633,7 +633,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     state = applyElevatedPath(state, path);
     const result = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }]);
     const mid = result.railMap.get(toKey(2, 0))!;
-    expect(mid.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(mid.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
     expect(mid.connections! & DIR.N).toBe(DIR.N);
     expect(mid.connections! & DIR.S).toBe(DIR.S);
   });
@@ -643,7 +643,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     const terrain = new Map<string, TerrainType>([[toKey(2, 0), 'water']]);
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const result = applyElevatedPath(state, path, terrain);
-    expect(result.railMap.get(toKey(2, 0))!.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(result.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
   });
 });
 
@@ -655,8 +655,8 @@ describe('applyBridge（旧APIの後方互換ラッパー）', () => {
       { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
     ];
     const result = applyBridge(state, path);
-    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1 });
-    expect(result.railMap.get(toKey(2, 0))!.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1, base: 0 });
+    expect(result.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
   });
 });
 
@@ -674,8 +674,8 @@ describe('高架駅タイル（applyElevatedStation）', () => {
     ]);
     const result = applyElevatedStation(state, { x: 2, z: 0 });
     const cell = result.railMap.get(toKey(2, 0))!;
-    expect(cell.upper?.stationId).toBeDefined();
-    const st = result.stations.get(cell.upper!.stationId!)!;
+    expect(cell.uppers?.[1]?.stationId).toBeDefined();
+    const st = result.stations.get(cell.uppers?.[1]!.stationId!)!;
     expect(st.cells).toEqual([{ x: 2, z: 0, layer: 1 }]);
   });
 
@@ -685,7 +685,7 @@ describe('高架駅タイル（applyElevatedStation）', () => {
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
     ]);
     state = applyElevatedStation(state, { x: 2, z: 0 });
-    const stationId = state.railMap.get(toKey(2, 0))!.upper!.stationId!;
+    const stationId = state.railMap.get(toKey(2, 0))!.uppers?.[1]!.stationId!;
 
     const result = applyElevatedStation(state, { x: 3, z: 0 });
     const st = result.stations.get(stationId)!;
@@ -710,7 +710,7 @@ describe('高架駅タイル（applyElevatedStation）', () => {
     expect(crossing.type).toBe('station'); // 地平のtype/接続はそのまま
     expect(crossing.connections).toBe(groundBefore);
     expect(crossing.stationId).toBe(groundStationId);
-    expect(crossing.upper?.stationId).toBe(groundStationId);
+    expect(crossing.uppers?.[1]?.stationId).toBe(groundStationId);
 
     const st = result.stations.get(groundStationId)!;
     expect(st.cells).toEqual(
@@ -738,13 +738,13 @@ describe('高架セル1枚の撤去（removePath）', () => {
     const path = Array.from({ length: 8 }, (_, i) => ({ x: i, z: 0 }));
     state = applyElevatedPath(state, path);
     // 橋桁は index 2..5 (0,1,6,7が坂)
-    expect(state.railMap.get(toKey(3, 0))!.upper).toBeDefined();
+    expect(state.railMap.get(toKey(3, 0))!.uppers?.[1]).toBeDefined();
 
     const result = removePath(state, [{ x: 3, z: 0 }]);
     expect(result.railMap.get(toKey(3, 0))).toBeUndefined();
     // 他の橋桁・坂セルは残る
-    expect(result.railMap.get(toKey(2, 0))!.upper).toBeDefined();
-    expect(result.railMap.get(toKey(4, 0))!.upper).toBeDefined();
+    expect(result.railMap.get(toKey(2, 0))!.uppers?.[1]).toBeDefined();
+    expect(result.railMap.get(toKey(4, 0))!.uppers?.[1]).toBeDefined();
     expect(result.railMap.get(toKey(0, 0))!.ramp).toBeDefined();
   });
 
@@ -773,7 +773,7 @@ describe('高架セル1枚の撤去（removePath）', () => {
     const result = removePath(state, [{ x: 2, z: 0 }]);
     const cell = result.railMap.get(toKey(2, 0))!;
     expect(cell).toBeDefined();
-    expect(cell.upper).toBeUndefined();
+    expect(cell.uppers?.[1]).toBeUndefined();
     expect(cell.connections! & DIR.N).toBe(DIR.N);
     expect(cell.connections! & DIR.S).toBe(DIR.S);
   });
@@ -783,9 +783,88 @@ describe('高架セル1枚の撤去（removePath）', () => {
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     state = applyElevatedPath(state, path);
     state = applyElevatedStation(state, { x: 2, z: 0 });
-    const stationId = state.railMap.get(toKey(2, 0))!.upper!.stationId!;
+    const stationId = state.railMap.get(toKey(2, 0))!.uppers?.[1]!.stationId!;
 
     const result = removePath(state, [{ x: 2, z: 0 }]);
     expect(result.stations.get(stationId)).toBeUndefined();
+  });
+});
+
+describe('多レベル高架(level 2/3)', () => {
+  it('planElevatedPath: レベル2の自由端には坂4セル(level1x2+level2x2相当)が割り当てられる', () => {
+    // 長さ10: 両端とも自由端(継ぎ足しでない)、targetLevel=2 → 各端2段差*2セル=4セルの坂、
+    // 中央2セルが橋桁(span)。
+    const plan = planElevatedPath(10, false, false, 2);
+    expect(plan).not.toBeNull();
+    expect(plan!.roles.map(r => r.kind)).toEqual([
+      'ramp', 'ramp', 'ramp', 'ramp', 'span', 'span', 'ramp', 'ramp', 'ramp', 'ramp',
+    ]);
+    // 始点側: base0(地平→level1)のlevel1/level2、続いてbase1(level1→level2)のlevel1/level2
+    expect(plan!.roles[0]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 1 });
+    expect(plan!.roles[1]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 2 });
+    expect(plan!.roles[2]).toEqual({ kind: 'ramp', side: 'start', base: 1, level: 1 });
+    expect(plan!.roles[3]).toEqual({ kind: 'ramp', side: 'start', base: 1, level: 2 });
+  });
+
+  it('resolveElevatedPathEnd: レベル1の既存高架(橋桁)へレベル1の経路を継ぎ足す端には坂を作らない', () => {
+    let state = emptyState();
+    // 長さ5: 両端2セルずつが坂、中央(x=2)だけが橋桁(span)になる
+    state = applyElevatedPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ], undefined, 1);
+    const info = resolveElevatedPathEnd(state.railMap, { x: 2, z: 0 }, 1);
+    expect(info.continuesElevated).toBe(true);
+    expect(info.existingLevel).toBe(1);
+  });
+
+  it('継ぎ足し先の既存高架レベルが建設レベルと一致しない場合、その端は自由端(坂あり)として扱われる', () => {
+    let state = emptyState();
+    // 長さ5: 中央(x=2,z=0)だけがレベル1の橋桁(span)になる
+    state = applyElevatedPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ], undefined, 1);
+    // その橋桁セル(2,0)からレベル2で継ぎ足そうとする → レベル不一致のため継続とはみなさず、
+    // 自由端(坂あり)として建設される(別レベルの桁とは独立して併存できる)。
+    // レベル2の自由端は片側4セルの坂が必要なため、長さ8の経路にする。
+    state = applyElevatedPath(state, [
+      { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 }, { x: 2, z: 3 },
+      { x: 2, z: 4 }, { x: 2, z: 5 }, { x: 2, z: 6 }, { x: 2, z: 7 },
+    ], undefined, 2);
+    const cell = state.railMap.get(toKey(2, 0))!;
+    expect(cell.uppers?.[1]?.connections).toBeDefined(); // レベル1の桁は残る
+    expect(cell.ramp).toBeDefined(); // レベル2側の坂が新たに付く
+  });
+
+  // 長さ10の経路(ramp4+span2+ramp4)を使う: 中央2セル(x=4,5)が橋桁(span)になる。
+  const tenCellPath = Array.from({ length: 10 }, (_, i) => ({ x: i, z: 0 }));
+
+  it('applyElevatedPath: レベル2の桁はuppers[2]に入り、レベル1とは独立して併存できる', () => {
+    let state = emptyState();
+    // まずレベル1の高架線を敷く(x=4,5が橋桁)
+    state = applyElevatedPath(state, tenCellPath, undefined, 1);
+    expect(state.railMap.get(toKey(4, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
+    // 同じ座標にレベル2の高架線を重ねて敷く(別レベルなので併存できる)
+    const result = applyElevatedPath(state, tenCellPath, undefined, 2);
+    expect(result.railMap).not.toBe(state.railMap);
+    const mid = result.railMap.get(toKey(4, 0))!;
+    expect(mid.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
+    expect(mid.uppers?.[2]?.connections).toBe(DIR.E | DIR.W);
+  });
+
+  it('applyElevatedPath: 同一レベルへの二重架けはno-op', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, tenCellPath, undefined, 2);
+    const before = state;
+    state = applyElevatedPath(state, tenCellPath, undefined, 2);
+    expect(state).toBe(before);
+  });
+
+  it('applyElevatedStation: レベル2の高架線にレベル2の駅を置ける', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, tenCellPath, undefined, 2);
+    const result = applyElevatedStation(state, { x: 4, z: 0 }, [], 2);
+    const cell = result.railMap.get(toKey(4, 0))!;
+    expect(cell.uppers?.[2]?.stationId).toBeDefined();
+    expect(cell.uppers?.[1]).toBeUndefined();
   });
 });

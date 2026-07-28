@@ -60,7 +60,7 @@ export function canPlaceTrainAt(
 
   const headKey = toKey(headCell.x, headCell.z);
   const headData = railMap.get(headKey);
-  if (!isRailLike(headData) || headData!.upper) return null;
+  if (!isRailLike(headData) || headData!.uppers) return null;
 
   const cells: Grid[] = [{ x: headCell.x, z: headCell.z }];
   const visited = new Set<string>([headKey]);
@@ -77,7 +77,7 @@ export function canPlaceTrainAt(
       const nKey = toKey(nx, nz);
       if (visited.has(nKey)) continue;
       const nData = railMap.get(nKey);
-      if (!isRailLike(nData) || nData!.upper) continue;
+      if (!isRailLike(nData) || nData!.uppers) continue;
       next = { x: nx, z: nz };
       break;
     }

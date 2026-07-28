@@ -18,11 +18,11 @@ const cell = (partial: Partial<CellData>): CellData => ({
 
 describe('isElevatedStationCell', () => {
   it('upperがありstationIdもあれば高架駅セル', () => {
-    expect(isElevatedStationCell(cell({ upper: { connections: 0b10001000, stationId: 's1' } }))).toBe(true);
+    expect(isElevatedStationCell(cell({ uppers: { 1: { connections: 0b10001000, stationId: 's1' } } }))).toBe(true);
   });
 
   it('upperはあるがstationIdが無ければ単なる橋桁', () => {
-    expect(isElevatedStationCell(cell({ upper: { connections: 0b10001000 } }))).toBe(false);
+    expect(isElevatedStationCell(cell({ uppers: { 1: { connections: 0b10001000 } } }))).toBe(false);
   });
 
   it('upperが無ければ高架駅セルではない', () => {
@@ -36,7 +36,7 @@ describe('groundStationCells / elevatedStationCells', () => {
     const railMap = new Map<string, CellData>();
     railMap.set(toKey(0, 0), cell({
       type: 'station', stationId: 'cross1', connections: 0b10001000,
-      upper: { connections: 0b00100010, stationId: 'cross1' },
+      uppers: { 1: { connections: 0b00100010, stationId: 'cross1' } },
     }));
     railMap.set(toKey(0, -1), cell({ type: 'station', stationId: 'cross1', connections: 0b10001000 }));
 
@@ -50,7 +50,7 @@ describe('groundStationCells / elevatedStationCells', () => {
 
   it('橋桁(stationId無し)のupperは拾わない', () => {
     const railMap = new Map<string, CellData>();
-    railMap.set(toKey(2, 2), cell({ upper: { connections: 0b10001000 } }));
+    railMap.set(toKey(2, 2), cell({ uppers: { 1: { connections: 0b10001000 } } }));
     expect(elevatedStationCells(railMap)).toHaveLength(0);
   });
 });

@@ -1012,7 +1012,7 @@ describe('stepWorld: 立体交差(upper)を走行中の描画高さ', () => {
     const overpassX = 5;
     const key = toKey(overpassX, 0);
     const original = railMap.get(key)!;
-    railMap.set(key, { ...original, connections: 0, upper: { connections: original.connections! } });
+    railMap.set(key, { ...original, connections: 0, uppers: { 1: { connections: original.connections! } } });
 
     const train = makeTrain({ schedule: ['stA'] });
     const world = makeWorld(railMap, stations, [train]);
@@ -1043,10 +1043,10 @@ describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高�
       { x: 4, z: 0 }, { x: 5, z: 0 }, { x: 6, z: 0 },
       { x: 7, z: 0 }, { x: 8, z: 0 }, { x: 9, z: 0 },
     ]);
-    expect(bridged.railMap.get(toKey(4, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 1 });
-    expect(bridged.railMap.get(toKey(5, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 2 });
-    expect(bridged.railMap.get(toKey(8, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 2 });
-    expect(bridged.railMap.get(toKey(9, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 1 });
+    expect(bridged.railMap.get(toKey(4, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 1, base: 0 });
+    expect(bridged.railMap.get(toKey(5, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 2, base: 0 });
+    expect(bridged.railMap.get(toKey(8, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 2, base: 0 });
+    expect(bridged.railMap.get(toKey(9, 0))!.ramp).toEqual({ dir: expect.any(Number), level: 1, base: 0 });
 
     const train = makeTrain({ schedule: ['stA'] });
     const world = makeWorld(bridged.railMap, bridged.stations, [train]);
@@ -1111,7 +1111,7 @@ describe('stepWorld: 立体交差(層の突き合わせ) 既に目的駅にい�
       type: 'station',
       stationId: 'stA',
       connections: 0,
-      upper: { connections: 0 },
+      uppers: { 1: { connections: 0 } },
     });
     const stations = new Map<string, StationData>([
       ['stA', { id: 'stA', name: 'A', cells: [{ x: 5, z: 0 }], center: { x: 5, z: 0 }, platformDoors: 'none' }],
@@ -1148,18 +1148,18 @@ describe('stepWorld: 立体交差(層の突き合わせ) 既に目的駅にい�
       const opp = getOppositeDir(dir);
       const ck = toKey(curr.x, curr.z);
       const cc = railMap.get(ck) || { type: 'rail' as const };
-      railMap.set(ck, { ...cc, upper: { connections: (cc.upper?.connections || 0) | dir } });
+      railMap.set(ck, { ...cc, uppers: { 1: { connections: (cc.uppers?.[1]?.connections || 0) | dir } } });
       const nk = toKey(next.x, next.z);
       const nc = railMap.get(nk) || { type: 'rail' as const };
-      railMap.set(nk, { ...nc, upper: { connections: (nc.upper?.connections || 0) | opp } });
+      railMap.set(nk, { ...nc, uppers: { 1: { connections: (nc.uppers?.[1]?.connections || 0) | opp } } });
     }
     const lastKey = toKey(2, 0);
-    railMap.set(lastKey, { ...railMap.get(lastKey)!, upper: { ...railMap.get(lastKey)!.upper!, stationId: 'stUP' } });
+    railMap.set(lastKey, { ...railMap.get(lastKey)!, uppers: { 1: { ...railMap.get(lastKey)!.uppers?.[1]!, stationId: 'stUP' } } });
     // resolveEntryLayerがstartセルの層を解決できるよう、prevGrid(西隣、実在しなくてよい)
     // からの進入ビットをupper.connectionsに足しておく。
     const firstKey = toKey(0, 0);
     const firstCell = railMap.get(firstKey)!;
-    railMap.set(firstKey, { ...firstCell, upper: { ...firstCell.upper!, connections: (firstCell.upper!.connections) | DIR.W } });
+    railMap.set(firstKey, { ...firstCell, uppers: { 1: { ...firstCell.uppers![1]!, connections: (firstCell.uppers![1]!.connections) | DIR.W } } });
     const stations = new Map<string, StationData>([
       ['stUP', { id: 'stUP', name: 'UP', cells: [{ x: 2, z: 0, layer: 1 as const }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
     ]);
@@ -1184,6 +1184,50 @@ describe('stepWorld: 立体交差(層の突き合わせ) 既に目的駅にい�
     expect(rt.grid).toEqual({ x: 2, z: 0, layer: 1 });
     expect(rt.renderPos.y).toBeCloseTo(0.5 + OVERPASS_HEIGHT, 5);
   });
+
+  it('レベル2の高架駅ホームに停車中は、renderPos.yが0.5+2*OVERPASS_HEIGHTになる', () => {
+    // レベル2のみの直線に、レベル2の高架ホーム(uppers[2].stationId)を1セル設ける。
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const railMap = new Map<string, CellData>();
+    for (let i = 0; i < cells.length - 1; i++) {
+      const curr = cells[i];
+      const next = cells[i + 1];
+      const dir = getDirFromVector(next.x - curr.x, next.z - curr.z);
+      const opp = getOppositeDir(dir);
+      const ck = toKey(curr.x, curr.z);
+      const cc = railMap.get(ck) || { type: 'rail' as const };
+      railMap.set(ck, { ...cc, uppers: { 2: { connections: (cc.uppers?.[2]?.connections || 0) | dir } } });
+      const nk = toKey(next.x, next.z);
+      const nc = railMap.get(nk) || { type: 'rail' as const };
+      railMap.set(nk, { ...nc, uppers: { 2: { connections: (nc.uppers?.[2]?.connections || 0) | opp } } });
+    }
+    const lastKey = toKey(2, 0);
+    railMap.set(lastKey, { ...railMap.get(lastKey)!, uppers: { 2: { ...railMap.get(lastKey)!.uppers?.[2]!, stationId: 'stUP2' } } });
+    const firstKey = toKey(0, 0);
+    const firstCell = railMap.get(firstKey)!;
+    railMap.set(firstKey, { ...firstCell, uppers: { 2: { ...firstCell.uppers![2]!, connections: (firstCell.uppers![2]!.connections) | DIR.W } } });
+    const stations = new Map<string, StationData>([
+      ['stUP2', { id: 'stUP2', name: 'UP2', cells: [{ x: 2, z: 0, layer: 2 as const }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const train = makeTrain({ schedule: ['stUP2'] });
+    const world = makeWorld(railMap, stations, [train]);
+    const rt = world.runtimes.get('t1') ?? (stepWorld(world, 0.1), world.runtimes.get('t1')!);
+    rt.grid = { x: 0, z: 0, layer: 2 };
+    rt.prevGrid = { x: -1, z: 0 };
+    rt.route = [];
+    rt.lastStopStationId = null;
+    rt.stopRemaining = 0;
+
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(rt.stopRemaining).toBeGreaterThan(0);
+    expect(rt.grid).toEqual({ x: 2, z: 0, layer: 2 });
+    expect(rt.renderPos.y).toBeCloseTo(0.5 + 2 * OVERPASS_HEIGHT, 5);
+  });
 });
 
 describe('stepWorld: 立体交差の十字乗換駅(統合) 地平×高架の同時運行と乗換', () => {
@@ -1207,13 +1251,13 @@ describe('stepWorld: 立体交差の十字乗換駅(統合) 地平×高架の同
       const opp = getOppositeDir(dir);
       const ck = toKey(curr.x, curr.z);
       const cc = railMap.get(ck) || { type: 'rail' as const };
-      railMap.set(ck, { ...cc, upper: { connections: (cc.upper?.connections || 0) | dir } });
+      railMap.set(ck, { ...cc, uppers: { 1: { connections: (cc.uppers?.[1]?.connections || 0) | dir } } });
       const nk = toKey(next.x, next.z);
       const nc = railMap.get(nk) || { type: 'rail' as const };
-      railMap.set(nk, { ...nc, upper: { connections: (nc.upper?.connections || 0) | opp } });
+      railMap.set(nk, { ...nc, uppers: { 1: { connections: (nc.uppers?.[1]?.connections || 0) | opp } } });
     }
-    railMap.set(toKey(0, -3), { ...railMap.get(toKey(0, -3))!, upper: { ...railMap.get(toKey(0, -3))!.upper!, stationId: 'stN' } });
-    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, upper: { ...railMap.get(toKey(0, 0))!.upper!, stationId: crossId } });
+    railMap.set(toKey(0, -3), { ...railMap.get(toKey(0, -3))!, uppers: { 1: { ...railMap.get(toKey(0, -3))!.uppers?.[1]!, stationId: 'stN' } } });
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, uppers: { 1: { ...railMap.get(toKey(0, 0))!.uppers?.[1]!, stationId: crossId } } });
 
     const stations = new Map<string, StationData>([
       ['stW', { id: 'stW', name: 'W', cells: [{ x: -3, z: 0 }], center: { x: -3, z: 0 }, platformDoors: 'none' }],

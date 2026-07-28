@@ -19,30 +19,37 @@ export interface CellData {
   tunnel?: boolean;
   /**
    * 立体交差(高架)の線路。地平側(connections)とは接続しない別の線路。
-   * construction.ts の applyElevatedPath で高架線の橋桁セルにのみ設定される
-   * (直角に線路を敷いただけでは自動生成されない。平面交差にする場合は
-   * connectionsへORするだけで済ませ、upperは作らない)。
+   * キーは高架のレベル(1〜3、高さは L*OVERPASS_HEIGHT)。construction.ts の
+   * applyElevatedPath で高架線の橋桁セルにのみ設定される(直角に線路を敷いただけでは
+   * 自動生成されない。平面交差にする場合は connections へ OR するだけで済ませ、
+   * uppers は作らない)。異なるレベルの桁は互いに独立して同一セルに併存できる
+   * (レベル2の桁の下をレベル1の桁が通る、等)。
    * 列車には層を持たせない。「そのセルにどちら向きで入ったか」(進入元へ戻るビットが
-   * connectionsとupper.connectionsのどちらに立っているか)で一意に決まるため。
+   * connectionsとuppers[L].connectionsのどれに立っているか)で一意に決まるため。
    *
-   * stationId: この橋桁が「高架駅のホーム」である場合にのみ設定する。
-   * 高架駅セルの判定は「upperを持ち、かつ upper.stationId がある」こと。
-   * stationIdが無いupper(undefined)は単なる橋桁(駅ではない)を意味し、
+   * stationId: このレベルの橋桁が「高架駅のホーム」である場合にのみ設定する。
+   * 高架駅セルの判定は「uppers[L]を持ち、かつ uppers[L].stationId がある」こと。
+   * stationIdが無いuppers[L](undefined)は単なる橋桁(駅ではない)を意味し、
    * 後段(予約のisSafeWaitingPoint等)では停止不可の扱いになる想定。
+   *
+   * 旧セーブ(v12以前)の`upper`はuppers[1]へ移行する(persistence.ts参照)。
    */
-  upper?: { connections: number; stationId?: string };
+  uppers?: Partial<Record<1 | 2 | 3, { connections: number; stationId?: string }>>;
   /**
-   * 坂セル(applyElevatedPathが高架線の地平に繋がる/行き止まりの端に付ける)であることを
-   * 示す。dirは登り方向(桁のあるupperセル側へ向かう8方向ビット)。
-   * セル自体は従来どおり地平のconnectionsを持ったまま、この坂情報が付く。
-   * levelは地平からの高さの段階: 1=地平寄りの下段(OVERPASS_HEIGHT/3)、
-   * 2=桁寄りの上段(OVERPASS_HEIGHT*2/3)。高架線の各端は坂2セル(level1→level2)+
-   * 橋桁(0セル以上)という構成になり、地平→level1→level2→桁(OVERPASS_HEIGHT)と
-   * 高さが3段階でつながる。既存の高架へ継ぎ足す端には坂を作らない(高架のまま続く)。
-   * 旧セーブにはlevelが無く、読み出しは常に (cell.ramp?.level ?? 2) で行う
-   * (旧データは1セルの急な坂だったため、桁側の高さに近いlevel2扱いにする)。
+   * 坂セル(applyElevatedPathが高架線の地平/下位レベルに繋がる/行き止まりの端に付ける)
+   * であることを示す。dirは登り方向(上位側へ向かう8方向ビット)。
+   * セル自体は従来どおりbaseレベルの線路(base=0なら地平connections、base≥1なら
+   * uppers[base].connections)を持ったまま、この坂情報が付く。
+   * baseは坂の下側レベル(省略時0=地平)。levelは坂の中でのどちら寄りか:
+   * 1=下段(OVERPASS_HEIGHT/3)、2=上段(OVERPASS_HEIGHT*2/3)。1段差(base→base+1)は
+   * 坂2セル(level1→level2)+橋桁(0セル以上)という構成になり、
+   * base→level1→level2→base+1と高さが3段階でつながる。
+   * 既存の高架へ継ぎ足す端には坂を作らない(高架のまま続く)。
+   * 旧セーブにはlevel/baseが無く、読み出しは常に (cell.ramp?.level ?? 2)・
+   * (cell.ramp?.base ?? 0) で行う(旧データは1セルの急な坂だったため、
+   * 桁側の高さに近いlevel2扱いにする)。
    */
-  ramp?: { dir: number; level?: 1 | 2 };
+  ramp?: { dir: number; level?: 1 | 2; base?: number };
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
@@ -51,11 +58,12 @@ export interface StationData {
   id: string;
   name: string;
   /**
-   * layer: このセルが地平(0、省略時の既定)か高架(1、立体交差の高架ホーム)かを示す。
-   * 1つの駅IDに地平ホーム群(layer未設定/0)と高架ホーム群(layer:1)が両方
-   * ぶら下がることがある(立体交差の十字乗り換え駅)。
+   * layer: このセルが地平(0、省略時の既定)か高架(1〜3、立体交差の高架ホーム、
+   * レベルはL*OVERPASS_HEIGHTの高さ)かを示す。1つの駅IDに地平ホーム群
+   * (layer未設定/0)と各レベルの高架ホーム群が複数ぶら下がることがある
+   * (立体交差の十字乗り換え駅)。
    */
-  cells: { x: number, z: number, layer?: 0 | 1 }[];
+  cells: { x: number, z: number, layer?: 0 | 1 | 2 | 3 }[];
   center: { x: number, z: number };
   platformDoors: PlatformDoorType;
 }

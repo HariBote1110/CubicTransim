@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DIR, toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData } from '../types';
 import { calculateRoute, calculateRouteWithStop } from './pathfinding';
-import { applyRailPath, applyBridge, applyStation, type ConstructionState } from './construction';
+import { applyRailPath, applyBridge, applyStation, applyElevatedPath, applyElevatedStation, type ConstructionState } from './construction';
 
 const noOccupied = new Set<string>();
 const noReserved = new Set<string>();
@@ -453,7 +453,7 @@ describe('立体交差(upper)の経路探索', () => {
     // 交差セル(2,0)は既存のE|Wと合流しないため upper 側にN|Sを持つ。
     // (2,-1)→(2,0)、(2,0)→(2,1) の南北接続はどちらも upper に入る。
     const cell20 = railMap.get(toKey(2, 0))!;
-    railMap.set(toKey(2, 0), { ...cell20, upper: { connections: DIR.N | DIR.S } });
+    railMap.set(toKey(2, 0), { ...cell20, uppers: { 1: { connections: DIR.N | DIR.S } } });
     const cell2m1 = railMap.get(toKey(2, -1))!;
     railMap.set(toKey(2, -1), { ...cell2m1, connections: (cell2m1.connections || 0) | DIR.S });
     const cell21 = railMap.get(toKey(2, 1))!;
@@ -516,7 +516,7 @@ describe('平面交差(ダイヤモンドクロッシング)の経路探索', ()
 
     const crossing = state.railMap.get(toKey(2, 0))!;
     expect(crossing.connections).toBe(DIR.N | DIR.E | DIR.S | DIR.W);
-    expect(crossing.upper).toBeUndefined();
+    expect(crossing.uppers?.[1]).toBeUndefined();
 
     const railMap = new Map(state.railMap);
     railMap.set(toKey(4, 0), { ...railMap.get(toKey(4, 0))!, type: 'station', stationId: 'stA' });
@@ -686,11 +686,11 @@ const buildUpperRailMap = (cells: { x: number; z: number }[]) => {
 
     const currKey = toKey(curr.x, curr.z);
     const currCell = map.get(currKey) || { type: 'rail' as const };
-    map.set(currKey, { ...currCell, upper: { connections: (currCell.upper?.connections || 0) | dir } });
+    map.set(currKey, { ...currCell, uppers: { 1: { connections: (currCell.uppers?.[1]?.connections || 0) | dir } } });
 
     const nextKey = toKey(next.x, next.z);
     const nextCell = map.get(nextKey) || { type: 'rail' as const };
-    map.set(nextKey, { ...nextCell, upper: { connections: (nextCell.upper?.connections || 0) | oppDir } });
+    map.set(nextKey, { ...nextCell, uppers: { 1: { connections: (nextCell.uppers?.[1]?.connections || 0) | oppDir } } });
   }
   return map;
 };
@@ -704,7 +704,7 @@ describe('立体交差(高架ホームの停止位置延長): findNextInLine/ext
     const railMap = buildUpperRailMap(cells);
     for (const x of [2, 3, 4]) {
       const cell = railMap.get(toKey(x, 0))!;
-      railMap.set(toKey(x, 0), { ...cell, upper: { ...cell.upper!, stationId: 'stHU' } });
+      railMap.set(toKey(x, 0), { ...cell, uppers: { 1: { ...cell.uppers?.[1]!, stationId: 'stHU' } } });
     }
     const stations = new Map<string, StationData>([
       ['stHU', { id: 'stHU', name: 'HU', cells: [{ x: 2, z: 0, layer: 1 }, { x: 3, z: 0, layer: 1 }, { x: 4, z: 0, layer: 1 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
@@ -731,7 +731,7 @@ describe('立体交差(高架ホームの停止位置延長): findNextInLine/ext
     const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
     const railMap = buildUpperRailMap(cells);
     const lastKey = toKey(2, 0);
-    railMap.set(lastKey, { ...railMap.get(lastKey)!, upper: { ...railMap.get(lastKey)!.upper!, stationId: 'stUP2' } });
+    railMap.set(lastKey, { ...railMap.get(lastKey)!, uppers: { 1: { ...railMap.get(lastKey)!.uppers?.[1]!, stationId: 'stUP2' } } });
     const stations = new Map<string, StationData>([
       ['stUP2', { id: 'stUP2', name: 'UP2', cells: [{ x: 2, z: 0, layer: 1 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
     ]);
@@ -757,10 +757,10 @@ describe('立体交差(層の突き合わせ): 地平駅の真上を高架で通
       type: 'station',
       stationId: 'stA',
       connections: DIR.E | DIR.W,
-      upper: { connections: DIR.N | DIR.S },
+      uppers: { 1: { connections: DIR.N | DIR.S } },
     });
-    railMap.set(toKey(0, -1), { type: 'rail', upper: { connections: DIR.N | DIR.S } });
-    railMap.set(toKey(0, 1), { type: 'rail', upper: { connections: DIR.N } });
+    railMap.set(toKey(0, -1), { type: 'rail', uppers: { 1: { connections: DIR.N | DIR.S } } });
+    railMap.set(toKey(0, 1), { type: 'rail', uppers: { 1: { connections: DIR.N } } });
 
     const stations = new Map<string, StationData>([
       ['stA', { id: 'stA', name: 'A', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
@@ -774,6 +774,54 @@ describe('立体交差(層の突き合わせ): 地平駅の真上を高架で通
     });
 
     // 高架を素通りするだけでは地平ホームには到達できない(空経路になる)。
+    expect(route).toEqual([]);
+  });
+});
+
+describe('多レベル高架: 地平→レベル1→レベル2と登坂する経路', () => {
+  it('地平→坂(base0)→レベル1桁→坂(base1)→レベル2桁と登る経路が引ける', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    // 長さ10のレベル2高架線: 両端4セルずつ(base0のlevel1/level2、base1のlevel1/level2の
+    // 2段差ぶん)が坂、中央2セル(x=4,5)がレベル2の橋桁になる。
+    // 地平(x=0)→坂(base0,level1)→坂(base0,level2)→坂(base1,level1)→坂(base1,level2)→
+    // レベル2桁(x=4,5)…と登る構成になる。
+    const level2Path = Array.from({ length: 10 }, (_, i) => ({ x: i, z: 0 }));
+    state = applyElevatedPath(state, level2Path, undefined, 2);
+    // レベル2桁のセル(x=4)に高架駅を設置する。
+    state = applyElevatedStation(state, { x: 4, z: 0 }, [], 2);
+    const stationId = state.railMap.get(toKey(4, 0))!.uppers![2]!.stationId!;
+
+    const route = calculateRoute(state.railMap, state.stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: null,
+      targetStationId: stationId,
+      cars: 1,
+    });
+
+    expect(route.length).toBeGreaterThan(0);
+    expect(route[route.length - 1]).toMatchObject({ x: 4, z: 0, layer: 2 });
+  });
+
+  it('レベル違いの桁同士は接続しない(別レベルの駅には到達できない)', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    const tenCellPath = Array.from({ length: 10 }, (_, i) => ({ x: i, z: 0 }));
+    state = applyElevatedPath(state, tenCellPath, undefined, 1);
+    // レベル1桁(x=4)に高架駅を設置する。
+    state = applyElevatedStation(state, { x: 4, z: 0 }, [], 1);
+    const stationId = state.railMap.get(toKey(4, 0))!.uppers![1]!.stationId!;
+
+    // レベル2の高架を全く別の場所(z=5)に独立して敷く。地平からは繋がっているが
+    // レベル1の駅とは異なる資源(uppers[2])なので到達できない。
+    const level2Path = Array.from({ length: 10 }, (_, i) => ({ x: i, z: 5 }));
+    state = applyElevatedPath(state, level2Path, undefined, 2);
+
+    const route = calculateRoute(state.railMap, state.stations, noOccupied, noReserved, {
+      start: { x: 0, z: 5 },
+      prev: null,
+      targetStationId: stationId,
+      cars: 1,
+    });
+
     expect(route).toEqual([]);
   });
 });

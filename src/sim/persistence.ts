@@ -146,10 +146,31 @@ export interface SaveDataV12 extends Omit<SaveDataV11, 'version'> {
   version: 12;
 }
 
+// v12以前のCellDataは`upper`(1レベル固定の高架)を持つ。v13で多レベル高架
+// (`uppers: Partial<Record<1|2|3, ...>>`)に一般化したため、旧形式との区別のために
+// バージョンを起こす。ramp.baseも同時に導入(v12以前は常にbase=0=地平からの坂)。
+// 旧セーブの実データは型上のCellData(uppers)とは異なる形(upper)を持つため、
+// 移行処理側ではLegacyCellDataとして緩く型付けして読む。
+export interface LegacyCellData {
+  type: CellData['type'];
+  connections?: number;
+  stationId?: string;
+  rotation?: number;
+  signalDir?: number;
+  bridge?: boolean;
+  tunnel?: boolean;
+  upper?: { connections: number; stationId?: string };
+  ramp?: { dir: number; level?: 1 | 2 };
+}
+
+export interface SaveDataV13 extends Omit<SaveDataV12, 'version'> {
+  version: 13;
+}
+
 export type SaveData =
   | SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5
   | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10 | SaveDataV11
-  | SaveDataV12;
+  | SaveDataV12 | SaveDataV13;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -174,9 +195,9 @@ export function serialiseWorld(
   groupDepartures: Map<string, number> = new Map(),
   loan = 0,
   demand: Map<string, PassengerCohort[]> = new Map()
-): SaveDataV12 {
+): SaveDataV13 {
   return {
-    version: 12,
+    version: 13,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -254,9 +275,43 @@ export function deserialiseWorld(data: SaveData): {
   const migrateTrains = (trains: TrainData[]) =>
     trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
-  if (data.version === 12 || data.version === 11 || data.version === 10 || data.version === 9) {
+  // v12以前のCellDataは`upper`(1レベル固定)を持つ。v13で`uppers`(レベル1〜3の
+  // Partial<Record>)へ一般化したため、`upper`があればuppers[1]へ移行する。
+  // ramp.baseも同時に導入したが、v12以前の坂は常にbase=0(地平からの坂)なので
+  // 補うだけで良い(levelは既存値をそのまま引き継ぐ)。
+  const migrateRailMap = (railMap: [string, LegacyCellData][]): [string, CellData][] =>
+    railMap.map(([key, cell]): [string, CellData] => {
+      const { upper, ramp, ...rest } = cell;
+      const migrated: CellData = { ...rest };
+      if (upper) migrated.uppers = { 1: { connections: upper.connections, stationId: upper.stationId } };
+      if (ramp) migrated.ramp = { ...ramp, base: 0 };
+      return [key, migrated];
+    });
+
+  if (data.version === 13) {
     return {
       railMap: new Map(data.railMap),
+      stations: migrateStations(data.stations),
+      trains: migrateTrains(data.trains),
+      runtimes,
+      waiting: new Map(data.waiting),
+      money: data.money,
+      towns: migrateTowns(data.towns),
+      terrain: new Map(data.terrain),
+      clock: data.clock,
+      currentLedger: migrateLedger(data.currentLedger),
+      ledgerHistory: data.ledgerHistory.map(migrateLedger),
+      stopLocation: data.stopLocation,
+      groups: data.groups ?? [],
+      groupDepartures: new Map(data.groupDepartures ?? []),
+      loan: data.loan,
+      demand: new Map(data.demand),
+    };
+  }
+
+  if (data.version === 12 || data.version === 11 || data.version === 10 || data.version === 9) {
+    return {
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -280,7 +335,7 @@ export function deserialiseWorld(data: SaveData): {
 
   if (data.version === 8) {
     return {
-      railMap: new Map(data.railMap),
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -301,7 +356,7 @@ export function deserialiseWorld(data: SaveData): {
 
   if (data.version === 7) {
     return {
-      railMap: new Map(data.railMap),
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -323,7 +378,7 @@ export function deserialiseWorld(data: SaveData): {
 
   if (data.version === 6) {
     return {
-      railMap: new Map(data.railMap),
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -344,7 +399,7 @@ export function deserialiseWorld(data: SaveData): {
 
   if (data.version === 5) {
     return {
-      railMap: new Map(data.railMap),
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -366,7 +421,7 @@ export function deserialiseWorld(data: SaveData): {
 
   if (data.version === 4) {
     return {
-      railMap: new Map(data.railMap),
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -388,7 +443,7 @@ export function deserialiseWorld(data: SaveData): {
 
   if (data.version === 3) {
     return {
-      railMap: new Map(data.railMap),
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -410,7 +465,7 @@ export function deserialiseWorld(data: SaveData): {
 
   if (data.version === 2) {
     return {
-      railMap: new Map(data.railMap),
+      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
       stations: migrateStations(data.stations),
       trains: migrateTrains(data.trains),
       runtimes,
@@ -431,7 +486,7 @@ export function deserialiseWorld(data: SaveData): {
 
   // v1→v6移行: waitingは空、moneyはSTARTING_MONEYから開始し、towns/terrain/暦/台帳も既定値にする。
   return {
-    railMap: new Map(data.railMap),
+    railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
     stations: migrateStations(data.stations),
     trains: migrateTrains(data.trains),
     runtimes,
