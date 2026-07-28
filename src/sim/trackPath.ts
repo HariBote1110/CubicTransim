@@ -31,6 +31,17 @@ export const RAMP_POS_LEVEL2 = 2 / 3;
 export const RAMP_POS_DECK = 1;
 
 /**
+ * 坂を構成する2セルそれぞれが担当する縦断プロファイルの範囲。
+ *
+ * 地平と最初の坂セルの共有境界は必ずpos=0、最後の坂セルと高架桁の共有境界は
+ * pos=1でなければならない。セル中心の中間値から始めると、その境界で既に高さが
+ * 生じてしまい、地平線路との間に見た目の隙間ができる。
+ */
+export function rampSegmentPositions(level: 1 | 2): [number, number] {
+  return level === 1 ? [RAMP_POS_GROUND, 0.5] : [0.5, RAMP_POS_DECK];
+}
+
+/**
  * Hermite の smoothstep(3x²-2x³)。x<=0で0、x>=1で1、両端で傾き0に漸近する
  * ease-in-outカーブ。橋の取り付き部を折れ角なく滑らかにするための基本形。
  */

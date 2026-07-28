@@ -55,6 +55,9 @@ const SLEEPER_PITCH = 0.24;
 const CURVE_SEGMENTS = 8;
 // セグメント同士の継ぎ目を隠すために各セグメントを前後へ伸ばす量。
 const JOIN_OVERLAP = 0.02;
+// 分岐線を本線へ合流させる位置。本線のセル端まで曲げると不自然な大きなS字になるため、
+// セル内でポイントらしく収束させる。
+const TURNOUT_JOIN_RATIO = 0.35;
 
 export interface TrackParts {
   ballast: THREE.BufferGeometry[];
@@ -152,7 +155,8 @@ export function buildTrackCentreLines(connections: number): TrackPoint[][] {
       const cn = norm(branch.x, branch.z);
       return (bn.x * cn.x + bn.z * cn.z) - (an.x * cn.x + an.z * cn.z);
     })[0];
-    routes.push(curvePoints(source, branch));
+    const join = { x: source.x * TURNOUT_JOIN_RATIO, z: source.z * TURNOUT_JOIN_RATIO };
+    routes.push(curvePoints(branch, join));
   }
   return routes;
 }

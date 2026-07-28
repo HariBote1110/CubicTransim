@@ -9,19 +9,11 @@ import {
   type TrackParts, type SupportParts,
 } from '../render/trackGeometry';
 import {
-  OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL, rampHeightAtPos,
-  RAMP_POS_GROUND, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2, RAMP_POS_DECK,
+  OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL, rampHeightAtPos, rampSegmentPositions,
 } from '../sim/trackPath';
 
 // 高架のレベル1〜MAX_ELEVATED_LEVELを走査するための配列([1,2,3])。
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
-
-// level1/level2境界どうしのposを、隣接セルの中間(=線路の境界点)として求める。
-// buildRampTrackParts/buildRampAbutmentPartへ渡すposLow/posHighはここで揃える
-// ことで、隣接セルのposがぴったり一致し、セルをまたいでも折れ角が出ない。
-const RAMP_BOUNDARY_GROUND_LEVEL1 = (RAMP_POS_GROUND + RAMP_POS_LEVEL1) / 2;
-const RAMP_BOUNDARY_LEVEL1_LEVEL2 = (RAMP_POS_LEVEL1 + RAMP_POS_LEVEL2) / 2;
-const RAMP_BOUNDARY_LEVEL2_DECK = (RAMP_POS_LEVEL2 + RAMP_POS_DECK) / 2;
 
 interface Props {
   railMap: Map<string, CellData>;
@@ -76,12 +68,11 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
         // level1(base寄り)は base/level1境界→level1/level2境界、level2(base+1寄り)は
         // level1/level2境界→level2/(base+1)境界を、rampHeightAtPos(pos, base)の曲線に
         // 沿って登る。旧セーブ(levelなし)はlevel2(桁側に近い段)として扱う。
-        // posLow/posHighはRAMP_POS_*から求めた境界値なので、隣接セルのposとぴったり
-        // 一致し、base→level1→level2→(base+1)のどのセル境界でも折れ角が生じない。
+        // posLow/posHighは共有境界で地平=0・坂の中間=0.5・桁=1に一致する範囲を使う。
+        // これにより地平→level1→level2→桁のどの境界でも高さの隙間が生じない。
         const level = data.ramp.level ?? 2;
         const base = data.ramp.base ?? 0;
-        const posLow = level === 1 ? RAMP_BOUNDARY_GROUND_LEVEL1 : RAMP_BOUNDARY_LEVEL1_LEVEL2;
-        const posHigh = level === 1 ? RAMP_BOUNDARY_LEVEL1_LEVEL2 : RAMP_BOUNDARY_LEVEL2_DECK;
+        const [posLow, posHigh] = rampSegmentPositions(level);
         const rampParts = buildRampTrackParts(data.ramp.dir, x, z, posLow, posHigh, undefined, base);
         all.ballast.push(...rampParts.ballast);
         all.sleepers.push(...rampParts.sleepers);
@@ -90,7 +81,7 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
         if (base === 0 && level === 1) {
           // 地平(base=0)に接するlevel1側だけ、従来どおり土盛りのくさびで支える。
           // 地平(pos=0)で高さ0に収束するようbuildRampAbutmentPart側のposLowは0のまま渡す。
-          const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, RAMP_BOUNDARY_LEVEL1_LEVEL2, RAMP_POS_GROUND);
+          const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, posHigh, posLow);
           if (wedge) abutments.push(wedge);
         } else {
           // それ以外(base>=1のlevel1、およびlevel2は常に)は地平に接しない
