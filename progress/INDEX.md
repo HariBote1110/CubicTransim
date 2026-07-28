@@ -1,4 +1,5 @@
 # progress インデックス
+- [startup-debug-scenario.md](startup-debug-scenario.md) 追記(v0.3.0-Alpha-25a: 単線デバッグを単編成へ修正) — 交換設備・信号のない単線に対向2編成を置く運行上の誤りを修正。デバッグは坂・高架・停車を安全に確認できる単編成の往復運行へ戻した
 - [startup-debug-scenario.md](startup-debug-scenario.md) 追記(v0.3.0-Alpha-24a: デバッグ列車のスポーンを修正) — 3両編成を駅セル中心へ置いたため後続車が駅舎にめり込んでいた。駅外の直線へ移動し、スポーンセルが駅ではないことをテストで保証
 - [startup-debug-scenario.md](startup-debug-scenario.md) — v0.3.0-Alpha-23a: 起動時に通常開始／デバッグモードを選択可能にし、坂・高架・往復2編成を自動生成。傾斜した車体の台車が浮かないよう、車体原点をレール面からの法線方向オフセットで補正
 - [graded-train-rendering.md](graded-train-rendering.md) — v0.3.0-Alpha-22a: 坂で編成全体が先頭車の高さに引きずられる問題を、各車両の3次元走行線・前後台車からの姿勢計算へ置換して解消。高架高を1.2→0.8へ下げ、車体・台車も小型化して勾配と見た目を緩和

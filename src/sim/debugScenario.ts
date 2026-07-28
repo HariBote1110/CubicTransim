@@ -9,7 +9,7 @@ export interface DebugScenario {
 }
 
 /**
- * 起動時の目視確認用に、地平・坂・高架を往復する2編成を用意する。
+ * 起動時の目視確認用に、地平・坂・高架を往復する1編成を用意する。
  * セーブデータは使わず、その場で生成するため通常プレイの状態を汚さない。
  */
 export function createDebugScenario(): DebugScenario {
@@ -32,9 +32,9 @@ export function createDebugScenario(): DebugScenario {
     stations: state.stations,
     trains: [
       // 駅セル中心に3両編成を置くと、初期履歴のない後続車が駅舎へ食い込む。
-      // 駅外の直線へ置き、両編成とも余地を持って走り始める。
+      // 駅外の直線へ置き、余地を持って走り始める。交換設備のない単線なので、
+      // 対向編成は置かない。
       { id: 'debug-west', x: -5, z: 0, schedule: [eastId, westId], scheduleIndex: 0, status: 'running', cars: 3 },
-      { id: 'debug-east', x: 5, z: 0, schedule: [westId, eastId], scheduleIndex: 0, status: 'running', cars: 3 },
     ],
   };
 }
