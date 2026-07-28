@@ -21,13 +21,12 @@ export const OVERPASS_HEIGHT = 0.8;
 export const MAX_ELEVATED_LEVEL = 3;
 
 // 坂(ramp)の高さプロファイルを表す正規化位置(0=地平、1=橋桁)。
-// 地平→坂(level1)→坂(level2)→桁 という並びを、セル中心が等間隔(1/3刻み)で
-// 並ぶものとして1本の連続パラメータに写像する。level自体はどのセルかを表す
-// 離散値のままだが、高さの計算はこのposを介した連続関数(rampHeightAtPos)に
-// 一本化することで、セルをまたいでも折れ角のない縦曲線になる。
+// 坂の下段セルはpos 0〜0.5、上段セルはpos 0.5〜1を描く。そのセル中心を
+// 列車の走行高さにも使う。描画側と異なる1/3・2/3を使うと、列車がレールより
+// 浮いたりめり込んだりするため、ここで同じ範囲の中心へ固定する。
 export const RAMP_POS_GROUND = 0;
-export const RAMP_POS_LEVEL1 = 1 / 3;
-export const RAMP_POS_LEVEL2 = 2 / 3;
+export const RAMP_POS_LEVEL1 = 1 / 4;
+export const RAMP_POS_LEVEL2 = 3 / 4;
 export const RAMP_POS_DECK = 1;
 
 /**

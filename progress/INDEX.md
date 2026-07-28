@@ -1,4 +1,5 @@
 # progress インデックス
+- [graded-train-rendering.md](graded-train-rendering.md) 追記(v0.3.0-Alpha-26a: 坂レールと列車高さを一致) — 坂レール描画が採用した level1=セル内0〜0.5／level2=0.5〜1 の区間と、列車側が参照する旧中心値1/3・2/3が食い違い、レールから浮く・めり込む原因になっていた。列車の高さ・姿勢の参照点を1/4・3/4へ統一
 - [startup-debug-scenario.md](startup-debug-scenario.md) 追記(v0.3.0-Alpha-25a: 単線デバッグを単編成へ修正) — 交換設備・信号のない単線に対向2編成を置く運行上の誤りを修正。デバッグは坂・高架・停車を安全に確認できる単編成の往復運行へ戻した
 - [startup-debug-scenario.md](startup-debug-scenario.md) 追記(v0.3.0-Alpha-24a: デバッグ列車のスポーンを修正) — 3両編成を駅セル中心へ置いたため後続車が駅舎にめり込んでいた。駅外の直線へ移動し、スポーンセルが駅ではないことをテストで保証
 - [startup-debug-scenario.md](startup-debug-scenario.md) — v0.3.0-Alpha-23a: 起動時に通常開始／デバッグモードを選択可能にし、坂・高架・往復2編成を自動生成。傾斜した車体の台車が浮かないよう、車体原点をレール面からの法線方向オフセットで補正
