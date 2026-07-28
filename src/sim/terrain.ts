@@ -153,3 +153,66 @@ export function computeElevation(terrain: Map<string, TerrainType>): Map<string,
 export function elevationAt(elevation: Map<string, number>, x: number, z: number): number {
   return elevation.get(toKey(Math.round(x), Math.round(z))) ?? 0;
 }
+
+/**
+ * コーナー標高。コーナー(cx,cz)は世界座標(cx-0.5, cz-0.5)の点で、
+ * セル(cx-1,cz-1)/(cx,cz-1)/(cx-1,cz)/(cx,cz) の4セルが囲む頂点にあたる。
+ * これら4セルの標高(未登録は0)の最小値を返す。min則により、
+ * 隣接セル間の標高差は常に1以下(=距離関数が1-Lipschitzであるため)なので、
+ * 生成される面は必ず連続した斜面になる。
+ */
+export function cornerElevation(elev: Map<string, number>, cx: number, cz: number): number {
+  const cells: Array<[number, number]> = [
+    [cx - 1, cz - 1],
+    [cx, cz - 1],
+    [cx - 1, cz],
+    [cx, cz],
+  ];
+  let min = Infinity;
+  for (const [x, z] of cells) {
+    const e = elev.get(toKey(x, z)) ?? 0;
+    if (e < min) min = e;
+  }
+  return min;
+}
+
+// セル(x,z)の4面(北/東/南/西)を "x,z,dx,dz" 形式(getVectorFromDirの単位ベクトル)で表した坑口面集合。
+// cliffFaces に含まれる面の2隅は、min則ではなくセル自身の標高になる(=坑口面を垂直の崖に保つ)。
+const CLIFF_CORNER_MAP: Record<string, [number, number]> = {
+  '0,-1': [0, 1], // 北面: 左上・右上
+  '1,0': [1, 2], // 東面: 右上・右下
+  '0,1': [2, 3], // 南面: 右下・左下
+  '-1,0': [3, 0], // 西面: 左下・左上
+};
+
+/**
+ * セル(x,z)の4隅のコーナー標高を [左上, 右上, 右下, 左下] の順で返す。
+ * 左上=corner(x,z)、右上=corner(x+1,z)、右下=corner(x+1,z+1)、左下=corner(x,z+1)。
+ * cliffFaces に "x,z,dx,dz" 形式でこのセルの坑口面が含まれる場合、
+ * その面に接する2隅はmin則を無視してセル自身の標高にする。
+ */
+export function cellCornerElevations(
+  elev: Map<string, number>,
+  x: number,
+  z: number,
+  cliffFaces?: Set<string>,
+): [number, number, number, number] {
+  const corners: [number, number, number, number] = [
+    cornerElevation(elev, x, z),
+    cornerElevation(elev, x + 1, z),
+    cornerElevation(elev, x + 1, z + 1),
+    cornerElevation(elev, x, z + 1),
+  ];
+
+  if (cliffFaces && cliffFaces.size > 0) {
+    const selfElevation = elev.get(toKey(x, z)) ?? 0;
+    for (const [dirKey, [i0, i1]] of Object.entries(CLIFF_CORNER_MAP)) {
+      if (cliffFaces.has(`${x},${z},${dirKey}`)) {
+        corners[i0] = selfElevation;
+        corners[i1] = selfElevation;
+      }
+    }
+  }
+
+  return corners;
+}
