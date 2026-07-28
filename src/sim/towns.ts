@@ -199,31 +199,31 @@ export function stationNameForTown(town: TownData, pos: Pos, usedNames: Set<stri
   return `${base}第${n}駅`;
 }
 
-// --- 何も無い所に駅を作ると町が発生する仕組み ---
+// --- 輸送力に応じて町が発生する仕組み ---
+//
+// 旧仕様(駅を置いた瞬間に一定確率で即湧き)は「適当に駅を置いただけで町が湧く」
+// という違和感の原因になっていたため廃止した。代わりに、実際にその駅へ列車が
+// 停まるようになり、輸送力(停車する列車の定員合計)が一定以上になって初めて
+// 町が育つ芽(小さな新しい町)が生える。判定は in-game 日次ティックで行う
+// (stepWorldから呼ばれるresolveTownSpawnTick)。
 
-/** 駅の近くに町が無いときに新しい町が湧く確率。 */
-export const NEW_TOWN_CHANCE = 0.5;
-export const NEW_TOWN_POPULATION_MIN = 100;
-export const NEW_TOWN_POPULATION_MAX = 400;
 // 新しい町は駅からこの距離(タイル)の範囲に生まれる。
 const NEW_TOWN_SPAWN_RADIUS_MIN = 1;
 const NEW_TOWN_SPAWN_RADIUS_MAX = 3;
+export const NEW_TOWN_POPULATION_MIN = 100;
+export const NEW_TOWN_POPULATION_MAX = 400;
 
 /**
- * 駅の建設をきっかけに新しい町が湧くかどうかを判定する純粋関数。
- * 近くに既に町があれば必ず null。無ければ NEW_TOWN_CHANCE の確率で、
- * 駅から1〜3タイル離れた平地(水域・山岳を除く)に小さな町を生成して返す。
- * rng は呼び出し側から注入する(この関数自体は副作用を持たない)。
+ * pos の周辺(1〜3タイル、水域・山岳を除く平地)から町の中心候補を1つ選び、
+ * 新しい町を生成する(呼び出し側は既に「生やしてよい」と判定済みの前提)。
+ * 候補が無ければnull。rngは呼び出し側から注入する。
  */
-export function maybeSpawnTownForStation(
+const spawnTownNear = (
   pos: Pos,
   towns: TownData[],
   terrain: Map<string, TerrainType>,
   rng: () => number
-): TownData | null {
-  if (nearestTownWithinRadius(pos, towns, TOWN_STATION_RADIUS)) return null;
-  if (rng() >= NEW_TOWN_CHANCE) return null;
-
+): TownData | null => {
   const candidates: Pos[] = [];
   for (let dz = -NEW_TOWN_SPAWN_RADIUS_MAX; dz <= NEW_TOWN_SPAWN_RADIUS_MAX; dz++) {
     for (let dx = -NEW_TOWN_SPAWN_RADIUS_MAX; dx <= NEW_TOWN_SPAWN_RADIUS_MAX; dx++) {
@@ -245,30 +245,67 @@ export function maybeSpawnTownForStation(
   );
 
   return { id: `town-spawn-${pos.x}-${pos.z}`, name, centre, population };
+};
+
+/**
+ * 駅1つぶんの「その駅に停まる運行の輸送力」。呼び出し側(simulation.ts)が
+ * 列車の運行表・編成両数から集計して渡す(towns.tsはtrains/groupsの形を知らない)。
+ */
+export interface StationTransportInfo {
+  stationId: string;
+  pos: Pos;
+  /** その駅に停車する運行を持つ列車の編成容量(定員)の合計。 */
+  capacity: number;
 }
 
-export interface TownSpawnForStationResult {
-  /** 命名に使う町の一覧。湧かなければ引数のtownsをそのまま返す(参照が変わらない)。 */
+/** この輸送力(定員合計)に達すると、日次チェックでTOWN_SPAWN_BASE_CHANCEの確率で町が湧き始める。 */
+export const TOWN_SPAWN_CAPACITY_THRESHOLD = 100;
+/** 輸送力がちょうどTOWN_SPAWN_CAPACITY_THRESHOLDのときの、日次チェック1回あたりの湧き確率。 */
+export const TOWN_SPAWN_BASE_CHANCE = 0.05;
+
+/** 駅の輸送力から、日次チェック1回あたりの町の湧き確率を求める(単純な線形、1で頭打ち)。 */
+export function townSpawnChance(capacity: number): number {
+  if (capacity < TOWN_SPAWN_CAPACITY_THRESHOLD) return 0;
+  return Math.min(1, TOWN_SPAWN_BASE_CHANCE * (capacity / TOWN_SPAWN_CAPACITY_THRESHOLD));
+}
+
+export interface TownSpawnTickResult {
+  /** 町が1つでも湧けば新しい配列、湧かなければ引数のtownsをそのまま返す(参照が変わらない)。 */
   towns: TownData[];
-  /** 今回新たに湧いた町。湧かなければnull。 */
-  spawnedTown: TownData | null;
+  /** 今回のチェックで新たに湧いた町の一覧(湧かなければ空配列)。 */
+  spawnedTowns: TownData[];
 }
 
 /**
- * 駅建設1件につき1回だけ町生成判定を行う共通ヘルパー。
- * 単一セルの駅(commitPath)・複数セルのテンプレート駅(commitTemplate)の両方から
- * 同じ判定を呼べるようにし、判定ロジックの写経・二重実装を避けるために切り出した。
- * pos には駅テンプレートの場合アンカー座標を渡す想定(セル数ぶん複数回抽選しない)。
+ * 日次ティックで呼ぶ、輸送力に応じた町の湧き判定。
+ *
+ * stationInfos の各駅について、(1) 近くに既存の町が無く、(2) 輸送力が
+ * TOWN_SPAWN_CAPACITY_THRESHOLD以上なら、townSpawnChanceの確率で新しい町を生やす。
+ * 同一tick内で先に湧いた町も後続の駅の「近くに町が無いか」判定に反映する
+ * (隣接する複数駅で同時に何個も湧かないように)。
  */
-export function resolveTownSpawnForStation(
-  pos: Pos,
+export function resolveTownSpawnTick(
+  stationInfos: StationTransportInfo[],
   towns: TownData[],
   terrain: Map<string, TerrainType>,
   rng: () => number
-): TownSpawnForStationResult {
-  const spawnedTown = maybeSpawnTownForStation(pos, towns, terrain, rng);
+): TownSpawnTickResult {
+  let currentTowns = towns;
+  const spawnedTowns: TownData[] = [];
+
+  for (const info of stationInfos) {
+    if (info.capacity < TOWN_SPAWN_CAPACITY_THRESHOLD) continue;
+    if (nearestTownWithinRadius(info.pos, currentTowns, TOWN_STATION_RADIUS)) continue;
+    if (rng() >= townSpawnChance(info.capacity)) continue;
+
+    const spawned = spawnTownNear(info.pos, currentTowns, terrain, rng);
+    if (!spawned) continue;
+    currentTowns = [...currentTowns, spawned];
+    spawnedTowns.push(spawned);
+  }
+
   return {
-    towns: spawnedTown ? [...towns, spawnedTown] : towns,
-    spawnedTown,
+    towns: spawnedTowns.length > 0 ? currentTowns : towns,
+    spawnedTowns,
   };
 }
