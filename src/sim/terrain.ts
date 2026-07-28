@@ -178,7 +178,8 @@ export function cornerElevation(elev: Map<string, number>, cx: number, cz: numbe
 
 // セル(x,z)の4面(北/東/南/西)を "x,z,dx,dz" 形式(getVectorFromDirの単位ベクトル)で表した坑口面集合。
 // cliffFaces に含まれる面の2隅は、min則ではなくセル自身の標高になる(=坑口面を垂直の崖に保つ)。
-const CLIFF_CORNER_MAP: Record<string, [number, number]> = {
+// render層(TerrainBlocks)でも坑口の垂直壁クアッドの対象コーナーを特定するために使うため公開する。
+export const CLIFF_CORNER_MAP: Record<string, [number, number]> = {
   '0,-1': [0, 1], // 北面: 左上・右上
   '1,0': [1, 2], // 東面: 右上・右下
   '0,1': [2, 3], // 南面: 右下・左下
