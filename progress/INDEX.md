@@ -1,4 +1,5 @@
 # progress インデックス
+- [terrace-elevation-terrain.md](terrace-elevation-terrain.md) — v0.3.0-Alpha-27a: 山岳地形をOpenTTD風の段丘状標高に刷新。既存のterrain(water/mountain)マップからcomputeElevationで標高(マンハッタン距離ベース、最大3)を決定的に導出しセーブ形式は不変のまま。描画は八面体の岩塊装飾からOVERPASS_HEIGHT基準のBox段丘(側面rock/上面草・雪)へ置き換え、山脈生成幅も1〜2から3〜6へ拡張
 - [graded-train-rendering.md](graded-train-rendering.md) 追記(v0.3.0-Alpha-26a: 坂レールと列車高さを一致) — 坂レール描画が採用した level1=セル内0〜0.5／level2=0.5〜1 の区間と、列車側が参照する旧中心値1/3・2/3が食い違い、レールから浮く・めり込む原因になっていた。列車の高さ・姿勢の参照点を1/4・3/4へ統一
 - [startup-debug-scenario.md](startup-debug-scenario.md) 追記(v0.3.0-Alpha-25a: 単線デバッグを単編成へ修正) — 交換設備・信号のない単線に対向2編成を置く運行上の誤りを修正。デバッグは坂・高架・停車を安全に確認できる単編成の往復運行へ戻した
 - [startup-debug-scenario.md](startup-debug-scenario.md) 追記(v0.3.0-Alpha-24a: デバッグ列車のスポーンを修正) — 3両編成を駅セル中心へ置いたため後続車が駅舎にめり込んでいた。駅外の直線へ移動し、スポーンセルが駅ではないことをテストで保証
