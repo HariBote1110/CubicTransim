@@ -722,6 +722,31 @@ describe('立体交差(高架ホームの停止位置延長): findNextInLine/ext
     ]);
     expect(result.stopProgress).toBe(1);
   });
+
+  it('高架駅ホームからの発車(prevGrid=null)でも、startのlayerを既定層として使い高架側を辿る', () => {
+    // 停車直後の発車はprevGridがnull(層をリセットした状態)になる(simulation.tsの
+    // stopAtStationがrt.prevGrid=nullにするため)。この状態でも、startに付与された
+    // layer:1を既定の走行層として使わないと、高架専用セル(地平connectionsを持たない)
+    // からの発車経路が一切見つからなくなる(地平layer0と誤認して探索してしまうため)。
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const railMap = buildUpperRailMap(cells);
+    const lastKey = toKey(2, 0);
+    railMap.set(lastKey, { ...railMap.get(lastKey)!, upper: { ...railMap.get(lastKey)!.upper!, stationId: 'stUP2' } });
+    const stations = new Map<string, StationData>([
+      ['stUP2', { id: 'stUP2', name: 'UP2', cells: [{ x: 2, z: 0, layer: 1 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0, layer: 1 },
+      prev: null,
+      targetStationId: 'stUP2',
+      cars: 1,
+    });
+
+    expect(result.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
+      { x: 1, z: 0, layer: 1 }, { x: 2, z: 0, layer: 1 },
+    ]);
+  });
 });
 
 describe('立体交差(層の突き合わせ): 地平駅の真上を高架で通過するだけでは到着とみなさない', () => {

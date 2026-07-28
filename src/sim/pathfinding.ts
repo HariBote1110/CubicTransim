@@ -31,7 +31,11 @@ export const stationIdAtLayer = (cell: CellData | undefined, layer: 0 | 1): stri
   layer === 1 ? cell?.upper?.stationId : cell?.stationId;
 
 export interface RouteQuery {
-  start: { x: number; z: number };
+  // layerは「prevが無い場合に既定として使う走行層」。停車直後の発車(simulation.tsの
+  // stopAtStationがprevGridをnullにリセットする)では、この値が無いと高架専用セル
+  // (地平connectionsを持たないセル)からの発車経路が一切見つからなくなる
+  // (prevGrid無し=地平と誤認して探索してしまうため)。省略時は従来通り0。
+  start: { x: number; z: number; layer?: 0 | 1 };
   prev: { x: number; z: number } | null;
   targetStationId: string;
   // 編成両数。停車位置(先頭車の停止セル)を「編成中央がホーム中央に最も近づく位置」
@@ -202,7 +206,7 @@ export function calculateRouteWithStop(
   const runSearch = (ignoreOccupied: boolean) => {
       // 開始セルの層は、直前セル(prevGrid)からの進入方向から解決する。
       // prevGridが無い(車庫発車直後など)場合は地平(0)とみなす(車庫・駅は常に地平)。
-      const startLayer: 0 | 1 = prevGrid ? (resolveEntryLayer(railMap, start, prevGrid) ?? 0) : 0;
+      const startLayer: 0 | 1 = prevGrid ? (resolveEntryLayer(railMap, start, prevGrid) ?? 0) : (start.layer ?? 0);
       const queue = [{
         curr: start,
         path: [] as { x: number; z: number; layer?: 0 | 1 }[],
