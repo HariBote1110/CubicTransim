@@ -3,7 +3,7 @@ import { DIR } from '../utils';
 import {
   buildCellTrackParts, buildRampTrackParts, buildRampAbutmentPart, buildTrackCentreLines,
 } from './trackGeometry';
-import { rampHeightAtPos } from '../sim/trackPath';
+import { rampHeightAtPos, rampSegmentPositions } from '../sim/trackPath';
 
 describe('buildCellTrackParts: connections が 0 のセル', () => {
   it('何も生成しない(applyBridgeが作る「地平connectionsが0の橋桁下セル」に幽霊の線路を描かせないため)', () => {
@@ -35,8 +35,16 @@ describe('buildTrackCentreLines: 分岐器の中心線', () => {
       expect.objectContaining({ x: -0.5, z: 0 }),
       expect.objectContaining({ x: 0.5, z: 0 }),
     ]));
-    expect(routes[1][0]).toEqual(expect.objectContaining({ x: 0.5, z: 0 }));
-    expect(routes[1][routes[1].length - 1]).toEqual(expect.objectContaining({ x: 0.5, z: 0.5 }));
+    // 分岐線はセル端の本線へ遠回りで接続せず、本線の途中で合流する。
+    expect(routes[1][0]).toEqual(expect.objectContaining({ x: 0.5, z: 0.5 }));
+    expect(routes[1][routes[1].length - 1]).toEqual(expect.objectContaining({ x: 0.175, z: 0 }));
+  });
+});
+
+describe('rampSegmentPositions: 坂セルの縦断範囲', () => {
+  it('地平に接する最初の坂セルは高さ0の境界から始まる', () => {
+    expect(rampSegmentPositions(1)).toEqual([0, 0.5]);
+    expect(rampSegmentPositions(2)).toEqual([0.5, 1]);
   });
 });
 
