@@ -125,6 +125,15 @@ export const GameScene: React.FC<GameSceneProps> = ({
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
+  // dragStartPos の実体はこの ref に持つ。handlePointerUp が読むのは常にこちら。
+  // 理由: pointerdown→pointerup が同期的に(間にpointermoveの再描画が挟まらずに)
+  // 発生する「動かさない単発クリック」では、pointerdownのsetDragStartPosがまだ
+  // コミットされておらず、pointerup側のクロージャは1つ前の描画時点のdragStartPos
+  // (=1クリック前の値、モード切替直後なら null)を読んでしまう。地平線路と高架桁が
+  // 重なる交差セルへの単発クリックで駅が置けなかった不具合の原因はこれで、
+  // ドラッグ時は途中のpointermoveで再描画が挟まるため症状が出なかった。
+  // state (dragStartPos) はプレビュー描画用にそのまま残し、コミット判定にはrefを使う。
+  const dragStartRef = React.useRef<{ x: number; z: number } | null>(null);
 
   // 列車ドラッグ(プラレールを掴んで移動する操作)。操作の起点は地面プレーンの
   // onPointerDown(押下したセルに列車がいるかをtrainAtCellで判定する)。列車メッシュ
@@ -193,7 +202,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
       if (trainId) setTrainPress({ id: trainId, startCell: pos });
       return;
     }
-    if (e.button === 0 && !e.shiftKey) setDragStartPos(getGridPosFromEvent(e));
+    if (e.button === 0 && !e.shiftKey) {
+      const pos = getGridPosFromEvent(e);
+      dragStartRef.current = pos;
+      setDragStartPos(pos);
+    }
   };
 
   const handlePointerUp = (e: ThreeEvent<PointerEvent>) => {
@@ -211,20 +224,22 @@ export const GameScene: React.FC<GameSceneProps> = ({
       }
       return;
     }
-    if (e.button === 0 && dragStartPos) {
+    const start = dragStartRef.current;
+    if (e.button === 0 && start) {
       const pos = getGridPosFromEvent(e);
       const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal' || buildMode === 'elevated-station')
         ? [pos]
-        : getConstrainedPath(dragStartPos, pos);
+        : getConstrainedPath(start, pos);
       // 駅設置(station)は常に単一セルを置くが、ドラッグした向きを軸のヒントとしてUI側から渡す。
       // (押下位置=解放位置で向きが分からない場合はヒント無しにし、隣接セルからの推測に任せる)
       let stationAxisHint: StationAxis | undefined;
       if (buildMode === 'station') {
-        const dx = Math.abs(pos.x - dragStartPos.x);
-        const dz = Math.abs(pos.z - dragStartPos.z);
+        const dx = Math.abs(pos.x - start.x);
+        const dz = Math.abs(pos.z - start.z);
         if (dx > 0 || dz > 0) stationAxisHint = dx >= dz ? 'ew' : 'ns';
       }
       onCommitPath(path, buildMode, stationAxisHint);
+      dragStartRef.current = null;
       setDragStartPos(null);
     }
   };
