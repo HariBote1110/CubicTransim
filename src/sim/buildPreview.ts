@@ -7,7 +7,7 @@
 import type { CellData, StationData, TerrainType, TownData } from '../types';
 import type { ConstructionState } from './construction';
 import { applyRailPathDetailed, applyStation, applyDepot, applySignal, applyBridge, removePath } from './construction';
-import { costOfPath, RAIL_COST, STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, RAIL_COST, STATION_COST, OVERPASS_COST_MULTIPLIER, type ConstructionMode } from './economy';
 import { terrainAt } from './terrain';
 import { applyStationTemplate, templateAbsoluteCells, type StationTemplate } from './stationTemplates';
 
@@ -120,10 +120,15 @@ export function evaluateStationTemplate(
   towns: TownData[] = []
 ): BuildPreview {
   const cells = templateAbsoluteCells(anchor, template, quarterTurns);
-  const stationCellCount = cells.filter(c => c.kind === 'station').length;
-  const railCellCount = cells.length - stationCellCount;
   const cellCount = cells.length;
-  const cost = stationCellCount * STATION_COST + railCellCount * RAIL_COST;
+  // 高架ホーム(layer:1)は橋と同じOVERPASS_COST_MULTIPLIERを掛ける
+  // (立体交差の橋桁を建てる工事として、通常の駅より割高になるのが自然なため)。
+  const cost = cells.reduce((sum, c) => {
+    if (c.kind === 'station') {
+      return sum + (c.layer === 1 ? STATION_COST * OVERPASS_COST_MULTIPLIER : STATION_COST);
+    }
+    return sum + RAIL_COST;
+  }, 0);
 
   const state: ConstructionState = { railMap, stations };
   const result = applyStationTemplate(state, anchor, template, quarterTurns, towns, terrain);

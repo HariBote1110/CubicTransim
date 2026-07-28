@@ -169,3 +169,28 @@ describe('evaluateStationTemplate', () => {
     expect(p.reason).toBe('no-effect');
   });
 });
+
+describe('evaluateStationTemplate(cross-elevated)', () => {
+  const crossElevated = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
+
+  it('地平駅5+高架坂4はSTATION_COST/RAIL_COST、高架橋桁3セルはSTATION_COST×OVERPASS_COST_MULTIPLIER', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const p = evaluateStationTemplate(crossElevated, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1_000_000);
+    expect(p.reason).toBe('ok');
+    expect(p.cellCount).toBe(12); // 地平5 + 高架オーバーパス7(うち中心が地平と重複するが、セル一覧としては別要素)
+    expect(p.cost).toBe(5 * STATION_COST + 4 * RAIL_COST + 3 * STATION_COST * OVERPASS_COST_MULTIPLIER);
+  });
+
+  it('資金が足りなければinsufficient-funds', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const p = evaluateStationTemplate(crossElevated, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1);
+    expect(p.reason).toBe('insufficient-funds');
+  });
+
+  it('高架橋桁が車庫と重なる場合はno-effect', () => {
+    let { railMap, stations, terrain } = emptyMaps();
+    ({ railMap, stations } = applyDepot({ railMap, stations }, { x: 1, z: 0 }));
+    const p = evaluateStationTemplate(crossElevated, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1_000_000);
+    expect(p.reason).toBe('no-effect');
+  });
+});

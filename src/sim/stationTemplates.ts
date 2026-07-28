@@ -6,7 +6,13 @@
 // 組み立てるだけにし、判定を二重に書かない。
 import { toKey } from '../utils';
 import type { TerrainType, TownData } from '../types';
-import { applyStation, applyRailPath, type ConstructionState, type StationAxis } from './construction';
+import {
+  applyStation,
+  applyRailPath,
+  applyElevatedStation,
+  type ConstructionState,
+  type StationAxis,
+} from './construction';
 
 export type TemplateCellKind = 'station' | 'rail';
 
@@ -21,6 +27,20 @@ export interface TemplateCell {
    * (rail種別のセルでは無視される。回転時にrotateTemplateが一緒に回す)。
    */
   axis: StationAxis;
+  /**
+   * 立体交差の高架層かどうか(0=地平、省略時は0)。1のセルはkind==='station'で
+   * かつ overpassLine も立っている必要がある(高架ホームは常に坂+橋桁の一部)。
+   */
+  layer?: 0 | 1;
+  /**
+   * 立体交差の「坂+橋桁」からなる一直線(オーバーパス)に属することを示す。
+   * このフラグを持つセルは個別にapplyStation/applyRailPathを呼ばず、
+   * applyStationTemplateがoverpassLine上のセルをまとめて並べ、
+   * applyElevatedStation(construction.tsの専用ロジック)へ一括で渡す
+   * (坂のramp・橋桁のupperはこの専用ロジックでしか作れないため)。
+   * 坂の4セル(両端2セルずつ)はkind:'rail'、桁(=ホーム)はkind:'station'・layer:1にする。
+   */
+  overpassLine?: boolean;
 }
 
 export interface StationTemplate {
@@ -58,7 +78,10 @@ export function rotateTemplate(template: StationTemplate, quarterTurns: 0 | 1 | 
       dx = rotated.dx;
       dz = rotated.dz;
     }
-    return { dx, dz, kind: c.kind, axis: rotateAxis(c.axis, quarterTurns) };
+    return {
+      dx, dz, kind: c.kind, axis: rotateAxis(c.axis, quarterTurns),
+      layer: c.layer, overpassLine: c.overpassLine,
+    };
   });
   return { ...template, cells };
 }
@@ -97,18 +120,57 @@ const THROUGH_TEMPLATE: StationTemplate = {
   })(),
 };
 
-export const STATION_TEMPLATES: StationTemplate[] = [CROSS_TEMPLATE, THROUGH_TEMPLATE];
+// 'cross-elevated': 立体交差の十字乗り換え駅。地平の直線ホーム(軸A、南北)5セルの上を、
+// 高架ホーム(軸B、東西)が直交して跨ぐ。高架側は「坂2セル+橋桁(ホーム)3セル+坂2セル」の
+// 一直線(overpassLine)で、坂は construction.ts の applyElevatedStation でしか作れないため、
+// overpassLine:true を付けて applyStationTemplate 側でまとめて処理させる。
+// 中心(0,0)は地平ホーム(軸A)と高架橋桁(軸B)の両方に属する唯一のセル
+// (地平駅の真上を高架駅が跨ぐ、という立体交差の核心部分)。
+const CROSS_ELEVATED_TEMPLATE: StationTemplate = {
+  id: 'cross-elevated',
+  name: '立体交差十字駅',
+  description: '地平のホームの上を、直交する高架ホームが跨ぐ立体交差の乗り換え駅。',
+  cells: (() => {
+    const cells: TemplateCell[] = [];
+    // 地平ホーム(軸A、南北): 中心(0,0)含め5セル
+    for (let dz = -2; dz <= 2; dz++) cells.push({ dx: 0, dz, kind: 'station', axis: 'ns' });
+    // 高架オーバーパス(軸B、東西): 坂2+桁3+坂2の一直線(dx=-3..3)
+    for (let dx = -3; dx <= 3; dx++) {
+      const isSpan = dx >= -1 && dx <= 1; // 橋桁(=高架ホーム)は中央3セル
+      if (isSpan) {
+        cells.push({ dx, dz: 0, kind: 'station', axis: 'ew', layer: 1, overpassLine: true });
+      } else {
+        cells.push({ dx, dz: 0, kind: 'rail', axis: 'ew', overpassLine: true });
+      }
+    }
+    return cells;
+  })(),
+};
+
+export const STATION_TEMPLATES: StationTemplate[] = [CROSS_TEMPLATE, THROUGH_TEMPLATE, CROSS_ELEVATED_TEMPLATE];
 
 interface Pos { x: number; z: number }
+
+type AbsoluteTemplateCell = {
+  x: number;
+  z: number;
+  kind: TemplateCellKind;
+  axis: StationAxis;
+  layer?: 0 | 1;
+  overpassLine?: boolean;
+};
 
 /** テンプレートをアンカー位置・回転込みの絶対座標セル列に変換する。 */
 export function templateAbsoluteCells(
   anchor: Pos,
   template: StationTemplate,
   quarterTurns: 0 | 1 | 2 | 3
-): { x: number; z: number; kind: TemplateCellKind; axis: StationAxis }[] {
+): AbsoluteTemplateCell[] {
   const rotated = rotateTemplate(template, quarterTurns);
-  return rotated.cells.map(c => ({ x: anchor.x + c.dx, z: anchor.z + c.dz, kind: c.kind, axis: c.axis }));
+  return rotated.cells.map(c => ({
+    x: anchor.x + c.dx, z: anchor.z + c.dz, kind: c.kind, axis: c.axis,
+    layer: c.layer, overpassLine: c.overpassLine,
+  }));
 }
 
 // 8方向の隣接判定(dx,dzがともに-1〜1で(0,0)でない)。rail同士の接続に使う。
@@ -135,8 +197,14 @@ export function applyStationTemplate(
   terrain: Map<string, TerrainType> = EMPTY_TERRAIN
 ): ConstructionState {
   const cells = templateAbsoluteCells(anchor, template, quarterTurns);
-  const stationCells = cells.filter(c => c.kind === 'station');
-  const railCells = cells.filter(c => c.kind === 'rail');
+  // overpassLineのセル(立体交差の坂+橋桁)は、地平のapplyStation/applyRailPathでは
+  // 組み立てられない(rampやupperはapplyElevatedStation専用ロジックでしか作れない)ため、
+  // ここで切り分けて別扱いにする。
+  const groundCells = cells.filter(c => !c.overpassLine);
+  const overpassCells = cells.filter(c => c.overpassLine);
+
+  const stationCells = groundCells.filter(c => c.kind === 'station');
+  const railCells = groundCells.filter(c => c.kind === 'rail');
 
   let working = state;
 
@@ -160,6 +228,36 @@ export function applyStationTemplate(
     const placed = working.railMap.get(toKey(cell.x, cell.z));
     if (!placed) {
       return state;
+    }
+  }
+
+  // 高架オーバーパス(坂+橋桁)を一直線に並べ、applyElevatedStationへまとめて渡す。
+  if (overpassCells.length > 0) {
+    // 軸(dx方向かdz方向か)を判定して並べ替え、坂→橋桁→坂の順の一直線パスを作る。
+    const sameZ = overpassCells.every(c => c.z === overpassCells[0].z);
+    const sorted = [...overpassCells].sort((a, b) => (sameZ ? a.x - b.x : a.z - b.z));
+    const path = sorted.map(c => ({ x: c.x, z: c.z }));
+
+    // 橋桁が地平駅の交差点と重なっていれば、その駅IDへ統合する
+    // (1つの駅IDに地平ホーム群と高架ホーム群が両方ぶら下がる形にするため)。
+    let groundStationId: string | undefined;
+    for (const p of path) {
+      const existing = working.railMap.get(toKey(p.x, p.z));
+      if (existing?.type === 'station' && existing.stationId) {
+        groundStationId = existing.stationId;
+        break;
+      }
+    }
+
+    const before = working;
+    working = applyElevatedStation(working, path, terrain, towns, groundStationId);
+    if (working === before) return state; // 高架化に失敗 → all-or-nothing
+
+    // 橋桁(=ホーム)にしたかったセルが実際に高架ホーム化しているか確認する
+    const spanCells = sorted.filter(c => c.layer === 1);
+    for (const sc of spanCells) {
+      const placed = working.railMap.get(toKey(sc.x, sc.z));
+      if (!placed?.upper?.stationId) return state;
     }
   }
 

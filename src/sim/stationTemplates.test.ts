@@ -151,3 +151,81 @@ describe('applyStationTemplate', () => {
     expect(result.railMap.size).toBe(0);
   });
 });
+
+describe('STATION_TEMPLATES: cross-elevated（立体交差の十字乗り換え駅）', () => {
+  it('地平ホーム5セル+高架オーバーパス7セル(うち中央3セルは重複)で計11セル', () => {
+    const tmpl = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
+    // 地平(dz軸)5 + 高架(dx軸)7 - 重複(0,0)1 = 11
+    const uniqueKeys = new Set(tmpl.cells.map(c => toKey(c.dx, c.dz)));
+    expect(uniqueKeys.size).toBe(11);
+  });
+
+  it('高架オーバーパスの中央3セルのみlayer:1かつoverpassLine、それ以外はlayer未設定', () => {
+    const tmpl = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
+    const elevatedPlatforms = tmpl.cells.filter(c => c.layer === 1);
+    expect(elevatedPlatforms).toHaveLength(3);
+    expect(elevatedPlatforms.every(c => c.overpassLine && c.kind === 'station' && c.dz === 0)).toBe(true);
+    expect(tmpl.cells.filter(c => !c.overpassLine).every(c => c.layer === undefined)).toBe(true);
+  });
+
+  it('設置すると、地平の十字点(0,0)が高架ホームと同じ駅IDに統合される', () => {
+    const tmpl = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
+    const state = emptyState();
+    const result = applyStationTemplate(state, { x: 0, z: 0 }, tmpl, 0, []);
+
+    expect(result.stations.size).toBe(1);
+    const st = Array.from(result.stations.values())[0];
+
+    const centre = result.railMap.get(toKey(0, 0))!;
+    expect(centre.type).toBe('station');
+    expect(centre.stationId).toBe(st.id);
+    expect(centre.upper?.stationId).toBe(st.id);
+
+    // 地平ホーム(layer省略/0)と高架ホーム(layer:1)の両方がcellsに入っている
+    expect(st.cells.some(c => c.x === 0 && c.z === 2 && (c.layer ?? 0) === 0)).toBe(true);
+    expect(st.cells.some(c => c.x === -1 && c.z === 0 && c.layer === 1)).toBe(true);
+    expect(st.cells.some(c => c.x === 1 && c.z === 0 && c.layer === 1)).toBe(true);
+  });
+
+  it('高架オーバーパスの坂・橋桁が正しく作られる(坂はramp、橋桁はupper)', () => {
+    const tmpl = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
+    const state = emptyState();
+    const result = applyStationTemplate(state, { x: 0, z: 0 }, tmpl, 0, []);
+
+    // 坂(dx=-3,-2,2,3)
+    for (const dx of [-3, -2, 2, 3]) {
+      const cell = result.railMap.get(toKey(dx, 0))!;
+      expect(cell.ramp).toBeDefined();
+      expect(cell.upper).toBeUndefined();
+    }
+    // 橋桁=高架ホーム(dx=-1,0,1)
+    for (const dx of [-1, 0, 1]) {
+      const cell = result.railMap.get(toKey(dx, 0))!;
+      expect(cell.upper?.connections).toBe(DIR.E | DIR.W);
+      expect(cell.upper?.stationId).toBeDefined();
+    }
+  });
+
+  it('90度回転すると高架オーバーパスが南北方向になる', () => {
+    const tmpl = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
+    const state = emptyState();
+    const result = applyStationTemplate(state, { x: 0, z: 0 }, tmpl, 1, []);
+
+    // 回転後は地平ホームが東西、高架が南北になる
+    const centre = result.railMap.get(toKey(0, 0))!;
+    expect(centre.connections).toBe(DIR.E | DIR.W);
+    expect(centre.upper?.connections).toBe(DIR.N | DIR.S);
+  });
+
+  it('高架橋桁が車庫と重なる場合は全体を設置しない(all-or-nothing)', () => {
+    const tmpl = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
+    let state = emptyState();
+    state = applyDepot(state, { x: 1, z: 0 });
+    const before = state;
+
+    const result = applyStationTemplate(state, { x: 0, z: 0 }, tmpl, 0, []);
+
+    expect(result).toBe(before);
+    expect(result.stations.size).toBe(0);
+  });
+});
