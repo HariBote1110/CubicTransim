@@ -111,15 +111,18 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
       const topTarget = e >= MOUNTAIN_ELEVATION_MAX ? snowTop : grassTop;
 
       // 対角線は「高さが等しい2隅を結ぶ側」を優先して分割する(ひねりの少ない自然な見た目になる)。
+      // 頂点順は+Y(上方)から見てCCW(反時計回り)にすること。tl→tr→brの順は
+      // +Yから見て時計回りになり法線が下向き(裏面カリングで上面が消える)ため、
+      // 最後の2頂点を入れ替えてCCW(法線+Y)にしている。
       if (corners[0] === corners[2]) {
-        pushTri(topTarget, tl, tr, br);
-        pushTri(topTarget, tl, br, bl);
+        pushTri(topTarget, tl, br, tr);
+        pushTri(topTarget, tl, bl, br);
       } else if (corners[1] === corners[3]) {
-        pushTri(topTarget, tl, tr, bl);
-        pushTri(topTarget, tr, br, bl);
+        pushTri(topTarget, tl, bl, tr);
+        pushTri(topTarget, tr, bl, br);
       } else {
-        pushTri(topTarget, tl, tr, br);
-        pushTri(topTarget, tl, br, bl);
+        pushTri(topTarget, tl, br, tr);
+        pushTri(topTarget, tl, bl, br);
       }
 
       // 坑口面の垂直壁: cliffFacesで持ち上げた2隅から、坑口が無かった場合の
@@ -136,6 +139,8 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
           const bottom0 = new THREE.Vector3(top0.x, naturalH0 * OVERPASS_HEIGHT, top0.z);
           const bottom1 = new THREE.Vector3(top1.x, naturalH1 * OVERPASS_HEIGHT, top1.z);
           // 傾きの大きい坑口の垂直壁は岩色にする。
+          // 頂点順(top0→top1→bottom1→bottom0)は外側(dx,dz方向)から見てCCWになる
+          // ことを確認済み(例: 北面dz=-1では法線が(0,0,-1)になり、外向きになる)。
           pushQuad(rockDark, top0, top1, bottom1, bottom0);
         }
       }

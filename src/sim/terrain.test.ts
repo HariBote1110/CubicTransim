@@ -184,16 +184,22 @@ describe('cornerElevation / cellCornerElevations', () => {
   });
 
   it('cliffFace指定でも自然な標高がセル標高を1段に制限した値より高ければそちらを採る(min則の連続性を壊さない)', () => {
-    // セル(0,0)標高3、北隣(0,-1)標高2(min(selfElevation,1)=1より高い)
+    // (0,0)を含む2x2ブロックを標高2〜3で埋め、北側コーナーの自然標高(min則)を
+    // CLIFF_LIFT_MAX(1)より高くする。
     const elev = new Map([
-      [toKey(0, 0), 3],
+      [toKey(-1, -1), 2],
       [toKey(0, -1), 2],
+      [toKey(-1, 0), 3],
+      [toKey(0, 0), 3],
+      [toKey(1, -1), 2],
+      [toKey(1, 0), 3],
     ]);
     const cliffFaces = new Set(['0,0,0,-1']);
     const withCliff = cellCornerElevations(elev, 0, 0, cliffFaces);
-    // 自然な標高(min則)のほうが1段制限より高いので、そちらが採用される
+    // 自然な標高(min則、ここでは2)のほうが1段制限(1)より高いので、そちらが採用される
     expect(withCliff[0]).toBe(cornerElevation(elev, 0, 0));
     expect(withCliff[1]).toBe(cornerElevation(elev, 1, 0));
+    expect(withCliff[0]).toBeGreaterThan(1);
   });
 });
 

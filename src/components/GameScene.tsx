@@ -22,6 +22,7 @@ import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals } from '../sim/tunnel';
+import { computeElevation } from '../sim/terrain';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import { T } from '../ui/theme';
@@ -309,8 +310,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
 
   // トンネルの坑口(山肌に面した出入口)。OpenTTD風にトンネル内部は地形メッシュへ
-  // 埋め込む(TerrainBlocks側)ため、坑口だけをこちらで別途描く。
-  const tunnelPortalList = useMemo(() => tunnelPortals(railMap), [railMap]);
+  // 埋め込む(TerrainBlocks側)ため、坑口だけをこちらで別途描く。行き止まり坑口が
+  // 山の内部を突き破らないよう、標高(TerrainBlocksと同じcomputeElevation)を渡す。
+  const terrainElevation = useMemo(() => computeElevation(terrain), [terrain]);
+  const tunnelPortalList = useMemo(() => tunnelPortals(railMap, terrainElevation), [railMap, terrainElevation]);
   // 坑口面を垂直の崖として保つため、TerrainBlocksへ"x,z,dx,dz"形式で伝える。
   const cliffFaces = useMemo(
     () => new Set(tunnelPortalList.map(p => `${p.x},${p.z},${p.dx},${p.dz}`)),
@@ -415,17 +418,22 @@ export const GameScene: React.FC<GameSceneProps> = ({
         // 坑口面へわずかにオフセットして地形メッシュの垂直壁とのZファイティングを避ける。
         const faceX = portal.x + portal.dx * 0.53;
         const faceZ = portal.z + portal.dz * 0.53;
-        // 坑口の向き(南北 or 東西)で開口・枠の幅/奥行きを入れ替える。
-        const alongX = portal.dx !== 0;
-        const frameSize: [number, number, number] = alongX ? [0.1, 0.65, 0.8] : [0.8, 0.65, 0.1];
-        const openingSize: [number, number, number] = alongX ? [0.12, 0.5, 0.55] : [0.55, 0.5, 0.12];
+        // groupをdx/dz方向へ向ける(南北を基準形状とし、rotation-yで実際の方向に合わせる。
+        // angleFromVectorと同じatan2(x,z)の規約なので、斜め線路の坑口も自然に向く)。
+        const angle = Math.atan2(portal.dx, portal.dz);
+        const frameSize: [number, number, number] = [0.8, 0.65, 0.1];
+        const openingSize: [number, number, number] = [0.55, 0.5, 0.12];
         return (
-          <group key={`portal-${portal.x},${portal.z},${portal.dx},${portal.dz}`}>
-            <mesh position={[faceX, 0.325, faceZ]} castShadow raycast={() => null}>
+          <group
+            key={`portal-${portal.x},${portal.z},${portal.dx},${portal.dz}`}
+            position={[faceX, 0, faceZ]}
+            rotation-y={angle}
+          >
+            <mesh position={[0, 0.325, 0]} castShadow raycast={() => null}>
               <boxGeometry args={frameSize} />
               <meshStandardMaterial color="#77726a" roughness={1} flatShading />
             </mesh>
-            <mesh position={[faceX, 0.25, faceZ]} raycast={() => null}>
+            <mesh position={[0, 0.25, 0]} raycast={() => null}>
               <boxGeometry args={openingSize} />
               <meshStandardMaterial color="#14181d" roughness={1} />
             </mesh>

@@ -215,11 +215,17 @@ export const CLIFF_CORNER_MAP: Record<string, [number, number]> = {
   '-1,0': [3, 0], // 西面: 左下・左上
 };
 
+// 坑口面の垂直壁として持ち上げる段数の上限。セル標高が高くても崖は1段ぶんだけに
+// 抑え、地表から巨大な壁が突き出さないようにする(トンネル内のレールは常に地表と
+// 同じ高さを走るため、坑口も1段の崖で十分)。
+const CLIFF_LIFT_MAX = 1;
+
 /**
  * セル(x,z)の4隅のコーナー標高を [左上, 右上, 右下, 左下] の順で返す。
  * 左上=corner(x,z)、右上=corner(x+1,z)、右下=corner(x+1,z+1)、左下=corner(x,z+1)。
- * cliffFaces に "x,z,dx,dz" 形式でこのセルの坑口面が含まれる場合、
- * その面に接する2隅はmin則を無視してセル自身の標高にする。
+ * cliffFaces に "x,z,dx,dz" 形式でこのセルの坑口面が含まれる場合、その面に接する
+ * 2隅はmin則の値と「セル標高をCLIFF_LIFT_MAXまでに制限した値」の大きい方にする
+ * (自然な標高のほうが高い場合はmin則の連続性を優先し、そちらを採る)。
  */
 export function cellCornerElevations(
   elev: Map<string, number>,
@@ -236,10 +242,11 @@ export function cellCornerElevations(
 
   if (cliffFaces && cliffFaces.size > 0) {
     const selfElevation = elev.get(toKey(x, z)) ?? 0;
+    const lift = Math.min(selfElevation, CLIFF_LIFT_MAX);
     for (const [dirKey, [i0, i1]] of Object.entries(CLIFF_CORNER_MAP)) {
       if (cliffFaces.has(`${x},${z},${dirKey}`)) {
-        corners[i0] = selfElevation;
-        corners[i1] = selfElevation;
+        corners[i0] = Math.max(corners[i0], lift);
+        corners[i1] = Math.max(corners[i1], lift);
       }
     }
   }

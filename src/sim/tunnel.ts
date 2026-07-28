@@ -6,6 +6,7 @@
 // railMap から純粋に導出する。描画(坑口ファサードの形状)はrender層の責務。
 import { toKey, fromKey, getVectorFromDir, getOppositeDir, DIR } from '../utils';
 import type { CellData } from '../types';
+import { elevationAt } from './terrain';
 
 const ALL_DIRS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
 
@@ -31,10 +32,16 @@ const pushPortal = (portals: TunnelPortal[], x: number, z: number, dir: number):
  * - そのセルの接続が1方向しかない(=トンネル区間内での行き止まり)場合、まだ線路が
  *   延びていない反対方向が坑口になる(例: 直線トンネルの両端セル。連結先セルは
  *   トンネル内部なので上のケースには該当しないが、未接続側は山肌の入口とみなす)。
+ *   ただし反対方向の隣接セルがまだmountain(標高>0)なら、そこは山の内部でしかなく
+ *   山肌ではないため坑口を作らない(elevationで判定する。地表で終端している場合
+ *   だけ坑口になる)。
  * 両ケースが同じ方向を指すことはない(接続方向とその反対方向は常に異なるため)ので
  * 重複は起きない。
+ *
+ * @param elevation sim/terrain.ts の computeElevation の結果。行き止まり坑口が
+ *   山の内部を突き破らないようにするための判定にのみ使う。
  */
-export function tunnelPortals(railMap: Map<string, CellData>): TunnelPortal[] {
+export function tunnelPortals(railMap: Map<string, CellData>, elevation: Map<string, number>): TunnelPortal[] {
   const portals: TunnelPortal[] = [];
 
   for (const [key, cell] of railMap) {
@@ -50,7 +57,11 @@ export function tunnelPortals(railMap: Map<string, CellData>): TunnelPortal[] {
     }
 
     if (connectedDirs.length === 1) {
-      pushPortal(portals, x, z, getOppositeDir(connectedDirs[0]));
+      const oppositeDir = getOppositeDir(connectedDirs[0]);
+      const { x: dx, z: dz } = getVectorFromDir(oppositeDir);
+      if (elevationAt(elevation, x + dx, z + dz) <= 0) {
+        pushPortal(portals, x, z, oppositeDir);
+      }
     }
   }
 
