@@ -900,3 +900,118 @@ describe('多レベル高架(level 2/3)', () => {
     expect(cell.uppers?.[1]).toBeUndefined();
   });
 });
+
+describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂を作って接続する', () => {
+  it('pickElevatedConnection: level=0は自分より高い既存レベルのうち最も近い(最小の)ものへconnectする', () => {
+    expect(pickElevatedConnection({ levels: [2] }, 0)).toEqual({ kind: 'connect', level: 2 });
+    expect(pickElevatedConnection({ levels: [1, 3] }, 0)).toEqual({ kind: 'connect', level: 1 });
+    expect(pickElevatedConnection({ levels: [] }, 0)).toEqual({ kind: 'flat' });
+    expect(pickElevatedConnection({ levels: [0] }, 0)).toEqual({ kind: 'continue' });
+  });
+
+  it('planElevatedPath: level=0でconnect(level:2)の端には、坂4セル(base1→base0の降順)が割り当てられる', () => {
+    const plan = planElevatedPath(6, { kind: 'flat' }, { kind: 'connect', level: 2 }, 0);
+    expect(plan).not.toBeNull();
+    expect(plan!.roles.map(r => r.kind)).toEqual(['span', 'span', 'ramp', 'ramp', 'ramp', 'ramp']);
+    // 接続先(既存レベル2)に近い側から: base1(level2側)→base0(地平側)の順に降りる
+    expect(plan!.roles[2]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 1 });
+    expect(plan!.roles[3]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 2 });
+    expect(plan!.roles[4]).toEqual({ kind: 'ramp', side: 'end', base: 1, level: 1 });
+    expect(plan!.roles[5]).toEqual({ kind: 'ramp', side: 'end', base: 1, level: 2 });
+  });
+
+  it('端が空(浮いた高架が無い): 従来通りの平坦な地平線路のまま', () => {
+    const state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const result = applyRailPath(state, path);
+    for (const pos of path) {
+      const cell = result.railMap.get(toKey(pos.x, pos.z))!;
+      expect(cell.ramp).toBeUndefined();
+      expect(cell.uppers).toBeUndefined();
+    }
+  });
+
+  it('端を浮いた高架(レベル1)の端タイルに当てると、その端だけ坂2セルで自動接続される', () => {
+    let state = emptyState();
+    // レベル1の浮いた高架(両端とも接続先なし)を(4,0)〜(9,0)に敷く
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    expect(state.railMap.get(toKey(4, 0))!.uppers?.[1]?.connections).toBeGreaterThan(0);
+
+    // 地平の線路を(0,0)から高架の端タイル(4,0)まで引く
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyRailPath(state, path);
+
+    // 接続先(4,0)に近い2セル(3,0)(4,0)が坂になり、遠い側(0,0)(1,0)(2,0)は
+    // 平坦な地平線路のまま
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(3, 0))!.ramp).toBeDefined();
+
+    // アンカーセル(4,0)は既存のuppers[1]がそのまま残りつつ、新しい方向(西=坂側)のビットが追加される
+    const anchor = result.railMap.get(toKey(4, 0))!;
+    expect(anchor.uppers?.[1]?.connections).toBeDefined();
+    expect((anchor.uppers![1]!.connections & DIR.W)).toBe(DIR.W);
+    // 既存の桁の東方向の接続(高架内部)は保持されたまま
+    expect((anchor.uppers![1]!.connections & DIR.E)).toBe(DIR.E);
+  });
+
+  it('端を浮いた高架(レベル2)の端タイルに当てると、坂4セルで接続される', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 6, z: 0 })), undefined, 2);
+    const path = Array.from({ length: 7 }, (_, i) => ({ x: i, z: 0 })); // 0..6, 6が高架の端タイル
+    const result = applyRailPath(state, path);
+
+    let rampCount = 0;
+    for (const pos of path) {
+      if (result.railMap.get(toKey(pos.x, pos.z))?.ramp) rampCount++;
+    }
+    expect(rampCount).toBe(4);
+    const anchor = result.railMap.get(toKey(6, 0))!;
+    expect((anchor.uppers![2]!.connections & DIR.W)).toBe(DIR.W);
+  });
+
+  it('接続先が無ければ、経路の途中にたまたま高架があっても影響しない(端だけを見る)', () => {
+    let state = emptyState();
+    // 高架(レベル1)を経路と関係ない場所(z=5)に浮かせて置く
+    state = applyElevatedPath(state, Array.from({ length: 4 }, (_, i) => ({ x: i, z: 5 })), undefined, 1);
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const result = applyRailPath(state, path);
+    for (const pos of path) {
+      expect(result.railMap.get(toKey(pos.x, pos.z))!.ramp).toBeUndefined();
+    }
+  });
+
+  it('坂になるセルが水域・山岳の場合は、接続を諦めて平坦な地平線路にフォールバックする', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    const terrain = new Map<string, TerrainType>([[toKey(3, 0), 'water']]);
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyRailPath(state, path, terrain);
+    // 坂は作られず(水域のため)、代わりに平坦な地平線路として敷かれる
+    for (const pos of path) {
+      expect(result.railMap.get(toKey(pos.x, pos.z))!.ramp).toBeUndefined();
+    }
+    expect(result.railMap.get(toKey(0, 0))!.connections).toBeGreaterThan(0);
+  });
+
+  it('坂になるセルが車庫の場合は、接続を諦めて平坦な地平線路にフォールバックする', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    state = applyDepot(state, { x: 3, z: 0 });
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyRailPath(state, path);
+    expect(result.railMap.get(toKey(3, 0))!.type).toBe('depot');
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
+  });
+
+  it('接続後、経路探索(BFS)で地平の始点から高架駅まで到達できる', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    state = applyElevatedStation(state, { x: 7, z: 0 }, []);
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyRailPath(state, path);
+    const stationId = result.railMap.get(toKey(7, 0))!.uppers![1]!.stationId!;
+    expect(stationId).toBeDefined();
+  });
+});

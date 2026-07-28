@@ -87,7 +87,7 @@ const BUILD_TOOLS: {
   hint: string;
 }[] = [
   { mode: 'none', label: '選択', key: '1', accent: '#8b98a6', hint: '列車や駅をクリックして選ぶ' },
-  { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: 'ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)。↑/↓で建設レベル(高架)を切替' },
+  { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: 'ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)。高架の端に当てると坂で自動接続。↑/↓で建設レベル(高架)を切替' },
   { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: '線路の上に置くと隣接セルと繋がって長いホームになる。↑/↓で建設レベル(高架)を切替' },
   { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },

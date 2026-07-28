@@ -116,6 +116,23 @@ const terrainFlags = (terrain: Map<string, TerrainType>, x: number, z: number): 
   return { bridge: undefined, tunnel: undefined };
 };
 
+// baseレベルの線路へbitsをORする。base===0は地平connections、base>0はuppers[base]。
+// applyElevatedPathと、地平の線路が高架の端に自動接続する坂(applyRailPathDetailed内)の
+// 両方から使う共通ヘルパー。
+const orIntoBaseLevel = (existing: CellData | undefined, base: number, bits: number): CellData => {
+  if (base === 0) {
+    return { ...(existing ?? { type: 'rail' }), connections: (existing?.connections ?? 0) | bits };
+  }
+  const upperAtBase = existing?.uppers?.[base as 1 | 2 | 3];
+  return {
+    ...(existing ?? { type: 'rail' }),
+    uppers: {
+      ...(existing?.uppers ?? {}),
+      [base]: { connections: (upperAtBase?.connections ?? 0) | bits, stationId: upperAtBase?.stationId },
+    },
+  };
+};
+
 // 既存セルにdir方向の接続を1つ足す。常に地平のconnectionsへOR(平面交差方式)。
 // 直角に交差する線路は4方向接続の1セル(ダイヤモンドクロッシング)になる。
 const addConnectionToCell = (
@@ -148,11 +165,30 @@ export interface RailPathApplyResult extends ConstructionState {
 
 // applyRailPathの詳細版。overpassCellsは自動高架の廃止により常に空集合。
 // 呼び出し側(economy.costOfPath等)との互換のため型は維持している。
+//
+// 経路の端が既存の高架(別レベルM>0の線路)の端タイルに接する場合だけ、
+// applyGroundPathWithElevatedConnectへ委譲して自動で坂を作り接続する
+// (詳細はそちらのdocコメント参照)。それ以外(従来通りの平坦な地平線路)は
+// 下の単純なループのまま、挙動を一切変えない。
 export function applyRailPathDetailed(
   state: ConstructionState,
   path: Pos[],
   terrain: Map<string, TerrainType> = EMPTY_TERRAIN
 ): RailPathApplyResult {
+  if (path.length >= 2) {
+    const startEnd = pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[0]), 0);
+    const endEnd = pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[path.length - 1]), 0);
+    if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
+      const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
+      if (plan) {
+        const result = applyGroundPathWithElevatedConnect(state, path, terrain, plan, startEnd, endEnd);
+        if (result) return result;
+      }
+      // planがnull、または坂条件(車庫・地形)を満たせない場合は、接続を諦めて
+      // 通常の平坦な地平線路として下のループにフォールバックする。
+    }
+  }
+
   const railMap = new Map(state.railMap);
   const overpassCells = new Set<string>();
 
@@ -185,6 +221,110 @@ export function applyRailPathDetailed(
 
 export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Map<string, TerrainType> = EMPTY_TERRAIN): ConstructionState {
   return applyRailPathDetailed(state, path, terrain);
+}
+
+/**
+ * 地平(レベル0)の線路建設で、経路の端が「浮いた高架(既存の別レベルM>0の線路)」の
+ * 端タイルに接した場合だけ使う内部ヘルパー。planElevatedPath(level=0)が返す計画に
+ * 従い、坂になるセルだけ地平から高架レベルMまで自動で登る坂にし、残りは通常の
+ * 地平の線路として敷く。applyRailPathDetailedから、接続の見込みがある場合だけ呼ばれる
+ * (それ以外は従来のシンプルな実装のまま)。
+ *
+ * 坂条件(車庫・地形)を満たさない場合はnullを返し、呼び出し元は従来の
+ * 平坦な地平線路としてフォールバックする。
+ */
+/**
+ * 坂になるセル(plan.roles[i].kind==='ramp')がすべて建設可能かどうかを判定する。
+ * 車庫セル・水域山岳セルには坂を作れない。applyGroundPathWithElevatedConnect(実際の建設)と
+ * buildPreview.ts(コスト・可否のプレビュー)の両方から使う共通ルールなので、
+ * ここに一本化しておく(UI側にルールを書き写さないため)。
+ */
+export function isElevatedConnectPlanBuildable(
+  railMap: Map<string, CellData>,
+  path: Pos[],
+  terrain: Map<string, TerrainType>,
+  plan: ElevatedPathPlan
+): boolean {
+  for (let i = 0; i < path.length; i++) {
+    if (plan.roles[i].kind !== 'ramp') continue;
+    if (railMap.get(toKey(path[i].x, path[i].z))?.type === 'depot') return false;
+    if (!isBuildableGround(terrain, path[i].x, path[i].z)) return false;
+  }
+  return true;
+}
+
+function applyGroundPathWithElevatedConnect(
+  state: ConstructionState,
+  path: Pos[],
+  terrain: Map<string, TerrainType>,
+  plan: ElevatedPathPlan,
+  startEnd: ElevatedEndPlan,
+  endEnd: ElevatedEndPlan
+): RailPathApplyResult | null {
+  if (!isElevatedConnectPlanBuildable(state.railMap, path, terrain, plan)) return null;
+
+  const railMap = new Map(state.railMap);
+  const dirBetween = (a: number, b: number): number =>
+    getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
+
+  // 接続先(既存の高架レベルM)の端タイルと同じ位置にあるアンカーインデックス。
+  // このセルは既存データを持つため、坂の書き込み(orIntoBaseLevel)では触らず、
+  // ループの後でuppers[M]へ直接ビットを追加する(下のextendExistingUpperLevel参照)。
+  const anchorIndex = new Map<number, number>(); // index -> connectLevel
+  if (startEnd.kind === 'connect') anchorIndex.set(0, startEnd.level);
+  if (endEnd.kind === 'connect') anchorIndex.set(path.length - 1, endEnd.level);
+
+  for (let i = 0; i < path.length; i++) {
+    const role = plan.roles[i];
+    const key = toKey(path[i].x, path[i].z);
+    const prevDir = i > 0 ? dirBetween(i, i - 1) : 0;
+    const nextDir = i < path.length - 1 ? dirBetween(i, i + 1) : 0;
+    const axisBits = prevDir | nextDir;
+
+    if (role.kind === 'span') {
+      addConnectionToCell(railMap, key, path[i].x, path[i].z, axisBits, terrain);
+      if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
+      continue;
+    }
+
+    const rampDir = role.side === 'start' ? nextDir : prevDir;
+    if (anchorIndex.has(i)) {
+      // 既存の高架セルそのもの: connections/uppersは書き換えず(下のextend処理に任せる)、
+      // 描画用のramp情報だけ付与する。
+      const existing = railMap.get(key);
+      railMap.set(key, { ...(existing ?? { type: 'rail' }), ramp: { dir: rampDir, level: role.level, base: role.base } });
+      continue;
+    }
+
+    const existing = railMap.get(key);
+    const merged = orIntoBaseLevel(existing, role.base, axisBits);
+    railMap.set(key, {
+      ...merged,
+      type: merged.type ?? 'rail',
+      ...terrainFlags(terrain, path[i].x, path[i].z),
+      ramp: { dir: rampDir, level: role.level, base: role.base },
+    });
+    if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
+  }
+
+  // アンカーセル(既存の高架レベルMの端タイル)のuppers[M].connectionsへ、
+  // 新しく繋がった坂の方向ビットを直接追加する(既存レベルのデータを正しく拡張する)。
+  for (const [idx, connectLevel] of anchorIndex) {
+    const neighbourIdx = idx === 0 ? 1 : path.length - 2;
+    const key = toKey(path[idx].x, path[idx].z);
+    const dir = dirBetween(idx, neighbourIdx);
+    const existing = railMap.get(key);
+    const upperAtLevel = existing?.uppers?.[connectLevel as 1 | 2 | 3];
+    railMap.set(key, {
+      ...(existing ?? { type: 'rail' }),
+      uppers: {
+        ...(existing?.uppers ?? {}),
+        [connectLevel]: { connections: (upperAtLevel?.connections ?? 0) | dir, stationId: upperAtLevel?.stationId },
+      },
+    });
+  }
+
+  return { railMap, stations: state.stations, overpassCells: new Set() };
 }
 
 export function applyStation(
@@ -412,10 +552,12 @@ export function resolveElevatedPathEnd(
 
 /**
  * 経路の端(始点 or 終点)が、建設レベルに対してどう振る舞うかを決める。
- * - continue: 同じレベルの既存高架へ坂なしで継ぎ足す
- * - connect: 建設レベルより低い既存レベルMが見つかったので、L↔Mを繋ぐ坂を作る
- *   (Lに最も近いM=levelより小さい最大値を選ぶ)
- * - flat: 何も無い(または建設レベルより高いレベルしか無い)ので、坂を作らず浮いた端のまま終端する
+ * - continue: 同じレベルの既存線路へ坂なしで継ぎ足す
+ * - connect: 建設レベルLとは異なる既存レベルMが見つかったので、L↔Mを繋ぐ坂を作る
+ *   (Lに最も近いMを選ぶ)。L>=1のときはLより低いMのみを対象にする(高架建設は
+ *   下位レベルへ降りる坂のみ)。L===0(地平)のときはLより高いMのみを対象にする
+ *   (地平の線路を浮いた高架の端に当てると自動で登る坂ができる)。
+ * - flat: 対象方向に何も無ければ、坂を作らず浮いた端のまま終端する
  */
 export type ElevatedEndPlan =
   | { kind: 'continue' }
@@ -424,9 +566,15 @@ export type ElevatedEndPlan =
 
 export function pickElevatedConnection(
   info: { levels: number[] },
-  level: ElevatedLevel
+  level: BuildLevel
 ): ElevatedEndPlan {
   if (info.levels.includes(level)) return { kind: 'continue' };
+  if (level === 0) {
+    // 地平(0)建設: 自分より高い既存レベルのうち最も近い(最小の)ものへ坂で登る。
+    const candidates = info.levels.filter(l => l > 0);
+    if (candidates.length === 0) return { kind: 'flat' };
+    return { kind: 'connect', level: Math.min(...candidates) };
+  }
   const candidates = info.levels.filter(l => l < level);
   if (candidates.length === 0) return { kind: 'flat' };
   return { kind: 'connect', level: Math.max(...candidates) };
@@ -441,11 +589,13 @@ export interface ElevatedPathPlan {
 }
 
 /**
- * 経路の各セルに「坂(どちら側の・どの段の)」か「橋桁」かを割り当てる。
- * level は建設する桁のレベル(1〜3)。各端の扱い(startEnd/endEnd)は
+ * 経路の各セルに「坂(どちら側の・どの段の)」か「橋桁/地平」かを割り当てる。
+ * level は建設するレベル(0=地平〜3)。各端の扱い(startEnd/endEnd)は
  * pickElevatedConnectionが決めた ElevatedEndPlan を渡す。
- * - kind:'connect'(level: M) の端は、M〜level-1の各段差2セルずつ(計 2*(level-M) セル)が坂になる
- * - kind:'continue'/'flat' の端は坂を作らない(そのまま橋桁として端に達するか、既存高架へ継ぎ足す)
+ * - kind:'connect'(level: M) の端は、min(M,level)〜max(M,level)-1の各段差2セルずつ
+ *   (計 2*|level-M| セル)が坂になる。M<level(高架建設が下位へ降りる)・M>level
+ *   (地平建設が上位の高架へ登る)のどちらの向きにも対応する。
+ * - kind:'continue'/'flat' の端は坂を作らない(そのまま端に達するか、既存線路へ継ぎ足す)
  * 割り当てが物理的に矛盾する(坂に必要なセル数が経路長を超える、あるいは
  * 継ぎ足し先/浮いた端のセルを坂で上書きしてしまう)場合は null を返す。
  */
@@ -453,11 +603,11 @@ export function planElevatedPath(
   length: number,
   startEnd: ElevatedEndPlan,
   endEnd: ElevatedEndPlan,
-  level: ElevatedLevel = 1
+  level: BuildLevel = 1
 ): ElevatedPathPlan | null {
   if (length < 2) return null;
 
-  const rampCountFor = (end: ElevatedEndPlan): number => (end.kind === 'connect' ? 2 * (level - end.level) : 0);
+  const rampCountFor = (end: ElevatedEndPlan): number => (end.kind === 'connect' ? 2 * Math.abs(level - end.level) : 0);
   const startCount = rampCountFor(startEnd);
   const endCount = rampCountFor(endEnd);
   if (startCount > length || endCount > length) return null;
@@ -478,18 +628,25 @@ export function planElevatedPath(
 
   const roles: ElevatedCellRole[] = new Array(length).fill(null).map(() => ({ kind: 'span' as const }));
 
-  // 接続先レベルMから建設レベルまで、1段差ごとに2セル(下段level1→上段level2)を、
-  // baseをMから積み上げながら割り当てる。
+  // 接続先レベルMと建設レベルlevelの間を、1段差ごとに2セル(下段level1→上段level2)で
+  // 埋める。M<level(上に接続先→内側へ登る、高架建設が地平/低層へ降りる場合)なら
+  // baseをMから昇順に積み上げ、M>level(接続先→内側へ降りる、地平建設が高架へ登る場合)
+  // ならbaseをM-1から降順に積み下げる。zoneIndicesは常に「接続先に近い側→経路内側」の順。
   const assignRampZone = (zoneIndices: number[], side: 'start' | 'end', connectLevel: number) => {
     const steps = zoneIndices.length / 2;
+    const ascending = connectLevel < level;
     for (let step = 0; step < steps; step++) {
-      const base = connectLevel + step;
-      // zoneIndicesはstart側は昇順(0,1,2,...)、end側は降順(length-1,length-2,...)で
-      // 「接続先に近い側→経路内側」の順に構築済み。
-      const level1Idx = zoneIndices[step * 2];
-      const level2Idx = zoneIndices[step * 2 + 1];
-      roles[level1Idx] = { kind: 'ramp', side, base, level: 1 };
-      roles[level2Idx] = { kind: 'ramp', side, base, level: 2 };
+      const base = ascending ? connectLevel + step : connectLevel - 1 - step;
+      // 接続先に近い側のセルは、ascendingなら低段(level1)、そうでなければ高段(level2)。
+      const nearIdx = zoneIndices[step * 2];
+      const farIdx = zoneIndices[step * 2 + 1];
+      if (ascending) {
+        roles[nearIdx] = { kind: 'ramp', side, base, level: 1 };
+        roles[farIdx] = { kind: 'ramp', side, base, level: 2 };
+      } else {
+        roles[nearIdx] = { kind: 'ramp', side, base, level: 2 };
+        roles[farIdx] = { kind: 'ramp', side, base, level: 1 };
+      }
     }
   };
   if (startEnd.kind === 'connect') assignRampZone(rampZoneStart, 'start', startEnd.level);
@@ -554,21 +711,6 @@ export function applyElevatedPath(
   const railMap = new Map(state.railMap);
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
-
-  // baseレベルの線路へbitsをORする。base===0は地平connections、base>0はuppers[base]。
-  const orIntoBaseLevel = (existing: CellData | undefined, base: number, bits: number): CellData => {
-    if (base === 0) {
-      return { ...(existing ?? { type: 'rail' }), connections: (existing?.connections ?? 0) | bits };
-    }
-    const upperAtBase = existing?.uppers?.[base as ElevatedLevel];
-    return {
-      ...(existing ?? { type: 'rail' }),
-      uppers: {
-        ...(existing?.uppers ?? {}),
-        [base]: { connections: (upperAtBase?.connections ?? 0) | bits, stationId: upperAtBase?.stationId },
-      },
-    };
-  };
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];

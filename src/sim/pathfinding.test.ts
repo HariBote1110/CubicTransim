@@ -826,4 +826,25 @@ describe('多レベル高架: 地平→レベル1→レベル2と登坂する経
 
     expect(route).toEqual([]);
   });
+
+  it('地平の始点から、自動接続された坂を経由して高架駅まで到達できる', () => {
+    let state2: ConstructionState = { railMap: new Map(), stations: new Map() };
+    // 浮いた高架(レベル1)を(4,0)〜(9,0)に敷く
+    state2 = applyElevatedPath(state2, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    state2 = applyElevatedStation(state2, { x: 7, z: 0 }, []);
+    const stationId2 = state2.railMap.get(toKey(7, 0))!.uppers![1]!.stationId!;
+
+    // 地平の線路を高架の端タイル(4,0)まで引く(applyRailPathが自動で坂を作る)
+    state2 = applyRailPath(state2, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+
+    const route2 = calculateRoute(state2.railMap, state2.stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 },
+      prev: null,
+      targetStationId: stationId2,
+      cars: 1,
+    });
+
+    expect(route2.length).toBeGreaterThan(0);
+    expect(route2[route2.length - 1]).toMatchObject({ x: 7, z: 0, layer: 1 });
+  });
 });

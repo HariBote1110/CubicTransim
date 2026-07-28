@@ -117,6 +117,31 @@ describe('evaluateBuild', () => {
   });
 });
 
+describe('evaluateBuild(rail, level:0) 浮いた高架の端への自動接続', () => {
+  it('端が浮いた高架(レベル1)の端タイルに接すると、坂セルはRAIL_COST・残りは通常コストになる', () => {
+    let { railMap, stations } = emptyMaps();
+    ({ railMap, stations } = applyElevatedPath(
+      { railMap, stations },
+      Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })),
+      undefined, 1
+    ));
+    const terrain = new Map<string, TerrainType>();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, terrain, 100_000, 0);
+    expect(p.reason).toBe('ok');
+    expect(p.rampCells).toBe(2);
+    expect(p.cost).toBe(RAIL_COST * 3 + RAIL_COST * 2); // 平坦3セル + 坂2セル(いずれも等倍)
+  });
+
+  it('端に浮いた高架が無ければ、従来通りcellCount×RAIL_COSTのまま', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, terrain, 100_000, 0);
+    expect(p.rampCells).toBe(0);
+    expect(p.cost).toBe(3 * RAIL_COST);
+  });
+});
+
 describe('evaluateBuild(rail, level>=1) 自由に敷ける高架線', () => {
   it('浮いた端(坂0)なら、全セルが橋桁(overpassCells)になる', () => {
     const { railMap, stations, terrain } = emptyMaps();

@@ -6,11 +6,11 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistenc
 import type { SaveData } from '../sim/persistence';
 import {
   applyRailPath, applyStation, applyDepot, applySignal, applyElevatedPath, applyElevatedStation,
-  removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath,
+  removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
 } from '../sim/construction';
 import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction';
 import {
-  STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, ELEVATED_STATION_COST,
+  STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   calculateUpkeep, CAR_COST, CAR_REFUND,
 } from '../sim/economy';
@@ -217,8 +217,26 @@ export const useGameLogic = () => {
         break;
       case 'rail': {
         if (level === 0) {
+          // 端が浮いた高架の端タイルに接する場合、applyRailPath(applyRailPathDetailed)が
+          // 自動で坂を作って接続する。その場合のコストもconstruction.ts側の判定
+          // (resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath/
+          // isElevatedConnectPlanBuildable)にそのまま問い合わせる
+          // (buildPreview.tsと同じロジックの二重実装を避けるため)。
+          let groundRampFlags: boolean[] | null = null;
+          if (path.length >= 2) {
+            const startEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[0]), 0);
+            const endEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[path.length - 1]), 0);
+            if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
+              const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
+              if (plan && isElevatedConnectPlanBuildable(railMap, path, terrain, plan)) {
+                groundRampFlags = plan.roles.map(r => r.kind === 'ramp');
+              }
+            }
+          }
           // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
-          cost = costOfPath('rail', path.length, path, terrain);
+          cost = groundRampFlags
+            ? costOfGroundPathWithRamps(path, terrain, groundRampFlags)
+            : costOfPath('rail', path.length, path, terrain);
           if (money < cost) return;
           result = applyRailPath(state, path, terrain);
         } else {

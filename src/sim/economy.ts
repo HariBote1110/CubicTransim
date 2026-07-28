@@ -148,6 +148,25 @@ export function costOfElevatedPath(rampCellCount: number, overpassCellCount: num
 // 高架駅タイル1枚のコスト。立体交差の橋桁を兼ねるぶん通常の駅より割高になる。
 export const ELEVATED_STATION_COST = STATION_COST * OVERPASS_COST_MULTIPLIER;
 
+// 地平(level 0)の線路が、浮いた高架の端タイルに自動接続する坂を含む場合のコスト。
+// 坂になるセルはRAIL_COST(4倍にはならない。あくまで登り降りの坂であり橋桁ではないため)、
+// それ以外の平坦なセルは従来通り地形(水域=橋/山岳=隧道)の倍率つきRAIL_COSTを使う。
+// 内訳(どのセルが坂か)はconstruction.tsのplanElevatedPath(level=0)が確定させたものを
+// 呼び出し側(buildPreview.ts/useGameLogic.ts)から渡してもらう(判定ロジックの
+// 二重実装を避けるため)。
+export function costOfGroundPathWithRamps(
+  path: { x: number; z: number }[],
+  terrain: Map<string, TerrainType>,
+  rampFlags: boolean[]
+): number {
+  return path.reduce((sum, cell, i) => {
+    if (rampFlags[i]) return sum + RAIL_COST;
+    const t = terrainAt(terrain, cell.x, cell.z);
+    const terrainMultiplier = t === 'water' ? BRIDGE_COST_MULTIPLIER : t === 'mountain' ? TUNNEL_COST_MULTIPLIER : 1;
+    return sum + RAIL_COST * terrainMultiplier;
+  }, 0);
+}
+
 // 事故発生確率 = 基本確率 × ドア種別による係数 × 混雑係数(待ち0で0.5倍、満杯で1.5倍)
 export function calculateAccidentChance(doorType: PlatformDoorType, waiting: number): number {
   const congestionFactor = 0.5 + waiting / STATION_WAITING_CAP;

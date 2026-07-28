@@ -21,8 +21,9 @@ import {
   resolveElevatedPathEnd,
   pickElevatedConnection,
   planElevatedPath,
+  isElevatedConnectPlanBuildable,
 } from './construction';
-import { costOfPath, costOfElevatedPath, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
 import { terrainAt } from './terrain';
 
 export type BuildMode = ConstructionMode | 'remove';
@@ -95,10 +96,31 @@ export function evaluateBuild(
     }
   }
 
+  // 地平(level 0)のrailも、端が浮いた高架の端タイルに接する場合は同様に
+  // resolveElevatedPathEnd/pickElevatedConnection/planElevatedPathへ問い合わせ、
+  // 自動で作られる坂の内訳(コスト計算・rampCells表示用)を求める。
+  let groundRampFlags: boolean[] | null = null;
+  if (mode === 'rail' && !elevated && path.length >= 2) {
+    const startEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[0]), 0);
+    const endEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[path.length - 1]), 0);
+    if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
+      const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
+      // 坂になるセルが車庫・水域・山岳で建設できない場合は、実際の建設(applyRailPath)側でも
+      // 接続を諦めて平坦な地平線路にフォールバックするため、プレビューのコストも
+      // 通常のcostOfPathへフォールバックする(groundRampFlagsをnullのままにする)。
+      if (plan && isElevatedConnectPlanBuildable(railMap, path, terrain, plan)) {
+        groundRampFlags = plan.roles.map(r => r.kind === 'ramp');
+      }
+    }
+  }
+  const groundRampCount = groundRampFlags ? groundRampFlags.filter(Boolean).length : 0;
+
   const cost = mode === 'remove'
     ? 0
     : mode === 'rail' && elevated
     ? costOfElevatedPath(elevatedRampCount, elevatedOverpassCount)
+    : mode === 'rail' && groundRampFlags
+    ? costOfGroundPathWithRamps(path, terrain, groundRampFlags)
     : mode === 'station' && elevated
     ? ELEVATED_STATION_COST
     : costOfPath(
@@ -150,5 +172,5 @@ export function evaluateBuild(
   if (!effective) reason = 'no-effect';
   else if (cost > money) reason = 'insufficient-funds';
 
-  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells, rampCells: elevatedRampCount, level };
+  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells, rampCells: elevatedRampCount || groundRampCount, level };
 }
