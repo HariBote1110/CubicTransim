@@ -1185,3 +1185,113 @@ describe('stepWorld: 立体交差(層の突き合わせ) 既に目的駅にい�
     expect(rt.renderPos.y).toBeCloseTo(0.5 + OVERPASS_HEIGHT, 5);
   });
 });
+
+describe('stepWorld: 立体交差の十字乗換駅(統合) 地平×高架の同時運行と乗換', () => {
+  // (0,0)を交点とする十字乗換駅stXを、建設APIに頼らずrailMap/stationsを直接組み立てて作る。
+  // 地平: 東西直線 (-3,0)〜(0,0)。西端がstW、東端(交点)がstXの地平ホーム。
+  // 高架: 南北直線 (0,-3)〜(0,0)、すべてupperのみ(地平connectionsは持たない)。
+  // 北端がstN(高架ホーム)、南端(交点、(0,0))がstXの高架ホーム。
+  // 交点セル(0,0)だけが「地平connections+stationId」と「upper.connections+upper.stationId」の
+  // 両方を持ち、1つの駅id(stX)に地平ホームと高架ホームがぶら下がる形になる。
+  const buildCrossElevatedFixture = () => {
+    const crossId = 'stX';
+    const railMap = buildRailMap([{ x: -3, z: 0 }, { x: -2, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 0 }]);
+    railMap.set(toKey(-3, 0), { ...railMap.get(toKey(-3, 0))!, type: 'station', stationId: 'stW' });
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, type: 'station', stationId: crossId });
+
+    const upperCells = [{ x: 0, z: -3 }, { x: 0, z: -2 }, { x: 0, z: -1 }, { x: 0, z: 0 }];
+    for (let i = 0; i < upperCells.length - 1; i++) {
+      const curr = upperCells[i];
+      const next = upperCells[i + 1];
+      const dir = getDirFromVector(next.x - curr.x, next.z - curr.z);
+      const opp = getOppositeDir(dir);
+      const ck = toKey(curr.x, curr.z);
+      const cc = railMap.get(ck) || { type: 'rail' as const };
+      railMap.set(ck, { ...cc, upper: { connections: (cc.upper?.connections || 0) | dir } });
+      const nk = toKey(next.x, next.z);
+      const nc = railMap.get(nk) || { type: 'rail' as const };
+      railMap.set(nk, { ...nc, upper: { connections: (nc.upper?.connections || 0) | opp } });
+    }
+    railMap.set(toKey(0, -3), { ...railMap.get(toKey(0, -3))!, upper: { ...railMap.get(toKey(0, -3))!.upper!, stationId: 'stN' } });
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, upper: { ...railMap.get(toKey(0, 0))!.upper!, stationId: crossId } });
+
+    const stations = new Map<string, StationData>([
+      ['stW', { id: 'stW', name: 'W', cells: [{ x: -3, z: 0 }], center: { x: -3, z: 0 }, platformDoors: 'none' }],
+      ['stN', { id: 'stN', name: 'N', cells: [{ x: 0, z: -3, layer: 1 as const }], center: { x: 0, z: -3 }, platformDoors: 'none' }],
+      [crossId, {
+        id: crossId, name: 'X',
+        cells: [{ x: 0, z: 0 }, { x: 0, z: 0, layer: 1 as const }],
+        center: { x: 0, z: 0 }, platformDoors: 'none',
+      }],
+    ]);
+    return { railMap, stations, crossId };
+  };
+
+  // arriveイベントでscheduleIndexを進める(実機のhandleTrainArrive相当の処理)。
+  const runWithScheduleAdvance = (world: SimWorld, trains: TrainData[], dt: number, ticks: number) => {
+    const events: SimEvent[] = [];
+    for (let i = 0; i < ticks; i++) {
+      const evs = stepWorld(world, dt);
+      events.push(...evs);
+      for (const e of evs) {
+        if (e.type === 'arrive') {
+          const train = trains.find(t => t.id === e.trainId)!;
+          train.scheduleIndex = (train.scheduleIndex + 1) % train.schedule.length;
+        }
+      }
+    }
+    return events;
+  };
+
+  it('地平を東西に走る列車と高架を南北に走る列車が同じ駅idに停車し、旅客が乗り換えられる', () => {
+    const { railMap, stations, crossId } = buildCrossElevatedFixture();
+
+    const trainEW = makeTrain({ id: 'ew', x: -3, z: 0, schedule: ['stW', crossId], cars: 1 });
+    const trainNS = makeTrain({ id: 'ns', x: 0, z: -2, schedule: ['stN', crossId], cars: 1 });
+    const world = makeWorld(railMap, stations, [trainEW, trainNS]);
+
+    // trainNSは高架(layer1)の途中セルで、既に北(stN)向きに走行中という状態から
+    // 開始させる。ensureRuntime既定のprevGrid=nullは「層をまだ解決していない」状態
+    // (=地平とみなす)なので、layer1の直線区間の中間セルにいる列車を素直に作るには、
+    // 直前セルを明示してlayer解決が成立する状態で初期化する必要がある
+    // (実機では車庫発車後に地平→坂→高架と辿って自然にこの状態になる)。
+    world.runtimes.set('ns', {
+      id: 'ns',
+      grid: { x: 0, z: -2, layer: 1 },
+      prevGrid: { x: 0, z: -1, layer: 1 },
+      progress: 0,
+      speedKmh: 0,
+      route: [],
+      reservedEndIndex: -1,
+      trail: [{ x: 0, z: -2, layer: 1 }],
+      pathHistory: [{ x: 0, z: -2, layer: 1 }],
+      stopRemaining: 0,
+      waitTimer: 0,
+      debugStatus: '',
+      renderPos: { x: 0, y: 0.5 + OVERPASS_HEIGHT, z: -2 },
+      renderTarget: null,
+      passengers: 0,
+      lastStopStationId: null,
+      haltRemaining: 0,
+      stopProgress: 1,
+      brakeDecelMs2: 0,
+    });
+
+    // stWからstNへの旅客(stX乗換が必須)を仕込む。
+    seedWaiting(world, 'stW', 'stN', 3);
+
+    const events = runWithScheduleAdvance(world, [trainEW, trainNS], 0.1, 6000);
+
+    // 立体交差の予約が層別に分離され、2列車が同時に交点セル(0,0)を
+    // (地平/高架の別資源として)保有できていること。
+    const rtEW = world.runtimes.get('ew')!;
+    const rtNS = world.runtimes.get('ns')!;
+    expect(rtEW.grid.layer ?? 0).toBe(0);
+    expect(rtNS.grid.layer).toBe(1);
+
+    // stN(高架)への到着で、乗換を経た旅客の運賃収入(income)が発生していること
+    // = stWで乗った旅客がstXで乗り換え、stNまで運ばれたことを意味する。
+    const arrivedAtN = events.some(e => e.type === 'income' && e.trainId === 'ns' && e.passengers > 0);
+    expect(arrivedAtN).toBe(true);
+  });
+});
