@@ -1,4 +1,5 @@
 # progress インデックス
+- [startup-debug-scenario.md](startup-debug-scenario.md) 追記(v0.3.0-Alpha-24a: デバッグ列車のスポーンを修正) — 3両編成を駅セル中心へ置いたため後続車が駅舎にめり込んでいた。駅外の直線へ移動し、スポーンセルが駅ではないことをテストで保証
 - [startup-debug-scenario.md](startup-debug-scenario.md) — v0.3.0-Alpha-23a: 起動時に通常開始／デバッグモードを選択可能にし、坂・高架・往復2編成を自動生成。傾斜した車体の台車が浮かないよう、車体原点をレール面からの法線方向オフセットで補正
 - [graded-train-rendering.md](graded-train-rendering.md) — v0.3.0-Alpha-22a: 坂で編成全体が先頭車の高さに引きずられる問題を、各車両の3次元走行線・前後台車からの姿勢計算へ置換して解消。高架高を1.2→0.8へ下げ、車体・台車も小型化して勾配と見た目を緩和
 - [turnout-and-elevated-track-rendering.md](turnout-and-elevated-track-rendering.md) 追記(v0.3.0-Alpha-21a: 交換線の分岐方向を反転) — 3方向分岐の合流先を「地理的に近い本線側」としていたため、交換線の入口が進行方向へ回り込む赤いループ状になっていた。進行元側から分岐するよう反転し、入口で分岐・出口で合流する黒い接続形状へ寄せた

@@ -31,8 +31,10 @@ export function createDebugScenario(): DebugScenario {
     railMap: state.railMap,
     stations: state.stations,
     trains: [
-      { id: 'debug-west', x: -9, z: 0, schedule: [eastId, westId], scheduleIndex: 0, status: 'running', cars: 3 },
-      { id: 'debug-east', x: 9, z: 0, schedule: [westId, eastId], scheduleIndex: 0, status: 'running', cars: 3 },
+      // 駅セル中心に3両編成を置くと、初期履歴のない後続車が駅舎へ食い込む。
+      // 駅外の直線へ置き、両編成とも余地を持って走り始める。
+      { id: 'debug-west', x: -5, z: 0, schedule: [eastId, westId], scheduleIndex: 0, status: 'running', cars: 3 },
+      { id: 'debug-east', x: 5, z: 0, schedule: [westId, eastId], scheduleIndex: 0, status: 'running', cars: 3 },
     ],
   };
 }
