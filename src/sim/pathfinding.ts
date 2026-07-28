@@ -27,7 +27,7 @@ const activeConnections = (cell: CellData | undefined, layer: 0 | 1): number =>
 // 層を突き合わせずにcell.stationIdだけを見ると、地平駅の真上をただの橋桁
 // (upperはあるがstationId無し)で通過するだけの列車を「到着した」と
 // 誤判定してしまうため、必ずこの関数を経由する。
-const stationIdAtLayer = (cell: CellData | undefined, layer: 0 | 1): string | undefined =>
+export const stationIdAtLayer = (cell: CellData | undefined, layer: 0 | 1): string | undefined =>
   layer === 1 ? cell?.upper?.stationId : cell?.stationId;
 
 export interface RouteQuery {
