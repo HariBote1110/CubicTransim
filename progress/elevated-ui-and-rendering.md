@@ -65,7 +65,7 @@
   当たる位置)をクリックしたところ、`elevatedCellCandidateFromGroundClick`による逆算で
   正しく「新野駅」が選択され、駅インスペクタ(ホーム長2マス=地平+高架)が開くことを確認した。
 
-## 既知の制約(sim層のバグ、担当外)
+## 既知の制約(sim層のバグ、担当外) → 修正済み
 
 - `sim/construction.ts`の`applyStation`は、既存セルを駅化する際に
   `railMap.set(key, { type: 'station', connections, stationId: targetId })`と新規オブジェクトで
@@ -73,8 +73,13 @@
   `tunnel`を保持しない。これにより「高架線が通っているセルに地平駅を後から重ねる」操作をすると
   高架線が消えてしまう(本ファイルの実機確認で発生し、高架線を敷き直して回避した)。
   `applyElevatedPath`の同等コードは`{...(existing ?? {type:'rail'}), ...}`とスプレッドしており
-  この問題が無い。UI側からは修正できない(`src/sim/`は担当外)ため、sim層の担当エージェントに
-  申し送りが必要。
+  この問題が無い。
+  → `railMap.set(key, { ...existingBeforeUpdate, type: 'station', connections, stationId: targetId })`
+  に修正済み(既存フィールドをスプレッドしてから上書き)。回帰テストを
+  `src/sim/construction.test.ts`(高架線/坂のセルに駅を置いてもupper/rampが消えないことを確認)
+  に追加した。`applyDepot`(空セルにしか設置できないためそもそも既存フィールドを持たない)・
+  `applySignal`(元々`{...cell, signalDir}`とスプレッド済み)には同種の取りこぼしは無いことを
+  確認済み。
 
 ## 既知の制約(UI側)
 

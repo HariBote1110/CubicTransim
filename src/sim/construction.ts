@@ -303,7 +303,9 @@ export function applyStation(
     ? (existingBeforeUpdate.connections || 0) | newBits
     : newBits;
 
-  railMap.set(key, { type: 'station', connections, stationId: targetId });
+  // バグ修正: 既存セルが持つupper(高架線)・ramp(坂)・bridge・tunnelを消さないよう
+  // 丸ごと置き換えず、既存フィールドをスプレッドしたうえでtype/connections/stationIdだけ上書きする。
+  railMap.set(key, { ...existingBeforeUpdate, type: 'station', connections, stationId: targetId });
   neighbours.forEach(n => updateDepotRotation(railMap, n.x, n.z));
 
   return { railMap, stations };
