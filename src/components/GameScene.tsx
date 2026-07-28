@@ -422,7 +422,12 @@ export const GameScene: React.FC<GameSceneProps> = ({
         // angleFromVectorと同じatan2(x,z)の規約なので、斜め線路の坑口も自然に向く)。
         const angle = Math.atan2(portal.dx, portal.dz);
         const frameSize: [number, number, number] = [0.8, 0.65, 0.1];
-        const openingSize: [number, number, number] = [0.55, 0.5, 0.12];
+        // 開口はトンネル奥行き方向(rotation-y適用後のローカル-Z、山の内側)へ深く伸ばす。
+        // 薄い板のままだと開口の向こうにトンネル内部のレールが直接見えてしまうため、
+        // 奥まで黒で満たして坑道の暗がりに見せる。中心をローカル-Zへずらして
+        // 坑口面(z=0)から山の内部(z=-openingDepth)まで埋める。
+        const openingDepth = 1.0;
+        const openingSize: [number, number, number] = [0.55, 0.5, openingDepth];
         return (
           <group
             key={`portal-${portal.x},${portal.z},${portal.dx},${portal.dz}`}
@@ -433,7 +438,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
               <boxGeometry args={frameSize} />
               <meshStandardMaterial color="#77726a" roughness={1} flatShading />
             </mesh>
-            <mesh position={[0, 0.25, 0]} raycast={() => null}>
+            <mesh position={[0, 0.25, -openingDepth / 2]} raycast={() => null}>
               <boxGeometry args={openingSize} />
               <meshStandardMaterial color="#14181d" roughness={1} />
             </mesh>

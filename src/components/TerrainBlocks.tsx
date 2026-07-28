@@ -5,8 +5,9 @@ import { fromKey } from '../utils';
 import {
   computeElevation,
   elevationAt,
-  cellCornerElevations,
   cornerElevation,
+  buildCornerElevationMap,
+  cellCornersFromMap,
   CLIFF_CORNER_MAP,
   MOUNTAIN_ELEVATION_MAX,
 } from '../sim/terrain';
@@ -70,6 +71,12 @@ const pushQuad = (
  */
 export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
   const elevation = useMemo(() => computeElevation(terrain), [terrain]);
+  // コーナー標高は「コーナー座標→標高」の共有マップとして1度だけ構築する
+  // (buildCornerElevationMap)。セルごとに個別計算すると、cliffFacesを宣言した
+  // セルの視点でしか持ち上げが反映されず、同じコーナーを共有する隣接セル側は
+  // 元のmin則の値のままになって上面メッシュに裂け目ができる(坑口の内部が
+  // 透けて見える不具合の原因だった)。
+  const cornerMap = useMemo(() => buildCornerElevationMap(elevation, cliffFaces), [elevation, cliffFaces]);
 
   const merged = useMemo(() => {
     const water: THREE.BufferGeometry[] = [];
@@ -100,7 +107,7 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
       const e = elevationAt(elevation, x, z);
       if (e <= 0) continue;
 
-      const corners = cellCornerElevations(elevation, x, z, cliffFaces);
+      const corners = cellCornersFromMap(cornerMap, x, z);
       const worldCorners = corners.map((h, i) => {
         const [ox, oz] = CORNER_OFFSETS[i];
         return new THREE.Vector3(x + ox, h * OVERPASS_HEIGHT, z + oz);
