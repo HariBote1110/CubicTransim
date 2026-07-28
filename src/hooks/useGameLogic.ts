@@ -160,7 +160,9 @@ export const useGameLogic = () => {
     buildMode: CellType | 'none' | 'remove' | 'signal' | 'elevated' | 'elevated-station',
     // 駅設置(station)専用: ドラッグした向きから決まる軸のヒント。
     // 省略時はapplyStationが隣接セルから軸を推測する(なければ東西が既定)。
-    stationAxisHint?: StationAxis
+    stationAxisHint?: StationAxis,
+    // 高架(elevated/elevated-station)専用: 建設対象レベル(1〜3)。省略時は1。
+    level: 1 | 2 | 3 = 1
   ) => {
     if (path.length === 0) return;
 
@@ -208,14 +210,14 @@ export const useGameLogic = () => {
       case 'elevated': {
         // 坂・橋桁の内訳はconstruction.ts側の判定(resolveElevatedPathEnd/planElevatedPath)
         // にそのまま問い合わせる(buildPreview.tsと同じロジックの二重実装を避けるため)。
-        const startInfo = resolveElevatedPathEnd(railMap, path[0]);
-        const endInfo = resolveElevatedPathEnd(railMap, path[path.length - 1]);
-        const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated);
+        const startInfo = resolveElevatedPathEnd(railMap, path[0], level);
+        const endInfo = resolveElevatedPathEnd(railMap, path[path.length - 1], level);
+        const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated, level);
         const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
         const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
         cost = costOfElevatedPath(rampCount, overpassCount);
         if (money < cost) return;
-        result = applyElevatedPath(state, path, terrain);
+        result = applyElevatedPath(state, path, terrain, level);
         break;
       }
       case 'elevated-station': {
@@ -225,7 +227,7 @@ export const useGameLogic = () => {
         const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
           stationPos, towns, terrain, worldRef.current.rng
         );
-        result = applyElevatedStation(state, stationPos, townsForNaming);
+        result = applyElevatedStation(state, stationPos, townsForNaming, level);
         if (spawnedTown && result.stations !== state.stations) {
           setTowns(townsForNaming);
         }

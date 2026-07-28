@@ -7,6 +7,9 @@ import type { BuildMode } from './components/GameUI';
 
 export default function App() {
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
+  // 高架(elevated/elevated-station)の建設対象レベル(1〜3、既定1)。GameUIのArrowUp/Down、
+  // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
+  const [buildLevel, setBuildLevel] = useState<1 | 2 | 3>(1);
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
@@ -53,6 +56,7 @@ export default function App() {
           terrain={terrain}
           world={worldRef}
           buildMode={buildMode}
+          buildLevel={buildLevel}
           selectedTrainId={selectedTrainId}
           isEditingSchedule={isEditingSchedule}
           simSpeed={simSpeed}
@@ -79,6 +83,8 @@ export default function App() {
       <GameUI
         buildMode={buildMode}
         setBuildMode={setBuildMode}
+        buildLevel={buildLevel}
+        setBuildLevel={setBuildLevel}
         selectedTrainId={selectedTrainId}
         trains={trains}
         stations={stations}

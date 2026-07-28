@@ -18,6 +18,7 @@ import { computeStationArrivals } from '../sim/arrivals';
 import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
+import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -29,6 +30,9 @@ export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'elevated' | '
 interface GameUIProps {
   buildMode: BuildMode;
   setBuildMode: (mode: BuildMode) => void;
+  // ★追加: 高架(elevated/elevated-station)の建設対象レベル(1〜MAX_ELEVATED_LEVEL)。
+  buildLevel: 1 | 2 | 3;
+  setBuildLevel: (level: 1 | 2 | 3) => void;
   selectedTrainId: string | null;
   trains: TrainData[];
   stations: Map<string, StationData>;
@@ -107,6 +111,7 @@ const STOP_LOCATION_LABEL = {
 
 export const GameUI: React.FC<GameUIProps> = ({
   buildMode, setBuildMode,
+  buildLevel, setBuildLevel,
   selectedTrainId, trains, stations, railMap, terrain,
   isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar,
@@ -181,7 +186,9 @@ export const GameUI: React.FC<GameUIProps> = ({
     return () => clearInterval(id);
   }, [selectedTrainId, selectedStationId, world, stations, groups]);
 
-  // キーボードショートカット: 1〜6で建設モード、Spaceで一時停止、Escで選択解除。
+  // キーボードショートカット: 1〜8で建設モード、Spaceで一時停止、Escで選択解除。
+  // 高架(elevated/elevated-station)選択中はArrowUp/DownでレベルをMAX_ELEVATED_LEVELまで
+  // ±1する(状態遷移そのものはsim/trackPath.tsのstepElevatedLevelに委譲)。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -190,11 +197,16 @@ export const GameUI: React.FC<GameUIProps> = ({
       const tool = BUILD_TOOLS.find(t => t.key === e.key);
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
-      if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); }
+      if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); return; }
+      if ((buildMode === 'elevated' || buildMode === 'elevated-station')
+        && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        setBuildLevel(stepElevatedLevel(buildLevel, e.key === 'ArrowUp' ? 1 : -1));
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setBuildMode, setSimSpeed, simSpeed, buildMode]);
+  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
@@ -203,8 +215,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
   const preview = useMemo(() => {
     if (buildMode === 'none' || previewPath.length === 0) return null;
-    return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money);
-  }, [buildMode, previewPath, railMap, stations, terrain, money]);
+    return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money, buildLevel);
+  }, [buildMode, previewPath, railMap, stations, terrain, money, buildLevel]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(
@@ -407,6 +419,26 @@ export const GameUI: React.FC<GameUIProps> = ({
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, zIndex: 10,
       }}>
         <BuildFeedback preview={preview} toolLabel={activeTool?.label ?? ''} />
+
+        {(buildMode === 'elevated' || buildMode === 'elevated-station') && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>高架レベル</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3).map(lv => (
+                <button
+                  key={lv}
+                  onClick={() => setBuildLevel(lv)}
+                  style={{ ...button({ active: buildLevel === lv, accent: T.bridge, compact: true }), minWidth: 30 }}
+                  title={`高架Lv${lv}に切替(↑/↓キーでも可)`}
+                >
+                  Lv{lv}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div style={panel({ display: 'flex', gap: 4, padding: 5 })}>
           {BUILD_TOOLS.map(tool => (

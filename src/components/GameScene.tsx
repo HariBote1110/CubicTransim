@@ -91,6 +91,8 @@ interface GameSceneProps {
   terrain: Map<string, TerrainType>;
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
+  // ★追加: 高架(elevated/elevated-station)の建設対象レベル(1〜MAX_ELEVATED_LEVEL)。
+  buildLevel: 1 | 2 | 3;
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
   simSpeed: number;
@@ -100,7 +102,9 @@ interface GameSceneProps {
     path: { x: number; z: number }[],
     mode: CellType | 'none' | 'remove' | 'signal' | 'elevated' | 'elevated-station',
     // 駅設置(station)専用: ドラッグ方向から決まる軸のヒント(南北/東西)。
-    stationAxisHint?: StationAxis
+    stationAxisHint?: StationAxis,
+    // 高架(elevated/elevated-station)専用: 建設対象レベル。省略時は1。
+    level?: 1 | 2 | 3
   ) => void;
   removeSignal: (x: number, z: number) => void;
   onSimEvent: (event: SimEvent) => void;
@@ -119,7 +123,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, terrain, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -164,10 +168,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // resolveElevatedPathEnd/planElevatedPathにそのまま問い合わせる(UIにルールを書き写さない)。
   const elevatedPreviewPlan = useMemo(() => {
     if (buildMode !== 'elevated' || previewPath.length < 2) return null;
-    const startInfo = resolveElevatedPathEnd(railMap, previewPath[0]);
-    const endInfo = resolveElevatedPathEnd(railMap, previewPath[previewPath.length - 1]);
-    return planElevatedPath(previewPath.length, startInfo.continuesElevated, endInfo.continuesElevated);
-  }, [buildMode, previewPath, railMap]);
+    const startInfo = resolveElevatedPathEnd(railMap, previewPath[0], buildLevel);
+    const endInfo = resolveElevatedPathEnd(railMap, previewPath[previewPath.length - 1], buildLevel);
+    return planElevatedPath(previewPath.length, startInfo.continuesElevated, endInfo.continuesElevated, buildLevel);
+  }, [buildMode, previewPath, railMap, buildLevel]);
 
   // 建設プレビューの内容をUI(コスト・可否の表示)へ流す。
   React.useEffect(() => {
@@ -238,7 +242,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const dz = Math.abs(pos.z - start.z);
         if (dx > 0 || dz > 0) stationAxisHint = dx >= dz ? 'ew' : 'ns';
       }
-      onCommitPath(path, buildMode, stationAxisHint);
+      const level = (buildMode === 'elevated' || buildMode === 'elevated-station') ? buildLevel : undefined;
+      onCommitPath(path, buildMode, stationAxisHint, level);
       dragStartRef.current = null;
       setDragStartPos(null);
     }
@@ -334,8 +339,15 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const color = buildMode === 'elevated'
           ? (role?.kind === 'ramp' ? T.warning : T.bridge)
           : getPreviewColor();
+        // 高架(elevated/elevated-station)は選択中レベルの高さにゴーストを出す。
+        // 坂の区間(role.kind==='ramp')は低い側のレベル(role.base)の高さに置く。
+        const previewY = buildMode === 'elevated'
+          ? 0.2 + (role?.kind === 'ramp' ? role.base : buildLevel) * OVERPASS_HEIGHT
+          : buildMode === 'elevated-station'
+          ? 0.2 + buildLevel * OVERPASS_HEIGHT
+          : 0.2;
         return (
-          <mesh key={`preview-${i}`} position={[pos.x, 0.2, pos.z]} raycast={() => null}>
+          <mesh key={`preview-${i}`} position={[pos.x, previewY, pos.z]} raycast={() => null}>
             <boxGeometry args={[0.92, 0.4, 0.92]} />
             <meshBasicMaterial color={color} transparent opacity={0.45} depthWrite={false} />
           </mesh>
