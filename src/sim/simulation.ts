@@ -15,7 +15,7 @@ import { growTown, townServiceLevel, resolveTownSpawnTick } from './towns';
 import type { StationTransportInfo } from './towns';
 import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
 import {
-  pathPointAt, rampHeightAtPos, OVERPASS_HEIGHT,
+  pathPointAt, pathHeightAt, rampHeightAtPos, OVERPASS_HEIGHT,
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
 } from './trackPath';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
@@ -89,22 +89,6 @@ const cellRampHeight = (railMap: Map<string, CellData>, x: number, z: number, la
 // base→level1→level2→base+1のどの境界でも折れ角が生じない。
 const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1 | 2 | 3): number =>
   0.5 + cellRampHeight(railMap, x, z, layer);
-
-// fromセル→toセルの区間をtで補間した描画高さ(tは0..1にクランプ)。
-// 両端の高さそのものを線形補間する(rampHeightAtPosは区間ごとにbaseが異なり得るため、
-// 正規化posの補間ではなく高さ自体を補間する)。地平→坂→桁の各区間内ではcellRampHeight
-// 自体がrampHeightAtPos(smoothstep)を経由しているので、区間内は折れ角のない縦曲線になる。
-const interpCellHeight = (
-  railMap: Map<string, CellData>,
-  from: { x: number; z: number; layer?: 0 | 1 | 2 | 3 },
-  to: { x: number; z: number; layer?: 0 | 1 | 2 | 3 },
-  t: number
-): number => {
-  const hA = cellRampHeight(railMap, from.x, from.z, from.layer);
-  const hB = cellRampHeight(railMap, to.x, to.z, to.layer);
-  const ct = t < 0 ? 0 : t > 1 ? 1 : t;
-  return 0.5 + hA + (hB - hA) * ct;
-};
 
 export interface TrainRuntime {
   id: string;
@@ -965,7 +949,14 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     // セル中心間の線形補間ではなく、線路の中心線(セル曲線)上の点を描画位置にする。
     // 直線区間ではこの2つは厳密に一致するので、従来の挙動は変わらない。
     const head = pathPointAt(rt.prevGrid, rt.grid, nextTile, rt.route[1] ?? null, newProgress);
-    rt.renderPos = { x: head.x, y: interpCellHeight(world.railMap, rt.grid, nextTile, newProgress), z: head.z };
+    // 高さも同じセル曲線ベジェ(pathHeightAt)で求める。従来はセル中心高さの線形補間
+    // (interpCellHeight)だったため、坂のsmoothstepカーブとズレてセル境界でピッチ角が
+    // 折れて見えていた(レール描画・後続車と定義を合わせる)。
+    const headY = pathHeightAt(
+      rt.prevGrid, rt.grid, nextTile, rt.route[1] ?? null, newProgress,
+      (p: Grid) => cellCentreHeight(world.railMap, p.x, p.z, p.layer)
+    );
+    rt.renderPos = { x: head.x, y: headY, z: head.z };
     rt.renderTarget = { x: nextTile.x, y: 0.5, z: nextTile.z };
   }
 };

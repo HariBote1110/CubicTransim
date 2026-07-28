@@ -128,6 +128,45 @@ export function pathPointAt(
 }
 
 /**
+ * セル curr を通る中心線上、パラメータ t における高さ。entry(prev側境界)と
+ * exit(next側境界)を隣接セル中心高さの平均、centre を curr のセル中心高さとする
+ * 2次ベジェで補間する。emitCurve の pointAt と simulation.ts の先頭車高さ計算が
+ * 同じ式を使うための共通関数(ここがズレるとレールと列車の高さが一致しなくなる)。
+ */
+export function cellCurveHeight<P extends Pt>(
+  prev: P | null,
+  curr: P,
+  next: P | null,
+  t: number,
+  heightAt: (point: P) => number
+): number {
+  const entryY = prev ? (heightAt(prev) + heightAt(curr)) / 2 : heightAt(curr);
+  const exitY = next ? (heightAt(curr) + heightAt(next)) / 2 : heightAt(curr);
+  const ct = clamp01(t);
+  const u = 1 - ct;
+  return u * u * entryY + 2 * u * ct * heightAt(curr) + ct * ct * exitY;
+}
+
+/**
+ * pathPointAt と同じ場合分けで、「セル curr から next へ progress だけ進んだ位置」の
+ * 高さを中心線上で求める。先頭車の renderPos.y はセル中心高さの線形補間ではなく、
+ * この関数(=レール描画・後続車と同じセル曲線ベジェ)を経由しないと、セル境界で
+ * ピッチ角が折れて見える。
+ */
+export function pathHeightAt<P extends Pt>(
+  prev: P | null,
+  curr: P,
+  next: P | null,
+  nextNext: P | null,
+  progress: number,
+  heightAt: (point: P) => number
+): number {
+  if (!next) return cellCurveHeight(prev, curr, null, 0.5 + progress, heightAt);
+  if (progress <= 0.5) return cellCurveHeight(prev, curr, next, 0.5 + progress, heightAt);
+  return cellCurveHeight(curr, next, nextNext, progress - 0.5, heightAt);
+}
+
+/**
  * セル curr の中心線を、パラメータ from から to へ辿る点列を points へ追加する。
  * from の点は「直前に追加済み」とみなして含めない(重複を避けるため)。
  */
@@ -144,13 +183,18 @@ const emitCurve = (
   const pointAt = (t: number): Pt => {
     const point = cellCurvePoint(prev, curr, next, t);
     if (!heightAt) return point;
-    const entryY = prev ? (heightAt(prev) + heightAt(curr)) / 2 : heightAt(curr);
-    const exitY = next ? (heightAt(curr) + heightAt(next)) / 2 : heightAt(curr);
-    const u = 1 - t;
-    return { ...point, y: u * u * entryY + 2 * u * t * heightAt(curr) + t * t * exitY };
+    return { ...point, y: cellCurveHeight(prev, curr, next, t, heightAt) };
   };
-  if (isCollinear(prev, curr, next)) {
-    // 直線区間は端点だけで十分(中間点は同一直線上に並ぶだけ)
+  // 直線区間(x,zが一直線)でも、高さがセル境界ごとに非線形(坂のsmoothstep)だと
+  // 端点2つだけでは丸みが失われ、列車のピッチ角がセル境界でガタつく。
+  // heightAtが渡されておらず高さを扱わない場合や、高さも含めて実質フラットな
+  // 場合だけ、従来どおり端点のみで済ませる。
+  const heightsVary =
+    !!heightAt &&
+    (Math.abs(heightAt(curr) - (prev ? heightAt(prev) : heightAt(curr))) > 1e-9 ||
+      Math.abs(heightAt(curr) - (next ? heightAt(next) : heightAt(curr))) > 1e-9);
+  if (isCollinear(prev, curr, next) && !heightsVary) {
+    // 直線区間かつ高さも一定なら端点だけで十分(中間点は同一直線上に並ぶだけ)
     points.push(pointAt(to));
     return;
   }
