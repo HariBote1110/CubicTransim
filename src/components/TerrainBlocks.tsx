@@ -11,7 +11,7 @@ import {
   MOUNTAIN_ELEVATION_MAX,
 } from '../sim/terrain';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
-import { MATERIALS, hash01 } from '../render/palette';
+import { MATERIALS } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
@@ -138,14 +138,6 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
           // 傾きの大きい坑口の垂直壁は岩色にする。
           pushQuad(rockDark, top0, top1, bottom1, bottom0);
         }
-      }
-
-      // 側面: 標高ごとに色をわずかに散らして単調さを崩す(隅の高さが揃っている柱状部分のみ)。
-      const minCorner = Math.min(...corners);
-      if (minCorner > 0) {
-        const side = new THREE.BoxGeometry(0.999, minCorner * OVERPASS_HEIGHT, 0.999);
-        side.translate(x, (minCorner * OVERPASS_HEIGHT) / 2, z);
-        (hash01(x, z, 5) < 0.4 ? rockDark : rock).push(side);
       }
     }
 
