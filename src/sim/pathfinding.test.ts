@@ -673,3 +673,32 @@ describe('十字乗換駅(交差セル)の経路探索', () => {
     ]);
   });
 });
+
+describe('立体交差(層の突き合わせ): 地平駅の真上を高架で通過するだけでは到着とみなさない', () => {
+  it('高架(upper、stationIdなし)で地平駅セルの真上を通過しても、その駅への到達にはならない', () => {
+    const railMap = new Map<string, CellData>();
+    // 地平駅(東西の1セル駅)。真上を南北の高架橋(単なる橋桁、stationIdなし)が跨ぐ。
+    railMap.set(toKey(0, 0), {
+      type: 'station',
+      stationId: 'stA',
+      connections: DIR.E | DIR.W,
+      upper: { connections: DIR.N | DIR.S },
+    });
+    railMap.set(toKey(0, -1), { type: 'rail', upper: { connections: DIR.N | DIR.S } });
+    railMap.set(toKey(0, 1), { type: 'rail', upper: { connections: DIR.N } });
+
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const route = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: -1 },
+      prev: { x: 0, z: -2 },
+      targetStationId: 'stA',
+      cars: 1,
+    });
+
+    // 高架を素通りするだけでは地平ホームには到達できない(空経路になる)。
+    expect(route).toEqual([]);
+  });
+});
