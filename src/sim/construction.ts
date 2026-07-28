@@ -16,6 +16,32 @@ export interface ConstructionState {
 
 type Pos = { x: number; z: number };
 
+// 駅セルの接続の軸。基本は南北(ns)か東西(ew)のどちらか一方の2方向接続にし、
+// 十字に交差した駅セルだけが4方向(cross)を持つ。旧セーブの4方向固定駅とは
+// このcrossが実質的に同じビット構成になる。
+export type StationAxis = 'ns' | 'ew' | 'cross';
+
+const axisBitsFor = (axis: StationAxis): number => {
+  if (axis === 'ns') return DIR.N | DIR.S;
+  if (axis === 'ew') return DIR.E | DIR.W;
+  return DIR.N | DIR.E | DIR.S | DIR.W;
+};
+
+// 隣接する既存の線路・駅セルから軸を推測する。南北方向に隣接セルがあればns、
+// 東西方向にあればew、両方あればcross(交差)。何も無ければ東西(ew)を既定にする。
+const inferStationAxis = (railMap: Map<string, CellData>, x: number, z: number): StationAxis => {
+  const hasNeighbourCell = (nx: number, nz: number): boolean => {
+    const c = railMap.get(toKey(nx, nz));
+    return !!c && (c.type === 'rail' || c.type === 'station');
+  };
+  const hasNS = hasNeighbourCell(x, z - 1) || hasNeighbourCell(x, z + 1);
+  const hasEW = hasNeighbourCell(x - 1, z) || hasNeighbourCell(x + 1, z);
+  if (hasNS && hasEW) return 'cross';
+  if (hasNS) return 'ns';
+  if (hasEW) return 'ew';
+  return 'ew';
+};
+
 // terrain省略時は空Map(=すべて平地)扱いにする。既存呼び出し・既存テストとの互換のため。
 const EMPTY_TERRAIN: Map<string, TerrainType> = new Map();
 
@@ -167,7 +193,8 @@ export function applyStation(
   state: ConstructionState,
   pos: Pos,
   terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
-  towns: TownData[] = []
+  towns: TownData[] = [],
+  axis?: StationAxis
 ): ConstructionState {
   const key = toKey(pos.x, pos.z);
   const existingBeforeUpdate = state.railMap.get(key);
@@ -205,9 +232,23 @@ export function applyStation(
     if (cell && cell.type === 'station') pushId(cell.stationId ?? null);
   }
 
-  // 既に駅セルで、統合すべき別の駅IDが周囲に無ければ従来通り no-op(バグ1/2対策の再設置防止)
+  // 軸(axis)は明示的に渡されればそれを使い、省略時は隣接する既存の線路・駅から推測する
+  // (何も無ければ東西を既定にする)。
+  const resolvedAxis: StationAxis = axis ?? inferStationAxis(state.railMap, pos.x, pos.z);
+  const newBits = axisBitsFor(resolvedAxis);
+
+  // 既に駅セルで、統合すべき別の駅IDが周囲に無い場合:
+  // 新しい軸ビットが既存のconnectionsに全て含まれていれば真のno-op(バグ1/2対策の再設置防止)。
+  // 含まれていないビットがあれば「直交する軸で既存の駅セルを横切った」ケースなので、
+  // 駅の統合は不要(同じ駅のまま)だが接続だけを拡張する。
   if (crossingStationId && involvedIds.length <= 1) {
-    return state;
+    const existingBits = existingBeforeUpdate!.connections ?? 0;
+    if ((existingBits & newBits) === newBits) {
+      return state;
+    }
+    const railMap = new Map(state.railMap);
+    railMap.set(key, { ...existingBeforeUpdate!, connections: existingBits | newBits });
+    return { railMap, stations: state.stations };
   }
 
   const railMap = new Map(state.railMap);
@@ -257,12 +298,12 @@ export function applyStation(
     stations.set(targetId, { id: targetId, name: newName, cells: [{ x: pos.x, z: pos.z }], center: { x: pos.x, z: pos.z }, platformDoors: 'none' });
   }
 
-  // バグ3対策: 既存の rail/station セルを駅化する場合は connections を維持する
-  // (十字駅の交差セルは既にN|E|S|Wを持っているので、そのまま維持すれば4方向とも通行可)。
-  // 空セルに新規設置する場合のみ N|E|S|W で初期化する。
+  // バグ3対策: 既存の rail/station セルを駅化する場合は connections を維持しつつ、
+  // 今回の軸ビットを追加する(斜め線路等の既存接続を消さないため)。
+  // 空セルに新規設置する場合は軸ビットだけで初期化する。
   const connections = existingBeforeUpdate && (existingBeforeUpdate.type === 'rail' || existingBeforeUpdate.type === 'station')
-    ? (existingBeforeUpdate.connections || 0)
-    : (DIR.N | DIR.E | DIR.S | DIR.W);
+    ? (existingBeforeUpdate.connections || 0) | newBits
+    : newBits;
 
   railMap.set(key, { type: 'station', connections, stationId: targetId });
   neighbours.forEach(n => updateDepotRotation(railMap, n.x, n.z));

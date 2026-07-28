@@ -39,13 +39,28 @@ describe('applyRailPath（特性テスト）', () => {
 });
 
 describe('applyStation（特性テスト）', () => {
-  it('空セルに駅を設置すると新しい駅IDと N|E|S|W の connections を持つ', () => {
+  it('空セルに孤立して駅を設置すると新しい駅IDと東西(既定軸)の connections を持つ', () => {
     const state = emptyState();
     const result = applyStation(state, { x: 0, z: 0 });
     const cell = result.railMap.get(toKey(0, 0))!;
     expect(cell.type).toBe('station');
-    expect(cell.connections).toBe(DIR.N | DIR.E | DIR.S | DIR.W);
+    expect(cell.connections).toBe(DIR.E | DIR.W);
     expect(result.stations.size).toBe(1);
+  });
+
+  it('axisを明示すると南北(ns)のconnectionsになる', () => {
+    const state = emptyState();
+    const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.connections).toBe(DIR.N | DIR.S);
+  });
+
+  it('隣接セルが南北にあれば軸をnsと推測する', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 0, z: -1 }, undefined, [], 'ns');
+    state = applyStation(state, { x: 0, z: 0 }); // axis省略。北隣が駅なのでnsと推測されるはず
+    const cell = state.railMap.get(toKey(0, 0))!;
+    expect(cell.connections).toBe(DIR.N | DIR.S);
   });
 
   it('隣接する駅セルに設置すると同じ駅IDにマージされる', () => {
@@ -100,39 +115,47 @@ describe('applyStation（特性テスト）', () => {
   // 十字乗換駅: 別々に建設された2つの駅が交差セルで1つに統合される
   it('別の駅IDの駅セルを横切ると1つの駅に統合される（十字駅）', () => {
     let state = emptyState();
-    // 東西方向の駅(H)を先に建設する
-    state = applyStation(state, { x: -1, z: 0 });
+    // 東西方向の駅(H)を先に建設する(軸を明示。実際のドラッグ方向に相当)
+    state = applyStation(state, { x: -1, z: 0 }, undefined, [], 'ew');
     const hId = Array.from(state.stations.keys())[0];
-    state = applyStation(state, { x: 0, z: 0 });
-    state = applyStation(state, { x: 1, z: 0 });
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
+    state = applyStation(state, { x: 1, z: 0 }, undefined, [], 'ew');
     expect(state.stations.get(hId)!.cells).toHaveLength(3);
 
     // 南北方向の駅(V)を、Hに触れないところから独立に建設し、
     // 最後にHの交差セル(0,0)へ向けて延伸させる(十字駅の形成)
-    state = applyStation(state, { x: 0, z: -3 });
+    state = applyStation(state, { x: 0, z: -3 }, undefined, [], 'ns');
     const vId = Array.from(state.stations.keys()).find(id => id !== hId)!;
-    state = applyStation(state, { x: 0, z: -2 });
+    state = applyStation(state, { x: 0, z: -2 }, undefined, [], 'ns');
     expect(state.stations.get(vId)!.cells).toHaveLength(2);
 
     // (0,-1)はHの交差セル(0,0)に隣接するため、この時点で統合される
-    state = applyStation(state, { x: 0, z: -1 });
+    state = applyStation(state, { x: 0, z: -1 }, undefined, [], 'ns');
     expect(state.stations.size).toBe(1);
     const merged = state.stations.get(hId)!; // 先に存在したHの駅IDが残る
     expect(merged.cells).toHaveLength(6);
     expect(state.stations.has(vId)).toBe(false);
 
-    // 交差セル自体(0,0)は既に統合済みの駅であり、再設置しても no-op
+    // 交差セル自体(0,0)はH(ew)としてのみ存在しており、V(ns)は隣接セル(0,-1)止まりで
+    // 実際にこのセルを軸として通過していないため、connectionsはew(E|W)のまま。
+    // 同じ軸(ew)で再設置しても no-op
     const before = state;
-    state = applyStation(state, { x: 0, z: 0 });
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
     expect(state).toBe(before);
 
     const crossCell = state.railMap.get(toKey(0, 0))!;
     expect(crossCell.type).toBe('station');
     expect(crossCell.stationId).toBe(hId);
-    expect(crossCell.connections).toBe(DIR.N | DIR.E | DIR.S | DIR.W);
+    expect(crossCell.connections).toBe(DIR.E | DIR.W);
+
+    // (0,0)を実際にns軸で横切ると、同じ駅のまま接続だけが十字(cross)に拡張される
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    const crossedCell = state.railMap.get(toKey(0, 0))!;
+    expect(crossedCell.connections).toBe(DIR.N | DIR.E | DIR.S | DIR.W);
+    expect(state.stations.size).toBe(1);
 
     // Vをさらに南へ延伸すると、統合済みの駅として増える
-    state = applyStation(state, { x: 0, z: 1 });
+    state = applyStation(state, { x: 0, z: 1 }, undefined, [], 'ns');
     expect(state.stations.get(hId)!.cells).toHaveLength(7);
     expect(state.railMap.get(toKey(0, 1))!.stationId).toBe(hId);
   });

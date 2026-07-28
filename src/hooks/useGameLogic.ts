@@ -5,7 +5,7 @@ import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import { applyRailPath, applyStation, applyDepot, applySignal, applyBridge, removePath } from '../sim/construction';
-import type { ConstructionState } from '../sim/construction';
+import type { ConstructionState, StationAxis } from '../sim/construction';
 import { evaluateStationTemplate } from '../sim/buildPreview';
 import { applyStationTemplate, STATION_TEMPLATES } from '../sim/stationTemplates';
 import type { QuarterTurns } from '../ui/templateRotation';
@@ -155,7 +155,13 @@ export const useGameLogic = () => {
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
   // ここでは現在の state を渡し、結果をまとめて setRailMap/setStations するだけの薄いラッパー。
   // 建設コストの算出・所持金チェック・課金もここで行う。
-  const commitPath = (path: { x: number; z: number }[], buildMode: CellType | 'none' | 'remove' | 'signal' | 'bridge') => {
+  const commitPath = (
+    path: { x: number; z: number }[],
+    buildMode: CellType | 'none' | 'remove' | 'signal' | 'bridge',
+    // 駅設置(station)専用: ドラッグした向きから決まる軸のヒント。
+    // 省略時はapplyStationが隣接セルから軸を推測する(なければ東西が既定)。
+    stationAxisHint?: StationAxis
+  ) => {
     if (path.length === 0) return;
 
     const state: ConstructionState = { railMap, stations };
@@ -181,7 +187,7 @@ export const useGameLogic = () => {
         const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
           stationPos, towns, terrain, worldRef.current.rng
         );
-        result = applyStation(state, stationPos, terrain, townsForNaming);
+        result = applyStation(state, stationPos, terrain, townsForNaming, stationAxisHint);
         // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
         if (spawnedTown && result.stations !== state.stations) {
           setTowns(townsForNaming);

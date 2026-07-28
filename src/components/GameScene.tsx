@@ -18,6 +18,7 @@ import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownDa
 import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
+import type { StationAxis } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
@@ -93,7 +94,12 @@ interface GameSceneProps {
   simSpeed: number;
   money: number;
 
-  onCommitPath: (path: { x: number; z: number }[], mode: CellType | 'none' | 'remove' | 'signal' | 'bridge') => void;
+  onCommitPath: (
+    path: { x: number; z: number }[],
+    mode: CellType | 'none' | 'remove' | 'signal' | 'bridge',
+    // 駅設置(station)専用: ドラッグ方向から決まる軸のヒント(南北/東西)。
+    stationAxisHint?: StationAxis
+  ) => void;
   // ★追加: 駅テンプレート(選択中のテンプレートと向き。設置はクリック1回)
   selectedTemplateId: string;
   quarterTurns: QuarterTurns;
@@ -221,7 +227,15 @@ export const GameScene: React.FC<GameSceneProps> = ({
       const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
         ? [pos]
         : getConstrainedPath(dragStartPos, pos);
-      onCommitPath(path, buildMode);
+      // 駅設置(station)は常に単一セルを置くが、ドラッグした向きを軸のヒントとしてUI側から渡す。
+      // (押下位置=解放位置で向きが分からない場合はヒント無しにし、隣接セルからの推測に任せる)
+      let stationAxisHint: StationAxis | undefined;
+      if (buildMode === 'station') {
+        const dx = Math.abs(pos.x - dragStartPos.x);
+        const dz = Math.abs(pos.z - dragStartPos.z);
+        if (dx > 0 || dz > 0) stationAxisHint = dx >= dz ? 'ew' : 'ns';
+      }
+      onCommitPath(path, buildMode, stationAxisHint);
       setDragStartPos(null);
     }
   };

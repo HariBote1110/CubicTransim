@@ -19,23 +19,28 @@ describe('rotateTemplate', () => {
     id: 't',
     name: 'テスト',
     description: '',
-    cells: [{ dx: 1, dz: 0, kind: 'station' }],
+    cells: [{ dx: 1, dz: 0, kind: 'station', axis: 'ew' }],
   };
 
   it('quarterTurns=0はそのまま返す', () => {
-    expect(rotateTemplate(template, 0).cells).toEqual([{ dx: 1, dz: 0, kind: 'station' }]);
+    expect(rotateTemplate(template, 0).cells).toEqual([{ dx: 1, dz: 0, kind: 'station', axis: 'ew' }]);
   });
 
-  it('quarterTurns=1で東(1,0)は南(0,1)になる(時計回り90度)', () => {
-    expect(rotateTemplate(template, 1).cells).toEqual([{ dx: 0, dz: 1, kind: 'station' }]);
+  it('quarterTurns=1で東(1,0)は南(0,1)になる(時計回り90度)。軸もew→nsに入れ替わる', () => {
+    expect(rotateTemplate(template, 1).cells).toEqual([{ dx: 0, dz: 1, kind: 'station', axis: 'ns' }]);
   });
 
-  it('quarterTurns=2で東(1,0)は西(-1,0)になる', () => {
-    expect(rotateTemplate(template, 2).cells).toEqual([{ dx: -1, dz: 0, kind: 'station' }]);
+  it('quarterTurns=2で東(1,0)は西(-1,0)になる。軸は変わらない', () => {
+    expect(rotateTemplate(template, 2).cells).toEqual([{ dx: -1, dz: 0, kind: 'station', axis: 'ew' }]);
   });
 
-  it('quarterTurns=3で東(1,0)は北(0,-1)になる', () => {
-    expect(rotateTemplate(template, 3).cells).toEqual([{ dx: 0, dz: -1, kind: 'station' }]);
+  it('quarterTurns=3で東(1,0)は北(0,-1)になる。軸もew→nsに入れ替わる', () => {
+    expect(rotateTemplate(template, 3).cells).toEqual([{ dx: 0, dz: -1, kind: 'station', axis: 'ns' }]);
+  });
+
+  it('crossは常にcrossのまま回転する', () => {
+    const crossCell: StationTemplate = { id: 'x', name: '', description: '', cells: [{ dx: 0, dz: 0, kind: 'station', axis: 'cross' }] };
+    expect(rotateTemplate(crossCell, 1).cells[0].axis).toBe('cross');
   });
 });
 
@@ -47,10 +52,23 @@ describe('STATION_TEMPLATES', () => {
     expect(cross.cells.every(c => c.kind === 'station')).toBe(true);
   });
 
+  it('crossテンプレートは中心がcross、東西の腕がew、南北の腕がns', () => {
+    const cross = STATION_TEMPLATES.find(t => t.id === 'cross')!;
+    const centre = cross.cells.find(c => c.dx === 0 && c.dz === 0)!;
+    expect(centre.axis).toBe('cross');
+    expect(cross.cells.filter(c => c.dz === 0 && c.dx !== 0).every(c => c.axis === 'ew')).toBe(true);
+    expect(cross.cells.filter(c => c.dx === 0 && c.dz !== 0).every(c => c.axis === 'ns')).toBe(true);
+  });
+
   it('throughテンプレートは平行な長さ4の駅セル列2本(計8セル)', () => {
     const through = STATION_TEMPLATES.find(t => t.id === 'through')!;
     expect(through.cells).toHaveLength(8);
     expect(through.cells.every(c => c.kind === 'station')).toBe(true);
+  });
+
+  it('throughテンプレートはすべてewの軸を持つ', () => {
+    const through = STATION_TEMPLATES.find(t => t.id === 'through')!;
+    expect(through.cells.every(c => c.axis === 'ew')).toBe(true);
   });
 });
 
@@ -90,6 +108,22 @@ describe('applyStationTemplate', () => {
     const result = applyStationTemplate(state, { x: 0, z: 0 }, cross, 1, []);
     expect(result.railMap.get(toKey(0, -2))).toBeDefined();
     expect(result.railMap.get(toKey(2, 0))).toBeDefined();
+  });
+
+  it('throughテンプレートを90度回転すると、南北方向(ns)のconnectionsで設置される', () => {
+    const through = STATION_TEMPLATES.find(t => t.id === 'through')!;
+    const state = emptyState();
+    const result = applyStationTemplate(state, { x: 0, z: 0 }, through, 1, []);
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.connections).toBe(DIR.N | DIR.S);
+  });
+
+  it('throughテンプレートを回転しないと、東西方向(ew)のconnectionsで設置される', () => {
+    const through = STATION_TEMPLATES.find(t => t.id === 'through')!;
+    const state = emptyState();
+    const result = applyStationTemplate(state, { x: 0, z: 0 }, through, 0, []);
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.connections).toBe(DIR.E | DIR.W);
   });
 
   it('一部のセルが車庫と重なる場合は全体を設置しない(all-or-nothing)', () => {

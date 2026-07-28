@@ -6,7 +6,7 @@
 // 組み立てるだけにし、判定を二重に書かない。
 import { toKey } from '../utils';
 import type { TerrainType, TownData } from '../types';
-import { applyStation, applyRailPath, type ConstructionState } from './construction';
+import { applyStation, applyRailPath, type ConstructionState, type StationAxis } from './construction';
 
 export type TemplateCellKind = 'station' | 'rail';
 
@@ -16,6 +16,11 @@ export interface TemplateCell {
   /** アンカーからの相対z */
   dz: number;
   kind: TemplateCellKind;
+  /**
+   * 駅セルの接続の軸(南北/東西/交差)。kind==='station'のセルにのみ意味を持つ
+   * (rail種別のセルでは無視される。回転時にrotateTemplateが一緒に回す)。
+   */
+  axis: StationAxis;
 }
 
 export interface StationTemplate {
@@ -36,6 +41,14 @@ const rotateOnce = (dx: number, dz: number): { dx: number; dz: number } => ({
   dz: normalizeZero(dx),
 });
 
+// 軸を90度単位で回転する。90度(奇数回)ごとにns/ewが入れ替わる。crossは常にcrossのまま。
+const rotateAxis = (axis: StationAxis, quarterTurns: 0 | 1 | 2 | 3): StationAxis => {
+  if (axis === 'cross') return 'cross';
+  const flips = quarterTurns % 2 === 1;
+  if (!flips) return axis;
+  return axis === 'ns' ? 'ew' : 'ns';
+};
+
 export function rotateTemplate(template: StationTemplate, quarterTurns: 0 | 1 | 2 | 3): StationTemplate {
   const cells = template.cells.map(c => {
     let dx = c.dx;
@@ -45,7 +58,7 @@ export function rotateTemplate(template: StationTemplate, quarterTurns: 0 | 1 | 
       dx = rotated.dx;
       dz = rotated.dz;
     }
-    return { dx, dz, kind: c.kind };
+    return { dx, dz, kind: c.kind, axis: rotateAxis(c.axis, quarterTurns) };
   });
   return { ...template, cells };
 }
@@ -57,10 +70,11 @@ const CROSS_TEMPLATE: StationTemplate = {
   description: '南北・東西のホームが中心で直交する乗り換え駅(西国分寺駅のような形)。',
   cells: (() => {
     const cells: TemplateCell[] = [];
-    for (let dx = -2; dx <= 2; dx++) cells.push({ dx, dz: 0, kind: 'station' });
+    // 東西の腕(中心含む): 中心だけは両軸を持つcross、それ以外はew
+    for (let dx = -2; dx <= 2; dx++) cells.push({ dx, dz: 0, kind: 'station', axis: dx === 0 ? 'cross' : 'ew' });
     for (let dz = -2; dz <= 2; dz++) {
       if (dz === 0) continue; // 中心(0,0)は上のループで既に追加済み
-      cells.push({ dx: 0, dz, kind: 'station' });
+      cells.push({ dx: 0, dz, kind: 'station', axis: 'ns' });
     }
     return cells;
   })(),
@@ -74,9 +88,10 @@ const THROUGH_TEMPLATE: StationTemplate = {
   description: '隣接する2本のホームからなる対向式の駅。',
   cells: (() => {
     const cells: TemplateCell[] = [];
+    // 東西方向に伸びる2本のホーム
     for (let dx = 0; dx < 4; dx++) {
-      cells.push({ dx, dz: 0, kind: 'station' });
-      cells.push({ dx, dz: 1, kind: 'station' });
+      cells.push({ dx, dz: 0, kind: 'station', axis: 'ew' });
+      cells.push({ dx, dz: 1, kind: 'station', axis: 'ew' });
     }
     return cells;
   })(),
@@ -91,9 +106,9 @@ export function templateAbsoluteCells(
   anchor: Pos,
   template: StationTemplate,
   quarterTurns: 0 | 1 | 2 | 3
-): { x: number; z: number; kind: TemplateCellKind }[] {
+): { x: number; z: number; kind: TemplateCellKind; axis: StationAxis }[] {
   const rotated = rotateTemplate(template, quarterTurns);
-  return rotated.cells.map(c => ({ x: anchor.x + c.dx, z: anchor.z + c.dz, kind: c.kind }));
+  return rotated.cells.map(c => ({ x: anchor.x + c.dx, z: anchor.z + c.dz, kind: c.kind, axis: c.axis }));
 }
 
 // 8方向の隣接判定(dx,dzがともに-1〜1で(0,0)でない)。rail同士の接続に使う。
@@ -127,7 +142,7 @@ export function applyStationTemplate(
 
   // 駅セルを設置する(交差統合はapplyStation自身が行う)
   for (const cell of stationCells) {
-    working = applyStation(working, cell, terrain, towns);
+    working = applyStation(working, cell, terrain, towns, cell.axis);
     const placed = working.railMap.get(toKey(cell.x, cell.z));
     if (!placed || placed.type !== 'station') {
       // 車庫との衝突・地形制約などで設置できなかった → all-or-nothing で全体を破棄

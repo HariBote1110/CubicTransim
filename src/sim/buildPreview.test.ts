@@ -53,7 +53,7 @@ describe('evaluateBuild', () => {
 
   it('既に駅があるセルには重ねられない(no-effect)', () => {
     const { railMap, stations, terrain } = emptyMaps();
-    railMap.set(toKey(0, 0), { type: 'station', connections: 0, stationId: 'st1' });
+    railMap.set(toKey(0, 0), { type: 'station', connections: DIR.E | DIR.W, stationId: 'st1' });
     const p = evaluateBuild('station', [{ x: 0, z: 0 }], railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('no-effect');
   });

@@ -626,13 +626,14 @@ describe('十字乗換駅(交差セル)の経路探索', () => {
   // 十字駅: (0,0)を交差セルとして東西・南北の駅セル列が交わる1つの駅を作る。
   const buildCrossStation = () => {
     let state: ConstructionState = { railMap: new Map<string, CellData>(), stations: new Map() };
-    // 南北方向を先に敷設
-    state = applyStation(state, { x: 0, z: -1 });
-    state = applyStation(state, { x: 0, z: 0 });
-    state = applyStation(state, { x: 0, z: 1 });
-    // 東西方向を敷設(交差セル(0,0)を通って統合される)
-    state = applyStation(state, { x: -1, z: 0 });
-    state = applyStation(state, { x: 1, z: 0 });
+    // 南北方向を先に敷設(軸を明示。実際のドラッグ方向に相当)
+    state = applyStation(state, { x: 0, z: -1 }, undefined, [], 'ns');
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    state = applyStation(state, { x: 0, z: 1 }, undefined, [], 'ns');
+    // 東西方向を敷設(交差セル(0,0)を東西でも横切り、十字(cross)接続にする)
+    state = applyStation(state, { x: -1, z: 0 }, undefined, [], 'ew');
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
+    state = applyStation(state, { x: 1, z: 0 }, undefined, [], 'ew');
     const stationId = state.railMap.get(toKey(0, 0))!.stationId!;
     expect(state.stations.size).toBe(1); // 十字全体が1つの駅に統合されている
     return { railMap: state.railMap, stations: state.stations, stationId };
