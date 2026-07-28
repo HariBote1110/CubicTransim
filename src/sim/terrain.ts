@@ -69,6 +69,34 @@ const carveMountain = (terrain: Map<string, TerrainType>, rng: () => number): vo
   }
 };
 
+// mountainセルを4近傍(上下左右)へ1セルぶん膨張(dilation)させる。
+//
+// 山脈生成のランダムウォークは幅1セルの尾根区間を作りうる。cellCornerElevations
+// のmin則では「幅1セルの尾根」は4隅すべてが標高0になり(=境界セルなのに内部セルが
+// 存在しないため)、地形が完全に平地化して描画されてしまう。膨張により元のセルが
+// 必ず内部セル(4方向にmountainの隣接を持つセル)を得られるようにし、稜線の標高が
+// 1以上になるようにする。
+//
+// 生成範囲(TERRAIN_COORD_RANGE)外へは膨張しない(クランプ)。water/mountainが重なる
+// 場合はmountainを優先する(generateTerrainの「後勝ち」方針と異なり、ここでは膨張元の
+// mountainが主役のため上書きしてよい)。
+export function dilateMountains(terrain: Map<string, TerrainType>): Map<string, TerrainType> {
+  const dilated = new Map(terrain);
+
+  for (const [key, type] of terrain) {
+    if (type !== 'mountain') continue;
+    const { x, z } = fromKey(key);
+    for (const [dx, dz] of NEIGHBOUR_OFFSETS) {
+      const nx = x + dx;
+      const nz = z + dz;
+      if (!inRange(nx) || !inRange(nz)) continue;
+      dilated.set(toKey(nx, nz), 'mountain');
+    }
+  }
+
+  return dilated;
+}
+
 // マップ上に地形(湖・山脈)を決定的に生成する。
 export function generateTerrain(rng: () => number): Map<string, TerrainType> {
   const terrain = new Map<string, TerrainType>();
@@ -84,7 +112,8 @@ export function generateTerrain(rng: () => number): Map<string, TerrainType> {
     carveMountain(terrain, rng);
   }
 
-  return terrain;
+  // 幅1セルの尾根が完全に平地化して見えないよう、mountainを1セル膨張させる。
+  return dilateMountains(terrain);
 }
 
 // 指定座標の地形種別を返す。未登録セル(平地)は既定値'grass'。
