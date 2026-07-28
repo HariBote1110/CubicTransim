@@ -93,6 +93,8 @@ export const MATERIALS = {
 
   rock: std(PALETTE.rock, { flatShading: true, roughness: 1 }),
   rockDark: std(PALETTE.rockDark, { flatShading: true, roughness: 1 }),
+  rockSnow: std(PALETTE.rockSnow, { flatShading: true, roughness: 0.95 }),
+  grassTerrace: std(PALETTE.grassDark, { roughness: 0.9 }),
   water: new THREE.MeshStandardMaterial({
     color: PALETTE.water, roughness: 0.15, metalness: 0.2, transparent: true, opacity: 0.85,
   }),

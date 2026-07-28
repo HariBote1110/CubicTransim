@@ -2,6 +2,8 @@ import React, { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import type { TerrainType } from '../types';
 import { fromKey } from '../utils';
+import { computeElevation, elevationAt, MOUNTAIN_ELEVATION_MAX } from '../sim/terrain';
+import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import { MATERIALS, hash01 } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
 
@@ -17,19 +19,23 @@ const WATER_LEVEL = -0.07;
 /**
  * 地形(水域・山岳)の描画。
  *
- * 「青い半透明タイル」と「灰色の四角錐」だったものを、
  *  - 水域: 一段掘り下げた水面 + 岸(砂色の縁)で湖らしく
- *  - 山岳: セル座標から決定的に形を散らしたローポリの岩塊(高い所には雪)
- * に作り直した。セル数が数百規模になり得るのでマテリアルごとにマージして描く。
+ *  - 山岳: OpenTTD風の整数標高の段丘ブロック。標高は sim/terrain.ts の
+ *    computeElevation で地形データから決定的に導出する(セーブ形式には含めない)。
+ *    1段の高さは OVERPASS_HEIGHT に合わせ、将来の高架・トンネルと視覚整合させる。
+ * セル数が数百規模になり得るのでマテリアルごとにマージして描く。
  * 地形データ(sim/terrain.ts)そのものは変更していない。
  */
 export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
+  const elevation = useMemo(() => computeElevation(terrain), [terrain]);
+
   const merged = useMemo(() => {
     const water: THREE.BufferGeometry[] = [];
     const shore: THREE.BufferGeometry[] = [];
     const rock: THREE.BufferGeometry[] = [];
     const rockDark: THREE.BufferGeometry[] = [];
-    const snow: THREE.BufferGeometry[] = [];
+    const grassTop: THREE.BufferGeometry[] = [];
+    const snowTop: THREE.BufferGeometry[] = [];
 
     for (const [key, type] of terrain) {
       const { x, z } = fromKey(key);
@@ -50,27 +56,20 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
       // mountain
       if (tunnelKeys?.has(key)) continue;
 
-      const h = 0.75 + hash01(x, z, 1) * 1.15;
-      const r = 0.42 + hash01(x, z, 2) * 0.2;
-      const rot = hash01(x, z, 3) * Math.PI * 2;
-      const tilt = (hash01(x, z, 4) - 0.5) * 0.28;
+      const e = elevationAt(elevation, x, z);
+      if (e <= 0) continue;
 
-      // 岩塊: 8面体を潰して低ポリの山肌にする。個体差は座標ハッシュで決定的に出す。
-      const g = new THREE.OctahedronGeometry(r, 0);
-      g.scale(1.15, h / r, 1.15);
-      g.rotateY(rot);
-      g.rotateX(tilt);
-      g.translate(x, h * 0.42, z);
-      (hash01(x, z, 5) < 0.4 ? rockDark : rock).push(g);
+      const height = e * OVERPASS_HEIGHT;
 
-      // 高い岩には雪冠を載せる
-      if (h > 1.55) {
-        const cap = new THREE.OctahedronGeometry(r * 0.42, 0);
-        cap.scale(1.0, 0.55, 1.0);
-        cap.rotateY(rot);
-        cap.translate(x, h * 0.82, z);
-        snow.push(cap);
-      }
+      // 側面: 段丘の柱。標高ごとに色をわずかに散らして単調さを崩す。
+      const side = new THREE.BoxGeometry(1.0, height, 1.0);
+      side.translate(x, height / 2, z);
+      (hash01(x, z, 5) < 0.4 ? rockDark : rock).push(side);
+
+      // 上面: 薄い板。標高3(芯)は雪、標高1〜2は草地。
+      const top = new THREE.BoxGeometry(0.98, 0.06, 0.98);
+      top.translate(x, height + 0.03, z);
+      (e >= MOUNTAIN_ELEVATION_MAX ? snowTop : grassTop).push(top);
     }
 
     const mergeAll = mergeAndDispose;
@@ -80,18 +79,14 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
       shore: mergeAll(shore),
       rock: mergeAll(rock),
       rockDark: mergeAll(rockDark),
-      snow: mergeAll(snow),
+      grassTop: mergeAll(grassTop),
+      snowTop: mergeAll(snowTop),
     };
-  }, [terrain, tunnelKeys]);
+  }, [terrain, tunnelKeys, elevation]);
 
   useEffect(() => () => {
     Object.values(merged).forEach(g => g?.dispose());
   }, [merged]);
-
-  const snowMaterial = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#eceae3', flatShading: true, roughness: 0.95 }),
-    []
-  );
 
   // 水域・山岳の地形装飾は選択対象ではない。地面クリックを奪わないようレイキャストを外す。
   const noRaycast = () => null;
@@ -104,7 +99,12 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
       {merged.rockDark && (
         <mesh geometry={merged.rockDark} material={MATERIALS.rockDark} castShadow receiveShadow raycast={noRaycast} />
       )}
-      {merged.snow && <mesh geometry={merged.snow} material={snowMaterial} raycast={noRaycast} />}
+      {merged.grassTop && (
+        <mesh geometry={merged.grassTop} material={MATERIALS.grassTerrace} receiveShadow raycast={noRaycast} />
+      )}
+      {merged.snowTop && (
+        <mesh geometry={merged.snowTop} material={MATERIALS.rockSnow} receiveShadow raycast={noRaycast} />
+      )}
     </group>
   );
 };
