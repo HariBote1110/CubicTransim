@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [station-cell-axis.md](station-cell-axis.md) — 駅セルの接続を4方向固定から軸(ns/ew/cross)ベースに変更。ドラッグ方向・テンプレートの回転(Rキー)から軸を決め、隣接する既存線路・駅からの推測もサポート。旧セーブの4方向駅はそのまま互換動作
 - [bridge-ramp-and-whole-removal.md](bridge-ramp-and-whole-removal.md) 追記(2026-07-28) — 橋の坂の高さを離散的なlevel加算から`rampHeightAtPos`(sim/trackPath.tsのsmoothstep曲線、地平→level1→level2→桁を1本の連続パラメータposで辿る)に一元化し、取り付き部の折れ角を解消。render側(buildRampTrackParts/buildRampAbutmentPart)も同じ関数でサブセグメント分割して曲線化
 - [station-template-ui.md](station-template-ui.md) — 駅テンプレート建設ツールのUI・描画側。BuildMode='template'(ショートカット8)、Rキーでの回転(quarterTurnsを純粋関数cycleQuarterTurnsで一周)、テンプレ選択UI、クリック1回での設置(commitTemplateがevaluateStationTemplate/applyStationTemplateに判定を委ねてcommitPathと同じ会計処理)、kind別に色分けしたプレビュー。実機確認で十字駅9セル・回転後も同一・相対式との交差統合(17セル化)・資金不足時のバナーを確認
 - [cross-transfer-station.md](cross-transfer-station.md) — 十字の乗り換え駅(シミュレーション層)。`applyStation`のdepot/station拒否を分割し、駅セルの交差を許可(depotは従来通り拒否)。既存セルの駅IDと隣接4セルの駅IDを集めて2件以上あれば1つの駅に統合(stations Mapの挿入順で最も早いIDを残す)。pathfinding/reservation/trackPathは無改修(駅セルは元々4方向connections・セル単位予約のため)。追記: 駅テンプレート(sim/stationTemplates.ts)を新設。`StationTemplate`データ+`rotateTemplate`(90度回転)+`applyStationTemplate`(applyStation/applyRailPathを組み合わせたall-or-nothing適用)で`'cross'`(十字9セル)・`'through'`(相対式2面2線8セル、隣接統合)を用意。buildPreview.tsに`evaluateStationTemplate`を追加
