@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toKey, getDirFromVector, getOppositeDir } from '../utils';
+import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
 import type { CellData, StationData, TrainData, TownData } from '../types';
 import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
@@ -1135,5 +1135,53 @@ describe('stepWorld: 立体交差(層の突き合わせ) 既に目的駅にい�
     // 高架を通過中なので、地平駅stAに到着したとみなしてはならない(停車扱いにしない)。
     expect(rt.stopRemaining).toBe(0);
     expect(rt.debugStatus).not.toBe('Arrived');
+  });
+
+  it('高架駅ホーム(layer1)に停車中も、renderPos.yはOVERPASS_HEIGHT分だけ高いままになる', () => {
+    // 高架(upper)のみの直線に、高架ホーム(upper.stationId)を1セル設ける。
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const railMap = new Map<string, CellData>();
+    for (let i = 0; i < cells.length - 1; i++) {
+      const curr = cells[i];
+      const next = cells[i + 1];
+      const dir = getDirFromVector(next.x - curr.x, next.z - curr.z);
+      const opp = getOppositeDir(dir);
+      const ck = toKey(curr.x, curr.z);
+      const cc = railMap.get(ck) || { type: 'rail' as const };
+      railMap.set(ck, { ...cc, upper: { connections: (cc.upper?.connections || 0) | dir } });
+      const nk = toKey(next.x, next.z);
+      const nc = railMap.get(nk) || { type: 'rail' as const };
+      railMap.set(nk, { ...nc, upper: { connections: (nc.upper?.connections || 0) | opp } });
+    }
+    const lastKey = toKey(2, 0);
+    railMap.set(lastKey, { ...railMap.get(lastKey)!, upper: { ...railMap.get(lastKey)!.upper!, stationId: 'stUP' } });
+    // resolveEntryLayerがstartセルの層を解決できるよう、prevGrid(西隣、実在しなくてよい)
+    // からの進入ビットをupper.connectionsに足しておく。
+    const firstKey = toKey(0, 0);
+    const firstCell = railMap.get(firstKey)!;
+    railMap.set(firstKey, { ...firstCell, upper: { ...firstCell.upper!, connections: (firstCell.upper!.connections) | DIR.W } });
+    const stations = new Map<string, StationData>([
+      ['stUP', { id: 'stUP', name: 'UP', cells: [{ x: 2, z: 0, layer: 1 as const }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const train = makeTrain({ schedule: ['stUP'] });
+    const world = makeWorld(railMap, stations, [train]);
+    // 出発時点から高架(layer1)にいる状態に仕立てる(車庫は常に地平のため、実際には
+    // 手前で坂を上って高架へ移ったあとの状態を想定した単純化)。
+    const rt = world.runtimes.get('t1') ?? (stepWorld(world, 0.1), world.runtimes.get('t1')!);
+    rt.grid = { x: 0, z: 0, layer: 1 };
+    rt.prevGrid = { x: -1, z: 0 };
+    rt.route = [];
+    rt.lastStopStationId = null;
+    rt.stopRemaining = 0;
+
+    for (let i = 0; i < 5000; i++) {
+      stepWorld(world, 0.1);
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(rt.stopRemaining).toBeGreaterThan(0);
+    expect(rt.grid).toEqual({ x: 2, z: 0, layer: 1 });
+    expect(rt.renderPos.y).toBeCloseTo(0.5 + OVERPASS_HEIGHT, 5);
   });
 });

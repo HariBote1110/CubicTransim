@@ -555,11 +555,18 @@ const stopAtStation = (
   rt.reservedEndIndex = -1;
   rt.prevGrid = null;
   // 端数停車(headPosがセル中心でない)の場合も、描画位置は実際の停止点に置く。
-  rt.renderPos = { x: headPos.x, y: 0.5, z: headPos.z };
+  // 高架ホーム(arrivedGrid.layer===1)に停車中も、走行中と同じ高さ計算
+  // (cellCentreHeight)を使う。ここを0.5固定にすると、高架駅で停車した瞬間だけ
+  // 列車が地平の高さへ沈んで見える不具合になる。
+  rt.renderPos = {
+    x: headPos.x,
+    y: cellCentreHeight(world.railMap, arrivedGrid.x, arrivedGrid.z, arrivedGrid.layer),
+    z: headPos.z,
+  };
   // renderTargetをリセットせず、進入方向の延長線上の点に維持する。
   // こうしないとDynamicTrain側のlookAtが働かず、停車の瞬間に列車の向きが初期値へ戻ってしまう。
   const enterVec = normalize(arrivedGrid.x - oldCurrent.x, arrivedGrid.z - oldCurrent.z);
-  rt.renderTarget = { x: headPos.x + enterVec.x, y: 0.5, z: headPos.z + enterVec.z };
+  rt.renderTarget = { x: headPos.x + enterVec.x, y: rt.renderPos.y, z: headPos.z + enterVec.z };
   rt.pendingDepartureFrom = targetStationId;
   rt.debugStatus = 'Arrived';
 };
