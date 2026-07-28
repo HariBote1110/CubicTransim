@@ -94,13 +94,66 @@ interface TemplateCell {
 
 ## 積み残し(後続エージェントへの申し送り)
 
-- `pathfinding.ts` / `reservation.ts` / `simulation.ts` / `trackPath.ts` は今回未着手。
-  高架駅セル(`upper.stationId`あり)を安全な待機点として扱う分岐、地平⇄高架の
-  乗換え(同一`StationData`内でlayerが異なるセル間の乗客導線)、列車がその層へ
-  進入・停車できるようにする経路探索・予約の拡張が必要。
 - 描画(`src/components/` / `src/render/`)も未着手。高架ホームの見た目
   (上屋・ホーム柵など)は既存の橋桁描画に「駅らしさ」を足す形になる想定。
 - `applyBridge` に `allowStationSpan` を露出するかどうかは保留(上記Decision参照)。
+
+## 第2段階: 経路探索・予約・走行ロジックの層(layer)対応
+
+`pathfinding.ts` / `reservation.ts` / `simulation.ts` / `trackPath.ts` を層対応させた
+(`trackPath.ts`はOVERPASS_HEIGHT/rampHeightAtPos等が元々layer非依存の高さ計算式のため無改修)。
+
+### Decision
+
+- **到着判定は必ず`stationIdAtLayer(cell, layer)`を経由する**(`pathfinding.ts`でexport)。
+  `layer===0`なら`cell.stationId`、`layer===1`なら`cell.upper?.stationId`。
+  素の`cell.stationId===targetId`比較は、地平駅の真上をただの橋桁(`upper`はあるが
+  `stationId`無し)で通過するだけの列車を「到着した」と誤判定するバグの原因だった
+  (`pathfinding.ts`のBFS到着判定と、`simulation.ts`の「経路探索の結果が空だった→
+  既に目的駅にいる」判定の両方に同種のバグがあった)。
+- **ホーム延長(`findNextInLine`/`extendThroughPlatform`)にlayer引数を追加**し、
+  地平専用だった実装を「layerに応じて`connections`か`upper.connections`を辿り、
+  `stationIdAtLayer`で一致判定する」形へ一般化した(地平・高架でロジックを複製しない)。
+- **`isSafeWaitingPoint`をlayerで分岐**: 高架側(`cell.layer===1`)は
+  `upper.stationId`がある(高架ホーム)場合のみ待機可能、無ければ(単なる橋桁)不可。
+  地平側は従来通り(`upper`を持つセル上では待機不可、ただし判定対象はあくまで
+  地平connections)。分岐点判定(`isJunction`)もlayerに応じて
+  `connections`/`upper.connections`を切り替えるよう一般化した。
+- **`reservePlatform`/`releasePlatformExcept`は無改修で層別分離が成立する**。
+  `StationData.cells`の各要素が`layer?`を持ち、`reservationKey`が`layer===1`で
+  `"x,z:u"`という別キーを作るため、これらの関数が`station.cells`を素通しで
+  `reservationKey`に渡す既存実装のままで、地平ホームと高架ホームの予約が
+  自然に別資源になる。統合テストで実際に2列車が交点セルを同時保有できることを確認済み。
+- **`RouteQuery.start`にlayerを追加(`{x,z,layer?}`)**。`calculateRouteWithStop`は
+  `prevGrid`が無いとき常に地平(0)を既定にしていたが、これだと
+  「高架駅ホームで停車→発車」のケースで発車経路が見つからなくなる
+  (`stopAtStation`が停車確定時に`rt.prevGrid`を`null`にリセットするため、
+  発車時の経路探索は`prevGrid`無しで呼ばれる。地平connectionsを持たない
+  高架専用セルから発車しようとすると、layerを常に0とみなして探索し、
+  移動不能になっていた)。`start.layer`を既定層のフォールバックにすることで解決。
+  既存呼び出し側(`simulation.ts`)は`start: rt.grid`をそのまま渡しているため、
+  `rt.grid.layer`が自然に伝播し、他の呼び出し(地平専用の既存テスト)には影響しない。
+- **停車中の高さ**: `stopAtStation`が`renderPos.y`/`renderTarget.y`を`0.5`固定に
+  していたため、高架ホームに停車した瞬間だけ列車が地平の高さへ沈む見た目になって
+  いた。走行中と同じ`cellCentreHeight(railMap, x, z, layer)`を使うよう修正した。
+
+### 統合テスト
+
+`simulation.test.ts`に、建設APIに依存せずrailMap/stationsを直接組み立てたフィクスチャで
+「地平を東西に走る列車」と「高架を南北に走る列車」が同じ駅id(`stX`、十字の交点セル)に
+停車し、旅客が`stX`で乗り換えて反対側の駅まで運ばれることを確認する統合テストを追加した。
+このテストの実装過程で、上記の「発車時のlayer既定値」バグを発見した。
+
+### Constraints / Gotchas
+
+- 高架専用セル(地平`connections`を持たない)に列車を"直接"配置してテストする場合、
+  `prevGrid`が無いと`resolveEntryLayer`は解決不能({@link resolveEntryLayer}は
+  `from`セルからの進入ビットでしか層を決められない)。テストでは、隣接する
+  高架セル同士で自然に両方向のビットが立つ「経路の途中セル」を起点に選ぶか、
+  `RouteQuery.start.layer`(今回追加)を明示するとよい。
+- `passengers.ts`のサービスグラフは駅id単位で辺を張るため、乗換の実装自体は
+  無改修で成立した(1駅idに地平・高架の両ホームがぶら下がっていれば、
+  物理的にどちらのホームで乗降しても同じ駅idの待ち行列/降車として扱われる)。
 
 ## 追記(2026-07-28 free-elevated-track)
 buildOverpassCore/applyElevatedStationの実装は`applyBridge`→`applyElevatedPath`への作り替え(`progress/free-elevated-track.md`)で置き換えられた。データモデル(upper/ramp/StationData.cells[].layer)自体は変更していない。
