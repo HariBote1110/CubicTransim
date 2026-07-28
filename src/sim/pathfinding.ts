@@ -134,7 +134,7 @@ const extendThroughPlatform = (
   targetId: string,
   lastCell: { x: number; z: number },
   prevCell: { x: number; z: number } | null,
-  path: { x: number; z: number }[],
+  path: { x: number; z: number; layer?: 0 | 1 }[],
   cars: number,
   layer: 0 | 1,
   stopLocation: 'near' | 'middle' | 'far' = 'middle'
