@@ -2,12 +2,27 @@ import { describe, it, expect } from 'vitest';
 import {
   smoothstep01,
   rampHeightAtPos,
+  stepElevatedLevel,
   OVERPASS_HEIGHT,
+  MAX_ELEVATED_LEVEL,
   RAMP_POS_GROUND,
   RAMP_POS_LEVEL1,
   RAMP_POS_LEVEL2,
   RAMP_POS_DECK,
 } from './trackPath';
+
+describe('stepElevatedLevel: 建設レベル選択の状態遷移', () => {
+  it('1〜MAX_ELEVATED_LEVELの範囲でクランプする', () => {
+    expect(stepElevatedLevel(1, -1)).toBe(1);
+    expect(stepElevatedLevel(MAX_ELEVATED_LEVEL, 1)).toBe(MAX_ELEVATED_LEVEL);
+  });
+
+  it('範囲内では単純に加算する', () => {
+    expect(stepElevatedLevel(1, 1)).toBe(2);
+    expect(stepElevatedLevel(2, 1)).toBe(3);
+    expect(stepElevatedLevel(2, -1)).toBe(1);
+  });
+});
 
 describe('smoothstep01', () => {
   it('範囲外はクランプされる', () => {

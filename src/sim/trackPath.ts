@@ -50,6 +50,15 @@ export function rampHeightAtPos(pos: number, base: number = 0): number {
   return (base + smoothstep01(pos)) * OVERPASS_HEIGHT;
 }
 
+/**
+ * UIの建設レベル選択(ArrowUp/ArrowDown)の状態遷移。1〜MAX_ELEVATED_LEVELへ
+ * クランプする純関数(UI側はキー入力の解釈だけを持ち、範囲の判定はここに一本化する)。
+ */
+export function stepElevatedLevel(current: 1 | 2 | 3, delta: number): 1 | 2 | 3 {
+  const next = current + delta;
+  return Math.max(1, Math.min(MAX_ELEVATED_LEVEL, next)) as 1 | 2 | 3;
+}
+
 const midpoint = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
