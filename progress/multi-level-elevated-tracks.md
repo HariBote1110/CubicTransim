@@ -20,5 +20,13 @@
 - `interpCellHeight`をpos補間のまま一般化する案 → base(坂の下位レベル)が区間の前後で異なりうる一般ケースでは破綻するため、高さ自体を補間する方式に変更。
 
 ## 制約・注意
-- `src/components/`・`src/render/`は今回`uppers[1]`固定の機械的読み替えのみ(多レベルの見た目対応は未着手、後続タスク)。
 - v12以前のセーブに存在した「upperはあるがconnections=0」というエッジケースの後方互換コードは、`uppers`移行時に単純化して削除した(実質発生しない状態のため)。
+
+## 追記(描画・UI対応)
+- `render/trackGeometry.ts`: `buildRampTrackParts`に`base`引数を追加し`rampHeightAtPos(pos, base)`を呼ぶように一般化。`buildOverpassSupportParts`/`buildBridgeAbutmentPart`はもともと`originY`を外から渡す設計だったため変更不要(呼び出し側がレベルごとの高さを渡すだけで多レベル対応できた)。`buildRampPierPart`を新設し、`base>=1`(地平に接しない、空中に架かる坂)を土盛りの橋台ではなく1本の支柱で支える見た目にした。
+- `components/TrackNetwork.tsx`: `uppers[1]`固定だった全ループを`ELEVATED_LEVELS=[1,2,3]`走査に一般化し、レベルLの桁・レール・支柱を`originY = L*OVERPASS_HEIGHT`で生成。坂は`ramp.base`が0のときだけ従来通りの土盛りくさび(`buildRampAbutmentPart`)、`base>=1`のときは`buildRampPierPart`で支柱を1本立てる。橋台(擁壁)候補の判定もレベルごとに独立させた。
+- `render/stationLayers.ts`: `elevatedStationCells`が全レベルを走査するよう変更し、`StationLayerCell.level`(1〜3、省略時は地平扱い)を追加。同一セルに複数レベルの高架駅ホームが併存するケースも`key`にレベルを含めて別セルとして扱う(Vitestで検証)。
+- `components/GameScene.tsx`: 高架駅ホーム・駅舎(`StationHouse`)・ラベルの描画高さを、固定の`OVERPASS_HEIGHT`から`cell.level * OVERPASS_HEIGHT`(駅舎は複数レベルにまたがる場合、最も低いレベルに置く/ラベルは最も高いレベルに合わせる)に一般化。地平クリックからの高架駅セル逆算(`elevatedCellCandidateFromGroundClick`)もレベル1〜3を順に確認するようにした。
+- UI: `GameUI.tsx`に`buildLevel`(1〜3、既定1)を追加。高架/高架駅ツール選択中のみ`ArrowUp`/`ArrowDown`でレベルを切り替える(クランプ処理は`sim/trackPath.ts`の`stepElevatedLevel`という純関数に切り出しVitestでテスト)。ツールバー上にレベル切替ボタン(押しても良い、キーボードでも良い)を表示。`buildLevel`は共通の親である`App.tsx`が保持し、`GameScene`(プレビュー生成・`onCommitPath`呼び出し)と`GameUI`(コスト・可否プレビューの`evaluateBuild`呼び出し)の両方へ渡す。
+- ブラウザ実機検証: レベル2・レベル3の高架線をドラッグ建設し、`railMap`に想定通り`ramp.base`が0→1(→2)と積み上がること、`uppers[2]`/`uppers[3]`の桁ができること、レベル2の桁の上に高架駅(`layer:2`)を設置できることを確認した。レベル3の坂は`base>=1`の区間が支柱で支えられ、地平に接するレベル1の坂だけが土盛り(くさび)になっている見た目を確認した。
+- 既知の制約: ブラウザ自動化ツールの合成`PointerEvent`(`dispatchEvent`によるJS注入)はreact-three-fiberのラウンドトリップに反応せず、実際のOS入力に近い`computer`ツールの`left_click_drag`でないと建設操作が成立しなかった(今後この環境で建設操作を検証する際の注意点として記録)。列車を実際に地平↔高架間で走らせる検証(路線・車両購入まで)は今回は未実施(データ・描画の確認まで)。
