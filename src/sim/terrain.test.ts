@@ -5,6 +5,8 @@ import {
   terrainAt,
   computeElevation,
   elevationAt,
+  cornerElevation,
+  cellCornerElevations,
   TERRAIN_COORD_RANGE,
   LAKE_COUNT_MIN,
   LAKE_COUNT_MAX,
@@ -122,5 +124,59 @@ describe('computeElevation', () => {
     const elevA = computeElevation(terrain);
     const elevB = computeElevation(terrain);
     expect(Array.from(elevA.entries())).toEqual(Array.from(elevB.entries()));
+  });
+});
+
+describe('cornerElevation / cellCornerElevations', () => {
+  it('孤立した1セル山(標高1)は4隅とも0になる(全周斜面のピラミッド)', () => {
+    const elev = new Map([[toKey(0, 0), 1]]);
+    const corners = cellCornerElevations(elev, 0, 0);
+    expect(corners).toEqual([0, 0, 0, 0]);
+  });
+
+  it('2x2の標高1塊の中央コーナーは1になる', () => {
+    const elev = new Map([
+      [toKey(0, 0), 1],
+      [toKey(1, 0), 1],
+      [toKey(0, 1), 1],
+      [toKey(1, 1), 1],
+    ]);
+    // セル(0,0)の右下隅・セル(1,1)の左上隅などが中央コーナー(1,1)にあたる
+    expect(cornerElevation(elev, 1, 1)).toBe(1);
+  });
+
+  it('min則により隣接セルの標高差は必ず1以下の連続面になる', () => {
+    const elev = new Map([
+      [toKey(0, 0), 2],
+      [toKey(1, 0), 1],
+    ]);
+    const cornersLow = cellCornerElevations(elev, 0, 0);
+    const cornersHigh = cellCornerElevations(elev, 1, 0);
+    // セル(0,0)の右側2隅とセル(1,0)の左側2隅は共有コーナーなので同じ値
+    expect(cornersLow[1]).toBe(cornerElevation(elev, 1, 0));
+    expect(cornersHigh[0]).toBe(cornerElevation(elev, 1, 0));
+    for (const c of [...cornersLow, ...cornersHigh]) {
+      expect(c).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it('cliffFace指定時、その面の2隅はmin則ではなくセル自身の標高になる', () => {
+    const elev = new Map([
+      [toKey(0, 0), 2],
+      [toKey(0, -1), 0],
+    ]);
+    const withoutCliff = cellCornerElevations(elev, 0, 0);
+    // 通常は北隣が平地(0)なのでmin則で北側2隅は0になる
+    expect(withoutCliff[0]).toBe(0);
+    expect(withoutCliff[1]).toBe(0);
+
+    const cliffFaces = new Set(['0,0,0,-1']);
+    const withCliff = cellCornerElevations(elev, 0, 0, cliffFaces);
+    // 北面(dx=0,dz=-1)がcliffFace指定されているので、北側2隅(左上・右上)はセル標高2になる
+    expect(withCliff[0]).toBe(2);
+    expect(withCliff[1]).toBe(2);
+    // 他の2隅は変わらずmin則
+    expect(withCliff[2]).toBe(withoutCliff[2]);
+    expect(withCliff[3]).toBe(withoutCliff[3]);
   });
 });
