@@ -15,6 +15,7 @@ import {
   resolveElevatedPathEnd,
   planElevatedPath,
   pickElevatedConnection,
+  planHasStraightRamps,
   type ConstructionState,
   type ElevatedEndPlan,
 } from './construction';
@@ -1013,5 +1014,101 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     const result = applyRailPath(state, path);
     const stationId = result.railMap.get(toKey(7, 0))!.uppers![1]!.stationId!;
     expect(stationId).toBeDefined();
+  });
+
+  it('斜め(対角)方向の直線なら坂で問題なく接続できる(直線制限は斜めを禁止しない)', () => {
+    let state = emptyState();
+    // 高架(レベル1)を対角(NE)方向に浮かせて敷く
+    state = applyElevatedPath(
+      state,
+      Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: -i - 4 })),
+      undefined, 1
+    );
+    // 地平の線路を同じ対角方向で高架の端タイル(4,-4)まで引く
+    const path = [{ x: 0, z: 0 }, { x: 1, z: -1 }, { x: 2, z: -2 }, { x: 3, z: -3 }, { x: 4, z: -4 }];
+    const result = applyRailPath(state, path);
+    expect(result.railMap.get(toKey(3, -3))!.ramp).toBeDefined();
+    expect(result.railMap.get(toKey(4, -4))!.ramp).toBeDefined();
+    expect((result.railMap.get(toKey(4, -4))!.uppers![1]!.connections & DIR.SW)).toBe(DIR.SW);
+  });
+
+  it('坂の区間でカーブ(方向転換)していると、接続を諦めて平坦な地平線路にフォールバックする', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    // 坂になるはずの区間((3,0)→(4,0)の手前)でカーブする経路: (2,0)から北へ折れてから
+    // 東へ戻り(4,0)へ到達する形にする。
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 2, z: -1 }, { x: 3, z: -1 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ];
+    const result = applyRailPath(state, path);
+    // 坂は作られず(直線制限のため)、平坦な地平線路として敷かれる
+    for (const pos of path) {
+      expect(result.railMap.get(toKey(pos.x, pos.z))!.ramp).toBeUndefined();
+    }
+    expect(result.railMap.get(toKey(0, 0))!.connections).toBeGreaterThan(0);
+    // 接続先の既存高架はカーブ経路によって書き換えられていない
+    expect(result.railMap.get(toKey(4, 0))!.uppers?.[1]?.connections).toBe(
+      state.railMap.get(toKey(4, 0))!.uppers![1]!.connections
+    );
+  });
+
+  it('planHasStraightRamps: 坂セルでカーブしているとfalseを返す', () => {
+    // 長さ5、末尾2セル(index3,4)が坂(base0)になる。index3で北→東へカーブする。
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 3, z: 1 },
+    ];
+    const plan = planElevatedPath(path.length, { kind: 'flat' }, { kind: 'connect', level: 1 }, 0);
+    expect(plan).not.toBeNull();
+    expect(planHasStraightRamps(path, plan!)).toBe(false);
+  });
+
+  it('planHasStraightRamps: 直線の坂区間ならtrueを返す', () => {
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const plan = planElevatedPath(path.length, { kind: 'flat' }, { kind: 'connect', level: 1 }, 0);
+    expect(plan).not.toBeNull();
+    expect(planHasStraightRamps(path, plan!)).toBe(true);
+  });
+});
+
+describe('高架建設(applyElevatedPath)の坂も直線区間のみに制限される', () => {
+  it('坂の区間でカーブしていると、高架建設全体がno-opになる', () => {
+    let state = emptyState();
+    // 地平の既存線路(継ぎ足し元)を(0,0)〜(1,0)に敷く
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    // (0,0)から坂(2セル分)の区間でカーブしてから橋桁へ続く経路
+    const path = [
+      { x: 0, z: 0 }, { x: 0, z: -1 }, { x: 1, z: -1 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 },
+    ];
+    const result = applyElevatedPath(state, path, undefined, 1);
+    expect(result).toBe(state);
+  });
+});
+
+describe('坂セルは、別々の建設で後から直交する接続を足されても壊れない', () => {
+  it('坂の軸と異なる方向で交差する線路を後から引いても、その建設はno-opになり坂は壊れない', () => {
+    let state = emptyState();
+    // 浮いた高架(レベル1)を(4,0)〜(9,0)に敷く
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    // 地平の線路を(0,0)から高架の端タイル(4,0)まで引き、(3,0)(4,0)を坂にする
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+    const rampCellBefore = state.railMap.get(toKey(3, 0))!;
+    expect(rampCellBefore.ramp).toBeDefined();
+
+    // 後から、坂セル(3,0)を南北方向に貫く別の線路を引く(1回目の建設とは無関係の別ドラッグ)
+    const before = state.railMap;
+    const result = applyRailPath(state, [{ x: 3, z: -2 }, { x: 3, z: -1 }, { x: 3, z: 0 }, { x: 3, z: 1 }, { x: 3, z: 2 }]);
+
+    // 建設全体がno-opになり、坂セルのデータは一切変化しない
+    expect(result.railMap).toBe(before);
+    expect(result.railMap.get(toKey(3, 0))).toEqual(rampCellBefore);
+  });
+
+  it('坂の軸と同じ方向(継ぎ足し)なら、後から重ねて引いても問題ない', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+    // 同じ軸(東西)方向で、坂セルを含む区間を重ねて引き直す
+    const result = applyRailPath(state, [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    expect(result.railMap.get(toKey(3, 0))!.ramp).toBeDefined();
   });
 });

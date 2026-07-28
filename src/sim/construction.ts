@@ -135,6 +135,35 @@ const orIntoBaseLevel = (existing: CellData | undefined, base: number, bits: num
 
 // 既存セルにdir方向の接続を1つ足す。常に地平のconnectionsへOR(平面交差方式)。
 // 直角に交差する線路は4方向接続の1セル(ダイヤモンドクロッシング)になる。
+// 既存の坂(ramp)セルへ、坂の軸(dir/opposite)以外の向きの接続を追加できるかを判定する。
+// 坂セルはbuildRampTrackParts(render/trackGeometry.ts)が「dir 1方向ぶんの傾斜」しか
+// 描けない前提のため、そこへ別方向(直交する平面交差など)の接続が生えると、その方向は
+// 高さ0の平坦な部品として誤って描かれ、宙に浮いた破片や地平線が途切れて見える不具合に
+// なる(2回に分けて建設した場合、後から交差する線路を引くと起きうる)。
+// これを防ぐため、坂の軸と一致しない新しい接続はブロックする(坂セルは直線専用)。
+const conflictsWithExistingRamp = (existing: CellData | undefined, dir: number): boolean => {
+  if (!existing?.ramp) return false;
+  const axis = existing.ramp.dir | getOppositeDir(existing.ramp.dir);
+  return (dir & ~axis) !== 0;
+};
+
+/**
+ * path(隣接するセル列)を敷設したとき、既存の坂(ramp)セルへ軸と異なる方向の接続を
+ * 追加してしまわないかを確認する。1つでも抵触すればtrueを返し、呼び出し元は
+ * 建設全体をno-opにする(部分的に建設して坂を壊さないため)。
+ */
+const pathConflictsWithExistingRamp = (railMap: Map<string, CellData>, path: Pos[]): boolean => {
+  for (let i = 0; i < path.length - 1; i++) {
+    const curr = path[i];
+    const next = path[i + 1];
+    const dir = getDirFromVector(next.x - curr.x, next.z - curr.z);
+    const oppDir = getOppositeDir(dir);
+    if (conflictsWithExistingRamp(railMap.get(toKey(curr.x, curr.z)), dir)) return true;
+    if (conflictsWithExistingRamp(railMap.get(toKey(next.x, next.z)), oppDir)) return true;
+  }
+  return false;
+};
+
 const addConnectionToCell = (
   railMap: Map<string, CellData>,
   key: string,
@@ -189,6 +218,10 @@ export function applyRailPathDetailed(
     }
   }
 
+  // 既存の坂セルへ、その軸と異なる方向の接続を追加してしまう経路はno-opにする
+  // (坂セルを壊さないため。詳細はconflictsWithExistingRampのdocコメント参照)。
+  if (pathConflictsWithExistingRamp(state.railMap, path)) return { ...state, overpassCells: new Set() };
+
   const railMap = new Map(state.railMap);
   const overpassCells = new Set<string>();
 
@@ -235,7 +268,13 @@ export function applyRailPath(state: ConstructionState, path: Pos[], terrain: Ma
  */
 /**
  * 坂になるセル(plan.roles[i].kind==='ramp')がすべて建設可能かどうかを判定する。
- * 車庫セル・水域山岳セルには坂を作れない。applyGroundPathWithElevatedConnect(実際の建設)と
+ * 車庫セル・水域山岳セルには坂を作れない。坂の区間は直線(進入方向と退出方向が
+ * 正反対)でなければならない — buildRampTrackParts(render/trackGeometry.ts)は
+ * ramp.dir 1方向ぶんの傾斜ジオメトリしか生成できず、坂セルでカーブ(進入/退出
+ * 方向が直線でない)すると、もう一方の方向ビットが平坦(高さ0)な部品として
+ * 誤って描かれ、宙に浮いた破片や向きの狂ったスラブになる不具合があったため
+ * (Cities: Skylinesなど他の鉄道シムでも坂は直線区間のみという割り切りが一般的)。
+ * applyGroundPathWithElevatedConnect/applyElevatedPath(実際の建設)と
  * buildPreview.ts(コスト・可否のプレビュー)の両方から使う共通ルールなので、
  * ここに一本化しておく(UI側にルールを書き写さないため)。
  */
@@ -249,6 +288,22 @@ export function isElevatedConnectPlanBuildable(
     if (plan.roles[i].kind !== 'ramp') continue;
     if (railMap.get(toKey(path[i].x, path[i].z))?.type === 'depot') return false;
     if (!isBuildableGround(terrain, path[i].x, path[i].z)) return false;
+  }
+  if (pathConflictsWithExistingRamp(railMap, path)) return false;
+  return planHasStraightRamps(path, plan);
+}
+
+/**
+ * 坂(ramp)になる各セルで、経路の進入方向と退出方向が正反対(=直線)であることを
+ * 確認する。坂の途中でカーブしていたらfalseを返す。isElevatedConnectPlanBuildableの
+ * 一部として使うほか、applyElevatedPath側の同種チェックにも使う。
+ */
+export function planHasStraightRamps(path: Pos[], plan: ElevatedPathPlan): boolean {
+  for (let i = 0; i < path.length; i++) {
+    if (plan.roles[i].kind !== 'ramp') continue;
+    const prevDir = i > 0 ? getDirFromVector(path[i - 1].x - path[i].x, path[i - 1].z - path[i].z) : 0;
+    const nextDir = i < path.length - 1 ? getDirFromVector(path[i + 1].x - path[i].x, path[i + 1].z - path[i].z) : 0;
+    if (prevDir !== 0 && nextDir !== 0 && getOppositeDir(prevDir) !== nextDir) return false;
   }
   return true;
 }
@@ -687,6 +742,12 @@ export function applyElevatedPath(
   const endEnd = forcedEnds?.end ?? pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[path.length - 1]), level);
   const plan = planElevatedPath(path.length, startEnd, endEnd, level);
   if (!plan) return state;
+
+  // 坂は直線区間のみ(理由はisElevatedConnectPlanBuildableのdocコメント参照)。
+  if (!planHasStraightRamps(path, plan)) return state;
+
+  // 既存の坂セルへ、その軸と異なる方向の接続を追加してしまう経路はno-opにする。
+  if (pathConflictsWithExistingRamp(state.railMap, path)) return state;
 
   // 車庫セルは高架にできない(坂・橋桁いずれも)
   for (const cell of path) {
