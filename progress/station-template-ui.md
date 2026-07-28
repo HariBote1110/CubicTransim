@@ -49,3 +49,6 @@
 
 ## 追記(2026-07-28 free-elevated-track)
 駅テンプレート機能(sim/stationTemplates.ts、本UIが依存していたapplyStationTemplate/STATION_TEMPLATES)はユーザー判断により廃止された。駅は地平・高架ともにタイルを1枚ずつ置く操作に統一される(詳細はprogress/free-elevated-track.md)。本ファイルが説明するテンプレート選択UI・回転操作はいずれ置き換えが必要。
+
+## 追記(2026-07-28その2、UI廃止完了)
+本ファイルが説明するUI一式は完全に削除した。`src/ui/templateRotation.ts`(と対応するテスト)を削除し、`App.tsx`の`selectedTemplateId`/`quarterTurns` state、`GameScene.tsx`のテンプレプレビュー(`templatePreview`)と`onCommitTemplate`経路、`GameUI.tsx`の`TemplatePicker`・Rキー回転・`BuildMode==='template'`をすべて除去した。置き換え先は`progress/elevated-ui-and-rendering.md`の高架線(7)・高架駅(8)ツール。
