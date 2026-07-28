@@ -1101,6 +1101,8 @@ describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高�
     let sawLevel1Height = false;
     let sawLevel2Height = false;
     let sawDeckHeight = false;
+    let sawIndividuallyRaisedCars = false;
+    let sawPitchedCar = false;
     const yHistory: number[] = [];
     for (let i = 0; i < 800; i++) {
       stepWorld(world, 0.1);
@@ -1120,6 +1122,16 @@ describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高�
       if (rt.grid.x === 6 || rt.grid.x === 7) {
         if (Math.abs(rt.renderPos.y - (0.5 + OVERPASS_HEIGHT)) < 1e-6) sawDeckHeight = true;
       }
+
+      // 編成の先頭だけではなく、各車両が自分のいる坂の高さを使う。前後台車の
+      // 高さ差から車体にも勾配が付くため、坂の途中で全車が同じ高さのままになる
+      // 不自然な見た目を防ぐ。
+      if (rt.grid.x === 6 || rt.grid.x === 7) {
+        const cars = carPositions(rt, 4, 1.0, bridged.railMap);
+        const heights = cars.map(car => car.y);
+        if (Math.max(...heights) - Math.min(...heights) > 0.1) sawIndividuallyRaisedCars = true;
+        if (cars.some(car => Math.abs(car.heading.y) > 0.01)) sawPitchedCar = true;
+      }
     }
 
     // 1tickあたりの高さの跳びが小さいこと(段差が無いこと)。
@@ -1129,6 +1141,8 @@ describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高�
     expect(sawLevel1Height).toBe(true);
     expect(sawLevel2Height).toBe(true);
     expect(sawDeckHeight).toBe(true);
+    expect(sawIndividuallyRaisedCars).toBe(true);
+    expect(sawPitchedCar).toBe(true);
 
     // 往路(地平→桁)のあいだ、高さは単調増加であること(折れ角による逆転が無い)。
     let prev = -Infinity;
