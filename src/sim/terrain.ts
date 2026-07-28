@@ -1,6 +1,6 @@
 // 地形(水域・山岳)の決定的生成ロジック。純粋関数のみ。React/THREE には依存しない。
 import type { TerrainType } from '../types';
-import { toKey } from '../utils';
+import { toKey, fromKey } from '../utils';
 
 export const TERRAIN_COORD_RANGE = 45; // 生成範囲は -45..45
 
@@ -13,8 +13,11 @@ export const MOUNTAIN_COUNT_MIN = 2;
 export const MOUNTAIN_COUNT_MAX = 3;
 export const MOUNTAIN_LENGTH_MIN = 15;
 export const MOUNTAIN_LENGTH_MAX = 40;
-export const MOUNTAIN_WIDTH_MIN = 1;
-export const MOUNTAIN_WIDTH_MAX = 2;
+export const MOUNTAIN_WIDTH_MIN = 3;
+export const MOUNTAIN_WIDTH_MAX = 6;
+
+// mountainセルの標高はこの値でクランプする(段丘の最大段数)。
+export const MOUNTAIN_ELEVATION_MAX = 3;
 
 const randInt = (rng: () => number, min: number, max: number): number =>
   Math.floor(min + rng() * (max - min + 1));
@@ -87,4 +90,66 @@ export function generateTerrain(rng: () => number): Map<string, TerrainType> {
 // 指定座標の地形種別を返す。未登録セル(平地)は既定値'grass'。
 export function terrainAt(terrain: Map<string, TerrainType>, x: number, z: number): TerrainType | 'grass' {
   return terrain.get(toKey(Math.round(x), Math.round(z))) ?? 'grass';
+}
+
+const NEIGHBOUR_OFFSETS: ReadonlyArray<[number, number]> = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+
+// mountainセルの標高を、最も近い非mountainセルまでのマンハッタン距離から決定的に導出する。
+// OpenTTD風の段丘表現のため、標高はMOUNTAIN_ELEVATION_MAXでクランプする。
+// 多始点BFS(全ての非mountain隣接境界を初期キューにする)でO(セル数)に計算する。
+export function computeElevation(terrain: Map<string, TerrainType>): Map<string, number> {
+  const elevation = new Map<string, number>();
+  const visited = new Set<string>();
+  let frontier: string[] = [];
+
+  // 境界セル(mountainかつ非mountain隣接を持つ)を距離1の初期フロンティアにする。
+  for (const [key, type] of terrain) {
+    if (type !== 'mountain') continue;
+    const { x, z } = fromKey(key);
+    let isBoundary = false;
+    for (const [dx, dz] of NEIGHBOUR_OFFSETS) {
+      const nKey = toKey(x + dx, z + dz);
+      if (terrain.get(nKey) !== 'mountain') {
+        isBoundary = true;
+        break;
+      }
+    }
+    if (isBoundary) {
+      elevation.set(key, 1);
+      visited.add(key);
+      frontier.push(key);
+    }
+  }
+
+  let dist = 1;
+  while (frontier.length > 0) {
+    const next: string[] = [];
+    for (const key of frontier) {
+      const { x, z } = fromKey(key);
+      for (const [dx, dz] of NEIGHBOUR_OFFSETS) {
+        const nx = x + dx;
+        const nz = z + dz;
+        const nKey = toKey(nx, nz);
+        if (visited.has(nKey)) continue;
+        if (terrain.get(nKey) !== 'mountain') continue;
+        visited.add(nKey);
+        elevation.set(nKey, Math.min(dist + 1, MOUNTAIN_ELEVATION_MAX));
+        next.push(nKey);
+      }
+    }
+    frontier = next;
+    dist += 1;
+  }
+
+  return elevation;
+}
+
+// 指定座標の標高を返す。未登録セル(平地・水域含む)は既定値0。
+export function elevationAt(elevation: Map<string, number>, x: number, z: number): number {
+  return elevation.get(toKey(Math.round(x), Math.round(z))) ?? 0;
 }

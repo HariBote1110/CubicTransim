@@ -89,7 +89,7 @@ describe('computeElevation', () => {
     expect(elevationAt(elev, 5, 5)).toBe(0);
   });
 
-  it('3x3のmountain塊で中心の標高は1(境界からの最短距離1)', () => {
+  it('3x3のmountain塊は境界セルが標高1、中心セルはマンハッタン距離2で標高2', () => {
     const cells: Array<[number, number]> = [];
     for (let x = -1; x <= 1; x++) {
       for (let z = -1; z <= 1; z++) {
@@ -98,8 +98,8 @@ describe('computeElevation', () => {
     }
     const terrain = makeTerrain(cells);
     const elev = computeElevation(terrain);
-    expect(elevationAt(elev, 0, 0)).toBe(1);
     expect(elevationAt(elev, 1, 0)).toBe(1);
+    expect(elevationAt(elev, 0, 0)).toBe(2);
   });
 
   it('幅7の塊(7x7)で芯は標高3にクランプされる', () => {
