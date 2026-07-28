@@ -92,8 +92,11 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
           // 地平(pos=0)で高さ0に収束するようbuildRampAbutmentPart側のposLowは0のまま渡す。
           const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, RAMP_BOUNDARY_LEVEL1_LEVEL2, RAMP_POS_GROUND);
           if (wedge) abutments.push(wedge);
-        } else if (base > 0 && level === 1) {
-          // base>=1の坂は地平に接しない(空中に架かる)ので、土盛りではなく支柱で支える。
+        } else {
+          // それ以外(base>=1のlevel1、およびlevel2は常に)は地平に接しない
+          // (空中に架かる)ので、土盛りではなく支柱で支える。
+          // 従来はlevel2側にこの分岐が無く、坂の桁寄りの半分が支えの無いまま
+          // 宙に浮いて見える不具合になっていた。
           const heightAtLowEnd = rampHeightAtPos(posLow, base);
           if (shouldPlacePier(x, z, data.ramp.dir)) {
             const pier = buildRampPierPart(x, z, heightAtLowEnd);
