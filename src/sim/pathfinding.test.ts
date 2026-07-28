@@ -674,6 +674,56 @@ describe('十字乗換駅(交差セル)の経路探索', () => {
   });
 });
 
+// 地平と同じ形の直線セル列を「高架(upper)のみ」で作る(connectionsは持たせない)。
+// 高架ホームのホーム延長(findNextInLine/extendThroughPlatformの層一般化)の検証に使う。
+const buildUpperRailMap = (cells: { x: number; z: number }[]) => {
+  const map = new Map<string, CellData>();
+  for (let i = 0; i < cells.length - 1; i++) {
+    const curr = cells[i];
+    const next = cells[i + 1];
+    const dir = getDirFromVector(next.x - curr.x, next.z - curr.z);
+    const oppDir = getOppositeDir(dir);
+
+    const currKey = toKey(curr.x, curr.z);
+    const currCell = map.get(currKey) || { type: 'rail' as const };
+    map.set(currKey, { ...currCell, upper: { connections: (currCell.upper?.connections || 0) | dir } });
+
+    const nextKey = toKey(next.x, next.z);
+    const nextCell = map.get(nextKey) || { type: 'rail' as const };
+    map.set(nextKey, { ...nextCell, upper: { connections: (nextCell.upper?.connections || 0) | oppDir } });
+  }
+  return map;
+};
+
+describe('立体交差(高架ホームの停止位置延長): findNextInLine/extendThroughPlatformの層一般化', () => {
+  it('高架ホーム(同一駅IDの連続セル、layer1)3セル+1両は編成中央基準でホーム中央セルに止まる', () => {
+    // (2,0)-(3,0)-(4,0) の3セルが高架ホームstHU(upper.stationId)。P=3, cars=1
+    // -> headIdx=ceil((3+1)/2)-1=1 (ホーム中央セル(3,0))。地平版と同じ計算が
+    // 高架(layer1)のconnections(=upper.connections)を辿って成立することを確認する。
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const railMap = buildUpperRailMap(cells);
+    for (const x of [2, 3, 4]) {
+      const cell = railMap.get(toKey(x, 0))!;
+      railMap.set(toKey(x, 0), { ...cell, upper: { ...cell.upper!, stationId: 'stHU' } });
+    }
+    const stations = new Map<string, StationData>([
+      ['stHU', { id: 'stHU', name: 'HU', cells: [{ x: 2, z: 0, layer: 1 }, { x: 3, z: 0, layer: 1 }, { x: 4, z: 0, layer: 1 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRouteWithStop(railMap, stations, noOccupied, noReserved, {
+      start: { x: 1, z: 0 },
+      prev: { x: 0, z: 0 },
+      targetStationId: 'stHU',
+      cars: 1,
+    });
+
+    expect(result.path.map(c => ({ x: c.x, z: c.z, layer: c.layer }))).toEqual([
+      { x: 2, z: 0, layer: 1 }, { x: 3, z: 0, layer: 1 },
+    ]);
+    expect(result.stopProgress).toBe(1);
+  });
+});
+
 describe('立体交差(層の突き合わせ): 地平駅の真上を高架で通過するだけでは到着とみなさない', () => {
   it('高架(upper、stationIdなし)で地平駅セルの真上を通過しても、その駅への到達にはならない', () => {
     const railMap = new Map<string, CellData>();

@@ -22,6 +22,14 @@ const resolveEntryLayer = (
 const activeConnections = (cell: CellData | undefined, layer: 0 | 1): number =>
   layer === 1 ? (cell?.upper?.connections ?? 0) : (cell?.connections ?? 0);
 
+// あるセルの、指定した層でのstationId。地平(layer0)はcell.stationId、
+// 高架(layer1)はcell.upper?.stationId(高架駅ホームでなければundefined)。
+// 層を突き合わせずにcell.stationIdだけを見ると、地平駅の真上をただの橋桁
+// (upperはあるがstationId無し)で通過するだけの列車を「到着した」と
+// 誤判定してしまうため、必ずこの関数を経由する。
+const stationIdAtLayer = (cell: CellData | undefined, layer: 0 | 1): string | undefined =>
+  layer === 1 ? cell?.upper?.stationId : cell?.stationId;
+
 export interface RouteQuery {
   start: { x: number; z: number };
   prev: { x: number; z: number } | null;
@@ -60,14 +68,17 @@ const EXTEND_DIRECTIONS = [
 
 // curr(直前セルprevから直進してきた)から、急カーブ制約(内積>=0.5)を満たす直進方向のうち
 // acceptを満たす次セルを探す。複数候補があれば最も直進に近い(内積が最大の)ものを選ぶ。
+// layerは「curr自身がどの層で走行中か」。ホーム延長は同じ層のconnectionsのみを辿る
+// (地平ホームと高架ホームで延長ロジックを複製しないための共通化)。
 const findNextInLine = (
   railMap: Map<string, CellData>,
   curr: { x: number; z: number },
   prev: { x: number; z: number },
+  layer: 0 | 1,
   accept: (cell: CellData | undefined) => boolean
 ): { x: number; z: number; score: number } | null => {
   const cellData = railMap.get(toKey(curr.x, curr.z));
-  const connections = cellData?.connections || 0;
+  const connections = activeConnections(cellData, layer);
   const cv = normalize(curr.x - prev.x, curr.z - prev.z);
 
   let best: { x: number; z: number; score: number } | null = null;
@@ -121,18 +132,21 @@ const extendThroughPlatform = (
   prevCell: { x: number; z: number } | null,
   path: { x: number; z: number }[],
   cars: number,
+  layer: 0 | 1,
   stopLocation: 'near' | 'middle' | 'far' = 'middle'
 ): RouteResult => {
   const extended = [...path];
   if (!prevCell) return { path: extended, stopProgress: 1 };
 
-  // Phase 0: ホームセル列(P個、entry=index0)を先読みする。
+  // Phase 0: ホームセル列(P個、entry=index0)を先読みする。地平・高架どちらの
+  // ホームでも、同じ層のconnectionsを辿ってstationIdatLayerが一致する限り延長する
+  // (層ごとにロジックを複製しない)。
   const platformCells: { x: number; z: number }[] = [lastCell];
   {
     let curr = lastCell;
     let prev = prevCell;
     while (true) {
-      const best = findNextInLine(railMap, curr, prev, (c) => !!c && c.stationId === targetId);
+      const best = findNextInLine(railMap, curr, prev, layer, (c) => stationIdAtLayer(c, layer) === targetId);
       if (!best) break;
       platformCells.push({ x: best.x, z: best.z });
       prev = curr;
@@ -160,7 +174,9 @@ const extendThroughPlatform = (
   //
   // 経路は headPos を含む最小のセル(=切り上げ)まで延ばし、端数は stopProgress で表す。
   const headCell = Math.ceil(headPos - STOP_POS_EPSILON);
-  for (let i = 1; i <= headCell; i++) extended.push(platformCells[i]);
+  for (let i = 1; i <= headCell; i++) {
+    extended.push(layer === 1 ? { ...platformCells[i], layer: 1 } : platformCells[i]);
+  }
 
   const remainder = headCell - headPos;
   const stopProgress = remainder <= STOP_POS_EPSILON ? 1 : 1 - remainder;
@@ -202,7 +218,9 @@ export function calculateRouteWithStop(
           const currKey = toKey(curr.x, curr.z);
           const cell = railMap.get(currKey);
 
-          if (cell && cell.stationId === targetId) return extendThroughPlatform(railMap, targetId, curr, prev, path, cars, stopLocation);
+          if (stationIdAtLayer(cell, layer) === targetId) {
+            return extendThroughPlatform(railMap, targetId, curr, prev, path, cars, layer, stopLocation);
+          }
           if (path.length >= MAX_DEPTH) continue;
 
           // そのセルから出られる方向は「今いる層」のconnectionsのみ。
