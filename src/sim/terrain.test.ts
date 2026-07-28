@@ -3,6 +3,8 @@ import { mulberry32 } from './towns';
 import {
   generateTerrain,
   terrainAt,
+  computeElevation,
+  elevationAt,
   TERRAIN_COORD_RANGE,
   LAKE_COUNT_MIN,
   LAKE_COUNT_MAX,
@@ -12,7 +14,8 @@ import {
   MOUNTAIN_LENGTH_MAX,
   MOUNTAIN_WIDTH_MAX,
 } from './terrain';
-import { fromKey } from '../utils';
+import { fromKey, toKey } from '../utils';
+import type { TerrainType } from '../types';
 
 describe('generateTerrain', () => {
   it('同じシードからは同じ地形が決定的に得られる', () => {
@@ -67,5 +70,57 @@ describe('terrainAt', () => {
   it('登録されたセルはその地形種別を返す', () => {
     const terrain = new Map([['1,2', 'water' as const]]);
     expect(terrainAt(terrain, 1, 2)).toBe('water');
+  });
+});
+
+describe('computeElevation', () => {
+  const makeTerrain = (mountainCells: Array<[number, number]>): Map<string, TerrainType> => {
+    const terrain = new Map<string, TerrainType>();
+    for (const [x, z] of mountainCells) {
+      terrain.set(toKey(x, z), 'mountain');
+    }
+    return terrain;
+  };
+
+  it('非mountainセルは標高を持たない(未登録=0)', () => {
+    const terrain = makeTerrain([[0, 0]]);
+    const elev = computeElevation(terrain);
+    expect(elevationAt(elev, 0, 0)).toBe(1);
+    expect(elevationAt(elev, 5, 5)).toBe(0);
+  });
+
+  it('3x3のmountain塊で中心の標高は1(境界からの最短距離1)', () => {
+    const cells: Array<[number, number]> = [];
+    for (let x = -1; x <= 1; x++) {
+      for (let z = -1; z <= 1; z++) {
+        cells.push([x, z]);
+      }
+    }
+    const terrain = makeTerrain(cells);
+    const elev = computeElevation(terrain);
+    expect(elevationAt(elev, 0, 0)).toBe(1);
+    expect(elevationAt(elev, 1, 0)).toBe(1);
+  });
+
+  it('幅7の塊(7x7)で芯は標高3にクランプされる', () => {
+    const cells: Array<[number, number]> = [];
+    for (let x = -3; x <= 3; x++) {
+      for (let z = -3; z <= 3; z++) {
+        cells.push([x, z]);
+      }
+    }
+    const terrain = makeTerrain(cells);
+    const elev = computeElevation(terrain);
+    // 中心(0,0)は最も近い非mountainまでマンハッタン距離4だが、3にクランプされる
+    expect(elevationAt(elev, 0, 0)).toBe(3);
+    // 端(3,0)は距離1
+    expect(elevationAt(elev, 3, 0)).toBe(1);
+  });
+
+  it('同じ入力からは同じ標高マップが決定的に得られる', () => {
+    const terrain = generateTerrain(mulberry32(42));
+    const elevA = computeElevation(terrain);
+    const elevB = computeElevation(terrain);
+    expect(Array.from(elevA.entries())).toEqual(Array.from(elevB.entries()));
   });
 });
