@@ -112,7 +112,7 @@ const oppositePair = (arms: Pt[]): [Pt, Pt] | null => {
  * 接続ビットを実際に描く中心線へ変換する。
  *
  * 3方向の接続は、中心から3本を放射状に描くのではなく、最も直線に近い組を本線、
- * 残りを本線の近い側から分岐するポイントとして描く。単線の交換設備でレールが
+ * 残りを本線の進行元側から分岐するポイントとして描く。単線の交換設備でレールが
  * セル中心に重なって見える問題を避けつつ、隣接セルと共有する境界点は維持する。
  * 高架の桁も同じ中心線を使うため、曲線のレールの下に直線の桁が残らない。
  */
@@ -137,7 +137,8 @@ export function buildTrackCentreLines(connections: number): TrackPoint[][] {
   const branches = arms.filter(arm => !mainSet.has(arm));
 
   // 十字交差は2本の直線として描く。残る形(3方向、または斜めを含む複雑な分岐)は
-  // 本線に最も近い側から曲線で分岐させる。
+  // 本線の進行元側から曲線で分岐させる。地理的に近い側へ戻すと、交換線の入口で
+  // 分岐線が本線の先へ回り込み、ループ状のS字に見えてしまう。
   if (branches.length === 2) {
     const [a, b] = branches;
     const ua = norm(a.x, a.z);
@@ -153,7 +154,7 @@ export function buildTrackCentreLines(connections: number): TrackPoint[][] {
       const an = norm(a.x, a.z);
       const bn = norm(b.x, b.z);
       const cn = norm(branch.x, branch.z);
-      return (bn.x * cn.x + bn.z * cn.z) - (an.x * cn.x + an.z * cn.z);
+      return (an.x * cn.x + an.z * cn.z) - (bn.x * cn.x + bn.z * cn.z);
     })[0];
     const join = { x: source.x * TURNOUT_JOIN_RATIO, z: source.z * TURNOUT_JOIN_RATIO };
     routes.push(curvePoints(branch, join));

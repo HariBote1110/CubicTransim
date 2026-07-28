@@ -1,4 +1,5 @@
 # progress インデックス
+- [turnout-and-elevated-track-rendering.md](turnout-and-elevated-track-rendering.md) 追記(v0.3.0-Alpha-21a: 交換線の分岐方向を反転) — 3方向分岐の合流先を「地理的に近い本線側」としていたため、交換線の入口が進行方向へ回り込む赤いループ状になっていた。進行元側から分岐するよう反転し、入口で分岐・出口で合流する黒い接続形状へ寄せた
 - [turnout-and-elevated-track-rendering.md](turnout-and-elevated-track-rendering.md) 追記(v0.3.0-Alpha-20a: 坂と分岐の接続形状を修正) — 坂が地平との共有境界で約0.09高く始まり隙間に見えていた問題を、level1=pos 0〜0.5・level2=0.5〜1へ再割当して解消。交換線の分岐は本線端まで曲げずセル内で合流させ、S字・ループ状のポイントを抑制
 - [turnout-and-elevated-track-rendering.md](turnout-and-elevated-track-rendering.md) — v0.3.0-Alpha-19a: 交換設備の3方向分岐を「本線+曲線の分岐」として描き、高架桁も同じ中心線に追従させた。中心にレールが三重に重なる形状と、曲線レールに直線の桁が残る違和感を解消。経路探索・予約には影響しない描画修正
 - [multi-level-elevated-tracks.md](multi-level-elevated-tracks.md) 追記(v0.3.0-Alpha-18a: 坂の桁寄り半分(level2)に支えが無い不具合を修正) — 「高架と地上線の繋がり(坂)の描画が若干怪しい」との指摘を調査。`TrackNetwork.tsx`の坂セル支持構造の分岐が`level===1`のケースしか網羅しておらず、坂の桁寄り半分(level2)は`base`の値によらず常に支柱・くさびいずれも無い浮遊状態だった。分岐を「base=0かつlevel1だけ土盛り、それ以外は支柱」に単純化して修正。描画のみの変更でsim層・テストへの影響なし
