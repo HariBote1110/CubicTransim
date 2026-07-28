@@ -9,9 +9,6 @@ import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
   terrain: Map<string, TerrainType>;
-  // トンネル化された山岳セル(rail敷設済み)。ここは岩を描かず、
-  // GameScene側で坑口を別途表示する。
-  tunnelKeys?: Set<string>;
 }
 
 const WATER_LEVEL = -0.07;
@@ -26,7 +23,7 @@ const WATER_LEVEL = -0.07;
  * セル数が数百規模になり得るのでマテリアルごとにマージして描く。
  * 地形データ(sim/terrain.ts)そのものは変更していない。
  */
-export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
+export const TerrainBlocks: React.FC<Props> = ({ terrain }) => {
   const elevation = useMemo(() => computeElevation(terrain), [terrain]);
 
   const merged = useMemo(() => {
@@ -53,9 +50,8 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
         continue;
       }
 
-      // mountain
-      if (tunnelKeys?.has(key)) continue;
-
+      // mountain(トンネル敷設済みセルもOpenTTD風に地形ブロックへ埋め込んで描く。
+      // 坑口はGameScene側でtunnelPortalsを使い山肌の位置に別途表示する)
       const e = elevationAt(elevation, x, z);
       if (e <= 0) continue;
 
@@ -82,7 +78,7 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
       grassTop: mergeAll(grassTop),
       snowTop: mergeAll(snowTop),
     };
-  }, [terrain, tunnelKeys, elevation]);
+  }, [terrain, elevation]);
 
   useEffect(() => () => {
     Object.values(merged).forEach(g => g?.dispose());

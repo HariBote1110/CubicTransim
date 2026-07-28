@@ -21,6 +21,8 @@ import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction';
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
+import { tunnelPortals } from '../sim/tunnel';
+import { computeElevation, elevationAt } from '../sim/terrain';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import { T } from '../ui/theme';
@@ -307,10 +309,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
 
-  const tunnelKeys = useMemo(
-    () => new Set(Array.from(railMap.entries()).filter(([, d]) => d.tunnel).map(([key]) => key)),
-    [railMap]
-  );
+  // トンネルの坑口(山肌に面した出入口)。OpenTTD風にトンネル内部は地形ブロックへ
+  // 埋め込む(TerrainBlocks側)ため、坑口だけをこちらで別途描く。高さはそのセルの
+  // 段丘標高(TerrainBlocksと同じcomputeElevation)に合わせる。
+  const terrainElevation = useMemo(() => computeElevation(terrain), [terrain]);
+  const tunnelPortalList = useMemo(() => tunnelPortals(railMap), [railMap]);
 
   // 草地のテクスチャ(色ムラ)。1度だけ生成して使い回す。
   const groundTexture = useMemo(() => createGroundTexture(), []);
@@ -356,7 +359,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TerrainBlocks terrain={terrain} tunnelKeys={tunnelKeys} />
+      <TerrainBlocks terrain={terrain} />
       <Scenery terrain={terrain} railMap={railMap} towns={towns} />
       <TrackNetwork railMap={railMap} />
 
@@ -398,22 +401,33 @@ export const GameScene: React.FC<GameSceneProps> = ({
             </group>
           );
         }
-        if (data.tunnel) {
-          // トンネルの坑口も装飾であり選択対象ではない。同様にレイキャストを外す。
-          elements.push(
-            <group key={`${key}-tunnel`}>
-              <mesh position={[x, 0.3, z]} castShadow raycast={() => null}>
-                <boxGeometry args={[1.0, 0.6, 1.0]} />
-                <meshStandardMaterial color="#77726a" roughness={1} flatShading />
-              </mesh>
-              <mesh position={[x, 0.22, z]} raycast={() => null}>
-                <boxGeometry args={[0.56, 0.42, 1.02]} />
-                <meshStandardMaterial color="#14181d" roughness={1} />
-              </mesh>
-            </group>
-          );
-        }
         return <group key={key}>{elements}</group>;
+      })}
+
+      {/* トンネルの坑口(山肌に面した出入口)。OpenTTD風に、トンネル内部のセルは
+          TerrainBlocksの段丘ブロックへ埋め込まれるため、坑口だけをセル境界面に
+          石造りの門型ファサード(枠+黒い開口)として描く。装飾であり選択対象では
+          ないため地面クリックを奪わないようレイキャストを外す。 */}
+      {tunnelPortalList.map(portal => {
+        const height = elevationAt(terrainElevation, portal.x, portal.z) * OVERPASS_HEIGHT;
+        const faceX = portal.x + portal.dx * 0.5;
+        const faceZ = portal.z + portal.dz * 0.5;
+        // 坑口の向き(南北 or 東西)で開口・枠の幅/奥行きを入れ替える。
+        const alongX = portal.dx !== 0;
+        const frameSize: [number, number, number] = alongX ? [0.14, 0.75, 0.85] : [0.85, 0.75, 0.14];
+        const openingSize: [number, number, number] = alongX ? [0.16, 0.55, 0.6] : [0.6, 0.55, 0.16];
+        return (
+          <group key={`portal-${portal.x},${portal.z},${portal.dx},${portal.dz}`}>
+            <mesh position={[faceX, height + 0.375, faceZ]} castShadow raycast={() => null}>
+              <boxGeometry args={frameSize} />
+              <meshStandardMaterial color="#77726a" roughness={1} flatShading />
+            </mesh>
+            <mesh position={[faceX, height + 0.275, faceZ]} raycast={() => null}>
+              <boxGeometry args={openingSize} />
+              <meshStandardMaterial color="#14181d" roughness={1} />
+            </mesh>
+          </group>
+        );
       })}
 
       {/* 高架駅セル(uppers[L].stationIdがあるセル)。地平の駅セルと同じStationBlockを
