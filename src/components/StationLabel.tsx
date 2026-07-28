@@ -9,6 +9,8 @@ interface Props {
   station: StationData;
   orderIndices: number[]; // 選択中の列車の運行表における停車順(複数可)
   world: React.RefObject<SimWorld>;
+  /** ラベルの高さ(既定1.35)。高架ホームを含む駅は、高架の上屋にめり込まないよう呼び出し側で高くする。 */
+  labelY?: number;
 }
 
 // 待ち人数の更新頻度(秒)。sim層のwaitingは毎tick更新されるが、
@@ -22,7 +24,7 @@ const DOOR_BADGE = {
   fullscreen: { label: '全', title: 'フルスクリーンホームドア' },
 } as const;
 
-export const StationLabel: React.FC<Props> = ({ station, orderIndices, world }) => {
+export const StationLabel: React.FC<Props> = ({ station, orderIndices, world, labelY = 1.35 }) => {
   const [waitingCount, setWaitingCount] = useState(0);
   const elapsedRef = useRef(0);
 
@@ -36,7 +38,7 @@ export const StationLabel: React.FC<Props> = ({ station, orderIndices, world }) 
   const door = DOOR_BADGE[station.platformDoors];
 
   return (
-    <Html position={[station.center.x, 1.35, station.center.z]} center style={{ pointerEvents: 'none' }}>
+    <Html position={[station.center.x, labelY, station.center.z]} center style={{ pointerEvents: 'none' }}>
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center',
         whiteSpace: 'nowrap', fontFamily: T.font,

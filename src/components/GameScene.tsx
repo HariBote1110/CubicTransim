@@ -19,14 +19,16 @@ import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis } from '../sim/construction';
+import { resolveElevatedPathEnd, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
-import { STATION_TEMPLATES, templateAbsoluteCells } from '../sim/stationTemplates';
-import type { QuarterTurns } from '../ui/templateRotation';
-import { evaluateStationTemplate } from '../sim/buildPreview';
+import { OVERPASS_HEIGHT } from '../sim/trackPath';
+import {
+  groundStationCells, elevatedStationCells, computeStationEndKeys, elevatedCellCandidateFromGroundClick,
+} from '../render/stationLayers';
 
 const REMOVE_COLOUR = '#ff3b47';
 
@@ -96,14 +98,10 @@ interface GameSceneProps {
 
   onCommitPath: (
     path: { x: number; z: number }[],
-    mode: CellType | 'none' | 'remove' | 'signal' | 'bridge',
+    mode: CellType | 'none' | 'remove' | 'signal' | 'elevated' | 'elevated-station',
     // 駅設置(station)専用: ドラッグ方向から決まる軸のヒント(南北/東西)。
     stationAxisHint?: StationAxis
   ) => void;
-  // ★追加: 駅テンプレート(選択中のテンプレートと向き。設置はクリック1回)
-  selectedTemplateId: string;
-  quarterTurns: QuarterTurns;
-  onCommitTemplate: (anchor: { x: number; z: number }) => void;
   removeSignal: (x: number, z: number) => void;
   onSimEvent: (event: SimEvent) => void;
   onSelectTrain: (id: string | null) => void;
@@ -121,8 +119,8 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed, money,
-  onCommitPath, selectedTemplateId, quarterTurns, onCommitTemplate, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
+  railMap, stations, trains, towns, terrain, world, buildMode, selectedTrainId, isEditingSchedule, simSpeed,
+  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
@@ -146,27 +144,21 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
-    if (buildMode === 'template') return [cursorPos];
     if (!dragStartPos) return [cursorPos];
-    if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal') return [cursorPos];
+    if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal' || buildMode === 'elevated-station') {
+      return [cursorPos];
+    }
     return getConstrainedPath(dragStartPos, cursorPos);
   }, [dragStartPos, cursorPos, buildMode]);
 
-  // 選択中の駅テンプレート(未選択なら先頭)。テンプレ一覧は不変なのでidだけ見ればよい。
-  const selectedTemplate = useMemo(
-    () => STATION_TEMPLATES.find(t => t.id === selectedTemplateId) ?? STATION_TEMPLATES[0],
-    [selectedTemplateId]
-  );
-
-  // テンプレートのプレビュー(アンカー位置に占めるセル一覧と、設置可否)。
-  const templatePreview = useMemo(() => {
-    if (buildMode !== 'template' || !cursorPos) return null;
-    const cells = templateAbsoluteCells(cursorPos, selectedTemplate, quarterTurns);
-    const evaluation = evaluateStationTemplate(
-      selectedTemplate, cursorPos, quarterTurns, railMap, stations, terrain, money, towns
-    );
-    return { cells, ok: evaluation.reason === 'ok' };
-  }, [buildMode, cursorPos, selectedTemplate, quarterTurns, railMap, stations, terrain, money, towns]);
+  // 高架線(elevated)プレビューの各セルの役割(坂/高架のまま)。construction.tsの
+  // resolveElevatedPathEnd/planElevatedPathにそのまま問い合わせる(UIにルールを書き写さない)。
+  const elevatedPreviewPlan = useMemo(() => {
+    if (buildMode !== 'elevated' || previewPath.length < 2) return null;
+    const startInfo = resolveElevatedPathEnd(railMap, previewPath[0]);
+    const endInfo = resolveElevatedPathEnd(railMap, previewPath[previewPath.length - 1]);
+    return planElevatedPath(previewPath.length, startInfo.continuesElevated, endInfo.continuesElevated);
+  }, [buildMode, previewPath, railMap]);
 
   // 建設プレビューの内容をUI(コスト・可否の表示)へ流す。
   React.useEffect(() => {
@@ -201,8 +193,6 @@ export const GameScene: React.FC<GameSceneProps> = ({
       if (trainId) setTrainPress({ id: trainId, startCell: pos });
       return;
     }
-    // 駅テンプレートはドラッグ操作を持たない(クリック1回はonClickで処理する)。
-    if (buildMode === 'template') return;
     if (e.button === 0 && !e.shiftKey) setDragStartPos(getGridPosFromEvent(e));
   };
 
@@ -221,10 +211,9 @@ export const GameScene: React.FC<GameSceneProps> = ({
       }
       return;
     }
-    if (buildMode === 'template') return;
     if (e.button === 0 && dragStartPos) {
       const pos = getGridPosFromEvent(e);
-      const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
+      const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal' || buildMode === 'elevated-station')
         ? [pos]
         : getConstrainedPath(dragStartPos, pos);
       // 駅設置(station)は常に単一セルを置くが、ドラッグした向きを軸のヒントとしてUI側から渡す。
@@ -249,11 +238,6 @@ export const GameScene: React.FC<GameSceneProps> = ({
        return;
     }
 
-    if (buildMode === 'template') {
-      onCommitTemplate(pos);
-      return;
-    }
-
     if (buildMode === 'none') {
         const key = toKey(pos.x, pos.z);
         const cell = railMap.get(key);
@@ -270,16 +254,29 @@ export const GameScene: React.FC<GameSceneProps> = ({
             onBuyTrain(pos.x, pos.z);
             return;
         }
+        // 地平にヒットするものが無ければ、直交カメラの見え方から「見えている高架駅セル」の
+        // 候補を逆算して確認する(完璧な判定ではないが、高架ホームをクリックして駅を選べる)。
+        const elevatedCandidate = elevatedCellCandidateFromGroundClick(pos);
+        const elevatedCell = railMap.get(toKey(elevatedCandidate.x, elevatedCandidate.z));
+        const elevatedStationId = elevatedCell?.upper?.stationId;
+        if (elevatedStationId && selectedTrainId) {
+            if (isEditingSchedule) onAddSchedule(selectedTrainId, elevatedStationId);
+            return;
+        }
+        if (elevatedStationId && !selectedTrainId && !isEditingSchedule) {
+            onSelectStation(elevatedStationId);
+            return;
+        }
         onSelectTrain(null);
     }
   };
 
   const getPreviewColor = () => {
-    if (buildMode === 'station') return STATION_COLOUR;
+    if (buildMode === 'station' || buildMode === 'elevated-station') return STATION_COLOUR;
     if (buildMode === 'depot') return DEPOT_COLOUR;
     if (buildMode === 'remove') return REMOVE_COLOUR;
     if (buildMode === 'signal') return SIGNAL_COLOUR;
-    if (buildMode === 'bridge') return T.bridge;
+    if (buildMode === 'elevated') return T.bridge;
     return '#3ab6ff';
   };
 
@@ -296,22 +293,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   // 駅セルがホームの端かどうか(=同一stationIdの隣接セルが1つ以下)を判定する。
   // 端のセルだけ上屋の妻側にも柱を立てて、ホームが尻切れに見えないようにする。
-  const stationEndKeys = useMemo(() => {
-    const ends = new Set<string>();
-    for (const [key, data] of railMap) {
-      if (data.type !== 'station' || !data.stationId) continue;
-      const { x, z } = fromKey(key);
-      let neighbours = 0;
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dz = -1; dz <= 1; dz++) {
-          if (dx === 0 && dz === 0) continue;
-          if (railMap.get(toKey(x + dx, z + dz))?.stationId === data.stationId) neighbours++;
-        }
-      }
-      if (neighbours <= 1) ends.add(key);
-    }
-    return ends;
-  }, [railMap]);
+  // 地平・高架は別の層として独立に集計する(render/stationLayers.ts参照)。
+  const groundCells = useMemo(() => groundStationCells(railMap), [railMap]);
+  const elevatedCells = useMemo(() => elevatedStationCells(railMap), [railMap]);
+  const stationEndKeys = useMemo(() => computeStationEndKeys(groundCells), [groundCells]);
+  const elevatedEndKeys = useMemo(() => computeStationEndKeys(elevatedCells), [elevatedCells]);
 
   return (
     <>
@@ -321,28 +307,22 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <OrthographicCamera makeDefault position={[20, 20, 20]} zoom={40} near={-50} far={200} />
       <OrbitControls makeDefault enableRotate={false} enableZoom={true} minZoom={20} maxZoom={100} mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }} />
 
-      {/* 建設プレビュー */}
-      {buildMode !== 'template' && previewPath.map((pos, i) => (
-        buildMode === 'rail'
-          ? <RailBlock key={`preview-${i}`} position={[pos.x, 0.02, pos.z]} isPreview connections={0} />
-          : (
-            <mesh key={`preview-${i}`} position={[pos.x, 0.2, pos.z]}>
-              <boxGeometry args={[0.92, 0.4, 0.92]} />
-              <meshBasicMaterial color={getPreviewColor()} transparent opacity={0.45} depthWrite={false} />
-            </mesh>
-          )
-      ))}
-
-      {/* 駅テンプレートのプレビュー(kindで色分け、置けない場合は警告色) */}
-      {templatePreview && templatePreview.cells.map((cell, i) => (
-        <mesh key={`template-preview-${i}`} position={[cell.x, 0.2, cell.z]}>
-          <boxGeometry args={[0.92, 0.4, 0.92]} />
-          <meshBasicMaterial
-            color={!templatePreview.ok ? REMOVE_COLOUR : cell.kind === 'station' ? T.station : T.accent}
-            transparent opacity={0.45} depthWrite={false}
-          />
-        </mesh>
-      ))}
+      {/* 建設プレビュー。高架(elevated)は坂になるセルと高架のままのセルを色分けする。 */}
+      {previewPath.map((pos, i) => {
+        if (buildMode === 'rail') {
+          return <RailBlock key={`preview-${i}`} position={[pos.x, 0.02, pos.z]} isPreview connections={0} />;
+        }
+        const role = elevatedPreviewPlan?.roles[i];
+        const color = buildMode === 'elevated'
+          ? (role?.kind === 'ramp' ? T.warning : T.bridge)
+          : getPreviewColor();
+        return (
+          <mesh key={`preview-${i}`} position={[pos.x, 0.2, pos.z]}>
+            <boxGeometry args={[0.92, 0.4, 0.92]} />
+            <meshBasicMaterial color={color} transparent opacity={0.45} depthWrite={false} />
+          </mesh>
+        );
+      })}
 
       <TerrainBlocks terrain={terrain} tunnelKeys={tunnelKeys} />
       <Scenery terrain={terrain} railMap={railMap} towns={towns} />
@@ -401,6 +381,22 @@ export const GameScene: React.FC<GameSceneProps> = ({
         return <group key={key}>{elements}</group>;
       })}
 
+      {/* 高架駅セル(upper.stationIdがあるセル)。地平の駅セルと同じStationBlockを
+          OVERPASS_HEIGHT分だけ持ち上げて描く。柱の端判定は高架層だけで独立に行う。 */}
+      {elevatedCells.map(cell => {
+        const data = railMap.get(cell.key);
+        if (!data?.upper) return null;
+        return (
+          <StationBlock
+            key={`${cell.key}-elevated`}
+            position={[cell.x, OVERPASS_HEIGHT, cell.z]}
+            connections={data.upper.connections}
+            platformDoors={stations.get(cell.stationId)?.platformDoors ?? 'none'}
+            isEnd={elevatedEndKeys.has(cell.key)}
+          />
+        );
+      })}
+
       <TownBlocks towns={towns} />
 
       {Array.from(stations.values()).map(station => {
@@ -410,12 +406,24 @@ export const GameScene: React.FC<GameSceneProps> = ({
             if (stId === station.id) orderIndices.push(index);
           });
         }
-        const centreCell = station.cells[Math.floor(station.cells.length / 2)] ?? station.center;
-        const angle = trackAngleFromConnections(railMap.get(toKey(centreCell.x, centreCell.z))?.connections);
+        // 駅舎・ラベルは1駅につき1つだけ出す(立体交差の十字駅でも二重にならないように)。
+        // 地平セルがあればそちらを優先して駅舎を置き、無ければ高架セルの位置に置く。
+        const ownGroundCells = station.cells.filter(c => (c.layer ?? 0) !== 1);
+        const hasElevatedCells = station.cells.some(c => c.layer === 1);
+        const cellsForHouse = ownGroundCells.length > 0 ? ownGroundCells : station.cells;
+        const centreCell = cellsForHouse[Math.floor(cellsForHouse.length / 2)] ?? station.center;
+        const houseIsElevated = ownGroundCells.length === 0;
+        const centreConnections = houseIsElevated
+          ? railMap.get(toKey(centreCell.x, centreCell.z))?.upper?.connections
+          : railMap.get(toKey(centreCell.x, centreCell.z))?.connections;
+        const angle = trackAngleFromConnections(centreConnections);
+        const houseY = houseIsElevated ? OVERPASS_HEIGHT : 0;
+        // 高架ホームを含む駅は、ラベルが高架の上屋にめり込まないようさらに高い位置に出す。
+        const labelY = hasElevatedCells ? 1.35 + OVERPASS_HEIGHT : 1.35;
         return (
           <group key={station.id}>
-            <StationHouse position={[centreCell.x, 0, centreCell.z]} angle={angle} />
-            <StationLabel station={station} orderIndices={orderIndices} world={world} />
+            <StationHouse position={[centreCell.x, houseY, centreCell.z]} angle={angle} />
+            <StationLabel station={station} orderIndices={orderIndices} world={world} labelY={labelY} />
           </group>
         );
       })}

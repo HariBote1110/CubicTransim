@@ -4,13 +4,13 @@ import type { CellData, CellType, TrainData, TrainGroupData, StationData, Platfo
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
-import { applyRailPath, applyStation, applyDepot, applySignal, applyBridge, removePath } from '../sim/construction';
-import type { ConstructionState, StationAxis } from '../sim/construction';
-import { evaluateStationTemplate } from '../sim/buildPreview';
-import { applyStationTemplate, STATION_TEMPLATES } from '../sim/stationTemplates';
-import type { QuarterTurns } from '../ui/templateRotation';
 import {
-  STARTING_MONEY, TRAIN_COST, costOfPath,
+  applyRailPath, applyStation, applyDepot, applySignal, applyElevatedPath, applyElevatedStation,
+  removePath, resolveElevatedPathEnd, planElevatedPath,
+} from '../sim/construction';
+import type { ConstructionState, StationAxis } from '../sim/construction';
+import {
+  STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, ELEVATED_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   calculateUpkeep, CAR_COST, CAR_REFUND,
 } from '../sim/economy';
@@ -157,7 +157,7 @@ export const useGameLogic = () => {
   // 建設コストの算出・所持金チェック・課金もここで行う。
   const commitPath = (
     path: { x: number; z: number }[],
-    buildMode: CellType | 'none' | 'remove' | 'signal' | 'bridge',
+    buildMode: CellType | 'none' | 'remove' | 'signal' | 'elevated' | 'elevated-station',
     // 駅設置(station)専用: ドラッグした向きから決まる軸のヒント。
     // 省略時はapplyStationが隣接セルから軸を推測する(なければ東西が既定)。
     stationAxisHint?: StationAxis
@@ -205,12 +205,32 @@ export const useGameLogic = () => {
         if (money < cost) return;
         result = applyRailPath(state, path, terrain);
         break;
-      case 'bridge':
-        // 橋台(通常運賃)＋橋桁(OVERPASS_COST_MULTIPLIER倍)
-        cost = costOfPath('bridge', path.length, path);
+      case 'elevated': {
+        // 坂・橋桁の内訳はconstruction.ts側の判定(resolveElevatedPathEnd/planElevatedPath)
+        // にそのまま問い合わせる(buildPreview.tsと同じロジックの二重実装を避けるため)。
+        const startInfo = resolveElevatedPathEnd(railMap, path[0]);
+        const endInfo = resolveElevatedPathEnd(railMap, path[path.length - 1]);
+        const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated);
+        const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
+        const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
+        cost = costOfElevatedPath(rampCount, overpassCount);
         if (money < cost) return;
-        result = applyBridge(state, path, terrain);
+        result = applyElevatedPath(state, path, terrain);
         break;
+      }
+      case 'elevated-station': {
+        cost = ELEVATED_STATION_COST;
+        if (money < cost) return;
+        const stationPos = path[path.length - 1];
+        const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
+          stationPos, towns, terrain, worldRef.current.rng
+        );
+        result = applyElevatedStation(state, stationPos, townsForNaming);
+        if (spawnedTown && result.stations !== state.stations) {
+          setTowns(townsForNaming);
+        }
+        break;
+      }
       default:
         return;
     }
@@ -221,40 +241,6 @@ export const useGameLogic = () => {
     if (changed && cost > 0) {
       setMoney(m => m - cost);
       setCurrentLedger(l => ({ ...l, construction: l.construction + cost }));
-    }
-
-    setRailMap(result.railMap);
-    setStations(result.stations);
-  };
-
-  // --- Commit Station Template ---
-  // 駅テンプレート(stationTemplates.ts)の設置。commitPathと同じ考え方:
-  // 会計処理(コスト算出・所持金チェック・ledger記録)はここで行い、
-  // 設置可否そのものの判定はUIに書き写さずsim層(evaluateStationTemplate/applyStationTemplate)に委ねる。
-  const commitTemplate = (anchor: { x: number; z: number }, templateId: string, quarterTurns: QuarterTurns) => {
-    const template = STATION_TEMPLATES.find(t => t.id === templateId);
-    if (!template) return;
-
-    const state: ConstructionState = { railMap, stations };
-    // 近くに町が無ければ一定確率で新しい町が湧く(resolveTownSpawnForStation)。
-    // テンプレートは複数セルを一度に置くため、判定はアンカー座標を基準に1回だけ行う。
-    const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
-      anchor, towns, terrain, worldRef.current.rng
-    );
-    const evaluation = evaluateStationTemplate(template, anchor, quarterTurns, railMap, stations, terrain, money, townsForNaming);
-    if (evaluation.reason !== 'ok') return;
-
-    const result = applyStationTemplate(state, anchor, template, quarterTurns, townsForNaming, terrain);
-    const changed = result.railMap !== state.railMap || result.stations !== state.stations;
-    if (!changed) return;
-
-    if (evaluation.cost > 0) {
-      setMoney(m => m - evaluation.cost);
-      setCurrentLedger(l => ({ ...l, construction: l.construction + evaluation.cost }));
-    }
-    // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
-    if (spawnedTown) {
-      setTowns(townsForNaming);
     }
 
     setRailMap(result.railMap);
@@ -579,7 +565,7 @@ export const useGameLogic = () => {
     terrain,
     selectedTrainId, setSelectedTrainId: selectTrain,
     isEditingSchedule, setIsEditingSchedule,
-    commitPath, commitTemplate, removeSignal,
+    commitPath, removeSignal,
     handleTrainArrive,
     buyTrain, deployTrain,
     addCar, removeCar,
