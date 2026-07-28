@@ -20,7 +20,7 @@ const MIN_CARS = 1;
 const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
-import { mulberry32, generateTowns, resolveTownSpawnForStation } from '../sim/towns';
+import { mulberry32, generateTowns } from '../sim/towns';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
@@ -185,28 +185,16 @@ export const useGameLogic = () => {
           cost = costOfPath('station', path.length);
           if (money < cost) return;
           const stationPos = path[path.length - 1];
-          // 近くに町が無ければ一定確率で新しい町が湧く(resolveTownSpawnForStation)。
-          // 駅名は後から使うため、町を決めてから applyStation に渡す。
-          const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
-            stationPos, towns, terrain, worldRef.current.rng
-          );
-          result = applyStation(state, stationPos, terrain, townsForNaming, stationAxisHint);
-          // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
-          if (spawnedTown && result.stations !== state.stations) {
-            setTowns(townsForNaming);
-          }
+          // 駅設置時点では町を湧かせない(近くに町が無くてもそのまま建てられる)。
+          // 命名は既存の町名由来/A駅フォールバックのまま(applyStationのstationNameFor)。
+          // 町は輸送力が育ってから日次チェック(resolveTownSpawnTick)で湧く。
+          result = applyStation(state, stationPos, terrain, towns, stationAxisHint);
         } else {
           // 高架駅タイル1枚(旧'elevated-station')。
           cost = ELEVATED_STATION_COST;
           if (money < cost) return;
           const stationPos = path[path.length - 1];
-          const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
-            stationPos, towns, terrain, worldRef.current.rng
-          );
-          result = applyElevatedStation(state, stationPos, townsForNaming, level as ElevatedLevel);
-          if (spawnedTown && result.stations !== state.stations) {
-            setTowns(townsForNaming);
-          }
+          result = applyElevatedStation(state, stationPos, towns, level as ElevatedLevel);
         }
         break;
       }
