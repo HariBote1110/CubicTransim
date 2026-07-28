@@ -220,12 +220,91 @@ export const CLIFF_CORNER_MAP: Record<string, [number, number]> = {
 // 同じ高さを走るため、坑口も1段の崖で十分)。
 const CLIFF_LIFT_MAX = 1;
 
+// コーナーのインデックス[左上,右上,右下,左下]それぞれに対応する、セル(x,z)から見た
+// コーナー座標へのオフセット。cornerElevationの引数(cx,cz)はこれをx,zへ足した値。
+const CORNER_COORD_DELTAS: ReadonlyArray<[number, number]> = [
+  [0, 0], // 左上 = corner(x,z)
+  [1, 0], // 右上 = corner(x+1,z)
+  [1, 1], // 右下 = corner(x+1,z+1)
+  [0, 1], // 左下 = corner(x,z+1)
+];
+
+const cornerKeyOfCell = (x: number, z: number, cornerIndex: number): string => {
+  const [dx, dz] = CORNER_COORD_DELTAS[cornerIndex];
+  return toKey(x + dx, z + dz);
+};
+
+/**
+ * mountainの全セルについて、4隅のコーナー標高を「コーナー座標→標高」の共有マップとして
+ * 一括構築する。cellCornerElevationsのようにセル単位で個別に計算すると、cliffFacesを
+ * 宣言したセルの視点でしか持ち上げが反映されず、同じコーナーを共有する隣接セル(cliffFaces
+ * 非宣言側)は元のmin則の値のままになって上面メッシュに裂け目ができてしまう。
+ * この関数はcliffFacesによる持ち上げを「コーナー単位」で一度だけ適用するため、
+ * どのセルからこのマップを参照しても同じコーナーは必ず同じ値になり、裂け目が原理的に
+ * 起こらない。
+ */
+export function buildCornerElevationMap(
+  elev: Map<string, number>,
+  cliffFaces?: Set<string>,
+): Map<string, number> {
+  const corners = new Map<string, number>();
+
+  for (const key of elev.keys()) {
+    const { x, z } = fromKey(key);
+    for (let i = 0; i < 4; i++) {
+      const ck = cornerKeyOfCell(x, z, i);
+      if (corners.has(ck)) continue;
+      const [dx, dz] = CORNER_COORD_DELTAS[i];
+      corners.set(ck, cornerElevation(elev, x + dx, z + dz));
+    }
+  }
+
+  if (cliffFaces && cliffFaces.size > 0) {
+    for (const key of elev.keys()) {
+      const { x, z } = fromKey(key);
+      const selfElevation = elev.get(key) ?? 0;
+      const lift = Math.min(selfElevation, CLIFF_LIFT_MAX);
+      for (const [dirKey, [i0, i1]] of Object.entries(CLIFF_CORNER_MAP)) {
+        if (!cliffFaces.has(`${x},${z},${dirKey}`)) continue;
+        for (const i of [i0, i1]) {
+          const ck = cornerKeyOfCell(x, z, i);
+          corners.set(ck, Math.max(corners.get(ck) ?? 0, lift));
+        }
+      }
+    }
+  }
+
+  return corners;
+}
+
+/**
+ * buildCornerElevationMapが返す共有マップから、セル(x,z)の4隅を
+ * [左上, 右上, 右下, 左下] の順で読み出す。マップに無いコーナー(=mountainが
+ * どこにも無い座標)は標高0として扱う。
+ */
+export function cellCornersFromMap(
+  corners: Map<string, number>,
+  x: number,
+  z: number,
+): [number, number, number, number] {
+  return [
+    corners.get(cornerKeyOfCell(x, z, 0)) ?? 0,
+    corners.get(cornerKeyOfCell(x, z, 1)) ?? 0,
+    corners.get(cornerKeyOfCell(x, z, 2)) ?? 0,
+    corners.get(cornerKeyOfCell(x, z, 3)) ?? 0,
+  ];
+}
+
 /**
  * セル(x,z)の4隅のコーナー標高を [左上, 右上, 右下, 左下] の順で返す。
  * 左上=corner(x,z)、右上=corner(x+1,z)、右下=corner(x+1,z+1)、左下=corner(x,z+1)。
  * cliffFaces に "x,z,dx,dz" 形式でこのセルの坑口面が含まれる場合、その面に接する
  * 2隅はmin則の値と「セル標高をCLIFF_LIFT_MAXまでに制限した値」の大きい方にする
  * (自然な標高のほうが高い場合はmin則の連続性を優先し、そちらを採る)。
+ *
+ * 内部的にはbuildCornerElevationMap(コーナー単位で持ち上げを適用する共有マップ)を
+ * 経由する。多数のセルをまとめて描画する場合はbuildCornerElevationMapを1度だけ呼び、
+ * cellCornersFromMapで個別に読み出すほうが効率的(この関数は単発利用向け)。
  */
 export function cellCornerElevations(
   elev: Map<string, number>,
@@ -233,23 +312,6 @@ export function cellCornerElevations(
   z: number,
   cliffFaces?: Set<string>,
 ): [number, number, number, number] {
-  const corners: [number, number, number, number] = [
-    cornerElevation(elev, x, z),
-    cornerElevation(elev, x + 1, z),
-    cornerElevation(elev, x + 1, z + 1),
-    cornerElevation(elev, x, z + 1),
-  ];
-
-  if (cliffFaces && cliffFaces.size > 0) {
-    const selfElevation = elev.get(toKey(x, z)) ?? 0;
-    const lift = Math.min(selfElevation, CLIFF_LIFT_MAX);
-    for (const [dirKey, [i0, i1]] of Object.entries(CLIFF_CORNER_MAP)) {
-      if (cliffFaces.has(`${x},${z},${dirKey}`)) {
-        corners[i0] = Math.max(corners[i0], lift);
-        corners[i1] = Math.max(corners[i1], lift);
-      }
-    }
-  }
-
-  return corners;
+  const corners = buildCornerElevationMap(elev, cliffFaces);
+  return cellCornersFromMap(corners, x, z);
 }
