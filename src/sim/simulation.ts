@@ -12,7 +12,7 @@ import {
 } from './passengers';
 import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { growTown, townServiceLevel } from './towns';
-import { calculateRouteWithStop } from './pathfinding';
+import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
 import {
   pathPointAt, rampHeightAtPos,
   RAMP_POS_GROUND, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2, RAMP_POS_DECK,
@@ -726,7 +726,8 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       // 'At destination'として処理済みのため、ここに来るのは「まだ一度も停車していない
       // (lastStopStationIdがnullまたは別駅)のに、たまたま目的駅セル上にいる」場合のみ)
       const currentCell = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
-      if (currentCell && currentCell.stationId === targetStationId) {
+      const currentLayer: 0 | 1 = rt.grid.layer === 1 ? 1 : 0;
+      if (stationIdAtLayer(currentCell, currentLayer) === targetStationId) {
         stopAtStation(world, train, rt, targetStationId, rt.grid, rt.prevGrid ?? rt.grid, events);
         return;
       }

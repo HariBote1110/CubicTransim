@@ -1100,3 +1100,40 @@ describe('stepWorld: applyBridgeが作る橋(坂つき)を走行中の描画高�
     expect(peakIndex).toBeGreaterThan(0);
   });
 });
+
+describe('stepWorld: 立体交差(層の突き合わせ) 既に目的駅にいる判定', () => {
+  it('高架(layer1)で地平駅の真上を通過中の列車を、その地平駅に到着済みと誤判定しない', () => {
+    // (5,0)は地平駅stAのホーム(東西)であり、真上を単なる橋桁(upper、stationIdなし)が
+    // 南北に跨ぐ。列車は高架側(layer1)をこの真上のセルへ進入した状態にあり、
+    // 実際には地平ホームには乗っていない。
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(5, 0), {
+      type: 'station',
+      stationId: 'stA',
+      connections: 0,
+      upper: { connections: 0 },
+    });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 5, z: 0 }], center: { x: 5, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+
+    // 列車を「高架(layer1)で駅セルの真上に進入した直後」の状態に手動で仕立てる
+    // (経路は空、まだ一度もこの駅に停車していない = lastStopStationIdはnull)。
+    stepWorld(world, 0.1);
+    const rt = world.runtimes.get('t1')!;
+    rt.grid = { x: 5, z: 0, layer: 1 };
+    rt.prevGrid = { x: 5, z: -1 };
+    rt.route = [];
+    rt.lastStopStationId = null;
+    rt.stopRemaining = 0;
+
+    stepWorld(world, 0.1);
+
+    // 高架を通過中なので、地平駅stAに到着したとみなしてはならない(停車扱いにしない)。
+    expect(rt.stopRemaining).toBe(0);
+    expect(rt.debugStatus).not.toBe('Arrived');
+  });
+});
