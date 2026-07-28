@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import type { TrainType, TrainData } from '../types';
+import type { CellData, TrainType, TrainData } from '../types';
 import type { TrainRuntime } from '../sim/simulation';
 import { carPositions } from '../sim/consist';
 import { TrainCar, type CarVariant } from './TrainCar';
@@ -10,6 +10,7 @@ import { PALETTE } from '../render/palette';
 
 interface DynamicTrainProps {
   data: TrainData;
+  railMap: Map<string, CellData>;
   runtimes: Map<string, TrainRuntime>;
   type: TrainType;
   isSelected: boolean;
@@ -32,7 +33,7 @@ const DRAG_LIFT_Y = 1.1;
 const INITIAL_CAR_Y = 0.5;
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
-  data, runtimes, type, isSelected, lineColour: groupColour, onClick,
+  data, railMap, runtimes, type, isSelected, lineColour: groupColour, onClick,
   isDragging, dragCell,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
@@ -64,15 +65,15 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
     //   - 到着tickでは renderPos と renderTarget が同じセル中心になり、lookAt が縮退して
     //     1フレームだけワールド+Z方向を向いてしまう(向きがガクッと飛ぶ原因)
     //   - セグメントの向きをそのまま使うとセル境界で階段状に飛ぶ
-    const positions = carPositions(runtime, data.cars, 1.0);
+    const positions = carPositions(runtime, data.cars, 1.0, railMap);
 
-    groupRef.current.position.set(runtime.renderPos.x, runtime.renderPos.y, runtime.renderPos.z);
     const head = positions[0];
     if (head) {
+      groupRef.current.position.set(head.x, head.y, head.z);
       groupRef.current.lookAt(
-        runtime.renderPos.x + head.heading.x,
-        runtime.renderPos.y,
-        runtime.renderPos.z + head.heading.z
+        head.x + head.heading.x,
+        head.y + head.heading.y,
+        head.z + head.heading.z
       );
     }
 
@@ -84,7 +85,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       const pos = positions[i];
       if (!pos) continue;
       carGroup.position.set(pos.x, pos.y, pos.z);
-      carGroup.lookAt(pos.x + pos.heading.x, pos.y, pos.z + pos.heading.z);
+      carGroup.lookAt(pos.x + pos.heading.x, pos.y + pos.heading.y, pos.z + pos.heading.z);
     }
 
     if (isSelected) {

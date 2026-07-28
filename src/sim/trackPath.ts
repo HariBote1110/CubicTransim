@@ -10,12 +10,12 @@
 // この曲線は「セル中心間の線形補間」と完全に一致する。したがって直線区間の
 // 挙動は従来と1ビットも変わらない。
 
-export type Pt = { x: number; z: number };
+export type Pt = { x: number; y?: number; z: number };
 
 // 立体交差の高架セルを走行中の列車の描画高さ(地平からの上乗せ分、renderPos.y相当の単位)。
 // simulation.tsのrenderPos.yは 0.5 + (layer===1 ? OVERPASS_HEIGHT : 0) を基準に、
 // 地平/高架の境界セルではセル内の進捗で線形補間する。
-export const OVERPASS_HEIGHT = 1.2;
+export const OVERPASS_HEIGHT = 0.8;
 
 // 高架の最大レベル(1〜3)。レベルLの桁の高さは L*OVERPASS_HEIGHT。
 export const MAX_ELEVATED_LEVEL = 3;
@@ -139,15 +139,24 @@ const emitCurve = (
   next: Pt | null,
   from: number,
   to: number,
-  samples: number
+  samples: number,
+  heightAt?: (point: Pt) => number
 ): void => {
+  const pointAt = (t: number): Pt => {
+    const point = cellCurvePoint(prev, curr, next, t);
+    if (!heightAt) return point;
+    const entryY = prev ? (heightAt(prev) + heightAt(curr)) / 2 : heightAt(curr);
+    const exitY = next ? (heightAt(curr) + heightAt(next)) / 2 : heightAt(curr);
+    const u = 1 - t;
+    return { ...point, y: u * u * entryY + 2 * u * t * heightAt(curr) + t * t * exitY };
+  };
   if (isCollinear(prev, curr, next)) {
     // 直線区間は端点だけで十分(中間点は同一直線上に並ぶだけ)
-    points.push(cellCurvePoint(prev, curr, next, to));
+    points.push(pointAt(to));
     return;
   }
   for (let s = 1; s <= samples; s++) {
-    points.push(cellCurvePoint(prev, curr, next, from + (to - from) * (s / samples)));
+    points.push(pointAt(from + (to - from) * (s / samples)));
   }
 };
 
@@ -164,6 +173,8 @@ export interface TrainPolylineInput {
   route: Pt[];
   /** 通過済みセル中心の列。history[0] が最新(= grid) */
   history: Pt[];
+  /** セル中心の軌道高さ。渡されると返すポリラインにも各点の高さを載せる。 */
+  heightAt?: (point: Pt) => number;
   samples?: number;
 }
 
@@ -187,16 +198,16 @@ export function curvedTrainPolyline(input: TrainPolylineInput): Pt[] {
   if (next && progress > 0.5) {
     // head は next セルの曲線上(t = progress - 0.5)。まず next セルを t=0 まで戻り、
     // 続けて現在セル(grid)を t=1→0 で辿る。
-    emitCurve(points, grid, next, nextNext, progress - 0.5, 0, samples);
-    emitCurve(points, prevGrid, grid, next, 1, 0, samples);
+    emitCurve(points, grid, next, nextNext, progress - 0.5, 0, samples, input.heightAt);
+    emitCurve(points, prevGrid, grid, next, 1, 0, samples, input.heightAt);
   } else {
     // head は grid セルの曲線上(t = 0.5 + progress)
-    emitCurve(points, prevGrid, grid, next, 0.5 + progress, 0, samples);
+    emitCurve(points, prevGrid, grid, next, 0.5 + progress, 0, samples, input.heightAt);
   }
 
   // history[0] は grid 自身なので消化済み。以降を古い方へ辿る。
   for (let i = 1; i < history.length; i++) {
-    emitCurve(points, history[i + 1] ?? null, history[i], history[i - 1], 1, 0, samples);
+    emitCurve(points, history[i + 1] ?? null, history[i], history[i - 1], 1, 0, samples, input.heightAt);
   }
 
   return points;

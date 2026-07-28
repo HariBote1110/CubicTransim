@@ -1,4 +1,5 @@
 # progress インデックス
+- [graded-train-rendering.md](graded-train-rendering.md) — v0.3.0-Alpha-22a: 坂で編成全体が先頭車の高さに引きずられる問題を、各車両の3次元走行線・前後台車からの姿勢計算へ置換して解消。高架高を1.2→0.8へ下げ、車体・台車も小型化して勾配と見た目を緩和
 - [turnout-and-elevated-track-rendering.md](turnout-and-elevated-track-rendering.md) 追記(v0.3.0-Alpha-21a: 交換線の分岐方向を反転) — 3方向分岐の合流先を「地理的に近い本線側」としていたため、交換線の入口が進行方向へ回り込む赤いループ状になっていた。進行元側から分岐するよう反転し、入口で分岐・出口で合流する黒い接続形状へ寄せた
 - [turnout-and-elevated-track-rendering.md](turnout-and-elevated-track-rendering.md) 追記(v0.3.0-Alpha-20a: 坂と分岐の接続形状を修正) — 坂が地平との共有境界で約0.09高く始まり隙間に見えていた問題を、level1=pos 0〜0.5・level2=0.5〜1へ再割当して解消。交換線の分岐は本線端まで曲げずセル内で合流させ、S字・ループ状のポイントを抑制
 - [turnout-and-elevated-track-rendering.md](turnout-and-elevated-track-rendering.md) — v0.3.0-Alpha-19a: 交換設備の3方向分岐を「本線+曲線の分岐」として描き、高架桁も同じ中心線に追従させた。中心にレールが三重に重なる形状と、曲線レールに直線の桁が残る違和感を解消。経路探索・予約には影響しない描画修正

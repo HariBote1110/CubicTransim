@@ -12,11 +12,11 @@ interface Props {
 // --- 寸法(1セル=1.0、車間spacing=1.0なので車体長0.86で0.14の隙間ができる) ---
 const LEN = 0.86;
 const WIDTH = 0.44;
-const BODY_H = 0.30;
-const BODY_Y = 0.06;      // 車体中心(groupのy=0が世界のy=0.5)
+const BODY_H = 0.25;
+const BODY_Y = 0.01;      // 車体中心(groupのy=0が世界のy=0.5)
 const ROOF_Y = BODY_Y + BODY_H / 2 + 0.025;
 const SKIRT_Y = BODY_Y - BODY_H / 2 - 0.045;
-const BOGIE_Y = -0.29;
+const BOGIE_Y = -0.32;
 const WINDOW_Y = BODY_Y + 0.045;
 const NOSE = LEN / 2;
 
@@ -39,7 +39,7 @@ export const TrainCar: React.FC<Props> = ({ variant, lineColour }) => {
       {/* 台車(前後2つ) */}
       {[-0.26, 0.26].map((z, i) => (
         <mesh key={i} position={[0, BOGIE_Y, z]} material={MATERIALS.carBogie}>
-          <boxGeometry args={[WIDTH - 0.06, 0.16, 0.24]} />
+          <boxGeometry args={[WIDTH - 0.08, 0.10, 0.18]} />
         </mesh>
       ))}
 

@@ -503,7 +503,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       {trains.map(train => (
         <DynamicTrain
-          key={train.id} data={train} runtimes={world.current.runtimes} type="commuter"
+          key={train.id} data={train} railMap={railMap} runtimes={world.current.runtimes} type="commuter"
           isSelected={train.id === selectedTrainId}
           lineColour={findGroup(groups, train.groupId)?.colour}
           onClick={() => {
