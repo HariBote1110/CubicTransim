@@ -7,6 +7,8 @@ import {
   elevationAt,
   cornerElevation,
   cellCornerElevations,
+  buildCornerElevationMap,
+  cellCornersFromMap,
   dilateMountains,
   TERRAIN_COORD_RANGE,
   LAKE_COUNT_MIN,
@@ -255,5 +257,43 @@ describe('dilateMountains', () => {
     ]);
     const dilated = dilateMountains(terrain);
     expect(terrainAt(dilated, 1, 0)).toBe('mountain');
+  });
+});
+
+describe('buildCornerElevationMap / cellCornersFromMap', () => {
+  it('cliffFacesを片方のセルだけが宣言していても、共有コーナーは隣接セル側から見ても同じ値になる(裂け目が出ない)', () => {
+    // セル(0,0)標高2・北面がcliffFace。隣セル(1,0)標高1はcliffFaceを宣言していない。
+    const elev = new Map([
+      [toKey(0, 0), 2],
+      [toKey(1, 0), 1],
+    ]);
+    const cliffFaces = new Set(['0,0,0,-1']);
+
+    const map = buildCornerElevationMap(elev, cliffFaces);
+    const cellA = cellCornersFromMap(map, 0, 0);
+    const cellB = cellCornersFromMap(map, 1, 0);
+
+    // セル(0,0)の右上隅とセル(1,0)の左上隅は同じコーナー(1,0)を指す。
+    // cliffFaceによる持ち上げ(min(2,1)=1)は宣言元のセルだけでなく、
+    // 同じコーナーを参照するどのセルから見ても一致する。
+    expect(cellA[1]).toBe(1);
+    expect(cellB[0]).toBe(1);
+    expect(cellA[1]).toBe(cellB[0]);
+  });
+
+  it('cellCornerElevations(旧API)はbuildCornerElevationMap+cellCornersFromMapで置き換えても既存の結果と一致する', () => {
+    const elev = new Map([
+      [toKey(0, 0), 2],
+      [toKey(1, 0), 1],
+      [toKey(0, 1), 1],
+      [toKey(1, 1), 1],
+    ]);
+    const cliffFaces = new Set(['0,0,0,-1']);
+
+    const viaLegacyApi = cellCornerElevations(elev, 0, 0, cliffFaces);
+    const map = buildCornerElevationMap(elev, cliffFaces);
+    const viaSharedMap = cellCornersFromMap(map, 0, 0);
+
+    expect(viaLegacyApi).toEqual(viaSharedMap);
   });
 });
