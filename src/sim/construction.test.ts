@@ -8,6 +8,7 @@ import {
   applyDepot,
   applySignal,
   applyBridge,
+  applyElevatedStation,
   removePath,
   nextStationName,
   MAX_BRIDGE_LENGTH,
@@ -610,5 +611,104 @@ describe('橋（applyBridge）', () => {
     const outside = result.railMap.get(toKey(-1, 0))!;
     expect(outside).toBeDefined();
     expect((outside.connections ?? 0) & DIR.E).toBe(0);
+  });
+});
+
+describe('高架駅（applyElevatedStation）', () => {
+  it('橋桁セル(坂を除いた中間セル)がすべて高架ホーム(upper.stationId)になる', () => {
+    const state = emptyState();
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+      { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ];
+    const result = applyElevatedStation(state, path);
+
+    for (const pos of [path[2], path[3]]) {
+      const cell = result.railMap.get(toKey(pos.x, pos.z))!;
+      expect(cell.upper?.connections).toBe(DIR.E | DIR.W);
+      expect(cell.upper?.stationId).toBeDefined();
+    }
+    // 坂は普通の橋と同じく地平のrampのみで、upperは持たない
+    for (const pos of [path[0], path[1], path[4], path[5]]) {
+      const cell = result.railMap.get(toKey(pos.x, pos.z))!;
+      expect(cell.upper).toBeUndefined();
+      expect(cell.ramp).toBeDefined();
+    }
+
+    const stationId = result.railMap.get(toKey(2, 0))!.upper!.stationId!;
+    const st = result.stations.get(stationId)!;
+    expect(st).toBeDefined();
+    expect(st.cells).toEqual(
+      expect.arrayContaining([
+        { x: 2, z: 0, layer: 1 },
+        { x: 3, z: 0, layer: 1 },
+      ])
+    );
+    expect(st.cells.length).toBe(2);
+  });
+
+  it('橋桁が既存の地平駅セルであっても建設でき、地平駅のconnectionsは変化しない', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 2, z: 0 }, undefined, [], 'ns');
+    const groundBefore = state.railMap.get(toKey(2, 0))!.connections;
+    const groundStationId = state.railMap.get(toKey(2, 0))!.stationId!;
+
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyElevatedStation(state, path, undefined, [], groundStationId);
+
+    const crossing = result.railMap.get(toKey(2, 0))!;
+    expect(crossing.type).toBe('station'); // 地平のtype/接続はそのまま
+    expect(crossing.connections).toBe(groundBefore);
+    expect(crossing.stationId).toBe(groundStationId); // 地平のstationIdも維持
+    expect(crossing.upper?.connections).toBe(DIR.E | DIR.W);
+    expect(crossing.upper?.stationId).toBe(groundStationId);
+
+    // 地平駅と高架ホームが同じ駅IDに統合されている
+    const st = result.stations.get(groundStationId)!;
+    expect(st.cells).toEqual(
+      expect.arrayContaining([
+        { x: 2, z: 0 }, // 地平ホーム(layer省略)
+        { x: 2, z: 0, layer: 1 }, // 高架ホーム
+      ])
+    );
+  });
+
+  it('橋桁が車庫セルの場合はno-op', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 2, z: 0 });
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyElevatedStation(state, path);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.stations).toBe(state.stations);
+  });
+
+  it('橋桁セルに既にupperがある場合はno-op(二重架け禁止)', () => {
+    let state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    state = applyBridge(state, path);
+
+    const crossing = [
+      { x: 2, z: -2 }, { x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 },
+    ];
+    const result = applyElevatedStation(state, crossing);
+    expect(result.railMap).toBe(state.railMap);
+  });
+
+  it('撤去すると高架ホームのセルがstationsから消える(独立した地平線路は残る)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }]);
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    state = applyElevatedStation(state, path);
+    const stationId = state.railMap.get(toKey(2, 0))!.upper!.stationId!;
+    expect(state.stations.get(stationId)).toBeDefined();
+
+    const result = removePath(state, [{ x: 2, z: 0 }]);
+
+    // 高架駅は消え、地平の南北線路は残る
+    expect(result.stations.get(stationId)).toBeUndefined();
+    const cell = result.railMap.get(toKey(2, 0))!;
+    expect(cell.upper).toBeUndefined();
+    expect(cell.connections! & DIR.N).toBe(DIR.N);
+    expect(cell.connections! & DIR.S).toBe(DIR.S);
   });
 });

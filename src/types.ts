@@ -19,13 +19,18 @@ export interface CellData {
   tunnel?: boolean;
   /**
    * 立体交差(橋桁)の高架側の線路。地平側(connections)とは接続しない別の線路。
-   * construction.ts の applyBridge で橋の中間セル(橋桁)にのみ設定される
-   * (直角に線路を敷いただけでは自動生成されない。平面交差にする場合は
-   * connectionsへORするだけで済ませ、upperは作らない)。
+   * construction.ts の applyBridge/applyElevatedStation で橋・高架駅の中間セル
+   * (橋桁)にのみ設定される(直角に線路を敷いただけでは自動生成されない。
+   * 平面交差にする場合はconnectionsへORするだけで済ませ、upperは作らない)。
    * 列車には層を持たせない。「そのセルにどちら向きで入ったか」(進入元へ戻るビットが
    * connectionsとupper.connectionsのどちらに立っているか)で一意に決まるため。
+   *
+   * stationId: この橋桁が「高架駅のホーム」である場合にのみ設定する。
+   * 高架駅セルの判定は「upperを持ち、かつ upper.stationId がある」こと。
+   * stationIdが無いupper(undefined)は単なる橋桁(駅ではない)を意味し、
+   * 後段(予約のisSafeWaitingPoint等)では停止不可の扱いになる想定。
    */
-  upper?: { connections: number };
+  upper?: { connections: number; stationId?: string };
   /**
    * 坂セル(applyBridgeが橋の両端2セルずつに付ける)であることを示す。
    * dirは登り方向(桁のあるupperセル側へ向かう8方向ビット)。
@@ -44,7 +49,12 @@ export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
 export interface StationData {
   id: string;
   name: string;
-  cells: { x: number, z: number }[];
+  /**
+   * layer: このセルが地平(0、省略時の既定)か高架(1、立体交差の高架ホーム)かを示す。
+   * 1つの駅IDに地平ホーム群(layer未設定/0)と高架ホーム群(layer:1)が両方
+   * ぶら下がることがある(立体交差の十字乗り換え駅)。
+   */
+  cells: { x: number, z: number, layer?: 0 | 1 }[];
   center: { x: number, z: number };
   platformDoors: PlatformDoorType;
 }

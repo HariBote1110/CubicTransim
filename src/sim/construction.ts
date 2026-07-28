@@ -371,29 +371,44 @@ export function applySignal(state: ConstructionState, path: Pos[], terrain: Map<
   return { railMap, stations: state.stations };
 }
 
-// TTD/OpenTTD流の橋。始点・終点それぞれから2セルずつが坂(地平の通常線路+ramp)、
-// 残る中間セルが橋桁(upper.connectionsのみ。地平のconnectionsは一切変更しない)になる。
+// TTD/OpenTTD流の橋・高架駅に共通する「坂+橋桁」構築ロジック。
+// 始点・終点それぞれから2セルずつが坂(地平の通常線路+ramp)、残る中間セルが
+// 橋桁(upper.connectionsのみ。地平のconnectionsは一切変更しない)になる。
 // 坂を2セル(level1→level2)にすることで、1セルで一気に登っていた急勾配を緩くする。
 // これにより橋の下に平面交差(ダイヤモンドクロッシング)や別の地平線路を通せる。
 //
-// 建設不可条件(いずれか1つでも該当すれば no-op、state をそのまま返す):
+// applyBridge(単なる橋)とapplyElevatedStation(高架駅)の両方から使う共通部分を
+// ここに集約する(高架駅は橋桁セルの一部にupper.stationIdを追加で設定するだけの差分)。
+//
+// 建設不可条件(いずれか1つでも該当すれば null を返す):
 // - 全長(path.length)が MIN_BRIDGE_LENGTH 未満 or MAX_BRIDGE_LENGTH 超
 // - 始点〜終点が8方向直線上に等間隔で並んでいない
 // - 坂になる4セル(両端2セルずつ)が水域・山岳
-// - 橋桁セル(坂を除いた中間)が駅・車庫
+// - 橋桁セル(坂を除いた中間)が車庫
+// - 橋桁セルが駅の場合、allowStationSpanがfalseならno-op
+//   (地平駅の上を高架駅・高架橋が跨げるようにするための緩和。ただし「地平駅の上に
+//   駅でない単なる橋桁を架ける」ことまで許すのは安全側でないと判断し、
+//   applyBridge自身は従来通り禁止のままにしている。詳細はprogressを参照)
 // - 橋桁セルに既にupperがある(二重架け禁止)
-export function applyBridge(
+interface OverpassCoreResult {
+  railMap: Map<string, CellData>;
+  /** 橋桁(坂を除いた中間セル)。高架駅ではこれがそのままホームセルになる。 */
+  spanCells: Pos[];
+}
+
+function buildOverpassCore(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN
-): ConstructionState {
-  if (path.length < MIN_BRIDGE_LENGTH || path.length > MAX_BRIDGE_LENGTH) return state;
+  terrain: Map<string, TerrainType>,
+  allowStationSpan: boolean
+): OverpassCoreResult | null {
+  if (path.length < MIN_BRIDGE_LENGTH || path.length > MAX_BRIDGE_LENGTH) return null;
 
   const start = path[0];
   const second = path[1];
   const end = path[path.length - 1];
   const dir = getDirFromVector(second.x - start.x, second.z - start.z);
-  if (dir === 0) return state; // 隣接しない/同一セル指定など
+  if (dir === 0) return null; // 隣接しない/同一セル指定など
 
   const oppDir = getOppositeDir(dir);
   const step = getVectorFromDir(dir);
@@ -402,21 +417,23 @@ export function applyBridge(
   for (let i = 0; i < path.length; i++) {
     const expectedX = start.x + step.x * i;
     const expectedZ = start.z + step.z * i;
-    if (path[i].x !== expectedX || path[i].z !== expectedZ) return state;
+    if (path[i].x !== expectedX || path[i].z !== expectedZ) return null;
   }
 
   // 坂になる4セル(両端2セルずつ)は水域・山岳に置けない
   const rampPositions = [path[0], path[1], path[path.length - 2], path[path.length - 1]];
   for (const cell of rampPositions) {
-    if (!isBuildableGround(terrain, cell.x, cell.z)) return state;
+    if (!isBuildableGround(terrain, cell.x, cell.z)) return null;
   }
 
-  // 橋桁(坂を除いた中間セル)は駅・車庫でないこと、既にupperが無いこと
+  // 橋桁(坂を除いた中間セル)は車庫でないこと、既にupperが無いこと。
+  // 駅は allowStationSpan の場合のみ許容する(高架駅・高架橋が地平駅を跨ぐケース)。
   const spanCells = path.slice(2, path.length - 2);
   for (const cell of spanCells) {
     const existing = state.railMap.get(toKey(cell.x, cell.z));
-    if (existing && (existing.type === 'station' || existing.type === 'depot')) return state;
-    if (existing?.upper) return state;
+    if (existing && existing.type === 'depot') return null;
+    if (existing && existing.type === 'station' && !allowStationSpan) return null;
+    if (existing?.upper) return null;
   }
 
   const railMap = new Map(state.railMap);
@@ -445,7 +462,9 @@ export function applyBridge(
 
   // 橋桁: upper.connectionsに軸方向の接続(dir|oppDir)を入れる。
   // 地平に同じ軸の線路が既にあれば、橋がそれを置き換えるので該当ビットは取り除く
-  // (交差する別方向のビットはそのまま残す)。
+  // (交差する別方向のビットはそのまま残る。駅セルの場合も同じ式でよい:
+  // OR してから同じビットを NOT で消すだけなので元のconnectionsに軸ビットが
+  // 無ければ実質変化しない)。
   const axisBits = dir | oppDir;
   for (const cell of spanCells) {
     const key = toKey(cell.x, cell.z);
@@ -458,7 +477,77 @@ export function applyBridge(
     });
   }
 
-  return { railMap, stations: state.stations };
+  return { railMap, spanCells };
+}
+
+export function applyBridge(
+  state: ConstructionState,
+  path: Pos[],
+  terrain: Map<string, TerrainType> = EMPTY_TERRAIN
+): ConstructionState {
+  const core = buildOverpassCore(state, path, terrain, false);
+  if (!core) return state;
+  return { railMap: core.railMap, stations: state.stations };
+}
+
+/**
+ * 立体交差の高架駅。applyBridgeと同じ坂+橋桁のロジックを再利用し、橋桁セル
+ * (spanCells)全てをホームにして upper.stationId を設定する。
+ *
+ * 橋桁セルが地平駅セルであっても建設できる(allowStationSpan=true)。地平駅の
+ * 接続(connections)は一切変更しない(高架と地平は独立した層のため)。
+ *
+ * stationId を渡すと、既存の駅(通常は同じ場所に先に建てた地平駅)へ高架ホーム
+ * セルを統合する(1つの駅IDに地平ホーム群と高架ホーム群が両方ぶら下がる形)。
+ * 省略時は新しい駅を作る(高架ホームだけの単独駅)。
+ *
+ * 建設不可条件はbuildOverpassCore(allowStationSpan=true)に準じる
+ * (橋桁が車庫、既にupperがある、坂が水域・山岳、等)。
+ */
+export function applyElevatedStation(
+  state: ConstructionState,
+  path: Pos[],
+  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
+  towns: TownData[] = [],
+  stationId?: string
+): ConstructionState {
+  const core = buildOverpassCore(state, path, terrain, true);
+  if (!core) return state;
+  if (core.spanCells.length === 0) return state; // 橋桁(ホームになるセル)が無ければ駅にならない
+
+  const railMap = core.railMap;
+  const stations = new Map(state.stations);
+  const anchor = core.spanCells[0];
+
+  let targetId: string;
+  if (stationId && stations.has(stationId)) {
+    targetId = stationId;
+  } else {
+    targetId = Math.random().toString(36).substr(2, 9);
+    const newName = stationNameFor(anchor, stations, towns);
+    stations.set(targetId, { id: targetId, name: newName, cells: [], center: anchor, platformDoors: 'none' });
+  }
+
+  const st = stations.get(targetId)!;
+  // 高架ホーム(layer:1)は地平ホーム(layer省略/0)と同じ(x,z)になり得るため、
+  // layerも含めたキーで重複判定する(既存の地平ホームcellと衝突させない)。
+  const elevatedKey = (x: number, z: number) => `${toKey(x, z)}|1`;
+  const existingCellKeys = new Set(st.cells.filter(c => c.layer === 1).map(c => elevatedKey(c.x, c.z)));
+  const newCells = [...st.cells];
+  for (const cell of core.spanCells) {
+    const key = toKey(cell.x, cell.z);
+    const existing = railMap.get(key)!;
+    railMap.set(key, { ...existing, upper: { ...existing.upper!, stationId: targetId } });
+    if (!existingCellKeys.has(elevatedKey(cell.x, cell.z))) {
+      newCells.push({ x: cell.x, z: cell.z, layer: 1 });
+      existingCellKeys.add(elevatedKey(cell.x, cell.z));
+    }
+  }
+  const cx = newCells.reduce((sum, c) => sum + c.x, 0) / newCells.length;
+  const cz = newCells.reduce((sum, c) => sum + c.z, 0) / newCells.length;
+  stations.set(targetId, { ...st, cells: newCells, center: { x: cx, z: cz } });
+
+  return { railMap, stations };
 }
 
 // セルが橋の一部(橋桁のupper、または坂のramp)かどうかと、その軸(dir|oppDir)を返す。
@@ -501,6 +590,28 @@ const collectBridgeCellKeys = (
   return result;
 };
 
+// 高架駅のホームセル(x,z)をstations Mapから取り除く(layer:1のcellのみ対象)。
+// 撤去後にセルが0になった駅は消す。地平ホーム(layer 0)は別途、既存の
+// cell.type==='station'経路(removePath内)で扱うため、ここでは触らない。
+const removeElevatedStationCell = (
+  stations: Map<string, StationData>,
+  sid: string,
+  x: number,
+  z: number
+): void => {
+  const st = stations.get(sid);
+  if (!st) return;
+  const newCells = st.cells.filter(c => !(c.x === x && c.z === z && c.layer === 1));
+  if (newCells.length === st.cells.length) return; // 対象セルが無かった
+  if (newCells.length === 0) {
+    stations.delete(sid);
+    return;
+  }
+  const cx = newCells.reduce((sum, c) => sum + c.x, 0) / newCells.length;
+  const cz = newCells.reduce((sum, c) => sum + c.z, 0) / newCells.length;
+  stations.set(sid, { ...st, cells: newCells, center: { x: cx, z: cz } });
+};
+
 export function removePath(state: ConstructionState, path: Pos[]): ConstructionState {
   const railMap = new Map(state.railMap);
   const stations = new Map(state.stations);
@@ -524,10 +635,14 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
 
     // 橋桁セル(upperを持ち、かつ地平のconnectionsも独立して存在する)をまるごと
     // 撤去した場合は、upperだけを消して地平の線路(下を通る別の経路)を残す。
+    // upperが高架駅のホーム(stationIdあり)だった場合は、そのホームセルをstationsからも消す。
     if (cell.upper?.connections && (cell.connections ?? 0) !== 0) {
+      if (cell.upper.stationId) removeElevatedStationCell(stations, cell.upper.stationId, pos.x, pos.z);
       railMap.set(key, { ...cell, upper: undefined });
       return;
     }
+
+    if (cell.upper?.stationId) removeElevatedStationCell(stations, cell.upper.stationId, pos.x, pos.z);
 
     railMap.delete(key);
     if (cell.type === 'station' && cell.stationId) {
