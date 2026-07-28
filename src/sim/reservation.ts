@@ -58,8 +58,10 @@ const popcount = (n: number) => {
 };
 
 // セルが分岐点(接続方向3以上)かどうか。分岐点そのものはsafe waiting pointにしない
-// (分岐点上に停止して塞いだまま待つことはない)。
-const isJunction = (cell: CellData | undefined): boolean => popcount(cell?.connections ?? 0) >= 3;
+// (分岐点上に停止して塞いだまま待つことはない)。layerに応じて地平のconnections/
+// 高架のupper.connectionsのどちらを見るかを切り替える。
+const isJunction = (cell: CellData | undefined, layer: 0 | 1): boolean =>
+  popcount(layer === 1 ? (cell?.upper?.connections ?? 0) : (cell?.connections ?? 0)) >= 3;
 
 // セルcellがsafe waiting point(そこで安全に停止して次の予約取得を待てる地点)かどうかを
 // 判定する。nextはcellの次に進むセル(route上の次要素。終端ならnull)。
@@ -81,15 +83,27 @@ export function isSafeWaitingPoint(
   cell: Grid,
   next: Grid | null
 ): boolean {
+  const layer: 0 | 1 = cell.layer === 1 ? 1 : 0;
   const cellData = railMap.get(toKey(cell.x, cell.z));
   const nextData = next ? railMap.get(toKey(next.x, next.z)) : undefined;
-  // 立体交差セル(upperを持つ)の上では待機させない。高架の上で止まると
-  // 下の線路も含めて配線が読みづらく、実用上も好ましくないため。
+
+  if (layer === 1) {
+    // 高架側: upper.stationId(高架駅ホーム)がある場合だけ待機できる。
+    // 通過用の高架(upper.connectionsのみでstationIdが無い橋桁)では待機不可
+    // (橋の上に列車を止めない)。
+    if (!cellData?.upper?.stationId) return false;
+    if (nextData?.signalDir) return true;
+    if (isJunction(cellData, layer)) return false;
+    return true;
+  }
+
+  // 地平側(従来通り)。立体交差セル(upperを持つ)の上では待機させない。高架の上で
+  // 止まると下の線路も含めて配線が読みづらく、実用上も好ましくないため。
   if (cellData?.upper) return false;
   // 次セルが信号セルなら、信号がその先を防護しているため、cell自身が分岐点で
   // あっても安全点として扱う(交換設備の分岐直後に信号を置く構成を想定)。
   if (nextData?.signalDir) return true;
-  if (isJunction(cellData)) return false;
+  if (isJunction(cellData, layer)) return false;
   if (cellData?.type === 'depot') return true;
   if (cellData?.type === 'station') return true;
   if (!next) return true;

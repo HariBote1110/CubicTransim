@@ -109,6 +109,33 @@ describe('reservation: safe waiting point判定', () => {
     railMap.set(toKey(1, 0), { type: 'rail', connections: DIR.E | DIR.W, signalDir: DIR.E });
     expect(isSafeWaitingPoint(railMap, { x: 0, z: 0 }, { x: 1, z: 0 })).toBe(false);
   });
+
+  it('高架セル(layer1)で、upper.stationIdがある(高架駅ホーム)なら待機可能', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(0, 0), {
+      type: 'rail',
+      upper: { connections: DIR.N | DIR.S, stationId: 'stU' },
+    });
+    expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, { x: 0, z: 1, layer: 1 })).toBe(true);
+    // 次セルが無い(行き止まり)場合も安全。
+    expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, null)).toBe(true);
+  });
+
+  it('高架セル(layer1)で、upper.stationIdが無い(単なる通過用の橋桁)なら待機不可', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(0, 0), { type: 'rail', upper: { connections: DIR.N | DIR.S } });
+    expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, { x: 0, z: 1, layer: 1 })).toBe(false);
+    expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, null)).toBe(false);
+  });
+
+  it('高架駅ホーム(layer1)でも、高架側が分岐点(接続3方向以上)なら待機不可', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(0, 0), {
+      type: 'rail',
+      upper: { connections: DIR.N | DIR.S | DIR.E, stationId: 'stU' },
+    });
+    expect(isSafeWaitingPoint(railMap, { x: 0, z: 0, layer: 1 }, { x: 0, z: 1, layer: 1 })).toBe(false);
+  });
 });
 
 describe('reservation: 立体交差での層ごとの予約キー分離', () => {
