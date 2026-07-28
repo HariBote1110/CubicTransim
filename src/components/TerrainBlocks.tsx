@@ -93,13 +93,18 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, tunnelKeys }) => {
     []
   );
 
+  // 水域・山岳の地形装飾は選択対象ではない。地面クリックを奪わないようレイキャストを外す。
+  const noRaycast = () => null;
+
   return (
     <group>
-      {merged.shore && <mesh geometry={merged.shore} material={MATERIALS.shore} receiveShadow />}
-      {merged.water && <mesh geometry={merged.water} material={MATERIALS.water} />}
-      {merged.rock && <mesh geometry={merged.rock} material={MATERIALS.rock} castShadow receiveShadow />}
-      {merged.rockDark && <mesh geometry={merged.rockDark} material={MATERIALS.rockDark} castShadow receiveShadow />}
-      {merged.snow && <mesh geometry={merged.snow} material={snowMaterial} />}
+      {merged.shore && <mesh geometry={merged.shore} material={MATERIALS.shore} receiveShadow raycast={noRaycast} />}
+      {merged.water && <mesh geometry={merged.water} material={MATERIALS.water} raycast={noRaycast} />}
+      {merged.rock && <mesh geometry={merged.rock} material={MATERIALS.rock} castShadow receiveShadow raycast={noRaycast} />}
+      {merged.rockDark && (
+        <mesh geometry={merged.rockDark} material={MATERIALS.rockDark} castShadow receiveShadow raycast={noRaycast} />
+      )}
+      {merged.snow && <mesh geometry={merged.snow} material={snowMaterial} raycast={noRaycast} />}
     </group>
   );
 };

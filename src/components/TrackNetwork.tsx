@@ -137,16 +137,28 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
     merged.abutments?.dispose();
   }, [merged]);
 
+  // 線路・高架桁・支柱・橋台は「クリックして選ぶ対象」ではない。react-three-fiberの
+  // レイキャストを素通しにしないと、真下の地平セル(駅設置クリックなど)がヒットせず
+  // 選べなくなる不具合(立体交差セルで駅が置けない)の原因になる。raycast={() => null}
+  // でこれらのメッシュ自体をレイキャスト対象から外し、地面プレーンへ届かせる。
+  const noRaycast = () => null;
+
   return (
     <group>
-      {merged.decks && <mesh geometry={merged.decks} material={MATERIALS.overpassDeck} castShadow receiveShadow />}
-      {merged.piers && <mesh geometry={merged.piers} material={MATERIALS.overpassPier} castShadow receiveShadow />}
-      {merged.abutments && (
-        <mesh geometry={merged.abutments} material={MATERIALS.overpassPier} castShadow receiveShadow />
+      {merged.decks && (
+        <mesh geometry={merged.decks} material={MATERIALS.overpassDeck} castShadow receiveShadow raycast={noRaycast} />
       )}
-      {merged.ballast && <mesh geometry={merged.ballast} material={MATERIALS.ballast} receiveShadow />}
-      {merged.sleepers && <mesh geometry={merged.sleepers} material={MATERIALS.sleeper} receiveShadow />}
-      {merged.rails && <mesh geometry={merged.rails} material={MATERIALS.rail as THREE.Material} castShadow />}
+      {merged.piers && (
+        <mesh geometry={merged.piers} material={MATERIALS.overpassPier} castShadow receiveShadow raycast={noRaycast} />
+      )}
+      {merged.abutments && (
+        <mesh geometry={merged.abutments} material={MATERIALS.overpassPier} castShadow receiveShadow raycast={noRaycast} />
+      )}
+      {merged.ballast && <mesh geometry={merged.ballast} material={MATERIALS.ballast} receiveShadow raycast={noRaycast} />}
+      {merged.sleepers && <mesh geometry={merged.sleepers} material={MATERIALS.sleeper} receiveShadow raycast={noRaycast} />}
+      {merged.rails && (
+        <mesh geometry={merged.rails} material={MATERIALS.rail as THREE.Material} castShadow raycast={noRaycast} />
+      )}
     </group>
   );
 };

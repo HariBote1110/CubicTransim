@@ -79,11 +79,16 @@ export const Scenery: React.FC<Props> = ({ terrain, railMap, towns, range = 45 }
     Object.values(merged).forEach(g => g?.dispose());
   }, [merged]);
 
+  // 樹木は装飾であり選択対象ではない。地面クリックを奪わないようレイキャストを外す。
+  const noRaycast = () => null;
+
   return (
     <group>
-      {merged.trunks && <mesh geometry={merged.trunks} material={MATERIALS.trunk} />}
-      {merged.foliage && <mesh geometry={merged.foliage} material={MATERIALS.foliage} castShadow />}
-      {merged.foliageDark && <mesh geometry={merged.foliageDark} material={MATERIALS.foliageDark} castShadow />}
+      {merged.trunks && <mesh geometry={merged.trunks} material={MATERIALS.trunk} raycast={noRaycast} />}
+      {merged.foliage && <mesh geometry={merged.foliage} material={MATERIALS.foliage} castShadow raycast={noRaycast} />}
+      {merged.foliageDark && (
+        <mesh geometry={merged.foliageDark} material={MATERIALS.foliageDark} castShadow raycast={noRaycast} />
+      )}
     </group>
   );
 };

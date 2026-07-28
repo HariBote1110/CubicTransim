@@ -22,22 +22,25 @@ export const SignalBlock: React.FC<Props> = ({ position, dir }) => {
   // 方向ベクトル(v.x, v.z)に一致するthetaはatan2(v.x, v.z)。RailBlockと同じ規約。
   const rotation = Math.atan2(v.x, v.z);
 
+  // 信号機は装飾であり選択対象ではない。地面クリックを奪わないようレイキャストを外す。
+  const noRaycast = () => null;
+
   return (
     <group position={position} rotation={[0, rotation, 0]}>
       {/* 支柱 (線路脇に少しオフセット) */}
-      <mesh position={[0.3, 0.25, 0]}>
+      <mesh position={[0.3, 0.25, 0]} raycast={noRaycast}>
         <cylinderGeometry args={[0.03, 0.03, 0.5]} />
         <meshStandardMaterial color="#333" />
       </mesh>
 
       {/* 信号機本体 */}
-      <mesh position={[0.3, 0.42, 0]}>
+      <mesh position={[0.3, 0.42, 0]} raycast={noRaycast}>
         <boxGeometry args={[0.12, 0.16, 0.12]} />
         <meshStandardMaterial color="#222" />
       </mesh>
 
       {/* ライト (緑) - 許可方向(local +Z, 進行方向)を向いている */}
-      <mesh position={[0.3, 0.42, 0.07]} rotation={[Math.PI / 2, 0, 0]}>
+      <mesh position={[0.3, 0.42, 0.07]} rotation={[Math.PI / 2, 0, 0]} raycast={noRaycast}>
         <cylinderGeometry args={[0.035, 0.035, 0.02]} />
         <meshBasicMaterial color="#00ff00" />
       </mesh>
@@ -46,24 +49,24 @@ export const SignalBlock: React.FC<Props> = ({ position, dir }) => {
           遠目でも向きが分かるよう、軸(shaft)+く字形の矢羽根(head)で構成する。 */}
       <group position={[0, 0.03, 0]}>
         {/* 軸 */}
-        <mesh position={[0, 0, -0.05]}>
+        <mesh position={[0, 0, -0.05]} raycast={noRaycast}>
           <boxGeometry args={[0.08, 0.02, 0.5]} />
           <meshBasicMaterial color={CHEVRON_COLOUR} />
         </mesh>
         {/* 矢羽根 左 */}
-        <mesh position={[-0.09, 0, 0.18]} rotation={[0, Math.PI / 5, 0]}>
+        <mesh position={[-0.09, 0, 0.18]} rotation={[0, Math.PI / 5, 0]} raycast={noRaycast}>
           <boxGeometry args={[0.08, 0.025, 0.3]} />
           <meshBasicMaterial color={CHEVRON_COLOUR} />
         </mesh>
         {/* 矢羽根 右 */}
-        <mesh position={[0.09, 0, 0.18]} rotation={[0, -Math.PI / 5, 0]}>
+        <mesh position={[0.09, 0, 0.18]} rotation={[0, -Math.PI / 5, 0]} raycast={noRaycast}>
           <boxGeometry args={[0.08, 0.025, 0.3]} />
           <meshBasicMaterial color={CHEVRON_COLOUR} />
         </mesh>
       </group>
 
       {/* 地面のマーカー(禁止方向を示す小さな点、信号色を踏襲) */}
-      <mesh position={[0, 0.021, -0.35]} rotation={[-Math.PI / 2, 0, 0]}>
+      <mesh position={[0, 0.021, -0.35]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
         <circleGeometry args={[0.06, 8]} />
         <meshBasicMaterial color={SIGNAL_COLOUR} transparent opacity={0.6} />
       </mesh>

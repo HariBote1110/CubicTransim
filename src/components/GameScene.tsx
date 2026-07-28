@@ -317,7 +317,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
           ? (role?.kind === 'ramp' ? T.warning : T.bridge)
           : getPreviewColor();
         return (
-          <mesh key={`preview-${i}`} position={[pos.x, 0.2, pos.z]}>
+          <mesh key={`preview-${i}`} position={[pos.x, 0.2, pos.z]} raycast={() => null}>
             <boxGeometry args={[0.92, 0.4, 0.92]} />
             <meshBasicMaterial color={color} transparent opacity={0.45} depthWrite={false} />
           </mesh>
@@ -349,14 +349,16 @@ export const GameScene: React.FC<GameSceneProps> = ({
         }
         // 橋(水上の線路)は桁と橋脚を、トンネル(山岳の線路)は坑口を表す。
         if (data.bridge) {
+          // 橋の桁・橋脚は装飾であり選択対象ではない。地面クリックを奪わないよう
+          // レイキャストを外す。
           elements.push(
             <group key={`${key}-bridge`}>
-              <mesh position={[x, -0.03, z]} castShadow>
+              <mesh position={[x, -0.03, z]} castShadow raycast={() => null}>
                 <boxGeometry args={[0.72, 0.12, 1.0]} />
                 <meshStandardMaterial color="#8a7a68" roughness={0.95} />
               </mesh>
               {[-0.3, 0.3].map(o => (
-                <mesh key={o} position={[x + o, -0.18, z]}>
+                <mesh key={o} position={[x + o, -0.18, z]} raycast={() => null}>
                   <boxGeometry args={[0.1, 0.26, 0.16]} />
                   <meshStandardMaterial color="#7b6c5c" roughness={1} />
                 </mesh>
@@ -365,13 +367,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
           );
         }
         if (data.tunnel) {
+          // トンネルの坑口も装飾であり選択対象ではない。同様にレイキャストを外す。
           elements.push(
             <group key={`${key}-tunnel`}>
-              <mesh position={[x, 0.3, z]} castShadow>
+              <mesh position={[x, 0.3, z]} castShadow raycast={() => null}>
                 <boxGeometry args={[1.0, 0.6, 1.0]} />
                 <meshStandardMaterial color="#77726a" roughness={1} flatShading />
               </mesh>
-              <mesh position={[x, 0.22, z]}>
+              <mesh position={[x, 0.22, z]} raycast={() => null}>
                 <boxGeometry args={[0.56, 0.42, 1.02]} />
                 <meshStandardMaterial color="#14181d" roughness={1} />
               </mesh>
@@ -451,7 +454,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       {/* 列車ドラッグ中の置き先プレビュー(置ける=緑、置けない=赤。建設プレビューと同じ表現) */}
       {draggingTrainId && cursorPos && (
-        <mesh position={[cursorPos.x, 0.2, cursorPos.z]}>
+        <mesh position={[cursorPos.x, 0.2, cursorPos.z]} raycast={() => null}>
           <boxGeometry args={[0.92, 0.4, 0.92]} />
           <meshBasicMaterial
             color={canDropTrainHere ? '#3ddc6f' : REMOVE_COLOUR}

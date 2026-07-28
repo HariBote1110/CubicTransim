@@ -63,26 +63,27 @@ const TownBlock: React.FC<{ town: TownData }> = ({ town }) => {
 
   return (
     <group position={[town.centre.x, 0, town.centre.z]}>
+      {/* 街の建物は装飾であり選択対象ではない。地面クリックを奪わないようレイキャストを外す。 */}
       {buildings.map((b, i) => (
         <group key={i} position={[b.x, 0, b.z]} rotation={[0, b.rotation, 0]}>
-          <mesh position={[0, b.height / 2, 0]} castShadow receiveShadow>
+          <mesh position={[0, b.height / 2, 0]} castShadow receiveShadow raycast={() => null}>
             <boxGeometry args={[b.width, b.height, b.depth]} />
             <meshStandardMaterial color={b.colour} roughness={0.9} />
           </mesh>
           {b.gabled ? (
             // 低層の住宅には寄棟屋根を載せる
-            <mesh position={[0, b.height + 0.08, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+            <mesh position={[0, b.height + 0.08, 0]} rotation={[0, Math.PI / 4, 0]} castShadow raycast={() => null}>
               <coneGeometry args={[Math.max(b.width, b.depth) * 0.78, 0.18, 4]} />
               <meshStandardMaterial color={PALETTE.buildingRoof} roughness={0.85} flatShading />
             </mesh>
           ) : (
             // 高層はパラペットと屋上設備で「ビル」らしく
             <>
-              <mesh position={[0, b.height + 0.02, 0]}>
+              <mesh position={[0, b.height + 0.02, 0]} raycast={() => null}>
                 <boxGeometry args={[b.width + 0.03, 0.04, b.depth + 0.03]} />
                 <meshStandardMaterial color="#9a958c" roughness={0.9} />
               </mesh>
-              <mesh position={[0, b.height + 0.09, 0]}>
+              <mesh position={[0, b.height + 0.09, 0]} raycast={() => null}>
                 <boxGeometry args={[b.width * 0.4, 0.1, b.depth * 0.4]} />
                 <meshStandardMaterial color="#8e8a82" roughness={0.9} />
               </mesh>

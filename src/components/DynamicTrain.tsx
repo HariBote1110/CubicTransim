@@ -122,7 +122,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
         <TrainCar variant="front" lineColour={lineColour} />
 
         {isSelected && (
-          <mesh position={[0, 0.85, 0]} rotation={[Math.PI, 0, 0]}>
+          <mesh position={[0, 0.85, 0]} rotation={[Math.PI, 0, 0]} raycast={() => null}>
             <coneGeometry args={[0.16, 0.28, 4]} />
             <meshBasicMaterial color={PALETTE.carLineSelected} />
           </mesh>
@@ -146,7 +146,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       </group>
 
       {isSelected && displayRoute.map((pos, i) => (
-        <mesh key={`route-${i}`} position={[pos.x, 0.2, pos.z]}>
+        <mesh key={`route-${i}`} position={[pos.x, 0.2, pos.z]} raycast={() => null}>
           <sphereGeometry args={[0.07]} />
           <meshBasicMaterial color="#ffd23f" transparent opacity={0.5} />
         </mesh>

@@ -37,13 +37,17 @@ export const RailBlock: React.FC<RailBlockProps> = ({ position, connections = 0,
     merged.rails?.dispose();
   }, [merged]);
 
+  // 建設プレビュー・敷設済みの線路はクリック対象ではない。地平の地面クリックを
+  // 素通しさせるため、レイキャストの対象から外す。
+  const noRaycast = () => null;
+
   return (
     <group position={position}>
-      {merged.ballast && <mesh geometry={merged.ballast} material={MATERIALS.ballast} />}
-      {merged.sleepers && <mesh geometry={merged.sleepers} material={MATERIALS.sleeper} />}
-      {merged.rails && <mesh geometry={merged.rails} material={MATERIALS.rail} />}
+      {merged.ballast && <mesh geometry={merged.ballast} material={MATERIALS.ballast} raycast={noRaycast} />}
+      {merged.sleepers && <mesh geometry={merged.sleepers} material={MATERIALS.sleeper} raycast={noRaycast} />}
+      {merged.rails && <mesh geometry={merged.rails} material={MATERIALS.rail} raycast={noRaycast} />}
       {isPreview && (
-        <mesh position={[0, 0.07, 0]}>
+        <mesh position={[0, 0.07, 0]} raycast={noRaycast}>
           <boxGeometry args={[0.94, 0.14, 0.94]} />
           <meshBasicMaterial color="#3ab6ff" transparent opacity={0.28} depthWrite={false} />
         </mesh>
