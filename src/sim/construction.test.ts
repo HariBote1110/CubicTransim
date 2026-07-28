@@ -910,15 +910,17 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     expect(pickElevatedConnection({ levels: [0] }, 0)).toEqual({ kind: 'continue' });
   });
 
-  it('planElevatedPath: level=0でconnect(level:2)の端には、坂4セル(base1→base0の降順)が割り当てられる', () => {
+  it('planElevatedPath: level=0でconnect(level:2)の端には、アンカー(既存桁そのもの)+坂4セル(base1→base0の降順)が割り当てられる', () => {
     const plan = planElevatedPath(6, { kind: 'flat' }, { kind: 'connect', level: 2 }, 0);
     expect(plan).not.toBeNull();
-    expect(plan!.roles.map(r => r.kind)).toEqual(['span', 'span', 'ramp', 'ramp', 'ramp', 'ramp']);
-    // 接続先(既存レベル2)に近い側から: base1(level2側)→base0(地平側)の順に降りる
-    expect(plan!.roles[2]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 1 });
-    expect(plan!.roles[3]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 2 });
-    expect(plan!.roles[4]).toEqual({ kind: 'ramp', side: 'end', base: 1, level: 1 });
-    expect(plan!.roles[5]).toEqual({ kind: 'ramp', side: 'end', base: 1, level: 2 });
+    // アンカー(既存レベル2の端タイルそのもの)は坂ではない専用roleになり、坂に数えない。
+    expect(plan!.roles.map(r => r.kind)).toEqual(['span', 'ramp', 'ramp', 'ramp', 'ramp', 'anchor']);
+    // 接続先(既存レベル2、アンカーはindex5)に近い側から: base1(level2側)→base0(地平側)の順に降りる
+    expect(plan!.roles[1]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 1 });
+    expect(plan!.roles[2]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 2 });
+    expect(plan!.roles[3]).toEqual({ kind: 'ramp', side: 'end', base: 1, level: 1 });
+    expect(plan!.roles[4]).toEqual({ kind: 'ramp', side: 'end', base: 1, level: 2 });
+    expect(plan!.roles[5]).toEqual({ kind: 'anchor', side: 'end', connectLevel: 2 });
   });
 
   it('端が空(浮いた高架が無い): 従来通りの平坦な地平線路のまま', () => {
@@ -932,7 +934,7 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     }
   });
 
-  it('端を浮いた高架(レベル1)の端タイルに当てると、その端だけ坂2セルで自動接続される', () => {
+  it('端を浮いた高架(レベル1)の端タイルに当てると、坂2セル+アンカー(ramp無し)で自動接続される(不具合再現: 桁セルにrampが同居しない)', () => {
     let state = emptyState();
     // レベル1の浮いた高架(両端とも接続先なし)を(4,0)〜(9,0)に敷く
     state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
@@ -942,12 +944,14 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const result = applyRailPath(state, path);
 
-    // 接続先(4,0)に近い2セル(3,0)(4,0)が坂になり、遠い側(0,0)(1,0)(2,0)は
-    // 平坦な地平線路のまま
+    // 接続先(4,0)に近い2セル(2,0)(3,0)が坂になり、遠い側(0,0)(1,0)は平坦な地平線路のまま。
+    // アンカー(4,0)は既存の桁セルそのものなので坂(ramp)にはならない
+    // (桁+坂の二重描画を防ぐため。これが不具合の根本原因だった)。
     expect(result.railMap.get(toKey(0, 0))!.ramp).toBeUndefined();
     expect(result.railMap.get(toKey(1, 0))!.ramp).toBeUndefined();
-    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeDefined();
     expect(result.railMap.get(toKey(3, 0))!.ramp).toBeDefined();
+    expect(result.railMap.get(toKey(4, 0))!.ramp).toBeUndefined();
 
     // アンカーセル(4,0)は既存のuppers[1]がそのまま残りつつ、新しい方向(西=坂側)のビットが追加される
     const anchor = result.railMap.get(toKey(4, 0))!;
@@ -957,7 +961,7 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     expect((anchor.uppers![1]!.connections & DIR.E)).toBe(DIR.E);
   });
 
-  it('端を浮いた高架(レベル2)の端タイルに当てると、坂4セルで接続される', () => {
+  it('端を浮いた高架(レベル2)の端タイルに当てると、坂4セル+アンカー(ramp無し)で接続される', () => {
     let state = emptyState();
     state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 6, z: 0 })), undefined, 2);
     const path = Array.from({ length: 7 }, (_, i) => ({ x: i, z: 0 })); // 0..6, 6が高架の端タイル
@@ -969,6 +973,7 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     }
     expect(rampCount).toBe(4);
     const anchor = result.railMap.get(toKey(6, 0))!;
+    expect(anchor.ramp).toBeUndefined();
     expect((anchor.uppers![2]!.connections & DIR.W)).toBe(DIR.W);
   });
 
@@ -1027,8 +1032,10 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     // 地平の線路を同じ対角方向で高架の端タイル(4,-4)まで引く
     const path = [{ x: 0, z: 0 }, { x: 1, z: -1 }, { x: 2, z: -2 }, { x: 3, z: -3 }, { x: 4, z: -4 }];
     const result = applyRailPath(state, path);
+    expect(result.railMap.get(toKey(2, -2))!.ramp).toBeDefined();
     expect(result.railMap.get(toKey(3, -3))!.ramp).toBeDefined();
-    expect(result.railMap.get(toKey(4, -4))!.ramp).toBeDefined();
+    // アンカー(4,-4)は既存の桁そのものなので坂にはならない
+    expect(result.railMap.get(toKey(4, -4))!.ramp).toBeUndefined();
     expect((result.railMap.get(toKey(4, -4))!.uppers![1]!.connections & DIR.SW)).toBe(DIR.SW);
   });
 
