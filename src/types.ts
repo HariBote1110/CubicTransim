@@ -18,10 +18,10 @@ export interface CellData {
   bridge?: boolean;
   tunnel?: boolean;
   /**
-   * 立体交差(橋桁)の高架側の線路。地平側(connections)とは接続しない別の線路。
-   * construction.ts の applyBridge/applyElevatedStation で橋・高架駅の中間セル
-   * (橋桁)にのみ設定される(直角に線路を敷いただけでは自動生成されない。
-   * 平面交差にする場合はconnectionsへORするだけで済ませ、upperは作らない)。
+   * 立体交差(高架)の線路。地平側(connections)とは接続しない別の線路。
+   * construction.ts の applyElevatedPath で高架線の橋桁セルにのみ設定される
+   * (直角に線路を敷いただけでは自動生成されない。平面交差にする場合は
+   * connectionsへORするだけで済ませ、upperは作らない)。
    * 列車には層を持たせない。「そのセルにどちら向きで入ったか」(進入元へ戻るビットが
    * connectionsとupper.connectionsのどちらに立っているか)で一意に決まるため。
    *
@@ -32,12 +32,13 @@ export interface CellData {
    */
   upper?: { connections: number; stationId?: string };
   /**
-   * 坂セル(applyBridgeが橋の両端2セルずつに付ける)であることを示す。
-   * dirは登り方向(桁のあるupperセル側へ向かう8方向ビット)。
+   * 坂セル(applyElevatedPathが高架線の地平に繋がる/行き止まりの端に付ける)であることを
+   * 示す。dirは登り方向(桁のあるupperセル側へ向かう8方向ビット)。
    * セル自体は従来どおり地平のconnectionsを持ったまま、この坂情報が付く。
    * levelは地平からの高さの段階: 1=地平寄りの下段(OVERPASS_HEIGHT/3)、
-   * 2=桁寄りの上段(OVERPASS_HEIGHT*2/3)。橋は坂2セル+桁(最低1セル)+坂2セルの
-   * 構成になり、地平→level1→level2→桁(OVERPASS_HEIGHT)と高さが3段階でつながる。
+   * 2=桁寄りの上段(OVERPASS_HEIGHT*2/3)。高架線の各端は坂2セル(level1→level2)+
+   * 橋桁(0セル以上)という構成になり、地平→level1→level2→桁(OVERPASS_HEIGHT)と
+   * 高さが3段階でつながる。既存の高架へ継ぎ足す端には坂を作らない(高架のまま続く)。
    * 旧セーブにはlevelが無く、読み出しは常に (cell.ramp?.level ?? 2) で行う
    * (旧データは1セルの急な坂だったため、桁側の高さに近いlevel2扱いにする)。
    */

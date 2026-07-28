@@ -1,13 +1,11 @@
-import { toKey, fromKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
+import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
 import type { CellData, StationData, TerrainType, TownData } from '../types';
 import { terrainAt } from './terrain';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
 
-// 橋の全長(坂4セル含む)の下限・上限。坂は両端2セルずつ固定なので、
-// 5未満は橋桁が0になり橋の意味が無く、12を超える長さは建設UIの想定外
-// (コストも高額になりすぎる)としてno-opにする。
+// 旧・固定長の橋(applyBridge)が使っていた上限値。自由な高架線(applyElevatedPath)には
+// 上下限を設けないため実質未使用だが、economy.ts側の後方互換のため定数だけ残す。
 export const MAX_BRIDGE_LENGTH = 12;
-const MIN_BRIDGE_LENGTH = 5;
 
 export interface ConstructionState {
   railMap: Map<string, CellData>;
@@ -371,224 +369,271 @@ export function applySignal(state: ConstructionState, path: Pos[], terrain: Map<
   return { railMap, stations: state.stations };
 }
 
-// TTD/OpenTTD流の橋・高架駅に共通する「坂+橋桁」構築ロジック。
-// 始点・終点それぞれから2セルずつが坂(地平の通常線路+ramp)、残る中間セルが
-// 橋桁(upper.connectionsのみ。地平のconnectionsは一切変更しない)になる。
-// 坂を2セル(level1→level2)にすることで、1セルで一気に登っていた急勾配を緩くする。
-// これにより橋の下に平面交差(ダイヤモンドクロッシング)や別の地平線路を通せる。
+// --- 自由に敷ける高架線(applyElevatedPath) ---
 //
-// applyBridge(単なる橋)とapplyElevatedStation(高架駅)の両方から使う共通部分を
-// ここに集約する(高架駅は橋桁セルの一部にupper.stationIdを追加で設定するだけの差分)。
+// 旧・applyBridgeは「両端2セルずつが坂+中間が桁」の固定構成で直線8方向のみ・
+// 長さ5〜12セル限定という強い制約があった。Simutrans的に自由な高架線を敷けるように
+// するため、applyRailPathと同じ経路制約(隣接8方向を辿ればよく、曲がってもよい)で
+// 任意長の経路を高架にできる関数を新設する。
 //
-// 建設不可条件(いずれか1つでも該当すれば null を返す):
-// - 全長(path.length)が MIN_BRIDGE_LENGTH 未満 or MAX_BRIDGE_LENGTH 超
-// - 始点〜終点が8方向直線上に等間隔で並んでいない
-// - 坂になる4セル(両端2セルずつ)が水域・山岳
-// - 橋桁セル(坂を除いた中間)が車庫
-// - 橋桁セルが駅の場合、allowStationSpanがfalseならno-op
-//   (地平駅の上を高架駅・高架橋が跨げるようにするための緩和。ただし「地平駅の上に
-//   駅でない単なる橋桁を架ける」ことまで許すのは安全側でないと判断し、
-//   applyBridge自身は従来通り禁止のままにしている。詳細はprogressを参照)
-// - 橋桁セルに既にupperがある(二重架け禁止)
-interface OverpassCoreResult {
-  railMap: Map<string, CellData>;
-  /** 橋桁(坂を除いた中間セル)。高架駅ではこれがそのままホームセルになる。 */
-  spanCells: Pos[];
+// 端の扱い: 経路の始点・終点それぞれについて、
+// - その位置が「既に高架(upper.connectionsを持つ)」なら、既存の高架へ継ぎ足す形に
+//   なるため坂は作らない(高架のまま連続する)。
+// - そうでない(地平の線路・駅・空セルいずれか)場合は、行き止まりでも地面へ降りられる
+//   よう、その端の2セル(外側=level1、内側=level2)を坂にする。
+// 中間セル(坂にならない残り)はすべて橋桁(upper)になる。
+//
+// この「端が坂になるか高架のまま続くか」の判定は resolveElevatedPathEnd として、
+// 各セルへの役割(坂/橋桁)の割り当ては planElevatedPath として、それぞれ独立した
+// 純粋関数に切り出してある(テスト容易性のため)。
+
+/** 経路の端(始点 or 終点)が、既存の高架へ継ぎ足す形になるかどうかを判定する。 */
+export function resolveElevatedPathEnd(
+  railMap: Map<string, CellData>,
+  pos: Pos
+): { continuesElevated: boolean } {
+  const existing = railMap.get(toKey(pos.x, pos.z));
+  return { continuesElevated: !!existing?.upper?.connections };
 }
 
-function buildOverpassCore(
+export type ElevatedCellRole =
+  | { kind: 'span' }
+  | { kind: 'ramp'; side: 'start' | 'end'; level: 1 | 2 };
+
+export interface ElevatedPathPlan {
+  roles: ElevatedCellRole[];
+}
+
+/**
+ * 経路の各セルに「坂(どちら側の・どの段の)」か「橋桁」かを割り当てる。
+ * 割り当てが物理的に矛盾する(坂に必要なセル数が経路長を超える、あるいは
+ * 継ぎ足し先の高架セルを坂で上書きしてしまう)場合は null を返す。
+ */
+export function planElevatedPath(
+  length: number,
+  startContinuesElevated: boolean,
+  endContinuesElevated: boolean
+): ElevatedPathPlan | null {
+  if (length < 2) return null;
+
+  const startRamp = !startContinuesElevated;
+  const endRamp = !endContinuesElevated;
+
+  const rampZoneStart = startRamp ? [0, 1] : [];
+  const rampZoneEnd = endRamp ? [length - 2, length - 1] : [];
+  // 継ぎ足し先(高架のまま続く端)は絶対にrampで上書きしてはいけない保護インデックス。
+  const protectedIndices = new Set<number>([
+    ...(!startRamp ? [0] : []),
+    ...(!endRamp ? [length - 1] : []),
+  ]);
+
+  const rampIndices = new Set<number>([...rampZoneStart, ...rampZoneEnd]);
+  if (rampIndices.size < rampZoneStart.length + rampZoneEnd.length) return null; // 坂同士が重なる
+  for (const idx of rampIndices) {
+    if (protectedIndices.has(idx)) return null; // 坂が継ぎ足し先を潰してしまう
+  }
+
+  const roles: ElevatedCellRole[] = new Array(length).fill(null).map(() => ({ kind: 'span' as const }));
+  if (startRamp) {
+    roles[0] = { kind: 'ramp', side: 'start', level: 1 };
+    roles[1] = { kind: 'ramp', side: 'start', level: 2 };
+  }
+  if (endRamp) {
+    roles[length - 1] = { kind: 'ramp', side: 'end', level: 1 };
+    roles[length - 2] = { kind: 'ramp', side: 'end', level: 2 };
+  }
+  return { roles };
+}
+
+/**
+ * 自由な経路に高架線を敷く。path は applyRailPath と同じく隣接8方向を辿る経路であれば
+ * よく、曲がってもよい。長さの上下限は無い。
+ *
+ * 建設不可条件(いずれか1つでも該当すれば no-op で state をそのまま返す):
+ * - path が隣接していない(8方向で繋がらない箇所がある)
+ * - 坂・橋桁の役割分担が矛盾する(planElevatedPathがnullを返す。例: 経路が短すぎる)
+ * - 車庫セルを経路が通る
+ * - 坂になるセルが水域・山岳(建設可能な地面の上にしか置けない)
+ * - 橋桁になるセルに、この経路の継ぎ足し元でない既存のupperがある(二重架け禁止)
+ */
+export function applyElevatedPath(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType>,
-  allowStationSpan: boolean
-): OverpassCoreResult | null {
-  if (path.length < MIN_BRIDGE_LENGTH || path.length > MAX_BRIDGE_LENGTH) return null;
+  terrain: Map<string, TerrainType> = EMPTY_TERRAIN
+): ConstructionState {
+  if (path.length < 2) return state;
+  for (let i = 0; i < path.length - 1; i++) {
+    const dx = path[i + 1].x - path[i].x;
+    const dz = path[i + 1].z - path[i].z;
+    if (getDirFromVector(dx, dz) === 0) return state;
+  }
 
-  const start = path[0];
-  const second = path[1];
-  const end = path[path.length - 1];
-  const dir = getDirFromVector(second.x - start.x, second.z - start.z);
-  if (dir === 0) return null; // 隣接しない/同一セル指定など
+  const startInfo = resolveElevatedPathEnd(state.railMap, path[0]);
+  const endInfo = resolveElevatedPathEnd(state.railMap, path[path.length - 1]);
+  const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated);
+  if (!plan) return state;
 
-  const oppDir = getOppositeDir(dir);
-  const step = getVectorFromDir(dir);
+  // 車庫セルは高架にできない(坂・橋桁いずれも)
+  for (const cell of path) {
+    if (state.railMap.get(toKey(cell.x, cell.z))?.type === 'depot') return state;
+  }
 
-  // 始点から終点までstep刻みの直線上に等間隔で並んでいるか(斜めも含む8方向)確認する
+  // 坂になるセルは建設可能な地面の上にしか置けない
   for (let i = 0; i < path.length; i++) {
-    const expectedX = start.x + step.x * i;
-    const expectedZ = start.z + step.z * i;
-    if (path[i].x !== expectedX || path[i].z !== expectedZ) return null;
+    if (plan.roles[i].kind === 'ramp' && !isBuildableGround(terrain, path[i].x, path[i].z)) return state;
   }
 
-  // 坂になる4セル(両端2セルずつ)は水域・山岳に置けない
-  const rampPositions = [path[0], path[1], path[path.length - 2], path[path.length - 1]];
-  for (const cell of rampPositions) {
-    if (!isBuildableGround(terrain, cell.x, cell.z)) return null;
-  }
-
-  // 橋桁(坂を除いた中間セル)は車庫でないこと、既にupperが無いこと。
-  // 駅は allowStationSpan の場合のみ許容する(高架駅・高架橋が地平駅を跨ぐケース)。
-  const spanCells = path.slice(2, path.length - 2);
-  for (const cell of spanCells) {
-    const existing = state.railMap.get(toKey(cell.x, cell.z));
-    if (existing && existing.type === 'depot') return null;
-    if (existing && existing.type === 'station' && !allowStationSpan) return null;
-    if (existing?.upper) return null;
+  // 橋桁セルに既にupperがある場合は二重架け禁止(ただし継ぎ足し元の端は許容)
+  for (let i = 0; i < path.length; i++) {
+    if (plan.roles[i].kind !== 'span') continue;
+    const isContinuationAnchor =
+      (i === 0 && startInfo.continuesElevated) || (i === path.length - 1 && endInfo.continuesElevated);
+    if (isContinuationAnchor) continue;
+    if (state.railMap.get(toKey(path[i].x, path[i].z))?.upper) return state;
   }
 
   const railMap = new Map(state.railMap);
+  const dirBetween = (a: number, b: number): number =>
+    getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
 
-  // 坂・橋桁を通して、経路全体に通常の地平線路として接続を敷設する
-  // (橋桁セルはこの後upper化する際に軸ビットを取り除くので、最終的に
-  // 地平のconnectionsが残るのは坂の4セルだけになる)。
-  for (let i = 0; i < path.length - 1; i++) {
-    const curr = path[i];
-    const next = path[i + 1];
-    addConnectionToCell(railMap, toKey(curr.x, curr.z), curr.x, curr.z, dir, terrain);
-    addConnectionToCell(railMap, toKey(next.x, next.z), next.x, next.z, oppDir, terrain);
-  }
-  if (railMap.get(toKey(start.x, start.z))?.type === 'depot') updateDepotRotation(railMap, start.x, start.z);
-  if (railMap.get(toKey(end.x, end.z))?.type === 'depot') updateDepotRotation(railMap, end.x, end.z);
+  for (let i = 0; i < path.length; i++) {
+    const role = plan.roles[i];
+    const key = toKey(path[i].x, path[i].z);
+    const prevDir = i > 0 ? dirBetween(i, i - 1) : 0;
+    const nextDir = i < path.length - 1 ? dirBetween(i, i + 1) : 0;
 
-  // 坂: 外側(地平寄り)がlevel1、内側(桁寄り)がlevel2。dirは桁側(登り方向)。
-  const setRamp = (cell: Pos, rampDir: number, level: 1 | 2) => {
-    const key = toKey(cell.x, cell.z);
-    railMap.set(key, { ...railMap.get(key)!, ramp: { dir: rampDir, level } });
-  };
-  setRamp(path[0], dir, 1);
-  setRamp(path[1], dir, 2);
-  setRamp(path[path.length - 2], oppDir, 2);
-  setRamp(path[path.length - 1], oppDir, 1);
-
-  // 橋桁: upper.connectionsに軸方向の接続(dir|oppDir)を入れる。
-  // 地平に同じ軸の線路が既にあれば、橋がそれを置き換えるので該当ビットは取り除く
-  // (交差する別方向のビットはそのまま残る。駅セルの場合も同じ式でよい:
-  // OR してから同じビットを NOT で消すだけなので元のconnectionsに軸ビットが
-  // 無ければ実質変化しない)。
-  const axisBits = dir | oppDir;
-  for (const cell of spanCells) {
-    const key = toKey(cell.x, cell.z);
-    const existing = railMap.get(key);
-    const groundConnections = (existing?.connections ?? 0) & ~axisBits;
-    railMap.set(key, {
-      ...(existing ?? { type: 'rail' }),
-      connections: groundConnections,
-      upper: { connections: axisBits },
-    });
+    if (role.kind === 'span') {
+      const axisBits = prevDir | nextDir;
+      const existing = railMap.get(key);
+      const groundConnections = (existing?.connections ?? 0) & ~axisBits;
+      railMap.set(key, {
+        ...(existing ?? { type: 'rail' }),
+        connections: groundConnections,
+        upper: { connections: (existing?.upper?.connections ?? 0) | axisBits, stationId: existing?.upper?.stationId },
+      });
+    } else {
+      const bits = prevDir | nextDir;
+      const existing = railMap.get(key);
+      const baseConnections =
+        existing && (existing.type === 'rail' || existing.type === 'station')
+          ? (existing.connections || 0) | bits
+          : bits;
+      const rampDir = role.side === 'start' ? nextDir : prevDir;
+      railMap.set(key, {
+        ...(existing ?? { type: 'rail' }),
+        type: existing?.type ?? 'rail',
+        connections: baseConnections,
+        ...terrainFlags(terrain, path[i].x, path[i].z),
+        ramp: { dir: rampDir, level: role.level },
+      });
+      if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
+    }
   }
 
-  return { railMap, spanCells };
+  return { railMap, stations: state.stations };
 }
 
+// 旧・固定長の橋(2セルずつの坂+中間が桁、直線のみ)。自由な高架線(applyElevatedPath)へ
+// 置き換えられたが、既存の呼び出し元(pathfinding/reservation/simulationのテスト等)との
+// 後方互換のため薄いラッパーとして残す。振る舞いはapplyElevatedPathに委譲する
+// (新規に敷く直線区間であれば、両端2セルずつが坂になる従来通りの構成になる)。
 export function applyBridge(
   state: ConstructionState,
   path: Pos[],
   terrain: Map<string, TerrainType> = EMPTY_TERRAIN
 ): ConstructionState {
-  const core = buildOverpassCore(state, path, terrain, false);
-  if (!core) return state;
-  return { railMap: core.railMap, stations: state.stations };
+  return applyElevatedPath(state, path, terrain);
 }
 
 /**
- * 立体交差の高架駅。applyBridgeと同じ坂+橋桁のロジックを再利用し、橋桁セル
- * (spanCells)全てをホームにして upper.stationId を設定する。
+ * 高架セル1枚に駅タイルを置く。applyStationと対になる関数で、地平の駅設置と同じ
+ * 考え方(隣接する既存の駅への統合)を高架層(upper)向けに再利用する。
  *
- * 橋桁セルが地平駅セルであっても建設できる(allowStationSpan=true)。地平駅の
- * 接続(connections)は一切変更しない(高架と地平は独立した層のため)。
- *
- * stationId を渡すと、既存の駅(通常は同じ場所に先に建てた地平駅)へ高架ホーム
- * セルを統合する(1つの駅IDに地平ホーム群と高架ホーム群が両方ぶら下がる形)。
- * 省略時は新しい駅を作る(高架ホームだけの単独駅)。
- *
- * 建設不可条件はbuildOverpassCore(allowStationSpan=true)に準じる
- * (橋桁が車庫、既にupperがある、坂が水域・山岳、等)。
+ * - 対象セルが高架の線路(upper.connectionsを持つ)でなければ no-op
+ *   (先にapplyElevatedPathで高架線を敷いてからでないと駅は置けない)。
+ * - 既に高架駅(upper.stationId)なら no-op。
+ * - 同じ(x,z)に地平駅セル(type==='station')があれば、その駅IDへ統合する
+ *   (立体交差の十字乗換駅は、地平と高架をそれぞれ別々に敷いてから、この関数で
+ *   重ねて置くことで手作業で作れる)。
+ * - 隣接する高架駅セルがあれば、その駅IDへ統合する(高架ホームの延伸)。
  */
 export function applyElevatedStation(
   state: ConstructionState,
-  path: Pos[],
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
-  towns: TownData[] = [],
-  stationId?: string
+  pos: Pos,
+  towns: TownData[] = []
 ): ConstructionState {
-  const core = buildOverpassCore(state, path, terrain, true);
-  if (!core) return state;
-  if (core.spanCells.length === 0) return state; // 橋桁(ホームになるセル)が無ければ駅にならない
+  const key = toKey(pos.x, pos.z);
+  const existing = state.railMap.get(key);
+  if (!existing?.upper?.connections) return state; // 高架の線路が無ければ駅は置けない
+  if (existing.upper.stationId) return state; // 既に高架駅
 
-  const railMap = core.railMap;
+  const neighbours = [
+    { x: pos.x + 1, z: pos.z },
+    { x: pos.x - 1, z: pos.z },
+    { x: pos.x, z: pos.z + 1 },
+    { x: pos.x, z: pos.z - 1 },
+  ];
+
+  const involvedIds: string[] = [];
+  const pushId = (id?: string | null) => {
+    if (id && !involvedIds.includes(id)) involvedIds.push(id);
+  };
+  // 同じ(x,z)の地平駅があれば統合対象にする(立体交差の十字乗換駅)
+  if (existing.type === 'station' && existing.stationId) pushId(existing.stationId);
+  for (const n of neighbours) {
+    const cell = state.railMap.get(toKey(n.x, n.z));
+    if (cell?.upper?.stationId) pushId(cell.upper.stationId);
+  }
+
+  const railMap = new Map(state.railMap);
   const stations = new Map(state.stations);
-  const anchor = core.spanCells[0];
-
   let targetId: string;
-  if (stationId && stations.has(stationId)) {
-    targetId = stationId;
+
+  if (involvedIds.length >= 1) {
+    // 先に存在した(stations Mapで挿入順が最も早い)駅へ統合する
+    const order = Array.from(state.stations.keys());
+    involvedIds.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    targetId = involvedIds[0];
+    const keepSt = stations.get(targetId)!;
+    const cellMap = new Map<string, { x: number; z: number; layer?: 0 | 1 }>();
+    keepSt.cells.forEach(c => cellMap.set(`${toKey(c.x, c.z)}|${c.layer ?? 0}`, c));
+    for (let i = 1; i < involvedIds.length; i++) {
+      const removeId = involvedIds[i];
+      const removeSt = stations.get(removeId);
+      if (!removeSt) continue;
+      removeSt.cells.forEach(c => {
+        cellMap.set(`${toKey(c.x, c.z)}|${c.layer ?? 0}`, c);
+        const ck = toKey(c.x, c.z);
+        const cell = railMap.get(ck);
+        if (cell?.upper?.stationId === removeId) {
+          railMap.set(ck, { ...cell, upper: { ...cell.upper, stationId: targetId } });
+        }
+        if (cell?.type === 'station' && cell.stationId === removeId) {
+          railMap.set(ck, { ...cell, stationId: targetId });
+        }
+      });
+      stations.delete(removeId);
+    }
+    cellMap.set(`${key}|1`, { x: pos.x, z: pos.z, layer: 1 });
+    const mergedCells = Array.from(cellMap.values());
+    const cx = mergedCells.reduce((sum, c) => sum + c.x, 0) / mergedCells.length;
+    const cz = mergedCells.reduce((sum, c) => sum + c.z, 0) / mergedCells.length;
+    stations.set(targetId, { ...keepSt, cells: mergedCells, center: { x: cx, z: cz } });
   } else {
     targetId = Math.random().toString(36).substr(2, 9);
-    const newName = stationNameFor(anchor, stations, towns);
-    stations.set(targetId, { id: targetId, name: newName, cells: [], center: anchor, platformDoors: 'none' });
+    const newName = stationNameFor(pos, stations, towns);
+    stations.set(targetId, {
+      id: targetId,
+      name: newName,
+      cells: [{ x: pos.x, z: pos.z, layer: 1 }],
+      center: { x: pos.x, z: pos.z },
+      platformDoors: 'none',
+    });
   }
 
-  const st = stations.get(targetId)!;
-  // 高架ホーム(layer:1)は地平ホーム(layer省略/0)と同じ(x,z)になり得るため、
-  // layerも含めたキーで重複判定する(既存の地平ホームcellと衝突させない)。
-  const elevatedKey = (x: number, z: number) => `${toKey(x, z)}|1`;
-  const existingCellKeys = new Set(st.cells.filter(c => c.layer === 1).map(c => elevatedKey(c.x, c.z)));
-  const newCells = [...st.cells];
-  for (const cell of core.spanCells) {
-    const key = toKey(cell.x, cell.z);
-    const existing = railMap.get(key)!;
-    railMap.set(key, { ...existing, upper: { ...existing.upper!, stationId: targetId } });
-    if (!existingCellKeys.has(elevatedKey(cell.x, cell.z))) {
-      newCells.push({ x: cell.x, z: cell.z, layer: 1 });
-      existingCellKeys.add(elevatedKey(cell.x, cell.z));
-    }
-  }
-  const cx = newCells.reduce((sum, c) => sum + c.x, 0) / newCells.length;
-  const cz = newCells.reduce((sum, c) => sum + c.z, 0) / newCells.length;
-  stations.set(targetId, { ...st, cells: newCells, center: { x: cx, z: cz } });
-
+  railMap.set(key, { ...existing, upper: { ...existing.upper, stationId: targetId } });
   return { railMap, stations };
 }
-
-// セルが橋の一部(橋桁のupper、または坂のramp)かどうかと、その軸(dir|oppDir)を返す。
-const bridgeAxisOf = (cell: CellData | undefined): number => {
-  if (!cell) return 0;
-  if (cell.upper?.connections) return cell.upper.connections;
-  if (cell.ramp) return cell.ramp.dir | getOppositeDir(cell.ramp.dir);
-  return 0;
-};
-
-const DIR_BITS_ALL = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
-
-// (x,z)から橋の軸方向へ両側にたどり、橋を構成するセル(坂4枚+橋桁)のキー集合を返す。
-const collectBridgeCellKeys = (
-  railMap: Map<string, CellData>,
-  x: number,
-  z: number,
-  axisBits: number
-): Set<string> => {
-  const result = new Set<string>([toKey(x, z)]);
-  let dirA = 0;
-  for (const b of DIR_BITS_ALL) {
-    if (axisBits & b) { dirA = b; break; }
-  }
-  if (!dirA) return result;
-  const dirB = getOppositeDir(dirA);
-
-  for (const dirBit of [dirA, dirB]) {
-    const step = getVectorFromDir(dirBit);
-    let cx = x;
-    let cz = z;
-    for (;;) {
-      cx += step.x;
-      cz += step.z;
-      const nCell = railMap.get(toKey(cx, cz));
-      if (bridgeAxisOf(nCell) !== axisBits) break;
-      result.add(toKey(cx, cz));
-    }
-  }
-  return result;
-};
 
 // 高架駅のホームセル(x,z)をstations Mapから取り除く(layer:1のcellのみ対象)。
 // 撤去後にセルが0になった駅は消す。地平ホーム(layer 0)は別途、既存の
@@ -612,39 +657,73 @@ const removeElevatedStationCell = (
   stations.set(sid, { ...st, cells: newCells, center: { x: cx, z: cz } });
 };
 
+const RAMP_NEIGHBOUR_OFFSETS = [
+  { x: 0, z: -1 }, { x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 },
+  { x: 0, z: 1 }, { x: -1, z: 1 }, { x: -1, z: 0 }, { x: -1, z: -1 },
+];
+
+// 撤去によって坂の行き先(登った先の橋桁 or 隣の坂セル)が無くなった場合、
+// その坂を地平の通常線路に戻す(ramp fieldだけを外す。connectionsはそのまま)。
+// 撤去したセルの直近8方向だけを見れば十分(1セルずつ順に消していく運用を想定)。
+const revertDanglingRamps = (railMap: Map<string, CellData>, x: number, z: number): void => {
+  for (const off of RAMP_NEIGHBOUR_OFFSETS) {
+    const nx = x + off.x;
+    const nz = z + off.z;
+    const nKey = toKey(nx, nz);
+    const nCell = railMap.get(nKey);
+    if (!nCell?.ramp) continue;
+    const step = getVectorFromDir(nCell.ramp.dir);
+    const targetKey = toKey(nx + step.x, nz + step.z);
+    const targetCell = railMap.get(targetKey);
+    if (targetCell?.upper?.connections || targetCell?.ramp) continue; // 行き先はまだある
+    railMap.set(nKey, { ...nCell, ramp: undefined });
+  }
+};
+
+/**
+ * 高架セル1枚を撤去する。旧・applyBridgeの「橋は全部まとめて消える」挙動は、
+ * 自由に敷ける高架線である以上不適切なため廃止し、撤去対象セルのみを消す。
+ * 撤去して坂の行き先が無くなった場合は、その坂も地平の線路に戻す
+ * (revertDanglingRampsで撤去セルの周囲だけを見て判定する)。
+ */
 export function removePath(state: ConstructionState, path: Pos[]): ConstructionState {
   const railMap = new Map(state.railMap);
   const stations = new Map(state.stations);
 
-  // 撤去対象セルが橋の一部(坂/橋桁)なら、橋全体(坂4枚+橋桁)を撤去対象に広げる。
-  // ユーザーが橋の一部だけを選んで消しても橋全体が消えるようにするため。
-  const targetKeys = new Set<string>(path.map(pos => toKey(pos.x, pos.z)));
-  for (const pos of path) {
-    const cell = state.railMap.get(toKey(pos.x, pos.z));
-    const axisBits = bridgeAxisOf(cell);
-    if (!axisBits) continue;
-    const bridgeKeys = collectBridgeCellKeys(state.railMap, pos.x, pos.z, axisBits);
-    bridgeKeys.forEach(k => targetKeys.add(k));
-  }
-  const targets: Pos[] = Array.from(targetKeys, k => fromKey(k));
-
-  targets.forEach(pos => {
+  path.forEach(pos => {
     const key = toKey(pos.x, pos.z);
     const cell = railMap.get(key);
     if (!cell) return;
 
-    // 橋桁セル(upperを持ち、かつ地平のconnectionsも独立して存在する)をまるごと
-    // 撤去した場合は、upperだけを消して地平の線路(下を通る別の経路)を残す。
-    // upperが高架駅のホーム(stationIdあり)だった場合は、そのホームセルをstationsからも消す。
-    if (cell.upper?.connections && (cell.connections ?? 0) !== 0) {
+    // 高架セル(upperを持つ)の撤去: 地平のconnectionsも独立して存在する場合は
+    // upperだけを消して地平の線路(下を通る別の経路)を残す。地平のconnectionsが
+    // 無ければ(純粋な高架専用セルだった場合)セル自体を丸ごと削除する。
+    if (cell.upper?.connections) {
       if (cell.upper.stationId) removeElevatedStationCell(stations, cell.upper.stationId, pos.x, pos.z);
-      railMap.set(key, { ...cell, upper: undefined });
+      if ((cell.connections ?? 0) !== 0) {
+        railMap.set(key, { ...cell, upper: undefined });
+      } else {
+        railMap.delete(key);
+      }
+      // 隣接する高架セルのupper.connectionsから、消えたこのセルへ向かうビットを外す
+      RAMP_NEIGHBOUR_OFFSETS.forEach(off => {
+        const nKey = toKey(pos.x + off.x, pos.z + off.z);
+        const nCell = railMap.get(nKey);
+        if (!nCell?.upper?.connections) return;
+        // off は「消えたセル→隣接セル」の向き。隣接セル側から見て消えたセルへ戻る
+        // ビットは、その逆方向(隣接セル→消えたセル、すなわちoffの反対)になる。
+        const dirTowardsRemoved = getOppositeDir(getDirFromVector(off.x, off.z));
+        const remaining = nCell.upper.connections & ~dirTowardsRemoved;
+        railMap.set(nKey, { ...nCell, upper: remaining === 0 ? undefined : { ...nCell.upper, connections: remaining } });
+      });
+      revertDanglingRamps(railMap, pos.x, pos.z);
       return;
     }
 
     if (cell.upper?.stationId) removeElevatedStationCell(stations, cell.upper.stationId, pos.x, pos.z);
 
     railMap.delete(key);
+    revertDanglingRamps(railMap, pos.x, pos.z);
     if (cell.type === 'station' && cell.stationId) {
       const sid = cell.stationId;
       const st = stations.get(sid);
@@ -681,10 +760,8 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
         }
         if (nCell.upper?.connections) {
           const remainingUpper = nCell.upper.connections & ~n.opp;
-          updated = { ...updated, upper: remainingUpper === 0 ? undefined : { connections: remainingUpper } };
+          updated = { ...updated, upper: remainingUpper === 0 ? undefined : { ...nCell.upper, connections: remainingUpper } };
         }
-        // 橋(坂+橋桁)は撤去対象を橋全体に広げてまとめて消すため、ここで単独の
-        // rampだけを消すケアは不要になった(隣の坂セルも同時に撤去済みのはず)。
         if (updated !== nCell) railMap.set(nKey, updated);
         if (nCell.type === 'depot') updateDepotRotation(railMap, n.x, n.z);
       }

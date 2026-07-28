@@ -46,3 +46,6 @@
   applyStationTemplateに渡す順序なので、湧いた町の名前がそのまま駅名に反映される
   (テンプレも通常駅と同じ処理順で、駅名がA駅のまま取り残される不整合はない)。
   テストは`src/sim/towns.test.ts`の`resolveTownSpawnForStation`にRed→Greenで追加。
+
+## 追記(2026-07-28 free-elevated-track)
+駅テンプレート機能(sim/stationTemplates.ts、本UIが依存していたapplyStationTemplate/STATION_TEMPLATES)はユーザー判断により廃止された。駅は地平・高架ともにタイルを1枚ずつ置く操作に統一される(詳細はprogress/free-elevated-track.md)。本ファイルが説明するテンプレート選択UI・回転操作はいずれ置き換えが必要。

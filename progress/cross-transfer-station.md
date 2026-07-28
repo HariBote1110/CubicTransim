@@ -25,3 +25,6 @@
 - `applyStationTemplate(state, anchor, template, quarterTurns, towns, terrain)`: 判定を二重に書かないため、実際に`applyStation`/`applyRailPath`を1セルずつ適用してみて、駅セルなら`railMap.get(key)?.type === 'station'`になっているかを確認する方式(evaluateBuild.tsと同じ考え方)。1つでも設置できなければ(地形制約・車庫との衝突など)、元のstateをそのまま返す(all-or-nothing)。rail種別のセルは、テンプレート内で8方向隣接する他のセルへ`applyRailPath`で接続する(現時点の2テンプレートはstationのみで未使用だが、将来のテンプレート用に汎用実装している)。
 - `buildPreview.ts` に `evaluateStationTemplate(template, anchor, quarterTurns, railMap, stations, terrain, money, towns)` を追加。コストは駅セル数×STATION_COST + 線路セル数×RAIL_COST。可否判定はevaluateBuildと同じ「実際に適用してみて参照が変わるか」方式。
 - CellData/StationDataの型は変更していないため、SaveDataのバージョンは上げていない(persistence.tsは無改修)。
+
+## 追記(2026-07-28 free-elevated-track)
+駅テンプレート機能(sim/stationTemplates.ts)はユーザー判断により廃止された(progress/free-elevated-track.md参照)。駅の交差統合ロジック(applyStationの複数駅ID統合)自体は変更なく、高架駅版(applyElevatedStation)にも同じ考え方を再利用している。

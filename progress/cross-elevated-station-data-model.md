@@ -101,3 +101,6 @@ interface TemplateCell {
 - 描画(`src/components/` / `src/render/`)も未着手。高架ホームの見た目
   (上屋・ホーム柵など)は既存の橋桁描画に「駅らしさ」を足す形になる想定。
 - `applyBridge` に `allowStationSpan` を露出するかどうかは保留(上記Decision参照)。
+
+## 追記(2026-07-28 free-elevated-track)
+buildOverpassCore/applyElevatedStationの実装は`applyBridge`→`applyElevatedPath`への作り替え(`progress/free-elevated-track.md`)で置き換えられた。データモデル(upper/ramp/StationData.cells[].layer)自体は変更していない。

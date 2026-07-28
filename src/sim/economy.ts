@@ -132,7 +132,20 @@ export const ACCIDENT_DOOR_MODIFIER = {
 export const ACCIDENT_HALT_DURATION = 60; // シミュレーション秒
 export const ACCIDENT_PENALTY = 5_000;
 
-export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal' | 'bridge';
+// 'bridge'は旧・固定長橋の後方互換用(applyBridgeが薄いラッパーとして残っているため)。
+// 新設の自由な高架線は'elevated'(線路)・'elevated-station'(高架駅タイル1枚)を使う。
+export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal' | 'bridge' | 'elevated' | 'elevated-station';
+
+// 自由な高架線(applyElevatedPath)のコスト。坂になるセルはRAIL_COST、橋桁(高架)に
+// なるセルはRAIL_COST×OVERPASS_COST_MULTIPLIER。内訳(rampCount/overpassCount)は
+// construction.tsのresolveElevatedPathEnd/planElevatedPathが確定させたものを
+// 呼び出し側(buildPreview.ts)から渡してもらう(判定ロジックの二重実装を避けるため)。
+export function costOfElevatedPath(rampCellCount: number, overpassCellCount: number): number {
+  return rampCellCount * RAIL_COST + overpassCellCount * RAIL_COST * OVERPASS_COST_MULTIPLIER;
+}
+
+// 高架駅タイル1枚のコスト。立体交差の橋桁を兼ねるぶん通常の駅より割高になる。
+export const ELEVATED_STATION_COST = STATION_COST * OVERPASS_COST_MULTIPLIER;
 
 // 事故発生確率 = 基本確率 × ドア種別による係数 × 混雑係数(待ち0で0.5倍、満杯で1.5倍)
 export function calculateAccidentChance(doorType: PlatformDoorType, waiting: number): number {

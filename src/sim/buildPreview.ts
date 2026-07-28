@@ -4,12 +4,21 @@
 // UI側で条件を書き写すと本体のルール(水域・山岳のno-op、上書き防止など)と
 // ずれていくため、apply系が「変化が無ければ同じ参照を返す」性質を使って
 // 実際に適用してみた結果から判定する。
-import type { CellData, StationData, TerrainType, TownData } from '../types';
+import type { CellData, StationData, TerrainType } from '../types';
 import type { ConstructionState } from './construction';
-import { applyRailPathDetailed, applyStation, applyDepot, applySignal, applyBridge, removePath } from './construction';
-import { costOfPath, RAIL_COST, STATION_COST, OVERPASS_COST_MULTIPLIER, type ConstructionMode } from './economy';
+import {
+  applyRailPathDetailed,
+  applyStation,
+  applyDepot,
+  applySignal,
+  applyElevatedPath,
+  applyElevatedStation,
+  removePath,
+  resolveElevatedPathEnd,
+  planElevatedPath,
+} from './construction';
+import { costOfPath, costOfElevatedPath, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
 import { terrainAt } from './terrain';
-import { applyStationTemplate, templateAbsoluteCells, type StationTemplate } from './stationTemplates';
 
 export type BuildMode = ConstructionMode | 'remove';
 
@@ -30,8 +39,10 @@ export interface BuildPreview {
   bridgeCells: number;
   /** トンネルになるセル数(線路のみ) */
   tunnelCells: number;
-  /** 立体交差(4倍コスト)になるセル数(線路のみ) */
+  /** 立体交差(4倍コスト)になるセル数(線路のみ。高架線ではこれが橋桁=高架セル数) */
   overpassCells: number;
+  /** 高架線(elevated)で坂になるセル数 */
+  rampCells: number;
 }
 
 export function evaluateBuild(
@@ -43,7 +54,7 @@ export function evaluateBuild(
   money: number
 ): BuildPreview {
   const empty: BuildPreview = {
-    mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0,
+    mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0,
   };
   if (path.length === 0) return empty;
 
@@ -57,10 +68,29 @@ export function evaluateBuild(
     }
   }
 
+  // 自由な高架線(elevated)は、坂になるセル数・橋桁(高架)になるセル数の内訳を
+  // construction.tsのresolveElevatedPathEnd/planElevatedPath(建設ロジックそのもの)に
+  // 問い合わせて求める(UI側にルールを書き写さないため)。
+  let elevatedOverpassCount = 0;
+  let elevatedRampCount = 0;
+  if (mode === 'elevated' && path.length >= 2) {
+    const startInfo = resolveElevatedPathEnd(railMap, path[0]);
+    const endInfo = resolveElevatedPathEnd(railMap, path[path.length - 1]);
+    const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated);
+    if (plan) {
+      elevatedOverpassCount = plan.roles.filter(r => r.kind === 'span').length;
+      elevatedRampCount = plan.roles.filter(r => r.kind === 'ramp').length;
+    }
+  }
+
   const cost = mode === 'remove'
     ? 0
+    : mode === 'elevated'
+    ? costOfElevatedPath(elevatedRampCount, elevatedOverpassCount)
+    : mode === 'elevated-station'
+    ? ELEVATED_STATION_COST
     : costOfPath(
-        mode,
+        mode === 'bridge' ? 'bridge' : mode,
         path.length,
         mode === 'rail' || mode === 'bridge' ? path : undefined,
         mode === 'rail' ? terrain : undefined,
@@ -76,16 +106,17 @@ export function evaluateBuild(
     case 'signal': result = applySignal(state, path, terrain); break;
     case 'station': result = applyStation(state, path[path.length - 1], terrain); break;
     case 'depot': result = applyDepot(state, path[path.length - 1], terrain); break;
+    case 'elevated-station': result = applyElevatedStation(state, path[path.length - 1]); break;
     case 'rail': {
       const detailed = applyRailPathDetailed(state, path, terrain);
       result = detailed;
       overpassCells = detailed.overpassCells.size;
       break;
     }
-    case 'bridge': {
-      result = applyBridge(state, path, terrain);
-      // 成立した場合のみ、橋桁数(坂4セルを除いた中間セル数)を返す。
-      if (result.railMap !== state.railMap) overpassCells = Math.max(0, path.length - 4);
+    case 'bridge':
+    case 'elevated': {
+      result = applyElevatedPath(state, path, terrain);
+      if (result.railMap !== state.railMap) overpassCells = elevatedOverpassCount;
       break;
     }
   }
@@ -95,48 +126,11 @@ export function evaluateBuild(
     ? path.some(c => railMap.has(`${c.x},${c.z}`))
     : (result.railMap !== state.railMap || result.stations !== state.stations);
 
-  const cellCount = mode === 'rail' || mode === 'remove' || mode === 'bridge' ? path.length : 1;
+  const cellCount = mode === 'rail' || mode === 'remove' || mode === 'bridge' || mode === 'elevated' ? path.length : 1;
 
   let reason: BuildBlockReason = 'ok';
   if (!effective) reason = 'no-effect';
   else if (cost > money) reason = 'insufficient-funds';
 
-  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells };
-}
-
-/**
- * 駅テンプレート(stationTemplates.ts)の設置可否・コストを評価する。
- * evaluateBuildと同じ考え方: 実際にapplyStationTemplateを適用してみて、
- * 参照が変わらなければ(=all-or-nothingで拒否された)no-effectとする。
- */
-export function evaluateStationTemplate(
-  template: StationTemplate,
-  anchor: { x: number; z: number },
-  quarterTurns: 0 | 1 | 2 | 3,
-  railMap: Map<string, CellData>,
-  stations: Map<string, StationData>,
-  terrain: Map<string, TerrainType>,
-  money: number,
-  towns: TownData[] = []
-): BuildPreview {
-  const cells = templateAbsoluteCells(anchor, template, quarterTurns);
-  const cellCount = cells.length;
-  // 高架ホーム(layer:1)は橋と同じOVERPASS_COST_MULTIPLIERを掛ける
-  // (立体交差の橋桁を建てる工事として、通常の駅より割高になるのが自然なため)。
-  const cost = cells.reduce((sum, c) => {
-    if (c.kind === 'station') {
-      return sum + (c.layer === 1 ? STATION_COST * OVERPASS_COST_MULTIPLIER : STATION_COST);
-    }
-    return sum + RAIL_COST;
-  }, 0);
-
-  const state: ConstructionState = { railMap, stations };
-  const result = applyStationTemplate(state, anchor, template, quarterTurns, towns, terrain);
-  const effective = result.railMap !== state.railMap || result.stations !== state.stations;
-
-  let reason: BuildBlockReason = 'ok';
-  if (!effective) reason = 'no-effect';
-  else if (cost > money) reason = 'insufficient-funds';
-
-  return { mode: 'station', cellCount, cost, reason, bridgeCells: 0, tunnelCells: 0, overpassCells: 0 };
+  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells, rampCells: elevatedRampCount };
 }

@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { toKey } from '../utils';
 import type { CellData, StationData, TerrainType } from '../types';
 import { DIR } from '../utils';
-import { evaluateBuild, evaluateStationTemplate } from './buildPreview';
-import { RAIL_COST, STATION_COST, BRIDGE_COST_MULTIPLIER, TUNNEL_COST_MULTIPLIER, OVERPASS_COST_MULTIPLIER } from './economy';
-import { STATION_TEMPLATES } from './stationTemplates';
-import { applyDepot } from './construction';
+import { evaluateBuild } from './buildPreview';
+import {
+  RAIL_COST,
+  STATION_COST,
+  BRIDGE_COST_MULTIPLIER,
+  TUNNEL_COST_MULTIPLIER,
+  OVERPASS_COST_MULTIPLIER,
+  ELEVATED_STATION_COST,
+} from './economy';
+import { applyElevatedPath } from './construction';
 
 const emptyMaps = () => ({
   railMap: new Map<string, CellData>(),
@@ -99,32 +105,40 @@ describe('evaluateBuild', () => {
   });
 });
 
-describe('evaluateBuild(bridge)', () => {
-  it('坂+橋桁のコストと橋桁セル数を返す', () => {
+describe('evaluateBuild(elevated) 自由に敷ける高架線', () => {
+  it('坂+橋桁のコストと内訳(rampCells/overpassCells)を返す', () => {
     const { railMap, stations, terrain } = emptyMaps();
     const path = [
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
       { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
     ];
-    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
+    const p = evaluateBuild('elevated', path, railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('ok');
+    expect(p.rampCells).toBe(4);
     expect(p.overpassCells).toBe(2);
     expect(p.cost).toBe(RAIL_COST * 4 + RAIL_COST * OVERPASS_COST_MULTIPLIER * 2);
   });
 
-  it('直線でない指定はno-op', () => {
+  it('曲がる経路でも敷ける(直線という制約が無い)', () => {
     const { railMap, stations, terrain } = emptyMaps();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 1 }];
-    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 }];
+    const p = evaluateBuild('elevated', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('ok');
+  });
+
+  it('隣接しない経路指定はno-op', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 5, z: 0 }];
+    const p = evaluateBuild('elevated', path, railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('no-effect');
   });
 
-  it('橋桁が駅セルの場合はno-op', () => {
+  it('橋桁が駅セルの場合でも建設できる(高架は地平駅を跨げる)', () => {
     const { railMap, stations, terrain } = emptyMaps();
     railMap.set(toKey(2, 0), { type: 'station', connections: 0, stationId: 'st1' });
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 100_000);
-    expect(p.reason).toBe('no-effect');
+    const p = evaluateBuild('elevated', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('ok');
   });
 
   it('資金が足りなければinsufficient-funds', () => {
@@ -133,64 +147,42 @@ describe('evaluateBuild(bridge)', () => {
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
       { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
     ];
-    const p = evaluateBuild('bridge', path, railMap, stations, terrain, 1);
+    const p = evaluateBuild('elevated', path, railMap, stations, terrain, 1);
     expect(p.reason).toBe('insufficient-funds');
+  });
+
+  it('既存の高架に継ぎ足す場合、その端は坂にならない(rampCellsが減る)', () => {
+    let { railMap, stations } = emptyMaps();
+    ({ railMap, stations } = applyElevatedPath(
+      { railMap, stations },
+      [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }]
+    ));
+    const terrain = new Map<string, TerrainType>();
+    const path = [{ x: 2, z: 0 }, { x: 2, z: -1 }, { x: 2, z: -2 }];
+    const p = evaluateBuild('elevated', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('ok');
+    // (2,0)は既存の橋桁への継ぎ足しなので坂にならない。残る(2,-1)(2,-2)のみ坂になる。
+    expect(p.rampCells).toBe(2);
   });
 });
 
-describe('evaluateStationTemplate', () => {
-  const cross = STATION_TEMPLATES.find(t => t.id === 'cross')!;
-
-  it('crossテンプレートは駅セル数(9)×STATION_COST', () => {
-    const { railMap, stations, terrain } = emptyMaps();
-    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 100_000);
+describe('evaluateBuild(elevated-station) 高架駅タイル1枚', () => {
+  it('高架の線路がある場所ならELEVATED_STATION_COSTで建設できる', () => {
+    let { railMap, stations } = emptyMaps();
+    ({ railMap, stations } = applyElevatedPath(
+      { railMap, stations },
+      [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]
+    ));
+    const terrain = new Map<string, TerrainType>();
+    const p = evaluateBuild('elevated-station', [{ x: 2, z: 0 }], railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('ok');
-    expect(p.cellCount).toBe(9);
-    expect(p.cost).toBe(9 * STATION_COST);
+    expect(p.cost).toBe(ELEVATED_STATION_COST);
+    expect(p.cellCount).toBe(1);
   });
 
-  it('資金が足りなければinsufficient-funds', () => {
+  it('高架の線路が無ければno-effect', () => {
     const { railMap, stations, terrain } = emptyMaps();
-    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1);
-    expect(p.reason).toBe('insufficient-funds');
-  });
-
-  it('一部が車庫と重なる場合はno-effect', () => {
-    let { railMap, stations, terrain } = emptyMaps();
-    ({ railMap, stations } = applyDepot({ railMap, stations }, { x: 2, z: 0 }));
-    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 100_000);
-    expect(p.reason).toBe('no-effect');
-  });
-
-  it('一部が水域の場合はno-effect', () => {
-    const { railMap, stations, terrain } = emptyMaps();
-    terrain.set(toKey(0, -2), 'water');
-    const p = evaluateStationTemplate(cross, { x: 0, z: 0 }, 0, railMap, stations, terrain, 100_000);
-    expect(p.reason).toBe('no-effect');
-  });
-});
-
-describe('evaluateStationTemplate(cross-elevated)', () => {
-  const crossElevated = STATION_TEMPLATES.find(t => t.id === 'cross-elevated')!;
-
-  it('地平駅5+高架坂4はSTATION_COST/RAIL_COST、高架橋桁3セルはSTATION_COST×OVERPASS_COST_MULTIPLIER', () => {
-    const { railMap, stations, terrain } = emptyMaps();
-    const p = evaluateStationTemplate(crossElevated, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1_000_000);
-    expect(p.reason).toBe('ok');
-    expect(p.cellCount).toBe(12); // 地平5 + 高架オーバーパス7(うち中心が地平と重複するが、セル一覧としては別要素)
-    expect(p.cost).toBe(5 * STATION_COST + 4 * RAIL_COST + 3 * STATION_COST * OVERPASS_COST_MULTIPLIER);
-  });
-
-  it('資金が足りなければinsufficient-funds', () => {
-    const { railMap, stations, terrain } = emptyMaps();
-    const p = evaluateStationTemplate(crossElevated, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1);
-    expect(p.reason).toBe('insufficient-funds');
-  });
-
-  it('高架橋桁が車庫と重なる場合はno-effect', () => {
-    let { railMap, stations, terrain } = emptyMaps();
-    ({ railMap, stations } = applyDepot({ railMap, stations }, { x: 1, z: 0 }));
-    const p = evaluateStationTemplate(crossElevated, { x: 0, z: 0 }, 0, railMap, stations, terrain, 1_000_000);
+    const p = evaluateBuild('elevated-station', [{ x: 2, z: 0 }], railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('no-effect');
   });
 });

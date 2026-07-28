@@ -1,4 +1,5 @@
 # progress インデックス
+- [free-elevated-track.md](free-elevated-track.md) — 橋(applyBridge)を「自由に敷ける高架線(applyElevatedPath)」へ作り替え。端の判定(resolveElevatedPathEnd)・坂/橋桁の役割割り当て(planElevatedPath)を純粋関数に切り出し、長さ上下限・直線制約を撤廃。撤去は橋全体ではなく高架セル1枚単位に変更(坂の行き先が無くなれば地平に戻す)。高架駅タイルはapplyElevatedStation(state, pos, towns?)に一本化。駅テンプレート機能(sim/stationTemplates.ts)は廃止しタイル単位の設置に統一
 
 - [cross-elevated-station-data-model.md](cross-elevated-station-data-model.md) — 立体交差の十字乗り換え駅(第1段階: データモデルと建設ロジック)。`CellData.upper.stationId`で高架駅セルを判定(upperを持ち、かつstationIdがあるセル)。`StationData.cells[].layer`(0=地平/1=高架)で1駅IDに地平・高架両ホームを持たせる。`applyBridge`の坂+橋桁ロジックを`buildOverpassCore`に共通化し`applyElevatedStation`を追加、橋桁が地平駅でも高架駅・高架橋なら跨げるようガード緩和(ただし駅でない単なる橋桁が地平駅を跨ぐことは安全側で禁止のまま)。駅テンプレート`cross-elevated`を追加。SaveData v12。pathfinding/reservation/simulation/描画は未着手
 - [station-cell-axis.md](station-cell-axis.md) — 駅セルの接続を4方向固定から軸(ns/ew/cross)ベースに変更。ドラッグ方向・テンプレートの回転(Rキー)から軸を決め、隣接する既存線路・駅からの推測もサポート。旧セーブの4方向駅はそのまま互換動作

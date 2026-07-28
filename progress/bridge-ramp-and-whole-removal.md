@@ -71,3 +71,6 @@
 - レール描画側だけを曲線化し、列車の高さ(sim)は従来の折れ線のままにする案は
   「レールと列車がずれない」というCLAUDE.mdの既存方針に反するため見送った。
   sim/renderの両方が`rampHeightAtPos`という単一の純粋関数を参照する構成にした。
+
+## 追記(2026-07-28 free-elevated-track)
+本ファイルの坂のlevel化・「橋全体撤去」の設計は、`applyBridge`→`applyElevatedPath`への作り替え(`progress/free-elevated-track.md`)で置き換えられた。坂は経路の端ごとに独立して判定するようになり、撤去は高架セル1枚単位(坂の行き先が無くなれば地平に戻す)に変更されている。
