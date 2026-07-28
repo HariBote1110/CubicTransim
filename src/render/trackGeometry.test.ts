@@ -37,7 +37,8 @@ describe('buildTrackCentreLines: 分岐器の中心線', () => {
     ]));
     // 分岐線はセル端の本線へ遠回りで接続せず、本線の途中で合流する。
     expect(routes[1][0]).toEqual(expect.objectContaining({ x: 0.5, z: 0.5 }));
-    expect(routes[1][routes[1].length - 1]).toEqual(expect.objectContaining({ x: 0.175, z: 0 }));
+    // 交換線の入口では、分岐は本線の進行元側から離れる。
+    expect(routes[1][routes[1].length - 1]).toEqual(expect.objectContaining({ x: -0.175, z: 0 }));
   });
 });
 
