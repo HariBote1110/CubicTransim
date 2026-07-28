@@ -66,6 +66,11 @@ describe('rampHeightAtPos: 坂の高さプロファイル', () => {
     }
   });
 
+  it('坂セルの中心高さは描画側の0〜0.5／0.5〜1の区間中心と一致する', () => {
+    expect(RAMP_POS_LEVEL1).toBe(0.25);
+    expect(RAMP_POS_LEVEL2).toBe(0.75);
+  });
+
   it('両端付近では区間あたりの高さ変化が中間区間より小さい(急勾配で始まらない)', () => {
     const dStart = rampHeightAtPos(0.1) - rampHeightAtPos(0);
     const dMid = rampHeightAtPos(0.55) - rampHeightAtPos(0.45);
