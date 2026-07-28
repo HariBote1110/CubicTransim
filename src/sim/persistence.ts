@@ -138,9 +138,18 @@ export interface SaveDataV11 extends Omit<SaveDataV10, 'version'> {
   demand: [string, PassengerCohort[]][];
 }
 
+// v11以前にはStationData.cellsのlayer(立体交差の高架ホーム区別)と
+// CellData.upperのstationId(高架駅かどうか)が存在しない。型としてはどちらも
+// 省略可能なオプショナルフィールドなのでv11の構造をそのまま再利用できるが、
+// 「立体交差の十字乗り換え駅」を新設した区切りとしてバージョンを起こす。
+export interface SaveDataV12 extends Omit<SaveDataV11, 'version'> {
+  version: 12;
+}
+
 export type SaveData =
   | SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5
-  | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10 | SaveDataV11;
+  | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10 | SaveDataV11
+  | SaveDataV12;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -165,9 +174,9 @@ export function serialiseWorld(
   groupDepartures: Map<string, number> = new Map(),
   loan = 0,
   demand: Map<string, PassengerCohort[]> = new Map()
-): SaveDataV11 {
+): SaveDataV12 {
   return {
-    version: 11,
+    version: 12,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -226,9 +235,15 @@ export function deserialiseWorld(data: SaveData): {
   );
 
   // v1/v2データにはplatformDoorsが存在しないため、既定値'none'で補う。
+  // v11以前のデータにはcells[].layerが存在しないため、既定値0(地平)で補う
+  // (立体交差の高架駅が無かった時代のセーブは、全セルが地平ホームとして読み込める)。
   const migrateStations = (stations: [string, StationData][]) =>
     new Map(
-      stations.map(([id, st]) => [id, { ...st, platformDoors: st.platformDoors ?? 'none' }])
+      stations.map(([id, st]) => [id, {
+        ...st,
+        platformDoors: st.platformDoors ?? 'none',
+        cells: st.cells.map(c => ({ ...c, layer: c.layer ?? 0 })),
+      }])
     );
 
   // v11以前のデータには町名が存在しないため、決定的な名前(街の位置から導く)で補う。
@@ -239,7 +254,7 @@ export function deserialiseWorld(data: SaveData): {
   const migrateTrains = (trains: TrainData[]) =>
     trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
-  if (data.version === 11 || data.version === 10 || data.version === 9) {
+  if (data.version === 12 || data.version === 11 || data.version === 10 || data.version === 9) {
     return {
       railMap: new Map(data.railMap),
       stations: migrateStations(data.stations),
@@ -259,7 +274,7 @@ export function deserialiseWorld(data: SaveData): {
       loan: data.version === 9 ? 0 : data.loan,
       // v10以前の待ち客は行き先を持たない。行き先の分からない客は運びようがないので
       // 引き継がず(待ち客は改めて湧く)、空の需要から再開する。
-      demand: new Map(data.version === 11 ? data.demand : []),
+      demand: new Map(data.version === 11 || data.version === 12 ? data.demand : []),
     };
   }
 

@@ -5,14 +5,14 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v11)', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v12)', () => {
   it('railMap/stations/trains/runtimes/waiting/money/towns/terrain/clock/台帳/stopLocation/運用グループ/借入残高/行き先つき待ち客 が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
     ]);
     const stations = new Map<string, StationData>([
-      ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+      ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0, layer: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
     ]);
     const trains: TrainData[] = [
       { id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0, status: 'running', cars: 2 },
@@ -58,7 +58,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       railMap, stations, trains, runtimes, waiting, money, towns, terrain,
       clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand
     );
-    expect(saveData.version).toBe(11);
+    expect(saveData.version).toBe(12);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -80,6 +80,27 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored.groupDepartures).toEqual(groupDepartures);
     expect(restored.loan).toBe(60_000);
     expect(restored.demand).toEqual(demand);
+  });
+
+  it('v11データ(駅セルにlayerが無い)を読み込むと、全セルが地平(layer:0)として復元される', () => {
+    const v11 = {
+      version: 11 as const,
+      railMap: [],
+      stations: [
+        ['stA', { id: 'stA', name: 'A駅', cells: [{ x: 1, z: 0 }, { x: 2, z: 0 }], center: { x: 1.5, z: 0 }, platformDoors: 'none' as const }],
+      ] as [string, StationData][],
+      trains: [], runtimes: [], waiting: [],
+      money: 1000, loan: 0, towns: [], terrain: [],
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
+      stopLocation: 'middle' as const,
+      groups: [], groupDepartures: [],
+      demand: [],
+    };
+    const restored = deserialiseWorld(v11 as never);
+    const st = restored.stations.get('stA')!;
+    expect(st.cells).toEqual([{ x: 1, z: 0, layer: 0 }, { x: 2, z: 0, layer: 0 }]);
   });
 
   it('v10データ(行き先つき待ち客が無い)を読み込むと、待ち人数から行き先未定の客として復元する', () => {
