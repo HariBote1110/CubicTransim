@@ -171,6 +171,34 @@ describe('applyStation（特性テスト）', () => {
     expect(state).toBe(before);
     expect(state.railMap.get(toKey(0, 0))!.type).toBe('depot');
   });
+
+  it('高架線(upper)が通るセルに地平駅を置いても upper が消えない', () => {
+    // 長さ5の経路: 両端2セルずつが坂、中央(x=0)が橋桁(span/upper)になる
+    let state = emptyState();
+    state = applyElevatedPath(state, [
+      { x: -2, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+    ]);
+    const before = state.railMap.get(toKey(0, 0))!;
+    expect(before.upper).toBeDefined();
+
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    const after = state.railMap.get(toKey(0, 0))!;
+    expect(after.type).toBe('station');
+    expect(after.upper).toEqual(before.upper);
+  });
+
+  it('坂(ramp)のセルに駅を置いても ramp が消えない', () => {
+    // 長さ4の経路: 両端2セルずつが坂(span無し)になる
+    let state = emptyState();
+    state = applyElevatedPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    const before = state.railMap.get(toKey(0, 0))!;
+    expect(before.ramp).toBeDefined();
+
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    const after = state.railMap.get(toKey(0, 0))!;
+    expect(after.type).toBe('station');
+    expect(after.ramp).toEqual(before.ramp);
+  });
 });
 
 describe('applyStation（町名からの駅名採用）', () => {
