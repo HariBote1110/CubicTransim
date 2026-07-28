@@ -18,8 +18,8 @@ import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownDa
 import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
-import type { StationAxis } from '../sim/construction';
-import { resolveElevatedPathEnd, planElevatedPath } from '../sim/construction';
+import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction';
+import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
@@ -91,8 +91,8 @@ interface GameSceneProps {
   terrain: Map<string, TerrainType>;
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
-  // ★追加: 高架(elevated/elevated-station)の建設対象レベル(1〜MAX_ELEVATED_LEVEL)。
-  buildLevel: 1 | 2 | 3;
+  // ★変更: 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜MAX_ELEVATED_LEVEL)。
+  buildLevel: BuildLevel;
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
   simSpeed: number;
@@ -100,11 +100,11 @@ interface GameSceneProps {
 
   onCommitPath: (
     path: { x: number; z: number }[],
-    mode: CellType | 'none' | 'remove' | 'signal' | 'elevated' | 'elevated-station',
+    mode: CellType | 'none' | 'remove' | 'signal',
     // 駅設置(station)専用: ドラッグ方向から決まる軸のヒント(南北/東西)。
     stationAxisHint?: StationAxis,
-    // 高架(elevated/elevated-station)専用: 建設対象レベル。省略時は1。
-    level?: 1 | 2 | 3
+    // 線路(rail)・駅(station)専用: 建設対象レベル。省略時は0(地平)。
+    level?: BuildLevel
   ) => void;
   removeSignal: (x: number, z: number) => void;
   onSimEvent: (event: SimEvent) => void;
@@ -158,19 +158,21 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
     if (!dragStartPos) return [cursorPos];
-    if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal' || buildMode === 'elevated-station') {
+    if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal') {
       return [cursorPos];
     }
     return getConstrainedPath(dragStartPos, cursorPos);
   }, [dragStartPos, cursorPos, buildMode]);
 
-  // 高架線(elevated)プレビューの各セルの役割(坂/高架のまま)。construction.tsの
-  // resolveElevatedPathEnd/planElevatedPathにそのまま問い合わせる(UIにルールを書き写さない)。
+  // 高架の線路(buildMode==='rail' かつ buildLevel>=1)プレビューの各セルの役割
+  // (坂/高架のまま)。construction.tsのresolveElevatedPathEnd/pickElevatedConnection/
+  // planElevatedPathにそのまま問い合わせる(UIにルールを書き写さない)。
   const elevatedPreviewPlan = useMemo(() => {
-    if (buildMode !== 'elevated' || previewPath.length < 2) return null;
-    const startInfo = resolveElevatedPathEnd(railMap, previewPath[0], buildLevel);
-    const endInfo = resolveElevatedPathEnd(railMap, previewPath[previewPath.length - 1], buildLevel);
-    return planElevatedPath(previewPath.length, startInfo.continuesElevated, endInfo.continuesElevated, buildLevel);
+    if (buildMode !== 'rail' || buildLevel === 0 || previewPath.length < 2) return null;
+    const level = buildLevel as ElevatedLevel;
+    const startEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, previewPath[0]), level);
+    const endEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, previewPath[previewPath.length - 1]), level);
+    return planElevatedPath(previewPath.length, startEnd, endEnd, level);
   }, [buildMode, previewPath, railMap, buildLevel]);
 
   // 建設プレビューの内容をUI(コスト・可否の表示)へ流す。
@@ -231,7 +233,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
     const start = dragStartRef.current;
     if (e.button === 0 && start) {
       const pos = getGridPosFromEvent(e);
-      const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal' || buildMode === 'elevated-station')
+      const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
         ? [pos]
         : getConstrainedPath(start, pos);
       // 駅設置(station)は常に単一セルを置くが、ドラッグした向きを軸のヒントとしてUI側から渡す。
@@ -242,7 +244,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const dz = Math.abs(pos.z - start.z);
         if (dx > 0 || dz > 0) stationAxisHint = dx >= dz ? 'ew' : 'ns';
       }
-      const level = (buildMode === 'elevated' || buildMode === 'elevated-station') ? buildLevel : undefined;
+      const level = (buildMode === 'rail' || buildMode === 'station') ? buildLevel : undefined;
       onCommitPath(path, buildMode, stationAxisHint, level);
       dragStartRef.current = null;
       setDragStartPos(null);
@@ -295,11 +297,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
   };
 
   const getPreviewColor = () => {
-    if (buildMode === 'station' || buildMode === 'elevated-station') return STATION_COLOUR;
+    if (buildMode === 'station') return STATION_COLOUR;
     if (buildMode === 'depot') return DEPOT_COLOUR;
     if (buildMode === 'remove') return REMOVE_COLOUR;
     if (buildMode === 'signal') return SIGNAL_COLOUR;
-    if (buildMode === 'elevated') return T.bridge;
+    if (buildMode === 'rail' && buildLevel > 0) return T.bridge;
     return '#3ab6ff';
   };
 
@@ -330,20 +332,20 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <OrthographicCamera makeDefault position={[20, 20, 20]} zoom={40} near={-50} far={200} />
       <OrbitControls makeDefault enableRotate={false} enableZoom={true} minZoom={20} maxZoom={100} mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }} />
 
-      {/* 建設プレビュー。高架(elevated)は坂になるセルと高架のままのセルを色分けする。 */}
+      {/* 建設プレビュー。高架のrail(buildLevel>=1)は坂になるセルと高架のままのセルを色分けする。 */}
       {previewPath.map((pos, i) => {
-        if (buildMode === 'rail') {
+        if (buildMode === 'rail' && buildLevel === 0) {
           return <RailBlock key={`preview-${i}`} position={[pos.x, 0.02, pos.z]} isPreview connections={0} />;
         }
         const role = elevatedPreviewPlan?.roles[i];
-        const color = buildMode === 'elevated'
+        const color = buildMode === 'rail' && buildLevel > 0
           ? (role?.kind === 'ramp' ? T.warning : T.bridge)
           : getPreviewColor();
-        // 高架(elevated/elevated-station)は選択中レベルの高さにゴーストを出す。
+        // 高架のrail/stationは選択中レベルの高さにゴーストを出す。
         // 坂の区間(role.kind==='ramp')は低い側のレベル(role.base)の高さに置く。
-        const previewY = buildMode === 'elevated'
+        const previewY = buildMode === 'rail' && buildLevel > 0
           ? 0.2 + (role?.kind === 'ramp' ? role.base : buildLevel) * OVERPASS_HEIGHT
-          : buildMode === 'elevated-station'
+          : buildMode === 'station' && buildLevel > 0
           ? 0.2 + buildLevel * OVERPASS_HEIGHT
           : 0.2;
         return (

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TerrainType } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, CAPACITY_PER_CAR,
-  CAR_COST, CAR_REFUND, OVERPASS_COST_MULTIPLIER, ELEVATED_STATION_COST,
+  CAR_COST, CAR_REFUND,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   demandFactor, clockToDate,
 } from '../sim/economy';
@@ -19,20 +19,21 @@ import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
+import type { BuildLevel } from '../sim/construction';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
 // 選択中列車の乗客数・駅の待ち人数の更新間隔(ms)。
 const POLL_INTERVAL_MS = 400;
 
-export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'elevated' | 'elevated-station';
+export type BuildMode = CellType | 'none' | 'remove' | 'signal';
 
 interface GameUIProps {
   buildMode: BuildMode;
   setBuildMode: (mode: BuildMode) => void;
-  // ★追加: 高架(elevated/elevated-station)の建設対象レベル(1〜MAX_ELEVATED_LEVEL)。
-  buildLevel: 1 | 2 | 3;
-  setBuildLevel: (level: 1 | 2 | 3) => void;
+  // ★変更: 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜MAX_ELEVATED_LEVEL)。
+  buildLevel: BuildLevel;
+  setBuildLevel: (level: BuildLevel) => void;
   selectedTrainId: string | null;
   trains: TrainData[];
   stations: Map<string, StationData>;
@@ -86,13 +87,11 @@ const BUILD_TOOLS: {
   hint: string;
 }[] = [
   { mode: 'none', label: '選択', key: '1', accent: '#8b98a6', hint: '列車や駅をクリックして選ぶ' },
-  { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: 'ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)' },
-  { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: '線路の上に置くと隣接セルと繋がって長いホームになる' },
+  { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: 'ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)。↑/↓で建設レベル(高架)を切替' },
+  { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: '線路の上に置くと隣接セルと繋がって長いホームになる。↑/↓で建設レベル(高架)を切替' },
   { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
-  { mode: 'elevated', label: '高架', key: '7', accent: T.bridge, cost: `¥${RAIL_COST * OVERPASS_COST_MULTIPLIER}/マス(坂は¥${RAIL_COST}/マス)`, hint: 'ドラッグで敷設。曲がってもよく、端は自動で地平へ坂になる' },
-  { mode: 'elevated-station', label: '高架駅', key: '8', accent: T.station, cost: `¥${ELEVATED_STATION_COST.toLocaleString()}`, hint: '高架の線路の上にクリックまたはドラッグで駅を設置' },
 ];
 
 const SPEEDS: (0 | 1 | 2 | 4)[] = [0, 1, 2, 4];
@@ -186,9 +185,9 @@ export const GameUI: React.FC<GameUIProps> = ({
     return () => clearInterval(id);
   }, [selectedTrainId, selectedStationId, world, stations, groups]);
 
-  // キーボードショートカット: 1〜8で建設モード、Spaceで一時停止、Escで選択解除。
-  // 高架(elevated/elevated-station)選択中はArrowUp/DownでレベルをMAX_ELEVATED_LEVELまで
-  // ±1する(状態遷移そのものはsim/trackPath.tsのstepElevatedLevelに委譲)。
+  // キーボードショートカット: 1〜6で建設モード、Spaceで一時停止、Escで選択解除。
+  // 線路(rail)・駅(station)ツール選択中はArrowUp/Downで建設レベルを0(地平)〜
+  // MAX_ELEVATED_LEVELまで±1する(状態遷移そのものはsim/trackPath.tsのstepElevatedLevelに委譲)。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -198,7 +197,7 @@ export const GameUI: React.FC<GameUIProps> = ({
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
       if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); return; }
-      if ((buildMode === 'elevated' || buildMode === 'elevated-station')
+      if ((buildMode === 'rail' || buildMode === 'station')
         && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         e.preventDefault();
         setBuildLevel(stepElevatedLevel(buildLevel, e.key === 'ArrowUp' ? 1 : -1));
@@ -420,20 +419,20 @@ export const GameUI: React.FC<GameUIProps> = ({
       }}>
         <BuildFeedback preview={preview} toolLabel={activeTool?.label ?? ''} />
 
-        {(buildMode === 'elevated' || buildMode === 'elevated-station') && (
+        {(buildMode === 'rail' || buildMode === 'station') && (
           <div style={panel({
             display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
           })}>
-            <span style={{ color: T.textMuted }}>高架レベル</span>
+            <span style={{ color: T.textMuted }}>建設レベル</span>
             <div style={{ display: 'flex', gap: 4 }}>
-              {Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3).map(lv => (
+              {Array.from({ length: MAX_ELEVATED_LEVEL + 1 }, (_, i) => i as BuildLevel).map(lv => (
                 <button
                   key={lv}
                   onClick={() => setBuildLevel(lv)}
                   style={{ ...button({ active: buildLevel === lv, accent: T.bridge, compact: true }), minWidth: 30 }}
-                  title={`高架Lv${lv}に切替(↑/↓キーでも可)`}
+                  title={lv === 0 ? '地平に切替(↑/↓キーでも可)' : `高架Lv${lv}に切替(↑/↓キーでも可)`}
                 >
-                  Lv{lv}
+                  {lv === 0 ? '地平' : `Lv${lv}`}
                 </button>
               ))}
             </div>
@@ -476,18 +475,19 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
 }) => {
   if (!preview || preview.cellCount === 0) return null;
 
-  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode } = preview;
+  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level } = preview;
   const tone = reason === 'ok' ? T.positive : reason === 'insufficient-funds' ? T.danger : T.warning;
   const message =
     reason === 'insufficient-funds' ? '資金が足りません'
     : reason === 'no-effect' ? 'ここには建設できません'
     : null;
+  const isElevatedRail = mode === 'rail' && level > 0;
 
   const detail: string[] = [];
-  if (mode === 'rail' || mode === 'remove' || mode === 'elevated') detail.push(`${cellCount}マス`);
+  if (mode === 'rail' || mode === 'remove') detail.push(`${cellCount}マス`);
   if (bridgeCells > 0) detail.push(`橋 ${bridgeCells}`);
   if (tunnelCells > 0) detail.push(`隧道 ${tunnelCells}`);
-  if (mode === 'elevated') {
+  if (isElevatedRail) {
     if (rampCells > 0) detail.push(`坂 ${rampCells}`);
     if (overpassCells > 0) detail.push(`高架 ${overpassCells}(4倍)`);
   } else if (overpassCells > 0) {

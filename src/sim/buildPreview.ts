@@ -48,6 +48,8 @@ export interface BuildPreview {
   overpassCells: number;
   /** 高架線(level>=1のrail)で坂になるセル数 */
   rampCells: number;
+  /** 建設対象レベル(0=地平)。UI側が「高架(rail/station)かどうか」を判定するために保持する。 */
+  level: BuildLevel;
 }
 
 export function evaluateBuild(
@@ -61,7 +63,7 @@ export function evaluateBuild(
   level: BuildLevel = 0
 ): BuildPreview {
   const empty: BuildPreview = {
-    mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0,
+    mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0, level,
   };
   if (path.length === 0) return empty;
 
@@ -148,5 +150,5 @@ export function evaluateBuild(
   if (!effective) reason = 'no-effect';
   else if (cost > money) reason = 'insufficient-funds';
 
-  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells, rampCells: elevatedRampCount };
+  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells, rampCells: elevatedRampCount, level };
 }

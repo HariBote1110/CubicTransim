@@ -6,9 +6,9 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistenc
 import type { SaveData } from '../sim/persistence';
 import {
   applyRailPath, applyStation, applyDepot, applySignal, applyElevatedPath, applyElevatedStation,
-  removePath, resolveElevatedPathEnd, planElevatedPath,
+  removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath,
 } from '../sim/construction';
-import type { ConstructionState, StationAxis } from '../sim/construction';
+import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction';
 import {
   STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, ELEVATED_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
@@ -157,12 +157,12 @@ export const useGameLogic = () => {
   // 建設コストの算出・所持金チェック・課金もここで行う。
   const commitPath = (
     path: { x: number; z: number }[],
-    buildMode: CellType | 'none' | 'remove' | 'signal' | 'elevated' | 'elevated-station',
+    buildMode: CellType | 'none' | 'remove' | 'signal',
     // 駅設置(station)専用: ドラッグした向きから決まる軸のヒント。
     // 省略時はapplyStationが隣接セルから軸を推測する(なければ東西が既定)。
     stationAxisHint?: StationAxis,
-    // 高架(elevated/elevated-station)専用: 建設対象レベル(1〜3)。省略時は1。
-    level: 1 | 2 | 3 = 1
+    // 線路(rail)・駅(station)専用: 建設対象レベル(0=地平〜3)。省略時は0。
+    level: BuildLevel = 0
   ) => {
     if (path.length === 0) return;
 
@@ -181,18 +181,32 @@ export const useGameLogic = () => {
         result = applySignal(state, path, terrain);
         break;
       case 'station': {
-        cost = costOfPath('station', path.length);
-        if (money < cost) return;
-        const stationPos = path[path.length - 1];
-        // 近くに町が無ければ一定確率で新しい町が湧く(resolveTownSpawnForStation)。
-        // 駅名は後から使うため、町を決めてから applyStation に渡す。
-        const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
-          stationPos, towns, terrain, worldRef.current.rng
-        );
-        result = applyStation(state, stationPos, terrain, townsForNaming, stationAxisHint);
-        // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
-        if (spawnedTown && result.stations !== state.stations) {
-          setTowns(townsForNaming);
+        if (level === 0) {
+          cost = costOfPath('station', path.length);
+          if (money < cost) return;
+          const stationPos = path[path.length - 1];
+          // 近くに町が無ければ一定確率で新しい町が湧く(resolveTownSpawnForStation)。
+          // 駅名は後から使うため、町を決めてから applyStation に渡す。
+          const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
+            stationPos, towns, terrain, worldRef.current.rng
+          );
+          result = applyStation(state, stationPos, terrain, townsForNaming, stationAxisHint);
+          // 建設が成立した(no-opでない)ときだけ、湧いた町をReact stateに反映する。
+          if (spawnedTown && result.stations !== state.stations) {
+            setTowns(townsForNaming);
+          }
+        } else {
+          // 高架駅タイル1枚(旧'elevated-station')。
+          cost = ELEVATED_STATION_COST;
+          if (money < cost) return;
+          const stationPos = path[path.length - 1];
+          const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
+            stationPos, towns, terrain, worldRef.current.rng
+          );
+          result = applyElevatedStation(state, stationPos, townsForNaming, level as ElevatedLevel);
+          if (spawnedTown && result.stations !== state.stations) {
+            setTowns(townsForNaming);
+          }
         }
         break;
       }
@@ -201,35 +215,25 @@ export const useGameLogic = () => {
         if (money < cost) return;
         result = applyDepot(state, path[path.length - 1], terrain);
         break;
-      case 'rail':
-        // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
-        cost = costOfPath('rail', path.length, path, terrain);
-        if (money < cost) return;
-        result = applyRailPath(state, path, terrain);
-        break;
-      case 'elevated': {
-        // 坂・橋桁の内訳はconstruction.ts側の判定(resolveElevatedPathEnd/planElevatedPath)
-        // にそのまま問い合わせる(buildPreview.tsと同じロジックの二重実装を避けるため)。
-        const startInfo = resolveElevatedPathEnd(railMap, path[0], level);
-        const endInfo = resolveElevatedPathEnd(railMap, path[path.length - 1], level);
-        const plan = planElevatedPath(path.length, startInfo.continuesElevated, endInfo.continuesElevated, level);
-        const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
-        const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
-        cost = costOfElevatedPath(rampCount, overpassCount);
-        if (money < cost) return;
-        result = applyElevatedPath(state, path, terrain, level);
-        break;
-      }
-      case 'elevated-station': {
-        cost = ELEVATED_STATION_COST;
-        if (money < cost) return;
-        const stationPos = path[path.length - 1];
-        const { towns: townsForNaming, spawnedTown } = resolveTownSpawnForStation(
-          stationPos, towns, terrain, worldRef.current.rng
-        );
-        result = applyElevatedStation(state, stationPos, townsForNaming, level);
-        if (spawnedTown && result.stations !== state.stations) {
-          setTowns(townsForNaming);
+      case 'rail': {
+        if (level === 0) {
+          // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
+          cost = costOfPath('rail', path.length, path, terrain);
+          if (money < cost) return;
+          result = applyRailPath(state, path, terrain);
+        } else {
+          // 自由な高架線(旧'elevated')。坂・橋桁の内訳はconstruction.ts側の判定
+          // (resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath)にそのまま
+          // 問い合わせる(buildPreview.tsと同じロジックの二重実装を避けるため)。
+          const elevatedLevel = level as ElevatedLevel;
+          const startEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[0]), elevatedLevel);
+          const endEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[path.length - 1]), elevatedLevel);
+          const plan = planElevatedPath(path.length, startEnd, endEnd, elevatedLevel);
+          const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
+          const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
+          cost = costOfElevatedPath(rampCount, overpassCount);
+          if (money < cost) return;
+          result = applyElevatedPath(state, path, terrain, elevatedLevel);
         }
         break;
       }
