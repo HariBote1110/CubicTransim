@@ -6,13 +6,15 @@ import { tunnelPortals, isInTunnelInterior } from './tunnel';
 describe('tunnelPortals', () => {
   it('直線トンネル3セルで坑口が両端の2つだけになる', () => {
     // (0,0)-(0,1)-(0,2) の南北直線。中間(0,1)は両隣ともtunnelなので坑口なし。
+    // 両端の外側((0,-1)/(0,3))は未登録(=非mountain、標高0)なので坑口が立つ。
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: true }],
       [toKey(0, 1), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
       [toKey(0, 2), { type: 'rail', connections: DIR.N, tunnel: true }],
     ]);
+    const elevation = new Map<string, number>();
 
-    const portals = tunnelPortals(railMap);
+    const portals = tunnelPortals(railMap, elevation);
 
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
@@ -27,8 +29,9 @@ describe('tunnelPortals', () => {
     const railMap = new Map<string, CellData>([
       [toKey(5, 5), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
     ]);
+    const elevation = new Map<string, number>();
 
-    const portals = tunnelPortals(railMap);
+    const portals = tunnelPortals(railMap, elevation);
 
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
@@ -46,8 +49,9 @@ describe('tunnelPortals', () => {
       [toKey(1, 0), { type: 'rail', connections: DIR.W | DIR.S, tunnel: true }],
       [toKey(1, 1), { type: 'rail', connections: DIR.N, tunnel: true }],
     ]);
+    const elevation = new Map<string, number>();
 
-    const portals = tunnelPortals(railMap);
+    const portals = tunnelPortals(railMap, elevation);
 
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
@@ -62,8 +66,43 @@ describe('tunnelPortals', () => {
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S }],
     ]);
+    const elevation = new Map<string, number>();
 
-    expect(tunnelPortals(railMap)).toEqual([]);
+    expect(tunnelPortals(railMap, elevation)).toEqual([]);
+  });
+
+  it('山の内部(行き止まり方向の隣接セルもmountain)で終端するレールは行き止まり坑口を作らない', () => {
+    // (0,0)は南へ1方向だけ接続。行き止まり方向(北)の隣接セル(0,-1)がmountain(標高2)
+    // ならまだ山の中なので、そこに坑口を立てるべきではない。
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: true }],
+      [toKey(0, 1), { type: 'rail', connections: DIR.N, tunnel: true }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(0, -1), 2]]);
+
+    const portals = tunnelPortals(railMap, elevation);
+
+    // (0,0)の北側(行き止まり方向)には坑口が立たない。(0,1)の南側は非mountainなので立つ。
+    expect(portals).toEqual([{ x: 0, z: 1, dx: 0, dz: 1 }]);
+  });
+
+  it('山肌(行き止まり方向の隣接セルが非mountain)で終端する場合は坑口を作る', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: true }],
+      [toKey(0, 1), { type: 'rail', connections: DIR.N, tunnel: true }],
+    ]);
+    // (0,-1)は未登録=非mountain(標高0)なので山肌。
+    const elevation = new Map<string, number>();
+
+    const portals = tunnelPortals(railMap, elevation);
+
+    expect(portals).toEqual(
+      expect.arrayContaining([
+        { x: 0, z: 0, dx: 0, dz: -1 },
+        { x: 0, z: 1, dx: 0, dz: 1 },
+      ])
+    );
+    expect(portals).toHaveLength(2);
   });
 });
 
