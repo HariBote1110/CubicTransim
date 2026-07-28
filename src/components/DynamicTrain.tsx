@@ -31,6 +31,19 @@ const DRAG_LIFT_Y = 1.1;
 // 先頭車はrenderPos.yを、2両目以降はcarPositionsが返すy(編成一律の近似値)を使う。
 // JSXの初期position(useFrameが一度も走る前)は地平の既定値0.5にしておく。
 const INITIAL_CAR_Y = 0.5;
+// 台車の車輪面から車両groupの原点までの高さ。坂で車体を傾けるとき、単に原点を
+// 線路中心の真上に置くと車輪が線路から浮くため、車体のローカル上方向へ補正する。
+const RAIL_SUPPORT_OFFSET = 0.37;
+
+const carGroupPosition = (pos: { x: number; y: number; z: number }, heading: { x: number; y: number; z: number }) => {
+  // world上方向を車両の進行方向に直交する平面へ射影したものが、車体のローカル+Yになる。
+  const upY = Math.sqrt(Math.max(0, 1 - heading.y * heading.y));
+  return {
+    x: pos.x - heading.x * heading.y * RAIL_SUPPORT_OFFSET,
+    y: pos.y + (upY - 1) * RAIL_SUPPORT_OFFSET,
+    z: pos.z - heading.z * heading.y * RAIL_SUPPORT_OFFSET,
+  };
+};
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   data, railMap, runtimes, type, isSelected, lineColour: groupColour, onClick,
@@ -69,7 +82,8 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
 
     const head = positions[0];
     if (head) {
-      groupRef.current.position.set(head.x, head.y, head.z);
+      const headGroupPos = carGroupPosition(head, head.heading);
+      groupRef.current.position.set(headGroupPos.x, headGroupPos.y, headGroupPos.z);
       groupRef.current.lookAt(
         head.x + head.heading.x,
         head.y + head.heading.y,
@@ -84,7 +98,8 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       if (!carGroup) continue;
       const pos = positions[i];
       if (!pos) continue;
-      carGroup.position.set(pos.x, pos.y, pos.z);
+      const groupPos = carGroupPosition(pos, pos.heading);
+      carGroup.position.set(groupPos.x, groupPos.y, groupPos.z);
       carGroup.lookAt(pos.x + pos.heading.x, pos.y + pos.heading.y, pos.z + pos.heading.z);
     }
 

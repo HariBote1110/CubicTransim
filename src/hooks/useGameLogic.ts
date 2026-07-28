@@ -25,6 +25,7 @@ import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop 
 import type { LineMode } from '../sim/groups';
 import { generateTerrain } from '../sim/terrain';
 import { relocateTrain } from '../sim/relocate';
+import { createDebugScenario } from '../sim/debugScenario';
 
 const SAVE_KEY = 'cubictransim-save-v1';
 
@@ -569,6 +570,24 @@ export const useGameLogic = () => {
     worldRef.current.serviceSignature = undefined;
   };
 
+  /** 起動時デバッグ用の坂・高架・往復列車を読み込む。セーブデータは変更しない。 */
+  const loadDebugScenario = () => {
+    const scenario = createDebugScenario();
+    setRailMap(scenario.railMap);
+    setStations(scenario.stations);
+    setTrains(scenario.trains);
+    setTerrain(new Map());
+    setTowns([]);
+    setGroups([]);
+    setSelectedTrainId(null);
+    setSelectedStationId(null);
+    worldRef.current.runtimes.clear();
+    worldRef.current.waiting.clear();
+    worldRef.current.demand = new Map();
+    worldRef.current.clock = { elapsed: 0 };
+    worldRef.current.serviceSignature = undefined;
+  };
+
   return {
     railMap, setRailMap,
     stations, setStations,
@@ -590,6 +609,7 @@ export const useGameLogic = () => {
     pasteSchedule,
     saveGame,
     loadGame,
+    loadDebugScenario,
     // ★追加: 経済システム
     money,
     addIncome,
