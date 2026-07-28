@@ -398,8 +398,8 @@ describe('斜面フリンジへの線路建設を防ぐ制約', () => {
     const result = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }], terrain);
 
     // 中間セル(0,0)は坑口にもならず内部フラットでもないため、経路全体がno-opになる
-    // (部分的に敷設して破綻した見た目を残さないため)。
-    expect(result).toBe(state);
+    // (部分的に敷設して破綻した見た目を残さないため)。railMapの参照は変わらない。
+    expect(result.railMap).toBe(state.railMap);
   });
 
   it('尾根を横切る(尾根と直交する)単セルの線は坑口として建設できる', () => {
@@ -424,7 +424,7 @@ describe('斜面フリンジへの線路建設を防ぐ制約', () => {
     // 尾根terrainで行き止まる場合、末端セルは内部フラット条件を満たさないため不可。
     const ridgeTerrain = makeRidgeTerrain();
     const blockedResult = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }], ridgeTerrain);
-    expect(blockedResult).toBe(state);
+    expect(blockedResult.railMap).toBe(state.railMap);
   });
 });
 

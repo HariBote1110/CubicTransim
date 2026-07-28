@@ -42,6 +42,16 @@ describe('evaluateBuild', () => {
     expect(p.cost).toBe(RAIL_COST * (1 + BRIDGE_COST_MULTIPLIER + TUNNEL_COST_MULTIPLIER));
   });
 
+  it('斜面フリンジ(天井が覆われていない山岳セル)を経路が横切る場合はno-effect', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    // 幅1セルの尾根(x軸方向、z=0)。南北が非mountainなので、尾根に沿って横切る
+    // 経路の中間セルは坑口にも内部セルにもなれない。
+    for (let x = -2; x <= 2; x++) terrain.set(toKey(x, 0), 'mountain');
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('no-effect');
+  });
+
   it('資金が足りなければ insufficient-funds', () => {
     const { railMap, stations, terrain } = emptyMaps();
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }];

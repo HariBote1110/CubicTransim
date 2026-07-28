@@ -1,6 +1,6 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
 import type { CellData, StationData, TerrainType, TownData } from '../types';
-import { terrainAt } from './terrain';
+import { terrainAt, computeElevation, cellCornerElevations } from './terrain';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
 
 // 旧・固定長の橋(applyBridge)が使っていた上限値。自由な高架線(applyElevatedPath)には
@@ -164,6 +164,55 @@ const pathConflictsWithExistingRamp = (railMap: Map<string, CellData>, path: Pos
   return false;
 };
 
+// path上のセルiが、そのセル自身の接続として持つことになる方向を返す。
+// 経路の端(接続が1方向だけ)は、tunnelPortals(sim/tunnel.ts)の行き止まりルールと
+// 同じく、まだ経路が伸びていない反対方向も坑口の候補として扱う。孤立した1セルの
+// 経路(path.length===1)は東西南北すべてを候補にする。
+const mountainCellCandidateDirs = (path: Pos[], i: number): number[] => {
+  const { x, z } = path[i];
+  const dirs: number[] = [];
+  if (i > 0) dirs.push(getDirFromVector(path[i - 1].x - x, path[i - 1].z - z));
+  if (i < path.length - 1) dirs.push(getDirFromVector(path[i + 1].x - x, path[i + 1].z - z));
+  if (dirs.length === 1) dirs.push(getOppositeDir(dirs[0]));
+  if (dirs.length === 0) dirs.push(DIR.N, DIR.E, DIR.S, DIR.W);
+  return dirs;
+};
+
+/**
+ * 山岳セルへ線路を敷けるのは次のどちらかのときだけ、という制約をpath全体について確認する。
+ * どちらも満たさないセルが1つでもあればtrue(=建設不可)を返す。
+ *
+ * - 坑口セルになる: 経路上でこのセルが繋がる方向(行き止まりならその反対方向も含む)に
+ *   非mountainセルが隣接する。この方向はsim/tunnel.tsのtunnelPortalsが実際に坑口を
+ *   立てる方向と同じ考え方(接続方向 or 行き止まりの反対方向)。
+ * - 天井が完全に覆われた内部セル: 自然コーナー標高(cliffFaces無視のmin則)が4隅すべて
+ *   1以上。斜面フリンジ(4隅のどれかが0)のセルは、レールが山肌の外へ突き出して
+ *   見えるため対象外。
+ *
+ * 平地・水域セルは対象外(常にtrueにはならない=常に許可)。
+ */
+export function pathHasUnsupportedMountainCell(
+  terrain: Map<string, TerrainType>,
+  elev: Map<string, number>,
+  path: Pos[]
+): boolean {
+  for (let i = 0; i < path.length; i++) {
+    const { x, z } = path[i];
+    if (terrainAt(terrain, x, z) !== 'mountain') continue;
+
+    const isPortal = mountainCellCandidateDirs(path, i).some(dir => {
+      const { x: dx, z: dz } = getVectorFromDir(dir);
+      return terrainAt(terrain, x + dx, z + dz) !== 'mountain';
+    });
+    if (isPortal) continue;
+
+    if (cellCornerElevations(elev, x, z).every(c => c >= 1)) continue;
+
+    return true;
+  }
+  return false;
+}
+
 const addConnectionToCell = (
   railMap: Map<string, CellData>,
   key: string,
@@ -221,6 +270,13 @@ export function applyRailPathDetailed(
   // 既存の坂セルへ、その軸と異なる方向の接続を追加してしまう経路はno-opにする
   // (坂セルを壊さないため。詳細はconflictsWithExistingRampのdocコメント参照)。
   if (pathConflictsWithExistingRamp(state.railMap, path)) return { ...state, overpassCells: new Set() };
+
+  // 斜面フリンジ(天井が覆われていない山岳セル)へ線路が突き出さないよう、
+  // 坑口にも内部セルにもなれない山岳セルを含む経路はno-opにする。
+  // 詳細はpathHasUnsupportedMountainCellのdocコメント参照。
+  if (pathHasUnsupportedMountainCell(terrain, computeElevation(terrain), path)) {
+    return { ...state, overpassCells: new Set() };
+  }
 
   const railMap = new Map(state.railMap);
   const overpassCells = new Set<string>();
