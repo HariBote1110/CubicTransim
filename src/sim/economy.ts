@@ -133,8 +133,9 @@ export const ACCIDENT_HALT_DURATION = 60; // シミュレーション秒
 export const ACCIDENT_PENALTY = 5_000;
 
 // 'bridge'は旧・固定長橋の後方互換用(applyBridgeが薄いラッパーとして残っているため)。
-// 新設の自由な高架線は'elevated'(線路)・'elevated-station'(高架駅タイル1枚)を使う。
-export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal' | 'bridge' | 'elevated' | 'elevated-station';
+// 高架専用ツール('elevated'/'elevated-station')は廃止し、'rail'/'station'がlevel引数
+// (buildPreview.ts参照)に従って高架を建設する形に統合した。
+export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal' | 'bridge';
 
 // 自由な高架線(applyElevatedPath)のコスト。坂になるセルはRAIL_COST、橋桁(高架)に
 // なるセルはRAIL_COST×OVERPASS_COST_MULTIPLIER。内訳(rampCount/overpassCount)は

@@ -781,8 +781,10 @@ describe('立体交差(層の突き合わせ): 地平駅の真上を高架で通
 describe('多レベル高架: 地平→レベル1→レベル2と登坂する経路', () => {
   it('地平→坂(base0)→レベル1桁→坂(base1)→レベル2桁と登る経路が引ける', () => {
     let state: ConstructionState = { railMap: new Map(), stations: new Map() };
-    // 長さ10のレベル2高架線: 両端4セルずつ(base0のlevel1/level2、base1のlevel1/level2の
-    // 2段差ぶん)が坂、中央2セル(x=4,5)がレベル2の橋桁になる。
+    // (-1,0)に地平の線路を敷いて、始点(x=0)を地平に接続させる。
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    // 長さ10のレベル2高架線: 始点側4セル(base0のlevel1/level2、base1のlevel1/level2の
+    // 2段差ぶん)が坂、残り(x=4..9)がレベル2の橋桁になる(終点側は浮いた端)。
     // 地平(x=0)→坂(base0,level1)→坂(base0,level2)→坂(base1,level1)→坂(base1,level2)→
     // レベル2桁(x=4,5)…と登る構成になる。
     const level2Path = Array.from({ length: 10 }, (_, i) => ({ x: i, z: 0 }));

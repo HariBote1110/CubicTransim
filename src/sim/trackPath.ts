@@ -51,12 +51,13 @@ export function rampHeightAtPos(pos: number, base: number = 0): number {
 }
 
 /**
- * UIの建設レベル選択(ArrowUp/ArrowDown)の状態遷移。1〜MAX_ELEVATED_LEVELへ
+ * UIの建設レベル選択(ArrowUp/ArrowDown)の状態遷移。0(地平)〜MAX_ELEVATED_LEVELへ
  * クランプする純関数(UI側はキー入力の解釈だけを持ち、範囲の判定はここに一本化する)。
+ * 線路(2)・駅(3)ツール選択中に常に有効(高架専用ツールは廃止済み)。
  */
-export function stepElevatedLevel(current: 1 | 2 | 3, delta: number): 1 | 2 | 3 {
+export function stepElevatedLevel(current: 0 | 1 | 2 | 3, delta: number): 0 | 1 | 2 | 3 {
   const next = current + delta;
-  return Math.max(1, Math.min(MAX_ELEVATED_LEVEL, next)) as 1 | 2 | 3;
+  return Math.max(0, Math.min(MAX_ELEVATED_LEVEL, next)) as 0 | 1 | 2 | 3;
 }
 
 const midpoint = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });

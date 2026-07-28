@@ -12,15 +12,17 @@ import {
 } from './trackPath';
 
 describe('stepElevatedLevel: 建設レベル選択の状態遷移', () => {
-  it('1〜MAX_ELEVATED_LEVELの範囲でクランプする', () => {
-    expect(stepElevatedLevel(1, -1)).toBe(1);
+  it('0(地平)〜MAX_ELEVATED_LEVELの範囲でクランプする', () => {
+    expect(stepElevatedLevel(0, -1)).toBe(0);
     expect(stepElevatedLevel(MAX_ELEVATED_LEVEL, 1)).toBe(MAX_ELEVATED_LEVEL);
   });
 
   it('範囲内では単純に加算する', () => {
+    expect(stepElevatedLevel(0, 1)).toBe(1);
     expect(stepElevatedLevel(1, 1)).toBe(2);
     expect(stepElevatedLevel(2, 1)).toBe(3);
     expect(stepElevatedLevel(2, -1)).toBe(1);
+    expect(stepElevatedLevel(1, -1)).toBe(0);
   });
 });
 

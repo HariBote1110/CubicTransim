@@ -14,7 +14,9 @@ import {
   nextStationName,
   resolveElevatedPathEnd,
   planElevatedPath,
+  pickElevatedConnection,
   type ConstructionState,
+  type ElevatedEndPlan,
 } from './construction';
 
 const emptyState = (): ConstructionState => ({
@@ -188,9 +190,10 @@ describe('applyStation（特性テスト）', () => {
   });
 
   it('坂(ramp)のセルに駅を置いても ramp が消えない', () => {
-    // 長さ4の経路: 両端2セルずつが坂(span無し)になる
+    // (0,0)を地平の既存線路に接続し、長さ4の経路の始点側2セルが坂になるようにする
     let state = emptyState();
-    state = applyElevatedPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    state = applyElevatedPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }], undefined, 1);
     const before = state.railMap.get(toKey(0, 0))!;
     expect(before.ramp).toBeDefined();
 
@@ -447,88 +450,105 @@ describe('平面交差（applyRailPath、ダイヤモンドクロッシング）
     expect(detailed.overpassCells.size).toBe(0);
   });
 });
-describe('resolveElevatedPathEnd（高架線の端の判定・純粋関数）', () => {
-  it('既存の高架(upper.connections)がある位置はcontinuesElevated:trueになる', () => {
+describe('resolveElevatedPathEnd（高架線の端に存在する既存レベル一覧・純粋関数）', () => {
+  it('既存の高架(uppers[1].connections)がある位置はlevelsに1を含む', () => {
     let state = emptyState();
     state = applyElevatedPath(state, [
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
-    ]);
-    const info = resolveElevatedPathEnd(state.railMap, { x: 2, z: 0 });
-    expect(info.continuesElevated).toBe(true);
+      { x: 5, z: 0 }, { x: 6, z: 0 }, { x: 7, z: 0 },
+    ], undefined, 1);
+    const info = resolveElevatedPathEnd(state.railMap, { x: 3, z: 0 });
+    expect(info.levels).toEqual([1]);
   });
 
-  it('地平の線路・空セルはcontinuesElevated:falseになる', () => {
+  it('地平の線路はlevelsに0を含み、空セルはlevelsが空になる', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
-    expect(resolveElevatedPathEnd(state.railMap, { x: 0, z: 0 }).continuesElevated).toBe(false);
-    expect(resolveElevatedPathEnd(state.railMap, { x: 9, z: 9 }).continuesElevated).toBe(false);
+    expect(resolveElevatedPathEnd(state.railMap, { x: 0, z: 0 }).levels).toEqual([0]);
+    expect(resolveElevatedPathEnd(state.railMap, { x: 9, z: 9 }).levels).toEqual([]);
+  });
+});
+
+describe('pickElevatedConnection（端の接続先レベルの決定・純粋関数）', () => {
+  it('建設レベルと同じレベルが既にあればcontinue', () => {
+    expect(pickElevatedConnection({ levels: [0, 2] }, 2)).toEqual({ kind: 'continue' });
+  });
+
+  it('建設レベルより低いレベルしか無ければ、そのうち最も近い(大きい)ものにconnect', () => {
+    expect(pickElevatedConnection({ levels: [0, 1] }, 3)).toEqual({ kind: 'connect', level: 1 });
+    expect(pickElevatedConnection({ levels: [0] }, 2)).toEqual({ kind: 'connect', level: 0 });
+  });
+
+  it('何も無い、または建設レベルより高いレベルしか無ければflat', () => {
+    expect(pickElevatedConnection({ levels: [] }, 2)).toEqual({ kind: 'flat' });
+    expect(pickElevatedConnection({ levels: [3] }, 1)).toEqual({ kind: 'flat' });
   });
 });
 
 describe('planElevatedPath（高架線の坂/橋桁の役割割り当て・純粋関数）', () => {
-  it('両端とも地平/行き止まりなら、両端2セルずつが坂、残りが橋桁になる', () => {
-    const plan = planElevatedPath(6, false, false);
+  const flat: ElevatedEndPlan = { kind: 'flat' };
+  const cont: ElevatedEndPlan = { kind: 'continue' };
+  const connect = (level: number): ElevatedEndPlan => ({ kind: 'connect', level });
+
+  it('両端とも浮いた端(flat)なら、坂は1つも無い(すべて橋桁のまま)', () => {
+    const plan = planElevatedPath(6, flat, flat, 1);
     expect(plan).not.toBeNull();
-    expect(plan!.roles.map(r => r.kind)).toEqual(['ramp', 'ramp', 'span', 'span', 'ramp', 'ramp']);
-    expect(plan!.roles[0]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 1 });
-    expect(plan!.roles[1]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 2 });
-    expect(plan!.roles[4]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 2 });
-    expect(plan!.roles[5]).toEqual({ kind: 'ramp', side: 'end', base: 0, level: 1 });
+    expect(plan!.roles.map(r => r.kind)).toEqual(['span', 'span', 'span', 'span', 'span', 'span']);
   });
 
-  it('始点が既存の高架に継ぎ足す場合、始点側には坂を作らない', () => {
-    const plan = planElevatedPath(4, true, false);
-    expect(plan!.roles.map(r => r.kind)).toEqual(['span', 'span', 'ramp', 'ramp']);
+  it('始点が地平(level 0)に接続する場合、始点側だけ2セルの坂ができる', () => {
+    const plan = planElevatedPath(4, connect(0), flat, 1);
+    expect(plan!.roles.map(r => r.kind)).toEqual(['ramp', 'ramp', 'span', 'span']);
+    expect(plan!.roles[0]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 1 });
+    expect(plan!.roles[1]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 2 });
   });
 
   it('両端とも既存の高架に継ぎ足す場合、坂は1つも無い(すべて橋桁)', () => {
-    const plan = planElevatedPath(3, true, true);
+    const plan = planElevatedPath(3, cont, cont, 1);
     expect(plan!.roles.map(r => r.kind)).toEqual(['span', 'span', 'span']);
   });
 
-  it('橋桁がゼロでもよい(両端の坂だけが隣接する短い高架)', () => {
-    const plan = planElevatedPath(4, false, false);
-    expect(plan!.roles.map(r => r.kind)).toEqual(['ramp', 'ramp', 'ramp', 'ramp']);
+  it('レベル3への地平接続は、1段差ごとに2セルずつ計6セルの坂になる(base0→base1→base2と積み上がる)', () => {
+    const plan = planElevatedPath(10, connect(0), flat, 3);
+    expect(plan!.roles.slice(0, 6)).toEqual([
+      { kind: 'ramp', side: 'start', base: 0, level: 1 },
+      { kind: 'ramp', side: 'start', base: 0, level: 2 },
+      { kind: 'ramp', side: 'start', base: 1, level: 1 },
+      { kind: 'ramp', side: 'start', base: 1, level: 2 },
+      { kind: 'ramp', side: 'start', base: 2, level: 1 },
+      { kind: 'ramp', side: 'start', base: 2, level: 2 },
+    ]);
+    expect(plan!.roles.slice(6).map(r => r.kind)).toEqual(['span', 'span', 'span', 'span']);
   });
 
   it('坂に必要なセル数が経路長を超える場合はnull', () => {
-    expect(planElevatedPath(3, false, false)).toBeNull(); // 両端坂(4セル分)には足りない
-    expect(planElevatedPath(1, false, false)).toBeNull();
+    expect(planElevatedPath(3, connect(0), connect(0), 1)).toBeNull(); // 両端坂(4セル分)には足りない
+    expect(planElevatedPath(1, flat, flat, 1)).toBeNull();
   });
 
   it('片側だけ坂が必要で、もう片方が継ぎ足しの場合はlength3から成立する(length2以下は継ぎ足し先を坂が潰すためnull)', () => {
-    expect(planElevatedPath(3, false, true)).not.toBeNull();
-    expect(planElevatedPath(2, false, true)).toBeNull();
-    expect(planElevatedPath(1, false, true)).toBeNull();
+    expect(planElevatedPath(3, connect(0), cont, 1)).not.toBeNull();
+    expect(planElevatedPath(2, connect(0), cont, 1)).toBeNull();
+    expect(planElevatedPath(1, connect(0), cont, 1)).toBeNull();
   });
 });
 
 describe('自由に敷ける高架線（applyElevatedPath）', () => {
-  it('新規に敷いた直線区間は、両端2セルずつが坂、中間が橋桁になる', () => {
+  it('端が何も無い(浮いた端)場合、坂を作らずそのレベルのままブツ切れで終端する', () => {
     const state = emptyState();
     const path = [
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
       { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
     ];
-    const result = applyElevatedPath(state, path);
+    const result = applyElevatedPath(state, path, undefined, 1);
 
-    for (const pos of [path[0], path[1], path[4], path[5]]) {
+    for (const pos of path) {
       const cell = result.railMap.get(toKey(pos.x, pos.z))!;
-      expect(cell.type).toBe('rail');
-      expect(cell.uppers?.[1]).toBeUndefined();
-      expect(cell.ramp).toBeDefined();
+      expect(cell.ramp).toBeUndefined();
+      expect(cell.uppers?.[1]?.connections).toBeGreaterThan(0);
     }
-    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1, base: 0 });
-    expect(result.railMap.get(toKey(1, 0))!.ramp).toEqual({ dir: DIR.E, level: 2, base: 0 });
-    expect(result.railMap.get(toKey(4, 0))!.ramp).toEqual({ dir: DIR.W, level: 2, base: 0 });
-    expect(result.railMap.get(toKey(5, 0))!.ramp).toEqual({ dir: DIR.W, level: 1, base: 0 });
-
-    const mid1 = result.railMap.get(toKey(2, 0))!;
-    const mid2 = result.railMap.get(toKey(3, 0))!;
-    expect(mid1.connections ?? 0).toBe(0);
-    expect(mid1.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
-    expect(mid2.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
-    expect(mid1.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(0, 0))!.uppers?.[1]?.connections).toBe(DIR.E);
+    expect(result.railMap.get(toKey(5, 0))!.uppers?.[1]?.connections).toBe(DIR.W);
   });
 
   it('曲がる経路にも敷ける(直線という制約が無い)', () => {
@@ -536,55 +556,55 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     const path = [
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 },
     ];
-    const result = applyElevatedPath(state, path);
+    const result = applyElevatedPath(state, path, undefined, 1);
     // 曲がり角の橋桁セル(2,0)はE|W|Sの複数ビットを持つ
     const corner = result.railMap.get(toKey(2, 0))!;
     expect(corner.uppers?.[1]?.connections).toBe(DIR.W | DIR.S);
-    // 坂は両端2セルずつ
-    expect(result.railMap.get(toKey(0, 0))!.ramp).toBeDefined();
-    expect(result.railMap.get(toKey(2, 2))!.ramp).toBeDefined();
+    // 端は浮いた端なので坂は無い
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(2, 2))!.ramp).toBeUndefined();
   });
 
-  it('長さの上下限が無い: 坂だけ(橋桁0セル)の短い高架も敷ける', () => {
-    const state = emptyState();
-    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
-    const result = applyElevatedPath(state, path);
-    for (const pos of path) {
-      expect(result.railMap.get(toKey(pos.x, pos.z))!.ramp).toBeDefined();
-    }
+  it('端を地平の既存線路に接すると、その端だけ坂ができる(地上に接続しない側は浮いた端のまま)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ];
+    const result = applyElevatedPath(state, path, undefined, 1);
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toBeDefined();
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toBeDefined();
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(4, 0))!.ramp).toBeUndefined(); // 反対側は浮いた端
+    expect(result.railMap.get(toKey(4, 0))!.uppers?.[1]?.connections).toBe(DIR.W);
   });
 
   it('長い高架(従来のMAX_BRIDGE_LENGTHを超える長さ)も敷ける', () => {
     const state = emptyState();
     const path = Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 }));
-    const result = applyElevatedPath(state, path);
+    const result = applyElevatedPath(state, path, undefined, 1);
     expect(result.railMap.get(toKey(10, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
   });
 
   it('既存の高架の端に継ぎ足すと、継ぎ足し側には坂を作らず高架のまま延伸する', () => {
     let state = emptyState();
-    state = applyElevatedPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
-    // (3,0)は元の高架の終端(坂)ではなく橋桁側の端になるよう、逆に(2,0)~(3,0)は坂。
-    // 高架(橋桁)側の端は(0,0)〜(1,0)の外側ではなく、坂を除いた中間が無い場合は無い。
-    // そこで、明確に橋桁が生まれる長さで組み直す。
-    state = emptyState();
     state = applyElevatedPath(state, [
       { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
-    ]);
+    ], undefined, 1);
     expect(state.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
 
-    // (2,0)(橋桁)から東へ延伸する
-    const extended = applyElevatedPath(state, [{ x: 2, z: 0 }, { x: 2, z: -1 }, { x: 2, z: -2 }]);
+    // (2,0)(橋桁)から北へ延伸する
+    const extended = applyElevatedPath(state, [{ x: 2, z: 0 }, { x: 2, z: -1 }, { x: 2, z: -2 }], undefined, 1);
     // 継ぎ足し元(2,0)は既存の橋桁のまま(坂にならない)
     expect(extended.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
     expect(extended.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W | DIR.N);
-    // 行き止まり側(2,-2)は坂になる
-    expect(extended.railMap.get(toKey(2, -2))!.ramp).toBeDefined();
+    // 行き止まり側(2,-2)は浮いた端のまま(坂は作らない)
+    expect(extended.railMap.get(toKey(2, -2))!.ramp).toBeUndefined();
   });
 
   it('隣接していない経路はno-op', () => {
     const state = emptyState();
-    const result = applyElevatedPath(state, [{ x: 0, z: 0 }, { x: 5, z: 0 }]);
+    const result = applyElevatedPath(state, [{ x: 0, z: 0 }, { x: 5, z: 0 }], undefined, 1);
     expect(result).toBe(state);
   });
 
@@ -592,26 +612,27 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     let state = emptyState();
     state = applyDepot(state, { x: 2, z: 0 });
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    const result = applyElevatedPath(state, path);
+    const result = applyElevatedPath(state, path, undefined, 1);
     expect(result).toBe(state);
   });
 
   it('橋桁になるセルに既にupperがある場合はno-op(二重架け禁止)', () => {
     let state = emptyState();
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    state = applyElevatedPath(state, path);
+    state = applyElevatedPath(state, path, undefined, 1);
     expect(state.railMap.get(toKey(2, 0))!.uppers?.[1]).toBeDefined();
 
     const crossing = [{ x: 2, z: -2 }, { x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 }];
-    const result = applyElevatedPath(state, crossing);
+    const result = applyElevatedPath(state, crossing, undefined, 1);
     expect(result).toBe(state);
   });
 
   it('坂になるセルが水域・山岳の場合はno-op', () => {
-    const state = emptyState();
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
     const terrain = new Map<string, TerrainType>([[toKey(0, 0), 'water']]);
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    const result = applyElevatedPath(state, path, terrain);
+    const result = applyElevatedPath(state, path, terrain, 1);
     expect(result).toBe(state);
   });
 
@@ -621,7 +642,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     const beforeGround = state.railMap.get(toKey(2, 0))!.connections;
 
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    const result = applyElevatedPath(state, path);
+    const result = applyElevatedPath(state, path, undefined, 1);
     const mid = result.railMap.get(toKey(2, 0))!;
     expect(mid.connections).toBe(beforeGround);
     expect(mid.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
@@ -630,7 +651,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
   it('橋桁の下に後から地平の線路を敷ける(高架は既存のまま)', () => {
     let state = emptyState();
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    state = applyElevatedPath(state, path);
+    state = applyElevatedPath(state, path, undefined, 1);
     const result = applyRailPath(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }, { x: 2, z: 1 }]);
     const mid = result.railMap.get(toKey(2, 0))!;
     expect(mid.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
@@ -639,10 +660,11 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
   });
 
   it('水域の上にも高架線を敷ける(橋の役割を兼ねる)', () => {
-    const state = emptyState();
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
     const terrain = new Map<string, TerrainType>([[toKey(2, 0), 'water']]);
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    const result = applyElevatedPath(state, path, terrain);
+    const result = applyElevatedPath(state, path, terrain, 1);
     expect(result.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
   });
 });
@@ -735,8 +757,10 @@ describe('高架駅タイル（applyElevatedStation）', () => {
 describe('高架セル1枚の撤去（removePath）', () => {
   it('橋桁セル1枚だけを撤去でき、他の高架セルは残る(旧・橋全体撤去は廃止)', () => {
     let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    state = applyRailPath(state, [{ x: 7, z: 0 }, { x: 8, z: 0 }]);
     const path = Array.from({ length: 8 }, (_, i) => ({ x: i, z: 0 }));
-    state = applyElevatedPath(state, path);
+    state = applyElevatedPath(state, path, undefined, 1);
     // 橋桁は index 2..5 (0,1,6,7が坂)
     expect(state.railMap.get(toKey(3, 0))!.uppers?.[1]).toBeDefined();
 
@@ -750,9 +774,11 @@ describe('高架セル1枚の撤去（removePath）', () => {
 
   it('坂の行き先(橋桁)が撤去で無くなった場合、坂も地平の線路に戻る', () => {
     let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    state = applyRailPath(state, [{ x: 4, z: 0 }, { x: 5, z: 0 }]);
     // 坂2 + 橋桁1 + 坂2 = 長さ5
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
-    state = applyElevatedPath(state, path);
+    state = applyElevatedPath(state, path, undefined, 1);
     expect(state.railMap.get(toKey(1, 0))!.ramp).toBeDefined();
 
     // 唯一の橋桁(2,0)を撤去する
@@ -791,51 +817,57 @@ describe('高架セル1枚の撤去（removePath）', () => {
 });
 
 describe('多レベル高架(level 2/3)', () => {
-  it('planElevatedPath: レベル2の自由端には坂4セル(level1x2+level2x2相当)が割り当てられる', () => {
-    // 長さ10: 両端とも自由端(継ぎ足しでない)、targetLevel=2 → 各端2段差*2セル=4セルの坂、
-    // 中央2セルが橋桁(span)。
-    const plan = planElevatedPath(10, false, false, 2);
-    expect(plan).not.toBeNull();
-    expect(plan!.roles.map(r => r.kind)).toEqual([
-      'ramp', 'ramp', 'ramp', 'ramp', 'span', 'span', 'ramp', 'ramp', 'ramp', 'ramp',
-    ]);
-    // 始点側: base0(地平→level1)のlevel1/level2、続いてbase1(level1→level2)のlevel1/level2
-    expect(plan!.roles[0]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 1 });
-    expect(plan!.roles[1]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 2 });
-    expect(plan!.roles[2]).toEqual({ kind: 'ramp', side: 'start', base: 1, level: 1 });
-    expect(plan!.roles[3]).toEqual({ kind: 'ramp', side: 'start', base: 1, level: 2 });
+  it('端が空(浮いた端): レベル2建設で坂0・全セルがuppers[2]になる', () => {
+    const state = emptyState();
+    const path = Array.from({ length: 6 }, (_, i) => ({ x: i, z: 0 }));
+    const result = applyElevatedPath(state, path, undefined, 2);
+    for (const pos of path) {
+      const cell = result.railMap.get(toKey(pos.x, pos.z))!;
+      expect(cell.ramp).toBeUndefined();
+      expect(cell.uppers?.[2]?.connections).toBeGreaterThan(0);
+    }
   });
 
-  it('resolveElevatedPathEnd: レベル1の既存高架(橋桁)へレベル1の経路を継ぎ足す端には坂を作らない', () => {
+  it('端が地上(level 0)の既存線路: レベル2建設でその端に坂4セル(base0,base1)ができる', () => {
     let state = emptyState();
-    // 長さ5: 両端2セルずつが坂、中央(x=2)だけが橋桁(span)になる
-    state = applyElevatedPath(state, [
-      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
-    ], undefined, 1);
-    const info = resolveElevatedPathEnd(state.railMap, { x: 2, z: 0 }, 1);
-    expect(info.continuesElevated).toBe(true);
-    expect(info.existingLevel).toBe(1);
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    const path = Array.from({ length: 8 }, (_, i) => ({ x: i, z: 0 }));
+    const result = applyElevatedPath(state, path, undefined, 2);
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1, base: 0 });
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toEqual({ dir: DIR.E, level: 2, base: 0 });
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toEqual({ dir: DIR.E, level: 1, base: 1 });
+    expect(result.railMap.get(toKey(3, 0))!.ramp).toEqual({ dir: DIR.E, level: 2, base: 1 });
+    expect(result.railMap.get(toKey(4, 0))!.uppers?.[2]?.connections).toBeGreaterThan(0);
+    // 反対側は浮いた端のまま
+    expect(result.railMap.get(toKey(7, 0))!.ramp).toBeUndefined();
   });
 
-  it('継ぎ足し先の既存高架レベルが建設レベルと一致しない場合、その端は自由端(坂あり)として扱われる', () => {
+  it('端が既存のレベル1線路: レベル2建設でその端に坂2セル(base1)だけができる', () => {
+    // (0,0)にだけレベル1の桁があり、そこからレベル2の経路を延ばす(反対側は浮いた端のまま)。
     let state = emptyState();
-    // 長さ5: 中央(x=2,z=0)だけがレベル1の橋桁(span)になる
-    state = applyElevatedPath(state, [
-      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
-    ], undefined, 1);
-    // その橋桁セル(2,0)からレベル2で継ぎ足そうとする → レベル不一致のため継続とはみなさず、
-    // 自由端(坂あり)として建設される(別レベルの桁とは独立して併存できる)。
-    // レベル2の自由端は片側4セルの坂が必要なため、長さ8の経路にする。
-    state = applyElevatedPath(state, [
-      { x: 2, z: 0 }, { x: 2, z: 1 }, { x: 2, z: 2 }, { x: 2, z: 3 },
-      { x: 2, z: 4 }, { x: 2, z: 5 }, { x: 2, z: 6 }, { x: 2, z: 7 },
-    ], undefined, 2);
-    const cell = state.railMap.get(toKey(2, 0))!;
-    expect(cell.uppers?.[1]?.connections).toBeDefined(); // レベル1の桁は残る
-    expect(cell.ramp).toBeDefined(); // レベル2側の坂が新たに付く
+    state = applyElevatedPath(state, [{ x: -3, z: 0 }, { x: -2, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 0 }], undefined, 1);
+    const path = Array.from({ length: 6 }, (_, i) => ({ x: i, z: 0 }));
+    const result = applyElevatedPath(state, path, undefined, 2);
+    expect(result.railMap.get(toKey(0, 0))!.ramp).toEqual({ dir: DIR.E, level: 1, base: 1 });
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toEqual({ dir: DIR.E, level: 2, base: 1 });
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(5, 0))!.ramp).toBeUndefined(); // 反対側は浮いた端
   });
 
-  // 長さ10の経路(ramp4+span2+ramp4)を使う: 中央2セル(x=4,5)が橋桁(span)になる。
+  it('端が同じレベル2の既存線路: 坂なしで継ぎ足す', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i, z: 0 })), undefined, 2);
+    const extended = applyElevatedPath(state, [{ x: 5, z: 0 }, { x: 6, z: 0 }, { x: 7, z: 0 }], undefined, 2);
+    expect(extended.railMap.get(toKey(5, 0))!.ramp).toBeUndefined();
+    expect(extended.railMap.get(toKey(7, 0))!.ramp).toBeUndefined(); // 新たな浮いた端
+    expect(extended.railMap.get(toKey(5, 0))!.uppers?.[2]?.connections).toBe(DIR.W | DIR.E);
+  });
+
+  it('pickElevatedConnection: レベル1とレベル0が両方ある端では、より近いレベル1に接続する', () => {
+    expect(pickElevatedConnection({ levels: [0, 1] }, 2)).toEqual({ kind: 'connect', level: 1 });
+  });
+
+  // 長さ10の経路(浮いた端の橋桁のみ)を使う: 全セルが橋桁(span)になる。
   const tenCellPath = Array.from({ length: 10 }, (_, i) => ({ x: i, z: 0 }));
 
   it('applyElevatedPath: レベル2の桁はuppers[2]に入り、レベル1とは独立して併存できる', () => {
