@@ -254,7 +254,9 @@ export function buildRampTrackParts(
   originZ = 0,
   posLow = 0,
   posHigh = 0,
-  segments = RAMP_CURVE_SEGMENTS
+  segments = RAMP_CURVE_SEGMENTS,
+  // 坂の下側レベル(base〜base+1段を登る)。省略時0=地平〜レベル1の従来どおりの坂。
+  base = 0
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
   const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
@@ -269,7 +271,7 @@ export function buildRampTrackParts(
     points.push({
       x: low.x + (high.x - low.x) * t,
       z: low.z + (high.z - low.z) * t,
-      y: rampHeightAtPos(pos),
+      y: rampHeightAtPos(pos, base),
     });
   }
   layTrackAlong(parts, points, originX, originZ, 0, true);
@@ -450,6 +452,18 @@ export function buildOverpassSupportParts(connections: number, x = 0, z = 0, ori
   }
 
   return { piers, decks };
+}
+
+/**
+ * 空中に架かる坂(ramp.base >= 1、地平に接しない多レベルの坂)を支える支柱を1本生成する。
+ * 坂の下側境界(地面に一番近い側)の高さまで、地面(y=0)から1本の円柱で立てる。
+ * buildOverpassSupportParts の橋脚と同じ寸法・shouldPlacePierの間引き判定を流用する。
+ */
+export function buildRampPierPart(x = 0, z = 0, heightAtLowEnd: number): THREE.BufferGeometry | null {
+  if (heightAtLowEnd <= 0.02) return null;
+  const pier = new THREE.CylinderGeometry(PIER_RADIUS, PIER_RADIUS * 1.3, heightAtLowEnd, 8);
+  pier.translate(x, heightAtLowEnd / 2, z);
+  return pier;
 }
 
 /**

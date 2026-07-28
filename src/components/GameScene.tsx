@@ -273,7 +273,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
         // 候補を逆算して確認する(完璧な判定ではないが、高架ホームをクリックして駅を選べる)。
         const elevatedCandidate = elevatedCellCandidateFromGroundClick(pos);
         const elevatedCell = railMap.get(toKey(elevatedCandidate.x, elevatedCandidate.z));
-        const elevatedStationId = elevatedCell?.uppers?.[1]?.stationId;
+        const elevatedStationId =
+          elevatedCell?.uppers?.[1]?.stationId
+          ?? elevatedCell?.uppers?.[2]?.stationId
+          ?? elevatedCell?.uppers?.[3]?.stationId;
         if (elevatedStationId && selectedTrainId) {
             if (isEditingSchedule) onAddSchedule(selectedTrainId, elevatedStationId);
             return;
@@ -399,16 +402,15 @@ export const GameScene: React.FC<GameSceneProps> = ({
         return <group key={key}>{elements}</group>;
       })}
 
-      {/* 高架駅セル(upper.stationIdがあるセル)。地平の駅セルと同じStationBlockを
-          OVERPASS_HEIGHT分だけ持ち上げて描く。柱の端判定は高架層だけで独立に行う。 */}
+      {/* 高架駅セル(uppers[L].stationIdがあるセル)。地平の駅セルと同じStationBlockを
+          レベルLぶん(L*OVERPASS_HEIGHT)持ち上げて描く。柱の端判定は高架層だけで独立に行う。 */}
       {elevatedCells.map(cell => {
-        const data = railMap.get(cell.key);
-        if (!data?.uppers?.[1]) return null;
+        const level = cell.level ?? 1;
         return (
           <StationBlock
             key={`${cell.key}-elevated`}
-            position={[cell.x, OVERPASS_HEIGHT, cell.z]}
-            connections={data.uppers[1].connections}
+            position={[cell.x, level * OVERPASS_HEIGHT, cell.z]}
+            connections={cell.connections}
             platformDoors={stations.get(cell.stationId)?.platformDoors ?? 'none'}
             isEnd={elevatedEndKeys.has(cell.key)}
           />
@@ -425,19 +427,26 @@ export const GameScene: React.FC<GameSceneProps> = ({
           });
         }
         // 駅舎・ラベルは1駅につき1つだけ出す(立体交差の十字駅でも二重にならないように)。
-        // 地平セルがあればそちらを優先して駅舎を置き、無ければ高架セルの位置に置く。
-        const ownGroundCells = station.cells.filter(c => (c.layer ?? 0) !== 1);
-        const hasElevatedCells = station.cells.some(c => c.layer === 1);
-        const cellsForHouse = ownGroundCells.length > 0 ? ownGroundCells : station.cells;
-        const centreCell = cellsForHouse[Math.floor(cellsForHouse.length / 2)] ?? station.center;
+        // 地平セルがあればそちらを優先して駅舎を置き、無ければ最も低い高架レベルの位置に置く。
+        const ownGroundCells = station.cells.filter(c => !c.layer);
+        const elevatedLevels = station.cells.map(c => c.layer).filter((l): l is 1 | 2 | 3 => !!l);
+        const hasElevatedCells = elevatedLevels.length > 0;
         const houseIsElevated = ownGroundCells.length === 0;
+        // 駅舎を置く高架レベル(地平セルが無いときのみ使う)。複数レベルにまたがる駅では
+        // 一番低いレベルに駅舎を置く(見た目上、地平に近い側のほうが自然なため)。
+        const houseLevel = houseIsElevated ? Math.min(...elevatedLevels) as 1 | 2 | 3 : 1;
+        const cellsForHouse = houseIsElevated
+          ? station.cells.filter(c => c.layer === houseLevel)
+          : ownGroundCells;
+        const centreCell = cellsForHouse[Math.floor(cellsForHouse.length / 2)] ?? station.center;
         const centreConnections = houseIsElevated
-          ? railMap.get(toKey(centreCell.x, centreCell.z))?.uppers?.[1]?.connections
+          ? railMap.get(toKey(centreCell.x, centreCell.z))?.uppers?.[houseLevel]?.connections
           : railMap.get(toKey(centreCell.x, centreCell.z))?.connections;
         const angle = trackAngleFromConnections(centreConnections);
-        const houseY = houseIsElevated ? OVERPASS_HEIGHT : 0;
-        // 高架ホームを含む駅は、ラベルが高架の上屋にめり込まないようさらに高い位置に出す。
-        const labelY = hasElevatedCells ? 1.35 + OVERPASS_HEIGHT : 1.35;
+        const houseY = houseIsElevated ? houseLevel * OVERPASS_HEIGHT : 0;
+        // 高架ホームを含む駅は、ラベルが高架の上屋にめり込まないよう、最も高いレベルに
+        // 合わせてさらに高い位置に出す。
+        const labelY = hasElevatedCells ? 1.35 + Math.max(...elevatedLevels) * OVERPASS_HEIGHT : 1.35;
         return (
           <group key={station.id}>
             <StationHouse position={[centreCell.x, houseY, centreCell.z]} angle={angle} />

@@ -5,12 +5,16 @@ import { DIR, fromKey, getOppositeDir } from '../utils';
 import { MATERIALS } from '../render/palette';
 import {
   buildBridgeAbutmentPart, buildCellTrackParts, buildOverpassSupportParts, mergeParts,
-  buildRampTrackParts, buildRampAbutmentPart,
+  buildRampTrackParts, buildRampAbutmentPart, buildRampPierPart, shouldPlacePier,
   type TrackParts, type SupportParts,
 } from '../render/trackGeometry';
 import {
-  OVERPASS_HEIGHT, RAMP_POS_GROUND, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2, RAMP_POS_DECK,
+  OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL, rampHeightAtPos,
+  RAMP_POS_GROUND, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2, RAMP_POS_DECK,
 } from '../sim/trackPath';
+
+// 高架のレベル1〜MAX_ELEVATED_LEVELを走査するための配列([1,2,3])。
+const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
 
 // level1/level2境界どうしのposを、隣接セルの中間(=線路の境界点)として求める。
 // buildRampTrackParts/buildRampAbutmentPartへ渡すposLow/posHighはここで揃える
@@ -69,54 +73,68 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       all.rails.push(...parts.rails);
 
       if (data.ramp) {
-        // level1(地平寄り)は 地平/level1境界→level1/level2境界、level2(桁寄り)は
-        // level1/level2境界→level2/桁境界を、rampHeightAtPosの曲線に沿って登る。
-        // 旧セーブ(levelなし)はlevel2(桁側に近い段)として扱う。
+        // level1(base寄り)は base/level1境界→level1/level2境界、level2(base+1寄り)は
+        // level1/level2境界→level2/(base+1)境界を、rampHeightAtPos(pos, base)の曲線に
+        // 沿って登る。旧セーブ(levelなし)はlevel2(桁側に近い段)として扱う。
         // posLow/posHighはRAMP_POS_*から求めた境界値なので、隣接セルのposとぴったり
-        // 一致し、地平→level1→level2→桁のどのセル境界でも折れ角が生じない。
+        // 一致し、base→level1→level2→(base+1)のどのセル境界でも折れ角が生じない。
         const level = data.ramp.level ?? 2;
+        const base = data.ramp.base ?? 0;
         const posLow = level === 1 ? RAMP_BOUNDARY_GROUND_LEVEL1 : RAMP_BOUNDARY_LEVEL1_LEVEL2;
         const posHigh = level === 1 ? RAMP_BOUNDARY_LEVEL1_LEVEL2 : RAMP_BOUNDARY_LEVEL2_DECK;
-        const rampParts = buildRampTrackParts(data.ramp.dir, x, z, posLow, posHigh);
+        const rampParts = buildRampTrackParts(data.ramp.dir, x, z, posLow, posHigh, undefined, base);
         all.ballast.push(...rampParts.ballast);
         all.sleepers.push(...rampParts.sleepers);
         all.rails.push(...rampParts.rails);
 
-        // 橋台のくさびは地平に接するlevel1側にだけ出す(level2は宙に浮いた坂なので
-        // 地面まで届くくさびを描くと不自然になる)。地平(pos=0)で高さ0に収束する
-        // ようbuildRampAbutmentPart側のposLowは0のまま渡す。
-        if (level === 1) {
+        if (base === 0 && level === 1) {
+          // 地平(base=0)に接するlevel1側だけ、従来どおり土盛りのくさびで支える。
+          // 地平(pos=0)で高さ0に収束するようbuildRampAbutmentPart側のposLowは0のまま渡す。
           const wedge = buildRampAbutmentPart(data.ramp.dir, x, z, RAMP_BOUNDARY_LEVEL1_LEVEL2, RAMP_POS_GROUND);
           if (wedge) abutments.push(wedge);
+        } else if (base > 0 && level === 1) {
+          // base>=1の坂は地平に接しない(空中に架かる)ので、土盛りではなく支柱で支える。
+          const heightAtLowEnd = rampHeightAtPos(posLow, base);
+          if (shouldPlacePier(x, z, data.ramp.dir)) {
+            const pier = buildRampPierPart(x, z, heightAtLowEnd);
+            if (pier) supports.piers.push(pier);
+          }
         }
       }
 
-      // 多レベル高架の見た目は当面レベル1相当のまま(後続タスクで多レベル対応する)。
-      // ここではuppers[1]だけを描画対象にする。
-      const upper1 = data.uppers?.[1];
-      if (upper1) {
+      // 高架は全レベル(1〜MAX_ELEVATED_LEVEL)を走査し、レベルLの桁・レール・支柱を
+      // originY = L * OVERPASS_HEIGHT で生成する。異なるレベルの桁は同一セルに併存しうる。
+      for (const level of ELEVATED_LEVELS) {
+        const upper = data.uppers?.[level];
+        if (!upper) continue;
+        const originY = level * OVERPASS_HEIGHT;
+
         // 高架側はバラストを敷かず、枕木とレールだけを桁の上に置く。
-        const upperParts = buildCellTrackParts(upper1.connections, x, z, OVERPASS_HEIGHT, false);
+        const upperParts = buildCellTrackParts(upper.connections, x, z, originY, false);
         all.sleepers.push(...upperParts.sleepers);
         all.rails.push(...upperParts.rails);
 
-        const support = buildOverpassSupportParts(upper1.connections, x, z, OVERPASS_HEIGHT);
+        const support = buildOverpassSupportParts(upper.connections, x, z, originY);
         supports.piers.push(...support.piers);
         supports.decks.push(...support.decks);
-      } else {
-        // 橋台候補: uppers[1]を持たない線路セルから見て、隣が橋桁(uppers[1])なら
-        // その方向へ擁壁を置く(地平の高さから桁下面までを埋める)。
-        // ramp(坂)を持つ方向は、上のbuildRampAbutmentPartがくさび状の擁壁を
-        // 既に置いているので、段差の直方体擁壁は重ねて描かない
-        // (rampが無い旧セーブの橋台は従来どおりここで段差の擁壁を描く)。
+      }
+
+      // 橋台候補: あるレベルLの桁を持たない線路セルから見て、隣がそのレベルの桁なら
+      // その方向へ擁壁を置く(地平の高さから桁下面までを埋める)。
+      // ramp(坂)を持つ方向は、上のbuildRampAbutmentPart/buildRampPierPartが既に
+      // 支えを置いているので、段差の直方体擁壁は重ねて描かない
+      // (rampが無い旧セーブの橋台は従来どおりここで段差の擁壁を描く)。
+      for (const level of ELEVATED_LEVELS) {
+        if (data.uppers?.[level]) continue;
+        const originY = level * OVERPASS_HEIGHT;
         for (const bit of DIR_BITS) {
           if (!((data.connections ?? 0) & bit)) continue;
           if (data.ramp?.dir === bit) continue;
           const v = DIR_VECTORS[bit];
           const neighbour = railMap.get(`${x + v.x},${z + v.z}`);
-          if (!neighbour?.uppers?.[1]) continue;
-          if (!(neighbour.uppers[1]!.connections & getOppositeDir(bit))) continue;
-          const abutment = buildBridgeAbutmentPart(bit, x, z, OVERPASS_HEIGHT);
+          if (!neighbour?.uppers?.[level]) continue;
+          if (!(neighbour.uppers[level]!.connections & getOppositeDir(bit))) continue;
+          const abutment = buildBridgeAbutmentPart(bit, x, z, originY);
           if (abutment) abutments.push(abutment);
         }
       }

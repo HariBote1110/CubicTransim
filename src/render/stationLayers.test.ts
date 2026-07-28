@@ -53,6 +53,34 @@ describe('groundStationCells / elevatedStationCells', () => {
     railMap.set(toKey(2, 2), cell({ uppers: { 1: { connections: 0b10001000 } } }));
     expect(elevatedStationCells(railMap)).toHaveLength(0);
   });
+
+  it('レベル2/3の高架駅セルも拾い、levelフィールドに反映する', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(0, 0), cell({
+      uppers: { 2: { connections: 0b10001000, stationId: 's2' } },
+    }));
+    railMap.set(toKey(5, 5), cell({
+      uppers: { 3: { connections: 0b00100010, stationId: 's3' } },
+    }));
+
+    const elevated = elevatedStationCells(railMap);
+    expect(elevated).toHaveLength(2);
+    expect(elevated.find(c => c.stationId === 's2')).toMatchObject({ x: 0, z: 0, level: 2 });
+    expect(elevated.find(c => c.stationId === 's3')).toMatchObject({ x: 5, z: 5, level: 3 });
+  });
+
+  it('同一セルに複数レベルの高架駅が併存していれば両方拾う', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(1, 1), cell({
+      uppers: {
+        1: { connections: 0b10001000, stationId: 'low' },
+        2: { connections: 0b00100010, stationId: 'high' },
+      },
+    }));
+    const elevated = elevatedStationCells(railMap);
+    expect(elevated).toHaveLength(2);
+    expect(elevated.map(c => c.stationId).sort()).toEqual(['high', 'low']);
+  });
 });
 
 describe('computeStationEndKeys', () => {
