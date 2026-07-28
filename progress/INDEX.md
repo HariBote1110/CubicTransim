@@ -1,5 +1,6 @@
 # progress インデックス
 
+- [cross-elevated-station-data-model.md](cross-elevated-station-data-model.md) — 立体交差の十字乗り換え駅(第1段階: データモデルと建設ロジック)。`CellData.upper.stationId`で高架駅セルを判定(upperを持ち、かつstationIdがあるセル)。`StationData.cells[].layer`(0=地平/1=高架)で1駅IDに地平・高架両ホームを持たせる。`applyBridge`の坂+橋桁ロジックを`buildOverpassCore`に共通化し`applyElevatedStation`を追加、橋桁が地平駅でも高架駅・高架橋なら跨げるようガード緩和(ただし駅でない単なる橋桁が地平駅を跨ぐことは安全側で禁止のまま)。駅テンプレート`cross-elevated`を追加。SaveData v12。pathfinding/reservation/simulation/描画は未着手
 - [station-cell-axis.md](station-cell-axis.md) — 駅セルの接続を4方向固定から軸(ns/ew/cross)ベースに変更。ドラッグ方向・テンプレートの回転(Rキー)から軸を決め、隣接する既存線路・駅からの推測もサポート。旧セーブの4方向駅はそのまま互換動作
 - [bridge-ramp-and-whole-removal.md](bridge-ramp-and-whole-removal.md) 追記(2026-07-28) — 橋の坂の高さを離散的なlevel加算から`rampHeightAtPos`(sim/trackPath.tsのsmoothstep曲線、地平→level1→level2→桁を1本の連続パラメータposで辿る)に一元化し、取り付き部の折れ角を解消。render側(buildRampTrackParts/buildRampAbutmentPart)も同じ関数でサブセグメント分割して曲線化
 - [station-template-ui.md](station-template-ui.md) — 駅テンプレート建設ツールのUI・描画側。BuildMode='template'(ショートカット8)、Rキーでの回転(quarterTurnsを純粋関数cycleQuarterTurnsで一周)、テンプレ選択UI、クリック1回での設置(commitTemplateがevaluateStationTemplate/applyStationTemplateに判定を委ねてcommitPathと同じ会計処理)、kind別に色分けしたプレビュー。実機確認で十字駅9セル・回転後も同一・相対式との交差統合(17セル化)・資金不足時のバナーを確認
