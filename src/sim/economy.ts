@@ -35,6 +35,12 @@ export function monthIndexOf(elapsed: number): number {
   return Math.floor(dayIndex / DAYS_PER_MONTH);
 }
 
+// elapsedから「何日目(0始まりの絶対日インデックス)」を導出する(日跨ぎ検出用の内部ヘルパー)。
+// 町の輸送力チェック(resolveTownSpawnTick)など、月次より細かい粒度のティックに使う。
+export function dayIndexOf(elapsed: number): number {
+  return Math.floor(elapsed / SECONDS_PER_DAY);
+}
+
 // 絶対月インデックスから年月を導出する(stepWorldがmonthEndイベントの年月を求めるのに使う)。
 export function yearMonthOfIndex(monthIndex: number): { year: number; month: number } {
   const year = Math.floor(monthIndex / MONTHS_PER_YEAR) + 1;

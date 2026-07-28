@@ -887,6 +887,50 @@ describe('stepWorld: 町の成長', () => {
   });
 });
 
+describe('stepWorld: 輸送力に応じた町の湧き(即時湧きの廃止)', () => {
+  it('駅を置いただけ(列車なし)では何ティック経っても町が湧かない', () => {
+    const { railMap, stations } = buildTwoStationLine(30, 'stA', 'stB');
+    const world: SimWorld = {
+      railMap, stations, trains: [], runtimes: new Map(), waiting: new Map(),
+      rng: () => 0, towns: [], terrain: new Map(),
+    };
+
+    stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH * 6);
+
+    expect(world.towns).toEqual([]);
+  });
+
+  it('輸送力が閾値未満の列車しかいなければ湧かない', () => {
+    const { railMap, stations } = buildTwoStationLine(30, 'stA', 'stB');
+    // cars=1(定員CAPACITY_PER_CAR=50)は閾値TOWN_SPAWN_CAPACITY_THRESHOLD=100未満。
+    const train = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'], cars: 1 });
+    const world: SimWorld = {
+      railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
+      rng: () => 0, towns: [], terrain: new Map(),
+    };
+
+    stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH * 6);
+
+    expect(world.towns).toEqual([]);
+  });
+
+  it('その駅に停まる運行を持つ列車がいて輸送力が閾値以上なら、十分なティックで湧く', () => {
+    const { railMap, stations } = buildTwoStationLine(30, 'stA', 'stB');
+    // cars=2×CAPACITY_PER_CAR=50 → 100(閾値ちょうど)
+    const train = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'], cars: 2 });
+    const world: SimWorld = {
+      railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
+      rng: () => 0, towns: [], terrain: new Map(),
+    };
+
+    // rng固定(常に0)で決定的に、6ヶ月ぶん進めれば必ず湧く。
+    const events = stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH * 6);
+
+    expect(world.towns!.length).toBeGreaterThan(0);
+    expect(events.some(e => e.type === 'townGrowth')).toBe(true);
+  });
+});
+
 describe('stepWorld: 折返し運転と乗車の向き', () => {
   // stA --- stB --- stC の3駅を1本の折返し路線が走る
   const buildShuttleLine = () => {

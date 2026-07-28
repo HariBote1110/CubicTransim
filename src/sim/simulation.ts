@@ -11,7 +11,8 @@ import {
   boardFromStation,
 } from './passengers';
 import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
-import { growTown, townServiceLevel } from './towns';
+import { growTown, townServiceLevel, resolveTownSpawnTick } from './towns';
+import type { StationTransportInfo } from './towns';
 import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
 import {
   pathPointAt, rampHeightAtPos, OVERPASS_HEIGHT,
@@ -35,6 +36,7 @@ import {
   demandFactor,
   monthIndexOf,
   yearMonthOfIndex,
+  dayIndexOf,
 } from './economy';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
@@ -968,15 +970,56 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
   }
 };
 
+// 駅ごとの輸送力(その駅に停車する運行を持つ列車の編成定員合計)。
+// resolveTownSpawnTick(sim/towns.ts)は trains/groups の型を知らないため、ここで集計してから渡す。
+const computeStationTransportInfos = (world: SimWorld): StationTransportInfo[] => {
+  const capacities = new Map<string, number>();
+  for (const train of world.trains) {
+    if (train.status !== 'running') continue;
+    const schedule = effectiveSchedule(train, world.groups ?? []);
+    if (schedule.length === 0) continue;
+    const capacity = (train.cars ?? 2) * CAPACITY_PER_CAR;
+    for (const stationId of new Set(schedule)) {
+      capacities.set(stationId, (capacities.get(stationId) ?? 0) + capacity);
+    }
+  }
+
+  const infos: StationTransportInfo[] = [];
+  for (const station of world.stations.values()) {
+    const capacity = capacities.get(station.id) ?? 0;
+    if (capacity <= 0) continue;
+    infos.push({ stationId: station.id, pos: station.center, capacity });
+  }
+  return infos;
+};
+
 export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
   const events: SimEvent[] = [];
 
   // ゲーム内暦を進め、月が変わったtickでmonthEndイベントを発行する(dtが大きく複数月
   // 跨いだ場合は月数分発行する)。
   if (!world.clock) world.clock = { elapsed: 0 };
+  const prevDayIndex = dayIndexOf(world.clock.elapsed);
   const prevMonthIndex = monthIndexOf(world.clock.elapsed);
   world.clock.elapsed += dt;
+  const newDayIndex = dayIndexOf(world.clock.elapsed);
   const newMonthIndex = monthIndexOf(world.clock.elapsed);
+
+  // 町の湧き判定は日次(dtが大きく複数日跨いだ場合は日数分)。駅を置いただけでは湧かず、
+  // 実際に列車が停まり輸送力が閾値を超えて初めて町の芽(小さな新しい町)が生える
+  // (resolveTownSpawnTick、sim/towns.ts)。
+  if (newDayIndex > prevDayIndex && world.terrain) {
+    const stationInfos = computeStationTransportInfos(world);
+    for (let d = prevDayIndex; d < newDayIndex; d++) {
+      if (stationInfos.length === 0) break;
+      const result = resolveTownSpawnTick(stationInfos, world.towns ?? [], world.terrain, world.rng);
+      if (result.spawnedTowns.length > 0) {
+        world.towns = result.towns;
+        events.push({ type: 'townGrowth', towns: world.towns });
+      }
+    }
+  }
+
   for (let m = prevMonthIndex; m < newMonthIndex; m++) {
     const { year, month } = yearMonthOfIndex(m);
     events.push({ type: 'monthEnd', year, month });
