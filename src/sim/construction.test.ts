@@ -959,6 +959,30 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     expect((anchor.uppers![1]!.connections & DIR.W)).toBe(DIR.W);
     // 既存の桁の東方向の接続(高架内部)は保持されたまま
     expect((anchor.uppers![1]!.connections & DIR.E)).toBe(DIR.E);
+
+    // ramp.dirは「登る方向(高い側=アンカーのある側)」を指す規約(buildRampTrackParts参照)。
+    // アンカー(4,0)は坂セルより東(+x)にあるので、両方の坂セルのdirは東(DIR.E)でなければならない。
+    // (西を指すと傾斜が逆向きに描画され、宙に浮いた破片になる不具合があった)
+    expect(result.railMap.get(toKey(2, 0))!.ramp!.dir).toBe(DIR.E);
+    expect(result.railMap.get(toKey(3, 0))!.ramp!.dir).toBe(DIR.E);
+  });
+
+  it('経路のstart側(index0)がアンカーの場合も、ramp.dirはアンカーのある向きを指す', () => {
+    let state = emptyState();
+    // レベル1の浮いた高架を(10,0)〜(15,0)に敷く
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 10, z: 0 })), undefined, 1);
+    // アンカー(10,0)を始点(index0)にして、西へ向かう地平の線路を引く
+    const path = [{ x: 10, z: 0 }, { x: 9, z: 0 }, { x: 8, z: 0 }, { x: 7, z: 0 }, { x: 6, z: 0 }];
+    const result = applyRailPath(state, path);
+
+    expect(result.railMap.get(toKey(10, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(9, 0))!.ramp).toBeDefined();
+    expect(result.railMap.get(toKey(8, 0))!.ramp).toBeDefined();
+    expect(result.railMap.get(toKey(7, 0))!.ramp).toBeUndefined();
+
+    // アンカー(10,0)は坂セルより東(+x)にあるので、dirは東(DIR.E)を指す
+    expect(result.railMap.get(toKey(9, 0))!.ramp!.dir).toBe(DIR.E);
+    expect(result.railMap.get(toKey(8, 0))!.ramp!.dir).toBe(DIR.E);
   });
 
   it('端を浮いた高架(レベル2)の端タイルに当てると、坂4セル+アンカー(ramp無し)で接続される', () => {
@@ -1037,6 +1061,9 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
     // アンカー(4,-4)は既存の桁そのものなので坂にはならない
     expect(result.railMap.get(toKey(4, -4))!.ramp).toBeUndefined();
     expect((result.railMap.get(toKey(4, -4))!.uppers![1]!.connections & DIR.SW)).toBe(DIR.SW);
+    // アンカー(4,-4)は坂セルよりNE方向にあるので、dirはNEを指す
+    expect(result.railMap.get(toKey(2, -2))!.ramp!.dir).toBe(DIR.NE);
+    expect(result.railMap.get(toKey(3, -3))!.ramp!.dir).toBe(DIR.NE);
   });
 
   it('坂の区間でカーブ(方向転換)していると、接続を諦めて平坦な地平線路にフォールバックする', () => {

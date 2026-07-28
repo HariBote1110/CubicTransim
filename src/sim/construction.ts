@@ -308,6 +308,26 @@ export function planHasStraightRamps(path: Pos[], plan: ElevatedPathPlan): boole
   return true;
 }
 
+// role.sideだけでは「登る方向(高い側=既存構造へ向かう向き)」を一意に決められない。
+// 通常(高架建設が下位へ降りるascendingの坂、桁が経路内部の別セルとして一緒に
+// 建設される)は、そのside(start/end)にとって「経路の内側(桁)へ向かう向き」が
+// 登る方向になる。一方、地平からの自動接続(descending、既存構造がまさにその
+// 境界セル=アンカー自身)では逆に「経路の外側(アンカー)へ向かう向き」が登る方向になる。
+// plan.rolesの境界セルがanchorかどうかを見て、side→(prevDir|nextDir)のどちらを
+// 採用するかを一箇所で決める(applyGroundPathWithElevatedConnect/applyElevatedPathの
+// 両方から使う)。
+function rampDirResolver(
+  plan: ElevatedPathPlan,
+  length: number
+): (side: 'start' | 'end', prevDir: number, nextDir: number) => number {
+  const anchorAtStart = plan.roles[0]?.kind === 'anchor';
+  const anchorAtEnd = plan.roles[length - 1]?.kind === 'anchor';
+  return (side, prevDir, nextDir) => {
+    if (side === 'start') return anchorAtStart ? prevDir : nextDir;
+    return anchorAtEnd ? nextDir : prevDir;
+  };
+}
+
 function applyGroundPathWithElevatedConnect(
   state: ConstructionState,
   path: Pos[],
@@ -319,6 +339,7 @@ function applyGroundPathWithElevatedConnect(
   const railMap = new Map(state.railMap);
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
+  const rampDirFor = rampDirResolver(plan, path.length);
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -350,7 +371,7 @@ function applyGroundPathWithElevatedConnect(
       continue;
     }
 
-    const rampDir = role.side === 'start' ? nextDir : prevDir;
+    const rampDir = rampDirFor(role.side, prevDir, nextDir);
     const existing = railMap.get(key);
     const merged = orIntoBaseLevel(existing, role.base, axisBits);
     railMap.set(key, {
@@ -797,6 +818,7 @@ export function applyElevatedPath(
   const railMap = new Map(state.railMap);
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
+  const rampDirFor = rampDirResolver(plan, path.length);
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -839,7 +861,7 @@ export function applyElevatedPath(
       const bits = prevDir | nextDir;
       const existing = railMap.get(key);
       const merged = orIntoBaseLevel(existing, role.base, bits);
-      const rampDir = role.side === 'start' ? nextDir : prevDir;
+      const rampDir = rampDirFor(role.side, prevDir, nextDir);
       railMap.set(key, {
         ...merged,
         type: merged.type ?? 'rail',
