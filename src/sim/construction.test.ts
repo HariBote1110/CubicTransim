@@ -357,6 +357,77 @@ describe('地形による建設制約（水域・山岳）', () => {
   });
 });
 
+describe('斜面フリンジへの線路建設を防ぐ制約', () => {
+  // 3x3の山塊(x:0..2, z:0..2、それ以外は既定でgrass)。
+  // 境界セルは標高1、中心(1,1)はマンハッタン距離2で標高2になる
+  // (computeElevationのテストと同じ形)。中心セルの4隅コーナー標高は
+  // すべて1以上になり、天井が完全に覆われた内部セルとして扱える。
+  const makeBlockTerrain = (): Map<string, TerrainType> => {
+    const terrain = new Map<string, TerrainType>();
+    for (let x = 0; x <= 2; x++) {
+      for (let z = 0; z <= 2; z++) {
+        terrain.set(toKey(x, z), 'mountain');
+      }
+    }
+    return terrain;
+  };
+
+  // 幅1セルの尾根(x軸方向、z=0の1行だけ)。南北(z=-1/z=1)は非mountainのため、
+  // computeElevationでは全セルが境界(標高1)になり、コーナー標高は4隅とも0になる
+  // (南北どちらの隣接セルもmin則で0を持ち込むため)。
+  const makeRidgeTerrain = (): Map<string, TerrainType> => {
+    const terrain = new Map<string, TerrainType>();
+    for (let x = -2; x <= 2; x++) {
+      terrain.set(toKey(x, 0), 'mountain');
+    }
+    return terrain;
+  };
+
+  it('3x3山塊を貫く直線(中心セルは内部フラット)は建設できる', () => {
+    const terrain = makeBlockTerrain();
+    const state = emptyState();
+    const result = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }], terrain);
+
+    expect(result.railMap.get(toKey(1, 1))?.type).toBe('rail');
+    expect(result.railMap.get(toKey(1, 1))?.tunnel).toBe(true);
+  });
+
+  it('幅1の斜面だけの尾根を(尾根に沿って)横切る線は建設できない(no-op)', () => {
+    const terrain = makeRidgeTerrain();
+    const state = emptyState();
+    const result = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }], terrain);
+
+    // 中間セル(0,0)は坑口にもならず内部フラットでもないため、経路全体がno-opになる
+    // (部分的に敷設して破綻した見た目を残さないため)。
+    expect(result).toBe(state);
+  });
+
+  it('尾根を横切る(尾根と直交する)単セルの線は坑口として建設できる', () => {
+    const terrain = makeRidgeTerrain();
+    const state = emptyState();
+    // (0,-1)→(0,0)→(0,1): 南北どちらも非mountainに接するので両方坑口になる
+    const result = applyRailPath(state, [{ x: 0, z: -1 }, { x: 0, z: 0 }, { x: 0, z: 1 }], terrain);
+
+    expect(result.railMap.get(toKey(0, 0))?.type).toBe('rail');
+    expect(result.railMap.get(toKey(0, 0))?.tunnel).toBe(true);
+  });
+
+  it('山内部で行き止まる線は、最後のセルが内部フラット(4隅とも標高1以上)でなければ建設できない', () => {
+    const terrain = makeBlockTerrain();
+    const state = emptyState();
+    // (0,1)→(1,1)で行き止まる場合、(1,1)は経路の端だが東西南北いずれの隣接セルも
+    // mountain(3x3の内部)なので坑口にならない。中心セルなので内部フラット条件は満たし
+    // 建設できる。
+    const okResult = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }], terrain);
+    expect(okResult.railMap.get(toKey(1, 1))?.type).toBe('rail');
+
+    // 尾根terrainで行き止まる場合、末端セルは内部フラット条件を満たさないため不可。
+    const ridgeTerrain = makeRidgeTerrain();
+    const blockedResult = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }], ridgeTerrain);
+    expect(blockedResult).toBe(state);
+  });
+});
+
 describe('removePath（特性テスト）', () => {
   it('rail を削除すると隣接セルの connections も掃除される', () => {
     let state = emptyState();
