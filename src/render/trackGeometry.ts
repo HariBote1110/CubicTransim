@@ -62,7 +62,8 @@ export interface TrackParts {
   rails: THREE.BufferGeometry[];
 }
 
-type Pt = { x: number; z: number; y?: number };
+export type TrackPoint = { x: number; z: number; y?: number };
+type Pt = TrackPoint;
 
 const norm = (x: number, z: number): Pt => {
   const len = Math.hypot(x, z) || 1;
@@ -77,6 +78,84 @@ const quad = (p0: Pt, p1: Pt, p2: Pt, t: number): Pt => {
     z: u * u * p0.z + 2 * u * t * p1.z + t * t * p2.z,
   };
 };
+
+const curvePoints = (from: Pt, to: Pt): Pt[] => {
+  const centre: Pt = { x: 0, z: 0 };
+  const points: Pt[] = [];
+  for (let i = 0; i <= CURVE_SEGMENTS; i++) {
+    points.push(quad(from, centre, to, i / CURVE_SEGMENTS));
+  }
+  return points;
+};
+
+const oppositePair = (arms: Pt[]): [Pt, Pt] | null => {
+  let best: [Pt, Pt] | null = null;
+  let bestDot = Infinity;
+  for (let i = 0; i < arms.length; i++) {
+    for (let j = i + 1; j < arms.length; j++) {
+      const a = norm(arms[i].x, arms[i].z);
+      const b = norm(arms[j].x, arms[j].z);
+      const dot = a.x * b.x + a.z * b.z;
+      if (dot < bestDot) {
+        bestDot = dot;
+        best = [arms[i], arms[j]];
+      }
+    }
+  }
+  return best;
+};
+
+/**
+ * 接続ビットを実際に描く中心線へ変換する。
+ *
+ * 3方向の接続は、中心から3本を放射状に描くのではなく、最も直線に近い組を本線、
+ * 残りを本線の近い側から分岐するポイントとして描く。単線の交換設備でレールが
+ * セル中心に重なって見える問題を避けつつ、隣接セルと共有する境界点は維持する。
+ * 高架の桁も同じ中心線を使うため、曲線のレールの下に直線の桁が残らない。
+ */
+export function buildTrackCentreLines(connections: number): TrackPoint[][] {
+  const arms = BOUNDARY_OFFSETS
+    .filter(o => connections & o.bit)
+    .map(o => ({ x: o.x, z: o.z }));
+
+  if (arms.length === 0) return [];
+  if (arms.length === 1) return [[{ x: 0, z: 0 }, arms[0]]];
+  if (arms.length === 2) {
+    const [a, b] = arms;
+    const ua = norm(a.x, a.z);
+    const ub = norm(b.x, b.z);
+    const isStraight = ua.x * ub.x + ua.z * ub.z < -0.999;
+    return [isStraight ? [a, b] : curvePoints(a, b)];
+  }
+
+  const main = oppositePair(arms)!;
+  const routes: Pt[][] = [[main[0], main[1]]];
+  const mainSet = new Set(main);
+  const branches = arms.filter(arm => !mainSet.has(arm));
+
+  // 十字交差は2本の直線として描く。残る形(3方向、または斜めを含む複雑な分岐)は
+  // 本線に最も近い側から曲線で分岐させる。
+  if (branches.length === 2) {
+    const [a, b] = branches;
+    const ua = norm(a.x, a.z);
+    const ub = norm(b.x, b.z);
+    if (ua.x * ub.x + ua.z * ub.z < -0.999) {
+      routes.push([a, b]);
+      return routes;
+    }
+  }
+
+  for (const branch of branches) {
+    const source = [...main].sort((a, b) => {
+      const an = norm(a.x, a.z);
+      const bn = norm(b.x, b.z);
+      const cn = norm(branch.x, branch.z);
+      return (bn.x * cn.x + bn.z * cn.z) - (an.x * cn.x + an.z * cn.z);
+    })[0];
+    routes.push(curvePoints(source, branch));
+  }
+  return routes;
+}
 
 /**
  * 中心線ポリラインに沿ってバラスト・レール・枕木を敷く。
@@ -192,41 +271,9 @@ export function buildCellTrackParts(
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
 
-  const arms: Pt[] = BOUNDARY_OFFSETS.filter(o => connections & o.bit).map(o => ({ x: o.x, z: o.z }));
-
-  if (arms.length === 0) return parts;
-
-  if (arms.length === 2) {
-    const [a, b] = arms;
-    const ua = norm(a.x, a.z);
-    const ub = norm(b.x, b.z);
-    // 2方向が正反対なら直線。1セグメントで足りる。
-    const isStraight = ua.x * ub.x + ua.z * ub.z < -0.999;
-
-    if (isStraight) {
-      layTrackAlong(parts, [a, b], originX, originZ, originY, withBallast);
-    } else {
-      // 境界点A → セル中心(制御点) → 境界点B の2次ベジェ
-      const centre: Pt = { x: 0, z: 0 };
-      const points: Pt[] = [];
-      for (let i = 0; i <= CURVE_SEGMENTS; i++) {
-        points.push(quad(a, centre, b, i / CURVE_SEGMENTS));
-      }
-      layTrackAlong(parts, points, originX, originZ, originY, withBallast);
-    }
-    return parts;
-  }
-
-  // 分岐(3方向以上)と行き止まり(1方向): 中心から各境界点へ直線の腕を伸ばす。
-  // 中心のバラストで腕どうしの継ぎ目を埋める。
-  if (withBallast) {
-    const pad = new THREE.BoxGeometry(BALLAST_WIDTH, BALLAST_HEIGHT, BALLAST_WIDTH);
-    pad.translate(originX, originY + BALLAST_HEIGHT / 2, originZ);
-    parts.ballast.push(pad);
-  }
-
-  for (const arm of arms) {
-    layTrackAlong(parts, [{ x: 0, z: 0 }, arm], originX, originZ, originY, withBallast);
+  const routes = buildTrackCentreLines(connections);
+  for (const route of routes) {
+    layTrackAlong(parts, route, originX, originZ, originY, withBallast);
   }
   return parts;
 }
@@ -395,6 +442,22 @@ export interface SupportParts {
 
 const DIR_BITS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
 
+/** レールと同じ中心線に沿って、高架の桁を短い部材として連続配置する。 */
+const layDeckAlong = (decks: THREE.BufferGeometry[], points: TrackPoint[], x: number, z: number, originY: number): void => {
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const length = Math.hypot(dx, dz);
+    if (length < 1e-6) continue;
+    const deck = new THREE.BoxGeometry(DECK_WIDTH, DECK_THICKNESS, length + JOIN_OVERLAP * 2);
+    deck.rotateY(angleFromVector(dx / length, dz / length));
+    deck.translate(x + (a.x + b.x) / 2, originY - DECK_THICKNESS / 2, z + (a.z + b.z) / 2);
+    decks.push(deck);
+  }
+};
+
 /** connections に立っている最初の方向ビットを返す(橋桁は必ず軸1本ぶんの2ビット)。 */
 const firstDirBit = (connections: number): number => {
   for (const bit of DIR_BITS) if (connections & bit) return bit;
@@ -419,32 +482,14 @@ export function shouldPlacePier(x: number, z: number, dir: number): boolean {
  * 橋脚はshouldPlacePierがtrueのセルだけに1本、地面から桁下面まで立てる。
  */
 export function buildOverpassSupportParts(connections: number, x = 0, z = 0, originY = 0): SupportParts {
-  const deckTop = originY; // バラストの底(=originY)にちょうど接するようにする
-  const deckCentreY = deckTop - DECK_THICKNESS / 2;
   const decks: THREE.BufferGeometry[] = [];
-
-  const arms = BOUNDARY_OFFSETS.filter(o => connections & o.bit);
-  if (arms.length === 2) {
-    const [a, b] = arms;
-    const dx = b.x - a.x;
-    const dz = b.z - a.z;
-    const segLen = Math.hypot(dx, dz);
-    if (segLen > 1e-6) {
-      const rotY = angleFromVector(dx / segLen, dz / segLen);
-      const cx = x + (a.x + b.x) / 2;
-      const cz = z + (a.z + b.z) / 2;
-      const deck = new THREE.BoxGeometry(DECK_WIDTH, DECK_THICKNESS, segLen + JOIN_OVERLAP * 2);
-      deck.rotateY(rotY);
-      deck.translate(cx, deckCentreY, cz);
-      decks.push(deck);
-    }
-  }
+  for (const route of buildTrackCentreLines(connections)) layDeckAlong(decks, route, x, z, originY);
 
   const piers: THREE.BufferGeometry[] = [];
   const dir = firstDirBit(connections);
   if (shouldPlacePier(x, z, dir)) {
     const pierBottom = 0;
-    const pierTop = deckCentreY - DECK_THICKNESS / 2;
+    const pierTop = originY - DECK_THICKNESS;
     const pierHeight = Math.max(0.02, pierTop - pierBottom);
     const pier = new THREE.CylinderGeometry(PIER_RADIUS, PIER_RADIUS * 1.3, pierHeight, 8);
     pier.translate(x, pierBottom + pierHeight / 2, z);
