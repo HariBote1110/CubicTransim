@@ -162,7 +162,7 @@ describe('cornerElevation / cellCornerElevations', () => {
     }
   });
 
-  it('cliffFace指定時、その面の2隅はmin則ではなくセル自身の標高になる', () => {
+  it('cliffFace指定時、その面の2隅はmin則ではなく「自然な標高」と「セル標高を最大1段までに制限した値」の大きい方になる', () => {
     const elev = new Map([
       [toKey(0, 0), 2],
       [toKey(0, -1), 0],
@@ -174,12 +174,26 @@ describe('cornerElevation / cellCornerElevations', () => {
 
     const cliffFaces = new Set(['0,0,0,-1']);
     const withCliff = cellCornerElevations(elev, 0, 0, cliffFaces);
-    // 北面(dx=0,dz=-1)がcliffFace指定されているので、北側2隅(左上・右上)はセル標高2になる
-    expect(withCliff[0]).toBe(2);
-    expect(withCliff[1]).toBe(2);
+    // 北面(dx=0,dz=-1)がcliffFace指定されているので北側2隅(左上・右上)は持ち上がるが、
+    // セル標高(2)そのものではなく1段(坑口に必要な垂直面ぶん)までに制限される。
+    expect(withCliff[0]).toBe(1);
+    expect(withCliff[1]).toBe(1);
     // 他の2隅は変わらずmin則
     expect(withCliff[2]).toBe(withoutCliff[2]);
     expect(withCliff[3]).toBe(withoutCliff[3]);
+  });
+
+  it('cliffFace指定でも自然な標高がセル標高を1段に制限した値より高ければそちらを採る(min則の連続性を壊さない)', () => {
+    // セル(0,0)標高3、北隣(0,-1)標高2(min(selfElevation,1)=1より高い)
+    const elev = new Map([
+      [toKey(0, 0), 3],
+      [toKey(0, -1), 2],
+    ]);
+    const cliffFaces = new Set(['0,0,0,-1']);
+    const withCliff = cellCornerElevations(elev, 0, 0, cliffFaces);
+    // 自然な標高(min則)のほうが1段制限より高いので、そちらが採用される
+    expect(withCliff[0]).toBe(cornerElevation(elev, 0, 0));
+    expect(withCliff[1]).toBe(cornerElevation(elev, 1, 0));
   });
 });
 
