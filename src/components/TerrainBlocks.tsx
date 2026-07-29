@@ -5,10 +5,8 @@ import { fromKey } from '../utils';
 import {
   computeElevation,
   elevationAt,
-  cornerElevation,
   buildCornerElevationMap,
   cellCornersFromMap,
-  CLIFF_CORNER_MAP,
   MOUNTAIN_ELEVATION_MAX,
 } from '../sim/terrain';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -17,8 +15,6 @@ import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
   terrain: Map<string, TerrainType>;
-  /** トンネル坑口の面集合("x,z,dx,dz"形式)。この面は斜面にせず垂直の崖として描く。 */
-  cliffFaces?: Set<string>;
 }
 
 const WATER_LEVEL = -0.07;
@@ -43,18 +39,6 @@ const pushTri = (
   target.push(geo);
 };
 
-const pushQuad = (
-  target: THREE.BufferGeometry[],
-  a: THREE.Vector3,
-  b: THREE.Vector3,
-  c: THREE.Vector3,
-  d: THREE.Vector3,
-): void => {
-  // a,b,c,d は四角形を一周する順(a-b-c-dの辺で構成)。2三角形(a,b,c)(a,c,d)に分割する。
-  pushTri(target, a, b, c);
-  pushTri(target, a, c, d);
-};
-
 /**
  * 地形(水域・山岳)の描画。
  *
@@ -63,20 +47,18 @@ const pushQuad = (
  *    各セルの上面は4隅のコーナー標高(sim/terrain.ts の cellCornerElevations、
  *    隣接4セルの標高のmin則で決まる)を頂点に持つ四角形を2三角形に分割して描く。
  *    コーナー標高は隣接セルと共有される値なので面は自然に連続し、隙間やスカートは不要。
- *    トンネル坑口面(cliffFaces)だけは例外的に、対象2隅をセル自身の標高に固定して
- *    垂直の崖として扱い、その面には別途壁クアッドを張る。
+ *    トンネル坑口も例外扱いせず、常に自然な斜面(min則)のまま描く(坑口構造物は
+ *    GameScene側で斜面から張り出す別パーツとして描く)。
  *  1段の高さは OVERPASS_HEIGHT に合わせ、将来の高架・トンネルと視覚整合させる。
  * セル数が数百規模になり得るのでマテリアルごとにマージして描く。
  * 地形データ(sim/terrain.ts)そのものは変更していない。
  */
-export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
+export const TerrainBlocks: React.FC<Props> = ({ terrain }) => {
   const elevation = useMemo(() => computeElevation(terrain), [terrain]);
   // コーナー標高は「コーナー座標→標高」の共有マップとして1度だけ構築する
-  // (buildCornerElevationMap)。セルごとに個別計算すると、cliffFacesを宣言した
-  // セルの視点でしか持ち上げが反映されず、同じコーナーを共有する隣接セル側は
-  // 元のmin則の値のままになって上面メッシュに裂け目ができる(坑口の内部が
-  // 透けて見える不具合の原因だった)。
-  const cornerMap = useMemo(() => buildCornerElevationMap(elevation, cliffFaces), [elevation, cliffFaces]);
+  // (buildCornerElevationMap)。セルごとに個別計算すると、同じコーナーを共有する
+  // 隣接セル間で計算結果がずれ、上面メッシュに裂け目ができる恐れがある。
+  const cornerMap = useMemo(() => buildCornerElevationMap(elevation), [elevation]);
 
   const merged = useMemo(() => {
     const water: THREE.BufferGeometry[] = [];
@@ -131,26 +113,6 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
         pushTri(topTarget, tl, br, tr);
         pushTri(topTarget, tl, bl, br);
       }
-
-      // 坑口面の垂直壁: cliffFacesで持ち上げた2隅から、坑口が無かった場合の
-      // 本来のコーナー標高(=隣接セル側の自然な高さ)まで壁クアッドを張る。
-      if (cliffFaces) {
-        for (const [dirKey, [i0, i1]] of Object.entries(CLIFF_CORNER_MAP)) {
-          if (!cliffFaces.has(`${x},${z},${dirKey}`)) continue;
-          const [ox0, oz0] = CORNER_OFFSETS[i0];
-          const [ox1, oz1] = CORNER_OFFSETS[i1];
-          const naturalH0 = cornerElevation(elevation, Math.round(x + ox0 + 0.5), Math.round(z + oz0 + 0.5));
-          const naturalH1 = cornerElevation(elevation, Math.round(x + ox1 + 0.5), Math.round(z + oz1 + 0.5));
-          const top0 = worldCorners[i0];
-          const top1 = worldCorners[i1];
-          const bottom0 = new THREE.Vector3(top0.x, naturalH0 * OVERPASS_HEIGHT, top0.z);
-          const bottom1 = new THREE.Vector3(top1.x, naturalH1 * OVERPASS_HEIGHT, top1.z);
-          // 傾きの大きい坑口の垂直壁は岩色にする。
-          // 頂点順(top0→top1→bottom1→bottom0)は外側(dx,dz方向)から見てCCWになる
-          // ことを確認済み(例: 北面dz=-1では法線が(0,0,-1)になり、外向きになる)。
-          pushQuad(rockDark, top0, top1, bottom1, bottom0);
-        }
-      }
     }
 
     const mergeAll = (list: THREE.BufferGeometry[]): THREE.BufferGeometry | null => {
@@ -167,7 +129,7 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain, cliffFaces }) => {
       grassTop: mergeAll(grassTop),
       snowTop: mergeAll(snowTop),
     };
-  }, [terrain, elevation, cliffFaces]);
+  }, [terrain, elevation, cornerMap]);
 
   useEffect(() => () => {
     Object.values(merged).forEach(g => g?.dispose());

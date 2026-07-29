@@ -314,11 +314,6 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // 山の内部を突き破らないよう、標高(TerrainBlocksと同じcomputeElevation)を渡す。
   const terrainElevation = useMemo(() => computeElevation(terrain), [terrain]);
   const tunnelPortalList = useMemo(() => tunnelPortals(railMap, terrainElevation), [railMap, terrainElevation]);
-  // 坑口面を垂直の崖として保つため、TerrainBlocksへ"x,z,dx,dz"形式で伝える。
-  const cliffFaces = useMemo(
-    () => new Set(tunnelPortalList.map(p => `${p.x},${p.z},${p.dx},${p.dz}`)),
-    [tunnelPortalList],
-  );
 
   // 草地のテクスチャ(色ムラ)。1度だけ生成して使い回す。
   const groundTexture = useMemo(() => createGroundTexture(), []);
@@ -364,7 +359,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TerrainBlocks terrain={terrain} cliffFaces={cliffFaces} />
+      <TerrainBlocks terrain={terrain} />
       <Scenery terrain={terrain} railMap={railMap} towns={towns} />
       <TrackNetwork railMap={railMap} />
 
@@ -409,39 +404,62 @@ export const GameScene: React.FC<GameSceneProps> = ({
         return <group key={key}>{elements}</group>;
       })}
 
-      {/* トンネルの坑口(山肌に面した出入口)。OpenTTD風に、トンネル内部のセルは
-          TerrainBlocksの段丘メッシュへ埋め込まれるため、坑口だけをセル境界面に
-          石造りの門型ファサード(枠+黒い開口)として描く。トンネル内のレールは
-          地表と同じ高さを走るため、標高に関わらず常に地面レベル(y=0)基準に置く。
-          装飾であり選択対象ではないため地面クリックを奪わないようレイキャストを外す。 */}
+      {/* トンネルの坑口(山肌に面した出入口)。OpenTTD風に「斜面へ掘り込む」見た目にするため、
+          坑口面を垂直の崖にするのではなく地形は自然な斜面のまま(TerrainBlocks側)にし、
+          坑口構造物(石造ヘッドウォール+黒い開口+袖壁)だけをセル境界面から非mountain側へ
+          張り出させる。上端が斜面に刺さって見えることで「山に掘り込んだ」印象になる。
+          トンネル内のレールは地表と同じ高さを走るため、標高に関わらず常に地面レベル(y=0)
+          基準に置く。装飾であり選択対象ではないため地面クリックを奪わないようレイキャストを外す。 */}
       {tunnelPortalList.map(portal => {
-        // 坑口面へわずかにオフセットして地形メッシュの垂直壁とのZファイティングを避ける。
-        const faceX = portal.x + portal.dx * 0.53;
-        const faceZ = portal.z + portal.dz * 0.53;
-        // groupをdx/dz方向へ向ける(南北を基準形状とし、rotation-yで実際の方向に合わせる。
-        // angleFromVectorと同じatan2(x,z)の規約なので、斜め線路の坑口も自然に向く)。
+        // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。
+        const faceX = portal.x + portal.dx * 0.5;
+        const faceZ = portal.z + portal.dz * 0.5;
+        // groupをdx/dz方向(非mountain側)へ向ける。ローカル+Zがこの方向に一致するので、
+        // ヘッドウォールは+Z側(斜面の外)、開口や袖壁は-Z側(山の内側)へ伸ばせばよい。
         const angle = Math.atan2(portal.dx, portal.dz);
-        const frameSize: [number, number, number] = [0.8, 0.65, 0.1];
-        // 開口はトンネル奥行き方向(rotation-y適用後のローカル-Z、山の内側)へ深く伸ばす。
-        // 薄い板のままだと開口の向こうにトンネル内部のレールが直接見えてしまうため、
-        // 奥まで黒で満たして坑道の暗がりに見せる。中心をローカル-Zへずらして
-        // 坑口面(z=0)から山の内部(z=-openingDepth)まで埋める。
+
+        // ヘッドウォール(斜面から張り出す石造の壁)。境界面からさらに外側へ張り出し、
+        // 上端が斜面に刺さって「山に掘り込んだ」見た目になる。
+        const headwallOffset = 0.2;
+        const headwallSize: [number, number, number] = [0.95, 0.8, 0.12];
+
+        // 黒い開口。ヘッドウォール面よりわずかに外側から、トンネル奥(山の内側)へ
+        // 深く伸ばして、手前の斜面ポリゴンに隠れず確実に「穴」として見えるようにする。
         const openingDepth = 1.0;
-        const openingSize: [number, number, number] = [0.55, 0.5, openingDepth];
+        const openingSize: [number, number, number] = [0.5, 0.55, openingDepth];
+        const openingOuterZ = headwallOffset + headwallSize[2] / 2 + 0.01;
+
+        // 袖壁(ヘッドウォール両脇から山側へ伸びる短い壁)。
+        const wingHeight = 0.5;
+        const wingLength = 0.4;
+        const wingThickness = 0.1;
+        const wingX = headwallSize[0] / 2 - wingThickness / 2;
+
         return (
           <group
             key={`portal-${portal.x},${portal.z},${portal.dx},${portal.dz}`}
             position={[faceX, 0, faceZ]}
             rotation-y={angle}
           >
-            <mesh position={[0, 0.325, 0]} castShadow raycast={() => null}>
-              <boxGeometry args={frameSize} />
+            <mesh position={[0, headwallSize[1] / 2, headwallOffset]} castShadow raycast={() => null}>
+              <boxGeometry args={headwallSize} />
               <meshStandardMaterial color="#77726a" roughness={1} flatShading />
             </mesh>
-            <mesh position={[0, 0.25, -openingDepth / 2]} raycast={() => null}>
+            <mesh position={[0, openingSize[1] / 2, openingOuterZ - openingDepth / 2]} raycast={() => null}>
               <boxGeometry args={openingSize} />
               <meshStandardMaterial color="#14181d" roughness={1} />
             </mesh>
+            {[-1, 1].map(side => (
+              <mesh
+                key={side}
+                position={[side * wingX, wingHeight / 2, -wingLength / 2]}
+                castShadow
+                raycast={() => null}
+              >
+                <boxGeometry args={[wingThickness, wingHeight, wingLength]} />
+                <meshStandardMaterial color="#6b665f" roughness={1} flatShading />
+              </mesh>
+            ))}
           </group>
         );
       })}

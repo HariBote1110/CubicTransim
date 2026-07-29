@@ -205,21 +205,6 @@ export function cornerElevation(elev: Map<string, number>, cx: number, cz: numbe
   return min;
 }
 
-// セル(x,z)の4面(北/東/南/西)を "x,z,dx,dz" 形式(getVectorFromDirの単位ベクトル)で表した坑口面集合。
-// cliffFaces に含まれる面の2隅は、min則ではなくセル自身の標高になる(=坑口面を垂直の崖に保つ)。
-// render層(TerrainBlocks)でも坑口の垂直壁クアッドの対象コーナーを特定するために使うため公開する。
-export const CLIFF_CORNER_MAP: Record<string, [number, number]> = {
-  '0,-1': [0, 1], // 北面: 左上・右上
-  '1,0': [1, 2], // 東面: 右上・右下
-  '0,1': [2, 3], // 南面: 右下・左下
-  '-1,0': [3, 0], // 西面: 左下・左上
-};
-
-// 坑口面の垂直壁として持ち上げる段数の上限。セル標高が高くても崖は1段ぶんだけに
-// 抑え、地表から巨大な壁が突き出さないようにする(トンネル内のレールは常に地表と
-// 同じ高さを走るため、坑口も1段の崖で十分)。
-const CLIFF_LIFT_MAX = 1;
-
 // コーナーのインデックス[左上,右上,右下,左下]それぞれに対応する、セル(x,z)から見た
 // コーナー座標へのオフセット。cornerElevationの引数(cx,cz)はこれをx,zへ足した値。
 const CORNER_COORD_DELTAS: ReadonlyArray<[number, number]> = [
@@ -236,17 +221,10 @@ const cornerKeyOfCell = (x: number, z: number, cornerIndex: number): string => {
 
 /**
  * mountainの全セルについて、4隅のコーナー標高を「コーナー座標→標高」の共有マップとして
- * 一括構築する。cellCornerElevationsのようにセル単位で個別に計算すると、cliffFacesを
- * 宣言したセルの視点でしか持ち上げが反映されず、同じコーナーを共有する隣接セル(cliffFaces
- * 非宣言側)は元のmin則の値のままになって上面メッシュに裂け目ができてしまう。
- * この関数はcliffFacesによる持ち上げを「コーナー単位」で一度だけ適用するため、
- * どのセルからこのマップを参照しても同じコーナーは必ず同じ値になり、裂け目が原理的に
- * 起こらない。
+ * 一括構築する。同じコーナーを共有する隣接セルは常に同じ値を参照するため、
+ * どのセルからこのマップを参照しても上面メッシュに裂け目ができない。
  */
-export function buildCornerElevationMap(
-  elev: Map<string, number>,
-  cliffFaces?: Set<string>,
-): Map<string, number> {
+export function buildCornerElevationMap(elev: Map<string, number>): Map<string, number> {
   const corners = new Map<string, number>();
 
   for (const key of elev.keys()) {
@@ -256,21 +234,6 @@ export function buildCornerElevationMap(
       if (corners.has(ck)) continue;
       const [dx, dz] = CORNER_COORD_DELTAS[i];
       corners.set(ck, cornerElevation(elev, x + dx, z + dz));
-    }
-  }
-
-  if (cliffFaces && cliffFaces.size > 0) {
-    for (const key of elev.keys()) {
-      const { x, z } = fromKey(key);
-      const selfElevation = elev.get(key) ?? 0;
-      const lift = Math.min(selfElevation, CLIFF_LIFT_MAX);
-      for (const [dirKey, [i0, i1]] of Object.entries(CLIFF_CORNER_MAP)) {
-        if (!cliffFaces.has(`${x},${z},${dirKey}`)) continue;
-        for (const i of [i0, i1]) {
-          const ck = cornerKeyOfCell(x, z, i);
-          corners.set(ck, Math.max(corners.get(ck) ?? 0, lift));
-        }
-      }
     }
   }
 
@@ -298,20 +261,16 @@ export function cellCornersFromMap(
 /**
  * セル(x,z)の4隅のコーナー標高を [左上, 右上, 右下, 左下] の順で返す。
  * 左上=corner(x,z)、右上=corner(x+1,z)、右下=corner(x+1,z+1)、左下=corner(x,z+1)。
- * cliffFaces に "x,z,dx,dz" 形式でこのセルの坑口面が含まれる場合、その面に接する
- * 2隅はmin則の値と「セル標高をCLIFF_LIFT_MAXまでに制限した値」の大きい方にする
- * (自然な標高のほうが高い場合はmin則の連続性を優先し、そちらを採る)。
  *
- * 内部的にはbuildCornerElevationMap(コーナー単位で持ち上げを適用する共有マップ)を
- * 経由する。多数のセルをまとめて描画する場合はbuildCornerElevationMapを1度だけ呼び、
- * cellCornersFromMapで個別に読み出すほうが効率的(この関数は単発利用向け)。
+ * 内部的にはbuildCornerElevationMapを経由する。多数のセルをまとめて描画する場合は
+ * buildCornerElevationMapを1度だけ呼び、cellCornersFromMapで個別に読み出すほうが
+ * 効率的(この関数は単発利用向け)。
  */
 export function cellCornerElevations(
   elev: Map<string, number>,
   x: number,
   z: number,
-  cliffFaces?: Set<string>,
 ): [number, number, number, number] {
-  const corners = buildCornerElevationMap(elev, cliffFaces);
+  const corners = buildCornerElevationMap(elev);
   return cellCornersFromMap(corners, x, z);
 }
