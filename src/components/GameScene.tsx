@@ -22,9 +22,10 @@ import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals } from '../sim/tunnel';
-import { computeElevation } from '../sim/terrain';
+import { computeElevation, buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
+import { computePortalPitch } from '../render/tunnelPortalGeometry';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -314,6 +315,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // 山の内部を突き破らないよう、標高(TerrainBlocksと同じcomputeElevation)を渡す。
   const terrainElevation = useMemo(() => computeElevation(terrain), [terrain]);
   const tunnelPortalList = useMemo(() => tunnelPortals(railMap, terrainElevation), [railMap, terrainElevation]);
+  // 坑口の開口を斜面へ沿わせる傾き計算に使うコーナー標高の共有マップ(TerrainBlocksと同じ導出)。
+  const terrainCornerMap = useMemo(() => buildCornerElevationMap(terrainElevation), [terrainElevation]);
 
   // 草地のテクスチャ(色ムラ)。1度だけ生成して使い回す。
   const groundTexture = useMemo(() => createGroundTexture(), []);
@@ -404,36 +407,21 @@ export const GameScene: React.FC<GameSceneProps> = ({
         return <group key={key}>{elements}</group>;
       })}
 
-      {/* トンネルの坑口(山肌に面した出入口)。OpenTTD風に「斜面へ掘り込む」見た目にするため、
-          坑口面を垂直の崖にするのではなく地形は自然な斜面のまま(TerrainBlocks側)にし、
-          坑口構造物(石造ヘッドウォール+黒い開口+袖壁)だけをセル境界面から非mountain側へ
-          張り出させる。上端が斜面に刺さって見えることで「山に掘り込んだ」印象になる。
-          トンネル内のレールは地表と同じ高さを走るため、標高に関わらず常に地面レベル(y=0)
-          基準に置く。装飾であり選択対象ではないため地面クリックを奪わないようレイキャストを外す。 */}
+      {/* トンネルの坑口(山肌に面した出入口)。「隙間だらけで大掛かりすぎる」というフィード
+          バックを受け、張り出す構造物(ヘッドウォール・袖壁)はやめ、斜面に斜めに開いた
+          黒い穴だけで表現する。開口の傾き(ピッチ角)はcomputePortalPitchで坑口セルの
+          4隅コーナー標高から求め、斜面にほぼ沿う向きに回転させて浮き・隙間を防ぐ。
+          トンネル内のレールは地表と同じ高さを走るため、境界面の基準点は常に地面レベル
+          (y=0)に置く。装飾であり選択対象ではないため地面クリックを奪わないようレイキャストを外す。 */}
       {tunnelPortalList.map(portal => {
         // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。
         const faceX = portal.x + portal.dx * 0.5;
         const faceZ = portal.z + portal.dz * 0.5;
-        // groupをdx/dz方向(非mountain側)へ向ける。ローカル+Zがこの方向に一致するので、
-        // ヘッドウォールは+Z側(斜面の外)、開口や袖壁は-Z側(山の内側)へ伸ばせばよい。
+        // groupをdx/dz方向(非mountain側)へ向ける。ローカル+Zがこの方向に一致する。
         const angle = Math.atan2(portal.dx, portal.dz);
 
-        // ヘッドウォール(斜面から張り出す石造の壁)。境界面からさらに外側へ張り出し、
-        // 上端が斜面に刺さって「山に掘り込んだ」見た目になる。
-        const headwallOffset = 0.2;
-        const headwallSize: [number, number, number] = [0.95, 0.8, 0.12];
-
-        // 黒い開口。ヘッドウォール面よりわずかに外側から、トンネル奥(山の内側)へ
-        // 深く伸ばして、手前の斜面ポリゴンに隠れず確実に「穴」として見えるようにする。
-        const openingDepth = 1.0;
-        const openingSize: [number, number, number] = [0.5, 0.55, openingDepth];
-        const openingOuterZ = headwallOffset + headwallSize[2] / 2 + 0.01;
-
-        // 袖壁(ヘッドウォール両脇から山側へ伸びる短い壁)。
-        const wingHeight = 0.5;
-        const wingLength = 0.4;
-        const wingThickness = 0.1;
-        const wingX = headwallSize[0] / 2 - wingThickness / 2;
+        const cellCorners = cellCornersFromMap(terrainCornerMap, portal.x, portal.z);
+        const { pitch } = computePortalPitch(cellCorners, portal.dx, portal.dz, OVERPASS_HEIGHT);
 
         return (
           <group
@@ -441,25 +429,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
             position={[faceX, 0, faceZ]}
             rotation-y={angle}
           >
-            <mesh position={[0, headwallSize[1] / 2, headwallOffset]} castShadow raycast={() => null}>
-              <boxGeometry args={headwallSize} />
-              <meshStandardMaterial color="#77726a" roughness={1} flatShading />
-            </mesh>
-            <mesh position={[0, openingSize[1] / 2, openingOuterZ - openingDepth / 2]} raycast={() => null}>
-              <boxGeometry args={openingSize} />
-              <meshStandardMaterial color="#14181d" roughness={1} />
-            </mesh>
-            {[-1, 1].map(side => (
-              <mesh
-                key={side}
-                position={[side * wingX, wingHeight / 2, -wingLength / 2]}
-                castShadow
-                raycast={() => null}
-              >
-                <boxGeometry args={[wingThickness, wingHeight, wingLength]} />
-                <meshStandardMaterial color="#6b665f" roughness={1} flatShading />
+            {/* rotation-xで斜面の傾きに合わせる。この中のz/yはローカル(未回転)座標。 */}
+            <group rotation-x={pitch}>
+              {/* 斜面に沿う黒い切り口。斜面表面からわずかに(+0.02)浮かせてZファイティングを避ける。 */}
+              <mesh position={[0, 0.02, -0.35]} raycast={() => null}>
+                <boxGeometry args={[0.6, 0.03, 0.7]} />
+                <meshStandardMaterial color="#14181d" roughness={1} />
               </mesh>
-            ))}
+              {/* 切り口の奥に続く暗がり。奥行きを持たせ、覗き込んでも中が透けないようにする。 */}
+              <mesh position={[0, -0.02, -0.9]} raycast={() => null}>
+                <boxGeometry args={[0.55, 0.5, 1.0]} />
+                <meshStandardMaterial color="#0b0e12" roughness={1} />
+              </mesh>
+            </group>
           </group>
         );
       })}
