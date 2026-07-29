@@ -164,44 +164,18 @@ describe('cornerElevation / cellCornerElevations', () => {
     }
   });
 
-  it('cliffFace指定時、その面の2隅はmin則ではなく「自然な標高」と「セル標高を最大1段までに制限した値」の大きい方になる', () => {
+  it('坑口面(cliffFaces)は撤去済みのため、mountainセルの標高が高くても自然な斜面(min則)のまま持ち上がらない', () => {
+    // かつてはcliffFacesで坑口面のコーナーを人工的に持ち上げていたが、
+    // OpenTTD風に「斜面へ掘り込む」見た目へ再設計したため、坑口面も常にmin則の
+    // 自然な標高になる(垂直の崖にはしない)。
     const elev = new Map([
       [toKey(0, 0), 2],
       [toKey(0, -1), 0],
     ]);
-    const withoutCliff = cellCornerElevations(elev, 0, 0);
-    // 通常は北隣が平地(0)なのでmin則で北側2隅は0になる
-    expect(withoutCliff[0]).toBe(0);
-    expect(withoutCliff[1]).toBe(0);
-
-    const cliffFaces = new Set(['0,0,0,-1']);
-    const withCliff = cellCornerElevations(elev, 0, 0, cliffFaces);
-    // 北面(dx=0,dz=-1)がcliffFace指定されているので北側2隅(左上・右上)は持ち上がるが、
-    // セル標高(2)そのものではなく1段(坑口に必要な垂直面ぶん)までに制限される。
-    expect(withCliff[0]).toBe(1);
-    expect(withCliff[1]).toBe(1);
-    // 他の2隅は変わらずmin則
-    expect(withCliff[2]).toBe(withoutCliff[2]);
-    expect(withCliff[3]).toBe(withoutCliff[3]);
-  });
-
-  it('cliffFace指定でも自然な標高がセル標高を1段に制限した値より高ければそちらを採る(min則の連続性を壊さない)', () => {
-    // (0,0)を含む2x2ブロックを標高2〜3で埋め、北側コーナーの自然標高(min則)を
-    // CLIFF_LIFT_MAX(1)より高くする。
-    const elev = new Map([
-      [toKey(-1, -1), 2],
-      [toKey(0, -1), 2],
-      [toKey(-1, 0), 3],
-      [toKey(0, 0), 3],
-      [toKey(1, -1), 2],
-      [toKey(1, 0), 3],
-    ]);
-    const cliffFaces = new Set(['0,0,0,-1']);
-    const withCliff = cellCornerElevations(elev, 0, 0, cliffFaces);
-    // 自然な標高(min則、ここでは2)のほうが1段制限(1)より高いので、そちらが採用される
-    expect(withCliff[0]).toBe(cornerElevation(elev, 0, 0));
-    expect(withCliff[1]).toBe(cornerElevation(elev, 1, 0));
-    expect(withCliff[0]).toBeGreaterThan(1);
+    const corners = cellCornerElevations(elev, 0, 0);
+    // 北隣が平地(0)なのでmin則で北側2隅は0のまま
+    expect(corners[0]).toBe(0);
+    expect(corners[1]).toBe(0);
   });
 });
 
@@ -261,23 +235,19 @@ describe('dilateMountains', () => {
 });
 
 describe('buildCornerElevationMap / cellCornersFromMap', () => {
-  it('cliffFacesを片方のセルだけが宣言していても、共有コーナーは隣接セル側から見ても同じ値になる(裂け目が出ない)', () => {
-    // セル(0,0)標高2・北面がcliffFace。隣セル(1,0)標高1はcliffFaceを宣言していない。
+  it('共有コーナーは隣接セル側から見ても同じ値になる(裂け目が出ない)', () => {
     const elev = new Map([
       [toKey(0, 0), 2],
       [toKey(1, 0), 1],
     ]);
-    const cliffFaces = new Set(['0,0,0,-1']);
 
-    const map = buildCornerElevationMap(elev, cliffFaces);
+    const map = buildCornerElevationMap(elev);
     const cellA = cellCornersFromMap(map, 0, 0);
     const cellB = cellCornersFromMap(map, 1, 0);
 
     // セル(0,0)の右上隅とセル(1,0)の左上隅は同じコーナー(1,0)を指す。
-    // cliffFaceによる持ち上げ(min(2,1)=1)は宣言元のセルだけでなく、
-    // 同じコーナーを参照するどのセルから見ても一致する。
-    expect(cellA[1]).toBe(1);
-    expect(cellB[0]).toBe(1);
+    expect(cellA[1]).toBe(cornerElevation(elev, 1, 0));
+    expect(cellB[0]).toBe(cornerElevation(elev, 1, 0));
     expect(cellA[1]).toBe(cellB[0]);
   });
 
@@ -288,10 +258,9 @@ describe('buildCornerElevationMap / cellCornersFromMap', () => {
       [toKey(0, 1), 1],
       [toKey(1, 1), 1],
     ]);
-    const cliffFaces = new Set(['0,0,0,-1']);
 
-    const viaLegacyApi = cellCornerElevations(elev, 0, 0, cliffFaces);
-    const map = buildCornerElevationMap(elev, cliffFaces);
+    const viaLegacyApi = cellCornerElevations(elev, 0, 0);
+    const map = buildCornerElevationMap(elev);
     const viaSharedMap = cellCornersFromMap(map, 0, 0);
 
     expect(viaLegacyApi).toEqual(viaSharedMap);
