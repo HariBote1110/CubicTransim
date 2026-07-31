@@ -27,7 +27,7 @@ import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import {
   computePortalHeadwall, buildHeadwallOutline, buildArchOutline, type Point2D,
-  PORTAL_WALL_WIDTH, PORTAL_WALL_THICKNESS, PORTAL_BODY_DEPTH,
+  PORTAL_WALL_WIDTH, PORTAL_WALL_THICKNESS, PORTAL_BODY_DEPTH, PORTAL_MOUTH_CAP_DEPTH,
 } from '../render/tunnelPortalGeometry';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
@@ -329,27 +329,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const openingHalfWidth = 0.26;
   const openingStraightHeight = 0.26;
   const archRadius = openingHalfWidth;
-  // 坑口全体の奥行き(ヘッドウォール+箱状ボディを合わせた1本のExtrudeGeometryの深さ)。
-  // 壁1枚+袖壁の「書き割り」構成だと、低い斜面・対角斜面で壁の裏側の空洞(黒い開口裏の
-  // プレートや壁の裏面)がカメラに露出してしまう不具合があった。ヘッドウォールと同じ
-  // 外形(アーチの穴あき断面)をPORTAL_BODY_DEPTHぶん追加して押し出すことで、天井・
-  // 側面・裏面すべてが石材の面だけになる「閉じた箱」にする。
-  const portalDepth = wallThickness + PORTAL_BODY_DEPTH;
-  // トンネル内部の暗がり(閉じた箱の奥に置く終端キャップ)。奥行きのある実穴の
-  // いちばん奥(箱の裏面より手前)に置くことで、どの角度から見ても黒い面が箱の外へ
-  // 出ないようにする。tunnelMouthPlateDepthは板の厚み(見た目上ごくわずかで良い。
-  // 0扱いにはせず、z-fightingを避ける最小限の厚みを持たせる)。
-  const tunnelMouthPlateDepth = 0.01;
-  // 終端キャップを箱の裏面から手前へ引っ込める余白(裏面ちょうどだと箱の裏側の面と
-  // 重なってしまうため、必ず内部に収まる位置に置く)。
-  const mouthCapMargin = 0.05;
+  // トンネル内部の暗がりの板厚(見た目上ごくわずかで良い。0扱いにはせず、z-fightingを
+  // 避ける最小限の厚みを持たせる)。
+  const tunnelMouthPlateDepth = PORTAL_MOUTH_CAP_DEPTH;
+  // ヘッドウォール背後に接続する、穴の無い中実な箱状ボディの奥行き。
+  const bodyDepth = PORTAL_BODY_DEPTH;
 
-  // ヘッドウォール+箱状ボディのジオメトリ(アーチ開口を1枚のExtrudeGeometryとして
-  // 一体成形)。「黒い開口パネル+奥の暗箱」を壁の手前に重ねる張りぼて構成だと、斜めから
-  // 見たときにパネルと暗箱のシルエットが合成されて開口が非対称・不定形に見えてしまって
-  // いた(実際に穴が開いていないため輪郭が正しく出ない)。buildHeadwallOutlineで求めた
-  // 「壁の外形+アーチ状の切り欠き」を1本の折れ線としてShape化し、実際に穴の開いた
-  // 箱として押し出すことで、どの角度から見ても開口の輪郭・箱の面だけが正しく読める。
+  // ヘッドウォールのジオメトリ(壁+アーチ開口を1枚のExtrudeGeometryとして一体成形、
+  // 深さは壁厚のみ)。以前は「壁+ボディ」をまとめて1本のExtrudeGeometryとして
+  // アーチ穴ごと押し出していたが、これだとボディ側にもアーチ型のトンネルが貫通してしまい、
+  // 山側(裏)の面にもアーチ形の穴が開いて、その奥の黒キャップが裏面の黒いアーチとして
+  // 露出する不具合があった。ヘッドウォールは壁厚(wallThickness)ぶんだけ穴あきで押し出し、
+  // その背後には穴の無い中実なボディ(boxGeometry)を密着させる「穴あき前壁+中実ボディ」
+  // 構成に変更し、穴が壁の中でだけ完結して裏まで貫通しないようにする。
   // wallHeightはポータルごとに異なるため、高さをキーにジオメトリをキャッシュして使い回す。
   const portalGeometryData = useMemo(() => {
     const cache = new Map<number, THREE.ExtrudeGeometry>();
@@ -367,19 +359,17 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const shape = new THREE.Shape();
         outline.forEach((p: Point2D, i: number) => (i === 0 ? shape.moveTo(p.x, p.y) : shape.lineTo(p.x, p.y)));
         shape.closePath();
-        headwallGeometry = new THREE.ExtrudeGeometry(shape, { depth: portalDepth, bevelEnabled: false });
-        // 手前側の面(局所+Z)がwallThickness/2の位置に来るよう平行移動する(壁のみだった
-        // 頃と同じ基準面を維持し、箱は奥(-Z)側にだけ伸びるようにする)。
-        headwallGeometry.translate(0, 0, wallThickness / 2 - portalDepth);
+        headwallGeometry = new THREE.ExtrudeGeometry(shape, { depth: wallThickness, bevelEnabled: false });
+        headwallGeometry.translate(0, 0, -wallThickness / 2);
         cache.set(cacheKey, headwallGeometry);
       }
       return { portal, wallHeight, embedDepth, headwallGeometry };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tunnelPortalList, terrainCornerMap, portalDepth]);
+  }, [tunnelPortalList, terrainCornerMap]);
 
-  // トンネル内部の暗がりのジオメトリ(開口断面と同形の薄い平板。箱の内部・裏面より
-  // 手前に置く想定。寸法は固定なので1度だけ生成する)。
+  // トンネル内部の暗がりのジオメトリ(開口断面と同形の薄い平板。壁の背面に面一で
+  // 貼り付ける終端キャップ。寸法は固定なので1度だけ生成する)。
   const tunnelMouthGeometry = useMemo(() => {
     const outline = buildArchOutline(openingHalfWidth, openingStraightHeight, archRadius);
     const shape = new THREE.Shape();
@@ -493,12 +483,18 @@ export const GameScene: React.FC<GameSceneProps> = ({
           ヘッドウォールは境界面よりHEADWALL_EMBED_DEPTHぶん山側へめり込ませて置くことで、
           斜面との間に隙間・浮きが見えないようにする。高さはcomputePortalHeadwallで坑口
           セルの4隅コーナー標高から求め、斜面の切り口を覆うのに十分な高さを確保する。
-          トンネル内部の暗がり(tunnelMouthGeometry)は箱の裏面より手前(内部)に置き、
-          黒い面が箱の外へ一切出ないようにする。光源が-x側にあるため+x向きの坑口正面が
-          陰りやすく、石壁が真っ黒に潰れないよう軽いemissiveを持たせる。トンネル内の
-          レールは地表と同じ高さを走るため、開口の基準点は常に地面レベル(y=0)に置く
-          (ヘッドウォールは垂直=傾けない)。装飾であり選択対象ではないため地面クリックを
-          奪わないよう全meshのレイキャストを外す。 */}
+          構成は手前から「穴あきヘッドウォール(壁厚のみ)→ 黒い終端キャップ(壁背面に
+          面一)→ 穴の無い中実ボディ(箱)」のサンドイッチ。ヘッドウォールと箱を1本の
+          ExtrudeGeometryとしてアーチ穴ごと押し出すと、箱側にもアーチ型のトンネルが
+          貫通してしまい、山側(裏)の面にも穴が開いて奥の黒キャップが裏面の黒いアーチ
+          として露出する不具合があったため、穴は壁の中だけで完結させ、箱は穴の無い
+          BoxGeometryで裏を完全に塞ぐようにした。黒キャップを壁背面に密着させることで、
+          開口を覗くとreveal(壁厚ぶん)のすぐ奥が黒く読め、斜めから見ても石色の内側面が
+          支配的にならない。光源が-x側にあるため+x向きの坑口正面が陰りやすく、石壁が
+          真っ黒に潰れないよう軽いemissiveを持たせる。トンネル内のレールは地表と同じ
+          高さを走るため、開口の基準点は常に地面レベル(y=0)に置く(ヘッドウォールは
+          垂直=傾けない)。装飾であり選択対象ではないため地面クリックを奪わないよう
+          全meshのレイキャストを外す。 */}
       {portalGeometryData.map(({ portal, wallHeight, embedDepth, headwallGeometry }) => {
         // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。
         const faceX = portal.x + portal.dx * 0.5;
@@ -508,11 +504,12 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const angle = Math.atan2(portal.dx, portal.dz);
 
         const wallZ = -embedDepth; // 境界面からわずかに山側(-Z)へめり込ませる。
-        // 箱の裏面(局所-Z側、山の内部にいちばん深く入る面)。
-        const boxBackZ = wallZ + wallThickness / 2 - portalDepth;
-        // 終端キャップ(暗がり)は箱の裏面よりmouthCapMarginぶん手前に置き、内部に完全に
-        // 収める(裏面ちょうどだと箱自体の裏側の面と重なってz-fightingを起こすため)。
-        const mouthCapZ = boxBackZ + mouthCapMargin;
+        const wallBackZ = wallZ - wallThickness / 2; // 壁の奥側の面(局所-Z側、山の内部)。
+        // 黒キャップは壁背面に面一(フラッシュ)で配置する。
+        const mouthCapZ = wallBackZ - tunnelMouthPlateDepth / 2;
+        // 中実ボディは黒キャップの背後に密着させ、裏面・側面・天面をすべて石材で塞ぐ。
+        const bodyBackFaceZ = wallBackZ - tunnelMouthPlateDepth; // ボディの手前側の面。
+        const bodyZ = bodyBackFaceZ - bodyDepth / 2;
         // 笠石(コーピング)。壁天端に幅+奥行きをやや張り出させる。壁よりわずかに濃い
         // トーンにして輪郭が出るようにする。前端(手前側)だけに置く。
         const copingWidth = wallWidth + 0.1;
@@ -525,7 +522,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
             position={[faceX, 0, faceZ]}
             rotation-y={angle}
           >
-            {/* ヘッドウォール+箱状ボディ本体(壁+アーチ開口+奥行きを一体成形)。陰でも
+            {/* ヘッドウォール本体(壁+アーチ開口を一体成形、深さは壁厚のみ)。陰でも
                 石壁として読めるよう軽いemissiveを持たせる。ExtrudeGeometryの巻き順に
                 依存せず両面から正しく見えるようdoubleSideにする。 */}
             <mesh geometry={headwallGeometry} position={[0, 0, wallZ]} castShadow raycast={() => null}>
@@ -538,12 +535,18 @@ export const GameScene: React.FC<GameSceneProps> = ({
               <boxGeometry args={[copingWidth, copingHeight, copingThickness]} />
               <meshStandardMaterial color="#8b9097" roughness={1} emissive="#2c2f33" emissiveIntensity={0.3} />
             </mesh>
-            {/* トンネル内部の暗がり。開口と同じ断面形状(アーチ)の薄い平板を、箱の裏面より
-                手前(内部)の終端キャップとして置く。箱そのものが天井・側面・裏面を
-                すべて石材で塞いでいるため、この黒い面はどの角度から見ても実開口を
-                通してしか見えず、箱の外へ露出することがない。 */}
+            {/* トンネル内部の暗がり。開口と同じ断面形状(アーチ)の薄い平板を壁背面に
+                面一で貼り付ける。壁厚(reveal)ぶんの奥にすぐ黒が来るため、どの角度から
+                見ても開口内が暗く読める。 */}
             <mesh geometry={tunnelMouthGeometry} position={[0, 0, mouthCapZ]} raycast={() => null}>
               <meshStandardMaterial color="#0b0e12" roughness={1} />
+            </mesh>
+            {/* 穴の無い中実ボディ。黒キャップの背後に密着させ、天面・側面・裏面すべてを
+                石材で閉じる。アーチ穴を持たないBoxGeometryなので、裏から見ても黒い
+                アーチが透けて見えることがない。 */}
+            <mesh position={[0, wallHeight / 2, bodyZ]} castShadow raycast={() => null}>
+              <boxGeometry args={[wallWidth, wallHeight, bodyDepth]} />
+              <meshStandardMaterial color="#a2a7ae" roughness={1} emissive="#3a3e44" emissiveIntensity={0.35} />
             </mesh>
           </group>
         );
