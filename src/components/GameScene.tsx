@@ -412,6 +412,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
           は境界面よりHEADWALL_EMBED_DEPTHぶん山側へめり込ませて置くことで、斜面との間に
           隙間・浮きが見えないようにする。高さはcomputePortalHeadwallで坑口セルの4隅
           コーナー標高から求め、斜面の切り口を覆うのに十分な高さを確保する。
+          幅はセル幅いっぱい(1.0)、高さは低めに抑え、門柱のように縦長へ見えないsquatな
+          プロポーションにしている。光源が-x側にあるため+x向きの坑口正面が陰りやすく、
+          石壁が真っ黒に潰れないよう軽いemissiveを持たせる。左右には山側へ短く延びる
+          袖壁(切り通しを囲う低い壁)を添える。
           トンネル内のレールは地表と同じ高さを走るため、開口の基準点は常に地面レベル
           (y=0)に置く(ヘッドウォールは垂直=傾けない)。装飾であり選択対象ではないため
           地面クリックを奪わないよう全meshのレイキャストを外す。 */}
@@ -427,19 +431,26 @@ export const GameScene: React.FC<GameSceneProps> = ({
           cellCorners, portal.dx, portal.dz, OVERPASS_HEIGHT,
         );
 
-        // ヘッドウォール(石壁)の寸法。線路1本ぶんの幅+αのコンパクトなサイズに抑える。
-        const wallWidth = 0.8;
+        // ヘッドウォール(石壁)の寸法。セル幅いっぱい(1.0)まで広げ、squatな比率にする。
+        const wallWidth = 1.0;
         const wallThickness = 0.12;
         const wallZ = -embedDepth; // 境界面からわずかに山側(-Z)へめり込ませる。
-        // 開口(アーチ)の寸法。下半分は矩形、上半分は半円のアーチ。
-        const openingHalfWidth = 0.21;
-        const openingStraightHeight = 0.28;
+        // 開口(アーチ)の寸法。下半分は矩形、上半分は半円のアーチ。アーチ頂部が壁高さと
+        // ほぼ揃うくらいまで拡大し、開口がしっかり視認できるようにする。
+        const openingHalfWidth = 0.26;
+        const openingStraightHeight = 0.26;
         const archRadius = openingHalfWidth;
-        const openingFrontZ = wallZ + wallThickness / 2 + 0.005; // 壁前面よりわずかに手前。
-        // 笠石(コーピング)。壁天端に幅+奥行きをやや張り出させる。
+        const openingFrontZ = wallZ + wallThickness / 2 + 0.01; // 壁前面よりわずかに手前。
+        // 笠石(コーピング)。壁天端に幅+奥行きをやや張り出させる。壁よりわずかに濃い
+        // トーンにして輪郭が出るようにする。
         const copingWidth = wallWidth + 0.1;
         const copingThickness = wallThickness + 0.06;
         const copingHeight = 0.08;
+        // 袖壁(切り通しを囲う低い壁)。ヘッドウォール左右から山側へ短く延ばす。
+        const sleeveDepth = 0.35;
+        const sleeveThickness = 0.1;
+        const sleeveHeight = wallHeight * 0.6;
+        const sleeveX = wallWidth / 2 + sleeveThickness / 2;
 
         return (
           <group
@@ -447,15 +458,27 @@ export const GameScene: React.FC<GameSceneProps> = ({
             position={[faceX, 0, faceZ]}
             rotation-y={angle}
           >
-            {/* 垂直なヘッドウォール本体。 */}
+            {/* 垂直なヘッドウォール本体。陰でも石壁として読めるよう軽いemissiveを持たせる。 */}
             <mesh position={[0, wallHeight / 2, wallZ]} castShadow raycast={() => null}>
               <boxGeometry args={[wallWidth, wallHeight, wallThickness]} />
-              <meshStandardMaterial color="#9aa0a8" roughness={1} />
+              <meshStandardMaterial color="#a2a7ae" roughness={1} emissive="#3a3e44" emissiveIntensity={0.35} />
             </mesh>
-            {/* 天端の笠石。壁よりひとまわり張り出す。 */}
+            {/* 左右の袖壁。山側へ短く延び、開口前の切り通しを囲う。控えめなサイズに抑える。 */}
+            {[-1, 1].map(side => (
+              <mesh
+                key={`sleeve-${side}`}
+                position={[side * sleeveX, sleeveHeight / 2, wallZ - sleeveDepth / 2]}
+                castShadow
+                raycast={() => null}
+              >
+                <boxGeometry args={[sleeveThickness, sleeveHeight, sleeveDepth]} />
+                <meshStandardMaterial color="#a2a7ae" roughness={1} emissive="#3a3e44" emissiveIntensity={0.35} />
+              </mesh>
+            ))}
+            {/* 天端の笠石。壁よりひとまわり張り出し、わずかに濃いトーンで輪郭を出す。 */}
             <mesh position={[0, wallHeight + copingHeight / 2, wallZ]} castShadow raycast={() => null}>
               <boxGeometry args={[copingWidth, copingHeight, copingThickness]} />
-              <meshStandardMaterial color="#9aa0a8" roughness={1} />
+              <meshStandardMaterial color="#8b9097" roughness={1} emissive="#2c2f33" emissiveIntensity={0.3} />
             </mesh>
             {/* アーチ開口の矩形部分(下半分)。壁前面よりわずかに手前に置き、暗い穴に見せる。 */}
             <mesh position={[0, openingStraightHeight / 2, openingFrontZ]} raycast={() => null}>
