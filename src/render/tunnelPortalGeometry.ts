@@ -44,6 +44,28 @@ export const MIN_HEADWALL_HEIGHT = 0.62;
 /** ヘッドウォールを斜面へめり込ませる奥行きオフセット(world単位)。隙間・浮きを防ぐ。 */
 export const HEADWALL_EMBED_DEPTH = 0.08;
 
+/** 坑口の壁幅(world単位、セル幅いっぱい)。壁・箱状ボディで共通して使う。 */
+export const PORTAL_WALL_WIDTH = 1.0;
+
+/** ヘッドウォール自体の厚み(world単位)。 */
+export const PORTAL_WALL_THICKNESS = 0.12;
+
+/**
+ * ヘッドウォールの背後に接続する、中実な箱状ボディの奥行き(world単位)。
+ * 壁1枚+袖壁の「書き割り」構成だと、低い斜面・対角斜面で壁の背後の空洞(黒い開口裏の
+ * プレートや壁の裏面)がカメラに露出してしまう。これを防ぐため、ヘッドウォールと同じ
+ * 外形(アーチの穴あき断面)をこの奥行きぶん追加で押し出し、上面・側面・裏面すべてが
+ * 石材の面だけになる「閉じた箱」にする。
+ */
+export const PORTAL_BODY_DEPTH = 0.3;
+
+/**
+ * 坑口全体(埋め込みオフセット+壁+箱状ボディ)がセル境界からセル内側へ食い込む
+ * 合計奥行き(world単位)。セルの半幅(0.5)を超えると隣接セルまで箱がはみ出すため、
+ * 常にこの範囲に収まるよう寸法を決める。
+ */
+export const PORTAL_TOTAL_DEPTH = HEADWALL_EMBED_DEPTH + PORTAL_WALL_THICKNESS / 2 + PORTAL_BODY_DEPTH;
+
 export interface PortalHeadwall {
   /** ヘッドウォールの高さ(world Y単位)。切り口を覆うのに十分な高さを保証する。 */
   height: number;

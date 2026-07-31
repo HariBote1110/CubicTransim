@@ -6,6 +6,7 @@ import {
   HEADWALL_EMBED_DEPTH,
   buildArchOutline,
   buildHeadwallOutline,
+  PORTAL_TOTAL_DEPTH,
 } from './tunnelPortalGeometry';
 
 describe('classifyPortalCorners', () => {
@@ -86,6 +87,12 @@ describe('buildArchOutline', () => {
       expect(p.x).toBeGreaterThanOrEqual(-0.26 - 1e-9);
       expect(p.x).toBeLessThanOrEqual(0.26 + 1e-9);
     });
+  });
+});
+
+describe('PORTAL_TOTAL_DEPTH', () => {
+  it('坑口の合計奥行きがセル半幅(0.5)を超えず、隣接セルへはみ出さない', () => {
+    expect(PORTAL_TOTAL_DEPTH).toBeLessThanOrEqual(0.5);
   });
 });
 
