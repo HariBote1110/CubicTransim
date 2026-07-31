@@ -77,3 +77,80 @@ export function isInTunnelInterior(railMap: Map<string, CellData>, x: number, z:
   const cell = railMap.get(toKey(Math.round(x), Math.round(z)));
   return !!cell?.tunnel;
 }
+
+/**
+ * 高架レール(cell.uppers[level])のセルが山岳の内部を通っているかどうか。
+ * 地平のtunnel(construction.tsのterrainFlagsが敷設時に付与する保存済みフラグ)とは
+ * 異なり、高架の橋桁(applyElevatedPathのspanセル)にはトンネル相当のフラグが
+ * 保存されない。そのため、その場の標高(computeElevation)がそのレベルの高さぶん
+ * (=level)以上あるかどうかで動的に「山に完全に埋もれているか」を判定する。
+ * OVERPASS_HEIGHT単位で段丘の1段=高架の1レベルとして揃えているため、
+ * elevation(段数)とlevel(高架レベル)をそのまま比較できる。
+ */
+export function isMountainInteriorAtLevel(
+  elevation: Map<string, number>, x: number, z: number, level: number,
+): boolean {
+  return elevationAt(elevation, x, z) >= level;
+}
+
+export interface ElevatedTunnelPortal extends TunnelPortal {
+  level: 1 | 2 | 3;
+}
+
+/**
+ * 高架レールが山岳セルの内部を通る区間の坑口(山肌に面した出入口)を列挙する。
+ * ロジックはtunnelPortalsと同型だが、「トンネル内部かどうか」を保存済みフラグではなく
+ * isMountainInteriorAtLevelで動的に判定する点だけが異なる(高架の橋桁セルには
+ * 地平のようなtunnelフラグが保存されないため)。
+ */
+export function elevatedTunnelPortals(
+  railMap: Map<string, CellData>,
+  elevation: Map<string, number>,
+  level: 1 | 2 | 3,
+): ElevatedTunnelPortal[] {
+  const portals: ElevatedTunnelPortal[] = [];
+
+  for (const [key, cell] of railMap) {
+    const upper = cell.uppers?.[level];
+    if (!upper) continue;
+    const { x, z } = fromKey(key);
+    if (!isMountainInteriorAtLevel(elevation, x, z, level)) continue;
+
+    const conns = upper.connections ?? 0;
+    const connectedDirs = ALL_DIRS.filter(dir => (conns & dir) !== 0);
+
+    for (const dir of connectedDirs) {
+      const { x: dx, z: dz } = getVectorFromDir(dir);
+      const nx = x + dx;
+      const nz = z + dz;
+      const neighbourUpper = railMap.get(toKey(nx, nz))?.uppers?.[level];
+      const neighbourIsInterior = !!neighbourUpper && isMountainInteriorAtLevel(elevation, nx, nz, level);
+      if (!neighbourIsInterior) portals.push({ x, z, dx, dz, level });
+    }
+
+    if (connectedDirs.length === 1) {
+      const oppositeDir = getOppositeDir(connectedDirs[0]);
+      const { x: dx, z: dz } = getVectorFromDir(oppositeDir);
+      if (!isMountainInteriorAtLevel(elevation, x + dx, z + dz, level)) {
+        portals.push({ x, z, dx, dz, level });
+      }
+    }
+  }
+
+  return portals;
+}
+
+/**
+ * 座標(四捨五入)のそのレベルの高架セルが、山岳の内部(isMountainInteriorAtLevel)に
+ * あるかどうか。列車の車両表示を隠すかどうかの判定に使う(isInTunnelInteriorの
+ * 高架版)。level<=0(地平)は常にfalse(地平はisInTunnelInteriorが担当する)。
+ */
+export function isInElevatedTunnelInterior(
+  railMap: Map<string, CellData>, elevation: Map<string, number>, x: number, z: number, level: number,
+): boolean {
+  if (level <= 0) return false;
+  const rx = Math.round(x);
+  const rz = Math.round(z);
+  const upper = railMap.get(toKey(rx, rz))?.uppers?.[level as 1 | 2 | 3];
+  return !!upper && isMountainInteriorAtLevel(elevation, rx, rz, level);
+}

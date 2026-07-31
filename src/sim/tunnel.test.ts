@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { toKey, DIR } from '../utils';
 import type { CellData } from '../types';
-import { tunnelPortals, isInTunnelInterior } from './tunnel';
+import {
+  tunnelPortals, isInTunnelInterior, elevatedTunnelPortals, isInElevatedTunnelInterior,
+} from './tunnel';
 
 describe('tunnelPortals', () => {
   it('直線トンネル3セルで坑口が両端の2つだけになる', () => {
@@ -122,5 +124,117 @@ describe('isInTunnelInterior', () => {
 
     expect(isInTunnelInterior(railMap, 3, 4)).toBe(false);
     expect(isInTunnelInterior(railMap, 99, 99)).toBe(false);
+  });
+});
+
+describe('elevatedTunnelPortals', () => {
+  it('標高がlevel未満(=山の内部でない)高架セルは坑口を持たない(通常の高架として扱う)', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(0, 0), 0]]);
+
+    expect(elevatedTunnelPortals(railMap, elevation, 1)).toEqual([]);
+  });
+
+  it('単セルの高架トンネル(標高がlevel以上)は坑口が2つになる', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(5, 5), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(5, 5), 1]]);
+
+    const portals = elevatedTunnelPortals(railMap, elevation, 1);
+
+    expect(portals).toHaveLength(2);
+    expect(portals).toEqual(
+      expect.arrayContaining([
+        { x: 5, z: 5, dx: 0, dz: -1, level: 1 },
+        { x: 5, z: 5, dx: 0, dz: 1, level: 1 },
+      ])
+    );
+  });
+
+  it('直線の高架トンネル3セルで坑口が両端の2つだけになる', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.S } } }],
+      [toKey(0, 1), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+      [toKey(0, 2), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N } } }],
+    ]);
+    const elevation = new Map<string, number>([
+      [toKey(0, 0), 1], [toKey(0, 1), 1], [toKey(0, 2), 1],
+    ]);
+
+    const portals = elevatedTunnelPortals(railMap, elevation, 1);
+
+    expect(portals).toHaveLength(2);
+    expect(portals).toEqual(
+      expect.arrayContaining([
+        { x: 0, z: 0, dx: 0, dz: -1, level: 1 },
+        { x: 0, z: 2, dx: 0, dz: 1, level: 1 },
+      ])
+    );
+  });
+
+  it('行き止まり方向の隣接セルもまだ山の内部(標高≥level)なら坑口を作らない', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.S } } }],
+      [toKey(0, 1), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N } } }],
+    ]);
+    const elevation = new Map<string, number>([
+      [toKey(0, -1), 2], [toKey(0, 0), 1], [toKey(0, 1), 1],
+    ]);
+
+    const portals = elevatedTunnelPortals(railMap, elevation, 1);
+
+    expect(portals).toEqual([{ x: 0, z: 1, dx: 0, dz: 1, level: 1 }]);
+  });
+
+  it('レベルが異なる高架は互いに独立して判定される(レベル1のみ埋まっている場合レベル2は対象外)', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), {
+        type: 'rail', connections: 0,
+        uppers: { 1: { connections: DIR.N | DIR.S }, 2: { connections: DIR.N | DIR.S } },
+      }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(0, 0), 1]]);
+
+    expect(elevatedTunnelPortals(railMap, elevation, 1)).toHaveLength(2);
+    expect(elevatedTunnelPortals(railMap, elevation, 2)).toEqual([]);
+  });
+});
+
+describe('isInElevatedTunnelInterior', () => {
+  it('標高がlevel以上で、そのレベルの高架セルがあればtrueを返す', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(3, 4), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(3, 4), 1]]);
+
+    expect(isInElevatedTunnelInterior(railMap, elevation, 3.2, 3.9, 1)).toBe(true);
+  });
+
+  it('標高がlevel未満なら、高架セルがあってもfalseを返す(まだ山肌より上=通常の高架)', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(3, 4), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(3, 4), 0]]);
+
+    expect(isInElevatedTunnelInterior(railMap, elevation, 3, 4, 1)).toBe(false);
+  });
+
+  it('level<=0(地平)は常にfalseを返す', () => {
+    const railMap = new Map<string, CellData>();
+    const elevation = new Map<string, number>();
+
+    expect(isInElevatedTunnelInterior(railMap, elevation, 0, 0, 0)).toBe(false);
+  });
+
+  it('そのレベルの高架セル自体が無ければfalseを返す', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(3, 4), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(3, 4), 1]]);
+
+    expect(isInElevatedTunnelInterior(railMap, elevation, 3, 4, 2)).toBe(false);
   });
 });
