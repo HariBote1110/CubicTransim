@@ -34,8 +34,10 @@ export function classifyPortalCorners(
   };
 }
 
-/** ヘッドウォールの最低高さ(world Y単位)。平坦地でも開口+笠石を確保できる高さ。 */
-export const MIN_HEADWALL_HEIGHT = 0.62;
+/** ヘッドウォールの最低高さ(world Y単位)。平坦地でも開口+笠石を確保できる高さ。
+ *  「門柱・モノリスに見える」というフィードバックを受け、幅いっぱい(1.0)に対して
+ *  縦に間延びしないsquatなプロポーションになるよう0.62から引き下げた。 */
+export const MIN_HEADWALL_HEIGHT = 0.5;
 
 /** ヘッドウォールを斜面へめり込ませる奥行きオフセット(world単位)。隙間・浮きを防ぐ。 */
 export const HEADWALL_EMBED_DEPTH = 0.08;
