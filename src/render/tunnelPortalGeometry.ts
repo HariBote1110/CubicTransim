@@ -70,3 +70,65 @@ export function computePortalHeadwall(
   const height = Math.max(MIN_HEADWALL_HEIGHT, MIN_HEADWALL_HEIGHT + cutExposure);
   return { height, outerHeight, embedDepth: HEADWALL_EMBED_DEPTH };
 }
+
+/** ローカルXY平面上の2次元点。壁・開口の断面はこの平面(X=左右, Y=高さ)に描く。 */
+export interface Point2D {
+  readonly x: number;
+  readonly y: number;
+}
+
+/**
+ * アーチ開口の断面(下半分=矩形、上半分=半円)を、地面(y=0)で開いた1本の折れ線として
+ * 返す。archRadius===openingHalfWidthのとき、半円の両端が直線部の上端(y=openingStraightHeight)
+ * にちょうど繋がり、滑らかな馬蹄形になる。
+ * 半円はTHREE.Path.absarcと同じ角度規約(角度0=+X、反時計回りが正)で、角度πの左端から
+ * 角度0の右端まで、頂上(角度π/2)を通って時計回りに分割する。これによりx座標は常に
+ * [-archRadius, archRadius]の対称範囲に収まり、片側だけが描かれる非対称の不具合を防ぐ。
+ * 頂点順序: 左足元(y=0)→左直線→半円(左→上→右)→右直線→右足元(y=0)。
+ */
+export function buildArchOutline(
+  openingHalfWidth: number,
+  openingStraightHeight: number,
+  archRadius: number,
+  archSegments = 16,
+): Point2D[] {
+  const points: Point2D[] = [];
+  points.push({ x: -openingHalfWidth, y: 0 });
+  points.push({ x: -openingHalfWidth, y: openingStraightHeight });
+  for (let i = 1; i < archSegments; i++) {
+    const angle = Math.PI - (Math.PI * i) / archSegments;
+    points.push({
+      x: archRadius * Math.cos(angle),
+      y: openingStraightHeight + archRadius * Math.sin(angle),
+    });
+  }
+  points.push({ x: openingHalfWidth, y: openingStraightHeight });
+  points.push({ x: openingHalfWidth, y: 0 });
+  return points;
+}
+
+/**
+ * ヘッドウォール(壁)の外形を、中央にアーチ開口の切り欠きを持つ1本の閉じた折れ線として
+ * 返す。開口はbuildArchOutlineの折れ線をそのまま壁の足元(y=0)に切り込ませているため、
+ * 「壁の中に別パーツの黒い開口パネルを重ねる」張りぼて構成ではなく、壁自体に実際に穴が
+ * 開いた1枚のジオメトリになる(THREE.ExtrudeGeometryでこの外形を押し出して使う想定)。
+ * 頂点順序: 左足元→開口の切り欠き→右足元→右上→左上(→左足元に閉じる)。
+ */
+export function buildHeadwallOutline(
+  wallWidth: number,
+  wallHeight: number,
+  openingHalfWidth: number,
+  openingStraightHeight: number,
+  archRadius: number,
+  archSegments = 16,
+): Point2D[] {
+  const halfWidth = wallWidth / 2;
+  const notch = buildArchOutline(openingHalfWidth, openingStraightHeight, archRadius, archSegments);
+  return [
+    { x: -halfWidth, y: 0 },
+    ...notch,
+    { x: halfWidth, y: 0 },
+    { x: halfWidth, y: wallHeight },
+    { x: -halfWidth, y: wallHeight },
+  ];
+}

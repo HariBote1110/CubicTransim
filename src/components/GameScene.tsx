@@ -25,7 +25,7 @@ import { tunnelPortals } from '../sim/tunnel';
 import { computeElevation, buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
-import { computePortalHeadwall } from '../render/tunnelPortalGeometry';
+import { computePortalHeadwall, buildHeadwallOutline, buildArchOutline, type Point2D } from '../render/tunnelPortalGeometry';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -318,6 +318,65 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // 坑口の開口を斜面へ沿わせる傾き計算に使うコーナー標高の共有マップ(TerrainBlocksと同じ導出)。
   const terrainCornerMap = useMemo(() => buildCornerElevationMap(terrainElevation), [terrainElevation]);
 
+  // ヘッドウォール(壁)・開口の寸法定数。壁の幅はセル幅いっぱい(1.0)、高さはポータルごとに
+  // computePortalHeadwallで決まる。開口はarchRadius===openingHalfWidthとして直線部と半円が
+  // 滑らかに繋がるようにしている。
+  const wallWidth = 1.0;
+  const wallThickness = 0.12;
+  const openingHalfWidth = 0.26;
+  const openingStraightHeight = 0.26;
+  const archRadius = openingHalfWidth;
+  // トンネル内部の暗がり(開口断面と同じ形の押し出し)。斜面を突き抜けないよう短く抑える。
+  const tunnelMouthDepth = 0.3;
+
+  // ヘッドウォールのジオメトリ(壁+アーチ開口を1枚のExtrudeGeometryとして一体成形)。
+  // 「黒い開口パネル+奥の暗箱」を壁の手前に重ねる張りぼて構成だと、斜めから見たときに
+  // パネルと暗箱のシルエットが合成されて開口が非対称・不定形に見えてしまっていた
+  // (実際に穴が開いていないため輪郭が正しく出ない)。buildHeadwallOutlineで求めた
+  // 「壁の外形+アーチ状の切り欠き」を1本の折れ線としてShape化し、実際に穴の開いた壁として
+  // 押し出すことで、どの角度から見ても開口の輪郭が正しく読めるようにする。
+  // wallHeightはポータルごとに異なるため、高さをキーにジオメトリをキャッシュして使い回す。
+  const portalGeometryData = useMemo(() => {
+    const cache = new Map<number, THREE.ExtrudeGeometry>();
+    return tunnelPortalList.map(portal => {
+      const cellCorners = cellCornersFromMap(terrainCornerMap, portal.x, portal.z);
+      const { height: wallHeight, embedDepth } = computePortalHeadwall(
+        cellCorners, portal.dx, portal.dz, OVERPASS_HEIGHT,
+      );
+      const cacheKey = Math.round(wallHeight * 1000);
+      let headwallGeometry = cache.get(cacheKey);
+      if (!headwallGeometry) {
+        const outline = buildHeadwallOutline(
+          wallWidth, wallHeight, openingHalfWidth, openingStraightHeight, archRadius,
+        );
+        const shape = new THREE.Shape();
+        outline.forEach((p: Point2D, i: number) => (i === 0 ? shape.moveTo(p.x, p.y) : shape.lineTo(p.x, p.y)));
+        shape.closePath();
+        headwallGeometry = new THREE.ExtrudeGeometry(shape, { depth: wallThickness, bevelEnabled: false });
+        headwallGeometry.translate(0, 0, -wallThickness / 2);
+        cache.set(cacheKey, headwallGeometry);
+      }
+      return { portal, wallHeight, embedDepth, headwallGeometry };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tunnelPortalList, terrainCornerMap]);
+
+  // トンネル内部の暗がりのジオメトリ(開口断面と同形、寸法は固定なので1度だけ生成)。
+  const tunnelMouthGeometry = useMemo(() => {
+    const outline = buildArchOutline(openingHalfWidth, openingStraightHeight, archRadius);
+    const shape = new THREE.Shape();
+    outline.forEach((p: Point2D, i: number) => (i === 0 ? shape.moveTo(p.x, p.y) : shape.lineTo(p.x, p.y)));
+    shape.closePath();
+    const geometry = new THREE.ExtrudeGeometry(shape, { depth: tunnelMouthDepth, bevelEnabled: false });
+    geometry.translate(0, 0, -tunnelMouthDepth);
+    return geometry;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  React.useEffect(() => () => {
+    portalGeometryData.forEach(({ headwallGeometry }) => headwallGeometry.dispose());
+  }, [portalGeometryData]);
+  React.useEffect(() => () => tunnelMouthGeometry.dispose(), [tunnelMouthGeometry]);
+
   // 草地のテクスチャ(色ムラ)。1度だけ生成して使い回す。
   const groundTexture = useMemo(() => createGroundTexture(), []);
   React.useEffect(() => () => groundTexture.dispose(), [groundTexture]);
@@ -412,45 +471,39 @@ export const GameScene: React.FC<GameSceneProps> = ({
           は境界面よりHEADWALL_EMBED_DEPTHぶん山側へめり込ませて置くことで、斜面との間に
           隙間・浮きが見えないようにする。高さはcomputePortalHeadwallで坑口セルの4隅
           コーナー標高から求め、斜面の切り口を覆うのに十分な高さを確保する。
-          幅はセル幅いっぱい(1.0)、高さは低めに抑え、門柱のように縦長へ見えないsquatな
-          プロポーションにしている。光源が-x側にあるため+x向きの坑口正面が陰りやすく、
-          石壁が真っ黒に潰れないよう軽いemissiveを持たせる。左右には山側へ短く延びる
-          袖壁(切り通しを囲う低い壁)を添える。
+          壁+開口はbuildHeadwallOutlineで実際に穴を開けた1枚のExtrudeGeometry(portalGeometryData)
+          として一体成形しており、黒いパネルを重ねる張りぼてではないため、どの角度から見ても
+          開口の輪郭が正しく読める。トンネル内部の暗がりも同じ断面のExtrudeGeometry
+          (tunnelMouthGeometry)を壁背面に短く継ぎ足すだけで、斜面を突き抜けない。
+          光源が-x側にあるため+x向きの坑口正面が陰りやすく、石壁が真っ黒に潰れないよう
+          軽いemissiveを持たせる。左右には山側へ短く延びる袖壁(切り通しを囲う低い壁)を
+          添え、壁の外側面にX位置をぴったり合わせて浮いて見えないようにする。
           トンネル内のレールは地表と同じ高さを走るため、開口の基準点は常に地面レベル
           (y=0)に置く(ヘッドウォールは垂直=傾けない)。装飾であり選択対象ではないため
           地面クリックを奪わないよう全meshのレイキャストを外す。 */}
-      {tunnelPortalList.map(portal => {
+      {portalGeometryData.map(({ portal, wallHeight, embedDepth, headwallGeometry }) => {
         // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。
         const faceX = portal.x + portal.dx * 0.5;
         const faceZ = portal.z + portal.dz * 0.5;
-        // groupをdx/dz方向(非mountain側)へ向ける。ローカル+Zがこの方向に一致する。
+        // groupをdx/dz方向(非mountain側)へ向ける。ローカル+Zがこの方向に一致する
+        // (=局所+Zが坑口の外向き=手前側、局所-Zが山の内側=奥)。
         const angle = Math.atan2(portal.dx, portal.dz);
 
-        const cellCorners = cellCornersFromMap(terrainCornerMap, portal.x, portal.z);
-        const { height: wallHeight, embedDepth } = computePortalHeadwall(
-          cellCorners, portal.dx, portal.dz, OVERPASS_HEIGHT,
-        );
-
-        // ヘッドウォール(石壁)の寸法。セル幅いっぱい(1.0)まで広げ、squatな比率にする。
-        const wallWidth = 1.0;
-        const wallThickness = 0.12;
         const wallZ = -embedDepth; // 境界面からわずかに山側(-Z)へめり込ませる。
-        // 開口(アーチ)の寸法。下半分は矩形、上半分は半円のアーチ。アーチ頂部が壁高さと
-        // ほぼ揃うくらいまで拡大し、開口がしっかり視認できるようにする。
-        const openingHalfWidth = 0.26;
-        const openingStraightHeight = 0.26;
-        const archRadius = openingHalfWidth;
-        const openingFrontZ = wallZ + wallThickness / 2 + 0.01; // 壁前面よりわずかに手前。
+        const wallFrontZ = wallZ + wallThickness / 2; // 壁の手前側の面(局所+Z側)。
+        const backFaceZ = wallZ - wallThickness / 2; // 壁の奥側の面(局所-Z側、山の内部)。
         // 笠石(コーピング)。壁天端に幅+奥行きをやや張り出させる。壁よりわずかに濃い
         // トーンにして輪郭が出るようにする。
         const copingWidth = wallWidth + 0.1;
         const copingThickness = wallThickness + 0.06;
         const copingHeight = 0.08;
-        // 袖壁(切り通しを囲う低い壁)。ヘッドウォール左右から山側へ短く延ばす。
+        // 袖壁(切り通しを囲う低い壁)。壁の手前側の面から山側(-Z)へだけ短く延ばし、
+        // 高さは壁の半分以下・笠石より必ず低くする。X位置は壁の外側面にぴったり揃えて
+        // (壁からはみ出て浮いて見えないよう)壁の内側に収める。
         const sleeveDepth = 0.35;
         const sleeveThickness = 0.1;
-        const sleeveHeight = wallHeight * 0.6;
-        const sleeveX = wallWidth / 2 + sleeveThickness / 2;
+        const sleeveHeight = wallHeight * 0.5;
+        const sleeveX = wallWidth / 2 - sleeveThickness / 2;
 
         return (
           <group
@@ -458,16 +511,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
             position={[faceX, 0, faceZ]}
             rotation-y={angle}
           >
-            {/* 垂直なヘッドウォール本体。陰でも石壁として読めるよう軽いemissiveを持たせる。 */}
-            <mesh position={[0, wallHeight / 2, wallZ]} castShadow raycast={() => null}>
-              <boxGeometry args={[wallWidth, wallHeight, wallThickness]} />
-              <meshStandardMaterial color="#a2a7ae" roughness={1} emissive="#3a3e44" emissiveIntensity={0.35} />
+            {/* ヘッドウォール本体(壁+アーチ開口を一体成形)。陰でも石壁として読めるよう
+                軽いemissiveを持たせる。ExtrudeGeometryの巻き順に依存せず両面から正しく
+                見えるようdoubleSideにする。 */}
+            <mesh geometry={headwallGeometry} position={[0, 0, wallZ]} castShadow raycast={() => null}>
+              <meshStandardMaterial
+                color="#a2a7ae" roughness={1} emissive="#3a3e44" emissiveIntensity={0.35} side={THREE.DoubleSide}
+              />
             </mesh>
-            {/* 左右の袖壁。山側へ短く延び、開口前の切り通しを囲う。控えめなサイズに抑える。 */}
+            {/* 左右の袖壁。壁の手前側の面から山側(-Z)へ短く延びる。 */}
             {[-1, 1].map(side => (
               <mesh
                 key={`sleeve-${side}`}
-                position={[side * sleeveX, sleeveHeight / 2, wallZ - sleeveDepth / 2]}
+                position={[side * sleeveX, sleeveHeight / 2, wallFrontZ - sleeveDepth / 2]}
                 castShadow
                 raycast={() => null}
               >
@@ -480,24 +536,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
               <boxGeometry args={[copingWidth, copingHeight, copingThickness]} />
               <meshStandardMaterial color="#8b9097" roughness={1} emissive="#2c2f33" emissiveIntensity={0.3} />
             </mesh>
-            {/* アーチ開口の矩形部分(下半分)。壁前面よりわずかに手前に置き、暗い穴に見せる。 */}
-            <mesh position={[0, openingStraightHeight / 2, openingFrontZ]} raycast={() => null}>
-              <boxGeometry args={[openingHalfWidth * 2, openingStraightHeight, 0.03]} />
-              <meshStandardMaterial color="#0b0e12" roughness={1} />
-            </mesh>
-            {/* アーチ開口の半円部分(上半分)。 */}
-            <mesh
-              position={[0, openingStraightHeight, openingFrontZ]}
-              rotation-x={-Math.PI / 2}
-              raycast={() => null}
-            >
-              <cylinderGeometry args={[archRadius, archRadius, 0.03, 24, 1, false, -Math.PI / 2, Math.PI]} />
-              <meshStandardMaterial color="#0b0e12" roughness={1} />
-            </mesh>
-            {/* 開口の奥に続く暗がり。奥行きを持たせ、覗き込んでも中が透けないようにする。 */}
-            <mesh position={[0, openingStraightHeight * 0.6, wallZ - 0.4]} raycast={() => null}>
-              <boxGeometry args={[openingHalfWidth * 1.9, openingStraightHeight + archRadius, 0.8]} />
-              <meshStandardMaterial color="#0b0e12" roughness={1} />
+            {/* トンネル内部の暗がり。開口と同じ断面形状(アーチ)を壁背面から短く押し出し、
+                覗き込んでも中が透けないようにする。断面が開口と同形なので壁の輪郭からは
+                み出ず、長い箱と違って斜面を突き抜けない。 */}
+            <mesh geometry={tunnelMouthGeometry} position={[0, 0, backFaceZ]} raycast={() => null}>
+              <meshStandardMaterial color="#0b0e12" roughness={1} side={THREE.DoubleSide} />
             </mesh>
           </group>
         );
