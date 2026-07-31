@@ -57,22 +57,26 @@ export const PORTAL_WALL_THICKNESS = 0.12;
 export const PORTAL_MOUTH_CAP_DEPTH = 0.01;
 
 /**
+ * 坑口構造物(埋め込みオフセット+壁+黒キャップ+箱状ボディ)の合計奥行き(world単位)。
+ * 「奥行きが足りないと奇妙な見た目になる」というフィードバックを受け、1セルぶん
+ * (=1.0)の奥行きを持つよう固定した。セル境界からこの奥行きぶん山側へ食い込むが、
+ * トンネルセルの奥端(次のセルとの境界)は1.0でちょうどなので、隣のトンネルセルへ
+ * はみ出すことはない。
+ */
+export const PORTAL_TOTAL_DEPTH = 1.0;
+
+/**
  * ヘッドウォール+黒キャップの背後に接続する、穴の無い中実な箱状ボディの奥行き
  * (world単位)。壁1枚+袖壁の「書き割り」構成だと、低い斜面・対角斜面で壁の背後の
  * 空洞(黒い開口裏のプレートや壁の裏面)がカメラに露出してしまう。これを防ぐため、
  * ヘッドウォールと同じ幅・高さの中実なBoxをこの奥行きぶん追加し、天井・側面・裏面
  * すべてが石材の面だけになる「閉じた箱」にする。ボディ自体には穴を開けないため、
  * 裏側から見てもアーチ型の穴・黒キャップが透けて見えることはない。
+ * 奥行きはPORTAL_TOTAL_DEPTH(1セル分)から埋め込みオフセット・壁厚・黒キャップ厚を
+ * 差し引いた残りとして決まる(合計でちょうど1セルになるよう逆算する)。
  */
-export const PORTAL_BODY_DEPTH = 0.3;
-
-/**
- * 坑口全体(埋め込みオフセット+壁+黒キャップ+箱状ボディ)がセル境界からセル内側へ
- * 食い込む合計奥行き(world単位)。セルの半幅(0.5)を超えると隣接セルまで箱がはみ出す
- * ため、常にこの範囲に収まるよう寸法を決める。
- */
-export const PORTAL_TOTAL_DEPTH =
-  HEADWALL_EMBED_DEPTH + PORTAL_WALL_THICKNESS / 2 + PORTAL_MOUTH_CAP_DEPTH + PORTAL_BODY_DEPTH;
+export const PORTAL_BODY_DEPTH =
+  PORTAL_TOTAL_DEPTH - HEADWALL_EMBED_DEPTH - PORTAL_WALL_THICKNESS / 2 - PORTAL_MOUTH_CAP_DEPTH;
 
 export interface PortalHeadwall {
   /** ヘッドウォールの高さ(world Y単位)。切り口を覆うのに十分な高さを保証する。 */

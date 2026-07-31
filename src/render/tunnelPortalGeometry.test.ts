@@ -91,8 +91,9 @@ describe('buildArchOutline', () => {
 });
 
 describe('PORTAL_TOTAL_DEPTH', () => {
-  it('坑口の合計奥行きがセル半幅(0.5)を超えず、隣接セルへはみ出さない', () => {
-    expect(PORTAL_TOTAL_DEPTH).toBeLessThanOrEqual(0.5);
+  it('坑口の合計奥行きが1セル(1.0)ちょうどで、次のトンネルセルへはみ出さない', () => {
+    expect(PORTAL_TOTAL_DEPTH).toBeLessThanOrEqual(1.0 + 1e-9);
+    expect(PORTAL_TOTAL_DEPTH).toBeCloseTo(1.0, 9);
   });
 });
 
