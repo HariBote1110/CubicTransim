@@ -25,7 +25,7 @@ import { tunnelPortals } from '../sim/tunnel';
 import { computeElevation, buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
-import { computePortalPitch } from '../render/tunnelPortalGeometry';
+import { computePortalHeadwall } from '../render/tunnelPortalGeometry';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -407,12 +407,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
         return <group key={key}>{elements}</group>;
       })}
 
-      {/* トンネルの坑口(山肌に面した出入口)。「隙間だらけで大掛かりすぎる」というフィード
-          バックを受け、張り出す構造物(ヘッドウォール・袖壁)はやめ、斜面に斜めに開いた
-          黒い穴だけで表現する。開口の傾き(ピッチ角)はcomputePortalPitchで坑口セルの
-          4隅コーナー標高から求め、斜面にほぼ沿う向きに回転させて浮き・隙間を防ぐ。
-          トンネル内のレールは地表と同じ高さを走るため、境界面の基準点は常に地面レベル
-          (y=0)に置く。装飾であり選択対象ではないため地面クリックを奪わないようレイキャストを外す。 */}
+      {/* トンネルの坑口(山肌に面した出入口)。OpenTTD風に、斜面の切り口へ石造の垂直な
+          ヘッドウォール(正面壁)を立て、中央にアーチ状の暗い開口を設ける。ヘッドウォール
+          は境界面よりHEADWALL_EMBED_DEPTHぶん山側へめり込ませて置くことで、斜面との間に
+          隙間・浮きが見えないようにする。高さはcomputePortalHeadwallで坑口セルの4隅
+          コーナー標高から求め、斜面の切り口を覆うのに十分な高さを確保する。
+          トンネル内のレールは地表と同じ高さを走るため、開口の基準点は常に地面レベル
+          (y=0)に置く(ヘッドウォールは垂直=傾けない)。装飾であり選択対象ではないため
+          地面クリックを奪わないよう全meshのレイキャストを外す。 */}
       {tunnelPortalList.map(portal => {
         // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。
         const faceX = portal.x + portal.dx * 0.5;
@@ -421,7 +423,23 @@ export const GameScene: React.FC<GameSceneProps> = ({
         const angle = Math.atan2(portal.dx, portal.dz);
 
         const cellCorners = cellCornersFromMap(terrainCornerMap, portal.x, portal.z);
-        const { pitch } = computePortalPitch(cellCorners, portal.dx, portal.dz, OVERPASS_HEIGHT);
+        const { height: wallHeight, embedDepth } = computePortalHeadwall(
+          cellCorners, portal.dx, portal.dz, OVERPASS_HEIGHT,
+        );
+
+        // ヘッドウォール(石壁)の寸法。線路1本ぶんの幅+αのコンパクトなサイズに抑える。
+        const wallWidth = 0.8;
+        const wallThickness = 0.12;
+        const wallZ = -embedDepth; // 境界面からわずかに山側(-Z)へめり込ませる。
+        // 開口(アーチ)の寸法。下半分は矩形、上半分は半円のアーチ。
+        const openingHalfWidth = 0.21;
+        const openingStraightHeight = 0.28;
+        const archRadius = openingHalfWidth;
+        const openingFrontZ = wallZ + wallThickness / 2 + 0.005; // 壁前面よりわずかに手前。
+        // 笠石(コーピング)。壁天端に幅+奥行きをやや張り出させる。
+        const copingWidth = wallWidth + 0.1;
+        const copingThickness = wallThickness + 0.06;
+        const copingHeight = 0.08;
 
         return (
           <group
@@ -429,19 +447,35 @@ export const GameScene: React.FC<GameSceneProps> = ({
             position={[faceX, 0, faceZ]}
             rotation-y={angle}
           >
-            {/* rotation-xで斜面の傾きに合わせる。この中のz/yはローカル(未回転)座標。 */}
-            <group rotation-x={pitch}>
-              {/* 斜面に沿う黒い切り口。斜面表面からわずかに(+0.02)浮かせてZファイティングを避ける。 */}
-              <mesh position={[0, 0.02, -0.35]} raycast={() => null}>
-                <boxGeometry args={[0.6, 0.03, 0.7]} />
-                <meshStandardMaterial color="#14181d" roughness={1} />
-              </mesh>
-              {/* 切り口の奥に続く暗がり。奥行きを持たせ、覗き込んでも中が透けないようにする。 */}
-              <mesh position={[0, -0.02, -0.9]} raycast={() => null}>
-                <boxGeometry args={[0.55, 0.5, 1.0]} />
-                <meshStandardMaterial color="#0b0e12" roughness={1} />
-              </mesh>
-            </group>
+            {/* 垂直なヘッドウォール本体。 */}
+            <mesh position={[0, wallHeight / 2, wallZ]} castShadow raycast={() => null}>
+              <boxGeometry args={[wallWidth, wallHeight, wallThickness]} />
+              <meshStandardMaterial color="#9aa0a8" roughness={1} />
+            </mesh>
+            {/* 天端の笠石。壁よりひとまわり張り出す。 */}
+            <mesh position={[0, wallHeight + copingHeight / 2, wallZ]} castShadow raycast={() => null}>
+              <boxGeometry args={[copingWidth, copingHeight, copingThickness]} />
+              <meshStandardMaterial color="#9aa0a8" roughness={1} />
+            </mesh>
+            {/* アーチ開口の矩形部分(下半分)。壁前面よりわずかに手前に置き、暗い穴に見せる。 */}
+            <mesh position={[0, openingStraightHeight / 2, openingFrontZ]} raycast={() => null}>
+              <boxGeometry args={[openingHalfWidth * 2, openingStraightHeight, 0.03]} />
+              <meshStandardMaterial color="#0b0e12" roughness={1} />
+            </mesh>
+            {/* アーチ開口の半円部分(上半分)。 */}
+            <mesh
+              position={[0, openingStraightHeight, openingFrontZ]}
+              rotation-x={-Math.PI / 2}
+              raycast={() => null}
+            >
+              <cylinderGeometry args={[archRadius, archRadius, 0.03, 24, 1, false, 0, Math.PI]} />
+              <meshStandardMaterial color="#0b0e12" roughness={1} />
+            </mesh>
+            {/* 開口の奥に続く暗がり。奥行きを持たせ、覗き込んでも中が透けないようにする。 */}
+            <mesh position={[0, openingStraightHeight * 0.6, wallZ - 0.4]} raycast={() => null}>
+              <boxGeometry args={[openingHalfWidth * 1.9, openingStraightHeight + archRadius, 0.8]} />
+              <meshStandardMaterial color="#0b0e12" roughness={1} />
+            </mesh>
           </group>
         );
       })}
