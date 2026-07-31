@@ -327,7 +327,13 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const openingStraightHeight = 0.26;
   const archRadius = openingHalfWidth;
   // トンネル内部の暗がり(開口断面と同じ形の押し出し)。斜面を突き抜けないよう短く抑える。
-  const tunnelMouthDepth = 0.3;
+  // 0.3ではExtrudeGeometryの奥側キャップ(押し出しの終端の平面)が、見上げるアイソメ
+  // カメラでは近い側キャップより画面上で上へずれて投影され、袖壁の高さ(壁の50%)を
+  // 越えて壁の脇からはみ出し、開口とは無関係な向きの黒い破片に見える不具合があった
+  // (N/S向き坑口で顕著。scene.traverseで奥側キャップの中心を投影し、実際にその位置に
+  // 不具合の黒片が一致することを確認した)。奥行きを浅くし、奥側キャップの投影ズレを
+  // 袖壁の陰に収まる範囲まで抑える。
+  const tunnelMouthDepth = 0.15;
 
   // ヘッドウォールのジオメトリ(壁+アーチ開口を1枚のExtrudeGeometryとして一体成形)。
   // 「黒い開口パネル+奥の暗箱」を壁の手前に重ねる張りぼて構成だと、斜めから見たときに
@@ -538,9 +544,13 @@ export const GameScene: React.FC<GameSceneProps> = ({
             </mesh>
             {/* トンネル内部の暗がり。開口と同じ断面形状(アーチ)を壁背面から短く押し出し、
                 覗き込んでも中が透けないようにする。断面が開口と同形なので壁の輪郭からは
-                み出ず、長い箱と違って斜面を突き抜けない。 */}
+                み出ず、長い箱と違って斜面を突き抜けない。
+                側面をDoubleSideにすると、山側の奥まった面(押し出しの終端キャップ)が
+                斜面に覆われず露出する角度で、開口とは無関係な向きの黒い断片として
+                見えてしまう不具合があった(N/S向き坑口で顕著)。FrontSide(既定)にし、
+                カメラに背を向ける終端キャップは通常のバックフェースカリングで隠す。 */}
             <mesh geometry={tunnelMouthGeometry} position={[0, 0, backFaceZ]} raycast={() => null}>
-              <meshStandardMaterial color="#0b0e12" roughness={1} side={THREE.DoubleSide} />
+              <meshStandardMaterial color="#0b0e12" roughness={1} />
             </mesh>
           </group>
         );
