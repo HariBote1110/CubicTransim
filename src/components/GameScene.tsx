@@ -21,7 +21,7 @@ import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction';
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
-import { tunnelPortals, elevatedTunnelPortals } from '../sim/tunnel';
+import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
 import { computeElevation, buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
@@ -317,19 +317,24 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // 埋め込む(TerrainBlocks側)ため、坑口だけをこちらで別途描く。行き止まり坑口が
   // 山の内部を突き破らないよう、標高(TerrainBlocksと同じcomputeElevation)を渡す。
   const terrainElevation = useMemo(() => computeElevation(terrain), [terrain]);
-  // 地平の坑口(level:0)+高架レール(uppers[L])が山岳内部を通る区間の坑口を合成する。
-  // 高架は保存済みのtunnelフラグを持たないため、elevatedTunnelPortalsがその場の標高から
-  // 動的に「山に埋もれているか」を導出する(sim/tunnel.tsのisMountainInteriorAtLevel)。
+  // 坑口の開口を斜面へ沿わせる傾き計算に使うコーナー標高の共有マップ(TerrainBlocksと同じ導出)。
+  const terrainCornerMap = useMemo(() => buildCornerElevationMap(terrainElevation), [terrainElevation]);
+  // 高架レール(uppers[L])が山岳内部を通る区間の坑口・内部判定(sim/tunnel.tsの
+  // buildElevatedTunnelIndex)。4隅すべての標高がそのレベル以上のセルだけを内部と
+  // みなすことで、坑口の箱が斜面から浮く/背後・左右に隙間ができる不具合を防ぐ。
+  const elevatedTunnelIndex = useMemo(
+    () => buildElevatedTunnelIndex(railMap, terrainCornerMap, terrainElevation),
+    [railMap, terrainCornerMap, terrainElevation],
+  );
+  // 地平の坑口(level:0)+高架の坑口(level:1〜3)を合成する。
   const tunnelPortalList = useMemo(() => {
     const ground = tunnelPortals(railMap, terrainElevation).map(p => ({ ...p, level: 0 as const }));
     const elevatedLevels: (1 | 2 | 3)[] = Array.from(
       { length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3,
     );
-    const elevated = elevatedLevels.flatMap(level => elevatedTunnelPortals(railMap, terrainElevation, level));
+    const elevated = elevatedLevels.flatMap(level => elevatedTunnelPortals(elevatedTunnelIndex, level));
     return [...ground, ...elevated];
-  }, [railMap, terrainElevation]);
-  // 坑口の開口を斜面へ沿わせる傾き計算に使うコーナー標高の共有マップ(TerrainBlocksと同じ導出)。
-  const terrainCornerMap = useMemo(() => buildCornerElevationMap(terrainElevation), [terrainElevation]);
+  }, [railMap, terrainElevation, elevatedTunnelIndex]);
 
   // ヘッドウォール(壁)・開口の寸法定数。壁の幅はセル幅いっぱい(1.0)、高さはポータルごとに
   // computePortalHeadwallで決まる。開口はarchRadius===openingHalfWidthとして直線部と半円が
@@ -654,7 +659,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       {trains.map(train => (
         <DynamicTrain
-          key={train.id} data={train} railMap={railMap} elevation={terrainElevation}
+          key={train.id} data={train} railMap={railMap} elevatedTunnelIndex={elevatedTunnelIndex}
           runtimes={world.current.runtimes} type="commuter"
           isSelected={train.id === selectedTrainId}
           lineColour={findGroup(groups, train.groupId)?.colour}

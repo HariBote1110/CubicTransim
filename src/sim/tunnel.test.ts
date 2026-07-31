@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { toKey, DIR } from '../utils';
-import type { CellData } from '../types';
+import type { CellData, TerrainType } from '../types';
 import {
-  tunnelPortals, isInTunnelInterior, elevatedTunnelPortals, isInElevatedTunnelInterior,
+  tunnelPortals, isInTunnelInterior, isMountainInteriorAtLevel,
+  buildElevatedTunnelIndex, elevatedTunnelPortals, isInElevatedTunnelInterior,
   isTrainHiddenInTunnel,
 } from './tunnel';
 import { OVERPASS_HEIGHT } from './trackPath';
+import { computeElevation, buildCornerElevationMap } from './terrain';
 
 describe('tunnelPortals', () => {
   it('直線トンネル3セルで坑口が両端の2つだけになる', () => {
@@ -129,23 +131,52 @@ describe('isInTunnelInterior', () => {
   });
 });
 
-describe('elevatedTunnelPortals', () => {
+describe('isMountainInteriorAtLevel', () => {
+  it('4隅すべてがlevel以上ならtrueを返す', () => {
+    const cornerElevation = new Map<string, number>([
+      [toKey(0, 0), 2], [toKey(1, 0), 2], [toKey(1, 1), 2], [toKey(0, 1), 2],
+    ]);
+
+    expect(isMountainInteriorAtLevel(cornerElevation, 0, 0, 2)).toBe(true);
+  });
+
+  it('1隅でもlevel未満ならfalseを返す(箱の底・側面が地形からはみ出す位置とみなす)', () => {
+    const cornerElevation = new Map<string, number>([
+      [toKey(0, 0), 2], [toKey(1, 0), 2], [toKey(1, 1), 1], [toKey(0, 1), 2],
+    ]);
+
+    expect(isMountainInteriorAtLevel(cornerElevation, 0, 0, 2)).toBe(false);
+  });
+});
+
+describe('elevatedTunnelPortals / isInElevatedTunnelInterior (孤立セル・線状=山が薄いフォールバック経路)', () => {
+  // 以下のテストはいずれも、周囲(左右または前後)の地形が登録されていない
+  // 「薄い」ケース。cellCornersFromMapのmin則により、このようなセルは4隅の
+  // どこかが必ず0に引っ張られるため、コーナー基準では絶対にisMountainInteriorAtLevel
+  // を満たせない。この場合はフォールバック(そのセル自身の標高がlevel以上か、という
+  // 従来の単純な判定)が使われ、山が薄すぎてもトンネル効果自体は消えないことを確認する。
+
   it('標高がlevel未満(=山の内部でない)高架セルは坑口を持たない(通常の高架として扱う)', () => {
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
     ]);
     const elevation = new Map<string, number>([[toKey(0, 0), 0]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
 
-    expect(elevatedTunnelPortals(railMap, elevation, 1)).toEqual([]);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+
+    expect(elevatedTunnelPortals(index, 1)).toEqual([]);
   });
 
-  it('単セルの高架トンネル(標高がlevel以上)は坑口が2つになる', () => {
+  it('単セルの高架トンネル(標高がlevel以上)は坑口が2つになる(フォールバック判定)', () => {
     const railMap = new Map<string, CellData>([
       [toKey(5, 5), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
     ]);
     const elevation = new Map<string, number>([[toKey(5, 5), 1]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
 
-    const portals = elevatedTunnelPortals(railMap, elevation, 1);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+    const portals = elevatedTunnelPortals(index, 1);
 
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
@@ -156,7 +187,7 @@ describe('elevatedTunnelPortals', () => {
     );
   });
 
-  it('直線の高架トンネル3セルで坑口が両端の2つだけになる', () => {
+  it('直線の高架トンネル3セルで坑口が両端の2つだけになる(フォールバック判定)', () => {
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.S } } }],
       [toKey(0, 1), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
@@ -165,8 +196,10 @@ describe('elevatedTunnelPortals', () => {
     const elevation = new Map<string, number>([
       [toKey(0, 0), 1], [toKey(0, 1), 1], [toKey(0, 2), 1],
     ]);
+    const cornerElevation = buildCornerElevationMap(elevation);
 
-    const portals = elevatedTunnelPortals(railMap, elevation, 1);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+    const portals = elevatedTunnelPortals(index, 1);
 
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
@@ -177,7 +210,7 @@ describe('elevatedTunnelPortals', () => {
     );
   });
 
-  it('行き止まり方向の隣接セルもまだ山の内部(標高≥level)なら坑口を作らない', () => {
+  it('行き止まり方向の隣接セルもまだ山の内部(標高≥level)なら坑口を作らない(フォールバック判定)', () => {
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.S } } }],
       [toKey(0, 1), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N } } }],
@@ -185,8 +218,10 @@ describe('elevatedTunnelPortals', () => {
     const elevation = new Map<string, number>([
       [toKey(0, -1), 2], [toKey(0, 0), 1], [toKey(0, 1), 1],
     ]);
+    const cornerElevation = buildCornerElevationMap(elevation);
 
-    const portals = elevatedTunnelPortals(railMap, elevation, 1);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+    const portals = elevatedTunnelPortals(index, 1);
 
     expect(portals).toEqual([{ x: 0, z: 1, dx: 0, dz: 1, level: 1 }]);
   });
@@ -199,20 +234,23 @@ describe('elevatedTunnelPortals', () => {
       }],
     ]);
     const elevation = new Map<string, number>([[toKey(0, 0), 1]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
 
-    expect(elevatedTunnelPortals(railMap, elevation, 1)).toHaveLength(2);
-    expect(elevatedTunnelPortals(railMap, elevation, 2)).toEqual([]);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+
+    expect(elevatedTunnelPortals(index, 1)).toHaveLength(2);
+    expect(elevatedTunnelPortals(index, 2)).toEqual([]);
   });
-});
 
-describe('isInElevatedTunnelInterior', () => {
   it('標高がlevel以上で、そのレベルの高架セルがあればtrueを返す', () => {
     const railMap = new Map<string, CellData>([
       [toKey(3, 4), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
     ]);
     const elevation = new Map<string, number>([[toKey(3, 4), 1]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
 
-    expect(isInElevatedTunnelInterior(railMap, elevation, 3.2, 3.9, 1)).toBe(true);
+    expect(isInElevatedTunnelInterior(index, 3.2, 3.9, 1)).toBe(true);
   });
 
   it('標高がlevel未満なら、高架セルがあってもfalseを返す(まだ山肌より上=通常の高架)', () => {
@@ -220,15 +258,19 @@ describe('isInElevatedTunnelInterior', () => {
       [toKey(3, 4), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
     ]);
     const elevation = new Map<string, number>([[toKey(3, 4), 0]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
 
-    expect(isInElevatedTunnelInterior(railMap, elevation, 3, 4, 1)).toBe(false);
+    expect(isInElevatedTunnelInterior(index, 3, 4, 1)).toBe(false);
   });
 
   it('level<=0(地平)は常にfalseを返す', () => {
     const railMap = new Map<string, CellData>();
     const elevation = new Map<string, number>();
+    const cornerElevation = new Map<string, number>();
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
 
-    expect(isInElevatedTunnelInterior(railMap, elevation, 0, 0, 0)).toBe(false);
+    expect(isInElevatedTunnelInterior(index, 0, 0, 0)).toBe(false);
   });
 
   it('そのレベルの高架セル自体が無ければfalseを返す', () => {
@@ -236,8 +278,66 @@ describe('isInElevatedTunnelInterior', () => {
       [toKey(3, 4), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
     ]);
     const elevation = new Map<string, number>([[toKey(3, 4), 1]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
 
-    expect(isInElevatedTunnelInterior(railMap, elevation, 3, 4, 2)).toBe(false);
+    expect(isInElevatedTunnelInterior(index, 3, 4, 2)).toBe(false);
+  });
+});
+
+describe('elevatedTunnelPortals (実際の5x5山の標高から導出、坑口の浮き防止)', () => {
+  // ユーザー報告: 「急峻な山でレベル1高架の坑口ボックスが斜面から浮き、箱の下・
+  // 背後・左右に大きな隙間が見える」。5x5のmountainブロック(実際にcomputeElevation/
+  // buildCornerElevationMapを通した標高)をE-W方向にレベル1高架で貫通させる。
+  // 境界セル(x=-2, x=2)は4隅の標高が[0,1,1,0]/[1,0,0,1]で、外側の2隅が0のまま
+  // (=斜面の裾がまだレール高さに届いていない)なので、そこに坑口を置くと浮く。
+  // 1つ内側(x=-1, x=1)は4隅が[1,2,2,1]/[2,1,1,2]ですべて1以上に達しており、
+  // 坑口はここに立つべき。
+  const terrain = new Map<string, TerrainType>();
+  for (let x = -2; x <= 2; x++) {
+    for (let z = -2; z <= 2; z++) terrain.set(toKey(x, z), 'mountain');
+  }
+  const elevation = computeElevation(terrain);
+  const cornerElevation = buildCornerElevationMap(elevation);
+
+  const buildEwRail = (): Map<string, CellData> => {
+    const railMap = new Map<string, CellData>();
+    for (let x = -4; x <= 3; x++) {
+      const conns = x === -4 ? DIR.E : x === 3 ? DIR.W : DIR.E | DIR.W;
+      railMap.set(toKey(x, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: conns } } });
+    }
+    return railMap;
+  };
+
+  it('坑口は境界セル(x=-2,x=2)ではなく、4隅すべて標高1以上に達した1つ内側(x=-1,x=1)に立つ', () => {
+    const railMap = buildEwRail();
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+    const portals = elevatedTunnelPortals(index, 1);
+
+    expect(portals).toHaveLength(2);
+    expect(portals).toEqual(
+      expect.arrayContaining([
+        { x: -1, z: 0, dx: -1, dz: 0, level: 1 },
+        { x: 1, z: 0, dx: 1, dz: 0, level: 1 },
+      ])
+    );
+  });
+
+  it('境界セル(x=-2,x=2)は露出した高架として扱われ、トンネル内部(非表示)にはならない', () => {
+    const railMap = buildEwRail();
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+
+    expect(isInElevatedTunnelInterior(index, -2, 0, 1)).toBe(false);
+    expect(isInElevatedTunnelInterior(index, 2, 0, 1)).toBe(false);
+  });
+
+  it('坑口の1つ内側から山頂側(x=-1〜1)はトンネル内部(非表示対象)になる', () => {
+    const railMap = buildEwRail();
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
+
+    expect(isInElevatedTunnelInterior(index, -1, 0, 1)).toBe(true);
+    expect(isInElevatedTunnelInterior(index, 0, 0, 1)).toBe(true);
+    expect(isInElevatedTunnelInterior(index, 1, 0, 1)).toBe(true);
   });
 });
 
@@ -246,9 +346,9 @@ describe('isTrainHiddenInTunnel', () => {
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
     ]);
-    const elevation = new Map<string, number>();
+    const index = buildElevatedTunnelIndex(railMap, new Map(), new Map());
 
-    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5)).toBe(true);
+    expect(isTrainHiddenInTunnel(railMap, index, 0, 0, 0.5)).toBe(true);
   });
 
   it('y=0.5+level*OVERPASS_HEIGHT(高架)は、そのレベルの高架トンネル判定を使う', () => {
@@ -256,8 +356,10 @@ describe('isTrainHiddenInTunnel', () => {
       [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
     ]);
     const elevation = new Map<string, number>([[toKey(0, 0), 1]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
 
-    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5 + OVERPASS_HEIGHT)).toBe(true);
+    expect(isTrainHiddenInTunnel(railMap, index, 0, 0, 0.5 + OVERPASS_HEIGHT)).toBe(true);
   });
 
   it('高架レベルの高さだが、そのセルがまだ山に埋もれていなければ非表示にしない', () => {
@@ -265,8 +367,10 @@ describe('isTrainHiddenInTunnel', () => {
       [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
     ]);
     const elevation = new Map<string, number>([[toKey(0, 0), 0]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
 
-    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5 + OVERPASS_HEIGHT)).toBe(false);
+    expect(isTrainHiddenInTunnel(railMap, index, 0, 0, 0.5 + OVERPASS_HEIGHT)).toBe(false);
   });
 
   it('坂の途中など中途半端な高さは、対応する高架セルが無ければ非表示にしない', () => {
@@ -274,7 +378,9 @@ describe('isTrainHiddenInTunnel', () => {
       [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S }],
     ]);
     const elevation = new Map<string, number>([[toKey(0, 0), 1]]);
+    const cornerElevation = buildCornerElevationMap(elevation);
+    const index = buildElevatedTunnelIndex(railMap, cornerElevation, elevation);
 
-    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5 + OVERPASS_HEIGHT * 0.5)).toBe(false);
+    expect(isTrainHiddenInTunnel(railMap, index, 0, 0, 0.5 + OVERPASS_HEIGHT * 0.5)).toBe(false);
   });
 });
