@@ -491,7 +491,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
               rotation-x={-Math.PI / 2}
               raycast={() => null}
             >
-              <cylinderGeometry args={[archRadius, archRadius, 0.03, 24, 1, false, 0, Math.PI]} />
+              <cylinderGeometry args={[archRadius, archRadius, 0.03, 24, 1, false, -Math.PI / 2, Math.PI]} />
               <meshStandardMaterial color="#0b0e12" roughness={1} />
             </mesh>
             {/* 開口の奥に続く暗がり。奥行きを持たせ、覗き込んでも中が透けないようにする。 */}
