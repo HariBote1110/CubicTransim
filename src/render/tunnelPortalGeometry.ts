@@ -34,10 +34,12 @@ export function classifyPortalCorners(
   };
 }
 
-/** ヘッドウォールの最低高さ(world Y単位)。平坦地でも開口+笠石を確保できる高さ。
- *  「門柱・モノリスに見える」というフィードバックを受け、幅いっぱい(1.0)に対して
- *  縦に間延びしないsquatなプロポーションになるよう0.62から引き下げた。 */
-export const MIN_HEADWALL_HEIGHT = 0.5;
+/** ヘッドウォールの高さ(world Y単位、固定値)。地形は実際には切削しておらず、壁の
+ *  背後の斜面は無傷のまま(壁がそれを覆い隠すだけ)なので、内外コーナーの標高差ぶん
+ *  壁を高くする必要はない。openingStraightHeight(0.26)+archRadius(0.26)のアーチを
+ *  収め、その上に笠石ぶんの梁(0.1程度)を確保できる高さとして0.62に固定している。
+ *  OpenTTDの坑口も壁は山の1段ぶんの高さで止まり、山はその上に自然に続く。 */
+export const MIN_HEADWALL_HEIGHT = 0.62;
 
 /** ヘッドウォールを斜面へめり込ませる奥行きオフセット(world単位)。隙間・浮きを防ぐ。 */
 export const HEADWALL_EMBED_DEPTH = 0.08;
@@ -52,10 +54,12 @@ export interface PortalHeadwall {
 }
 
 /**
- * ヘッドウォール(垂直な正面壁)に必要な高さを求める。
- * 内側(山側)コーナーが外側(坑口方向側)コーナーより高いぶんだけ、斜面の切り口が
- * 露出するため、その差ぶん壁を高くしないと斜面との間に隙間・段差が見えてしまう。
- * 平坦地(差が0以下)ではMIN_HEADWALL_HEIGHTを最低保証する。
+ * ヘッドウォール(垂直な正面壁)の高さ・基準標高を求める。
+ * 高さは常にMIN_HEADWALL_HEIGHT固定(内外コーナーの標高差は加算しない)。地形メッシュは
+ * 坑口の有無に関わらず自然な斜面のままで実際には切削されておらず、壁が山の1段目を覆う
+ * だけなので、標高差ぶん壁を高くする必要がそもそもない(以前はこれを加算しており、
+ * 内外標高差が大きい坑口で壁が山の稜線より突き出て「塔門」に見える不具合があった)。
+ * outerHeightは坑口方向側(境界面)の基準標高で、壁の設置基準面として引き続き返す。
  */
 export function computePortalHeadwall(
   corners: readonly [number, number, number, number],
@@ -63,12 +67,9 @@ export function computePortalHeadwall(
   dz: number,
   overpassHeight: number,
 ): PortalHeadwall {
-  const { outer, inner } = classifyPortalCorners(corners, dx, dz);
+  const { outer } = classifyPortalCorners(corners, dx, dz);
   const outerHeight = ((outer[0] + outer[1]) / 2) * overpassHeight;
-  const innerHeight = ((inner[0] + inner[1]) / 2) * overpassHeight;
-  const cutExposure = Math.max(0, innerHeight - outerHeight);
-  const height = Math.max(MIN_HEADWALL_HEIGHT, MIN_HEADWALL_HEIGHT + cutExposure);
-  return { height, outerHeight, embedDepth: HEADWALL_EMBED_DEPTH };
+  return { height: MIN_HEADWALL_HEIGHT, outerHeight, embedDepth: HEADWALL_EMBED_DEPTH };
 }
 
 /** ローカルXY平面上の2次元点。壁・開口の断面はこの平面(X=左右, Y=高さ)に描く。 */

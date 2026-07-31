@@ -31,17 +31,18 @@ describe('computePortalHeadwall', () => {
     expect(height).toBe(MIN_HEADWALL_HEIGHT);
   });
 
-  it('内側(山側)が外側より高いほど、切り口を覆うために壁が高くなる', () => {
+  it('内側(山側)が外側より高くても、壁の高さはMIN_HEADWALL_HEIGHT固定のまま変わらない(地形は切削しないため)', () => {
     const corners: [number, number, number, number] = [0, 0, 1, 1];
     const { height } = computePortalHeadwall(corners, 0, -1, 1);
-    expect(height).toBeGreaterThan(MIN_HEADWALL_HEIGHT);
+    expect(height).toBe(MIN_HEADWALL_HEIGHT);
   });
 
-  it('overpassHeightのスケールに応じて必要な高さが変わる', () => {
+  it('overpassHeightのスケールが変わっても壁の高さはMIN_HEADWALL_HEIGHT固定のまま変わらない', () => {
     const corners: [number, number, number, number] = [0, 0, 1, 1];
     const half = computePortalHeadwall(corners, 0, -1, 0.5);
     const full = computePortalHeadwall(corners, 0, -1, 1);
-    expect(half.height).toBeLessThan(full.height);
+    expect(half.height).toBe(MIN_HEADWALL_HEIGHT);
+    expect(full.height).toBe(MIN_HEADWALL_HEIGHT);
   });
 
   it('outerHeightは坑口方向側(境界面)の基準標高を返す', () => {

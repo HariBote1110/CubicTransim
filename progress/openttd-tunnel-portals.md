@@ -55,3 +55,8 @@
 - `GameScene.tsx`側では、この折れ線を`THREE.Shape`に変換して`THREE.ExtrudeGeometry`で押し出すことで、壁とその開口を「実際に穴の開いた1枚のジオメトリ」として一体成形する(`portalGeometryData`のuseMemo。壁の高さはポータルごとに`computePortalHeadwall`で変わるため、高さをキーにジオメトリをキャッシュして使い回す)。トンネル内部の暗がりも、開口と同じ断面のExtrudeGeometryを壁背面から0.3だけ短く継ぎ足すだけにし(`tunnelMouthGeometry`、寸法固定なので1度だけ生成)、斜面を突き抜ける長い箱をやめた。
 - 袖壁は、X位置を壁の外側面にぴったり合わせ(`wallWidth/2 - sleeveThickness/2`。従来は壁の外側へさらに足していたため壁からはみ出て「浮いた直方体」に見えていた)、高さを壁の50%(従来60%)に抑え、壁の手前側の面(局所+Z、坑口の外向き)から山側(-Z)へだけ延ばすよう修正。
 - E/W/N/S全4方向について、`window.__sun`からシーングラフを辿って`OrthographicCamera`を取得しズーム・位置を直接操作するデバッグスニペットでclose-up検証し、開口が線路中心に一致・左右対称の馬蹄形・袖壁が壁に密着(浮きなし)・斜面から黒い面がはみ出さないことを確認した。
+
+## 追記(v0.3.0-Alpha-33b: 壁高さのcutExposure加算を撤去、固定高さへ)
+- Alpha-33aの実穴ジオメトリ化後、シーングラフのworld AABBを数値検証したところ、開口・壁・線路の中心一致は完璧に成立していた。ただしW坑口の壁AABBがy 0〜1.3と高く、`computePortalHeadwall`が内外コーナー標高差(cutExposure=0.8)を`MIN_HEADWALL_HEIGHT`に加算していたため、壁が山の1段目稜線(0.8)より0.5も突き出て「塔門」のように見える不具合が判明した。
+- 地形メッシュは坑口の有無に関わらず常に自然な斜面のままで実際には切削されておらず(Alpha-31a以降の方針)、壁はその斜面の切り口を単に覆い隠すだけの構造物なので、標高差ぶん壁を高くする必要はそもそもなかった(cutExposureという概念自体が地形を垂直に削る前提の名残だった)。
+- `computePortalHeadwall`の`height`を`MIN_HEADWALL_HEIGHT`固定に変更し、cutExposureの計算(innerHeightの算出含む)を撤去。`MIN_HEADWALL_HEIGHT`は0.5→0.62へ引き上げ、アーチ(openingStraightHeight 0.26+archRadius 0.26=0.52)の上に笠石ぶんの梁(0.1程度)を収められる高さにした。`outerHeight`(坑口方向側の基準標高)・`embedDepth`は従来どおり返す。GameScene.tsx側は変更不要(wallHeightを参照する箇所はすべて固定値をそのまま使うだけで成立)。
