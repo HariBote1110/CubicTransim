@@ -5,13 +5,16 @@ import * as THREE from 'three';
 import type { CellData, TrainType, TrainData } from '../types';
 import type { TrainRuntime } from '../sim/simulation';
 import { carPositions } from '../sim/consist';
-import { isInTunnelInterior } from '../sim/tunnel';
+import { isTrainHiddenInTunnel } from '../sim/tunnel';
 import { TrainCar, type CarVariant } from './TrainCar';
 import { PALETTE } from '../render/palette';
 
 interface DynamicTrainProps {
   data: TrainData;
   railMap: Map<string, CellData>;
+  /** 山岳地形の標高(sim/terrain.tsのcomputeElevation)。高架トンネル(山岳内部を通る
+   *  高架レール)の内部判定にのみ使う。 */
+  elevation: Map<string, number>;
   runtimes: Map<string, TrainRuntime>;
   type: TrainType;
   isSelected: boolean;
@@ -47,7 +50,7 @@ const carGroupPosition = (pos: { x: number; y: number; z: number }, heading: { x
 };
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
-  data, railMap, runtimes, type, isSelected, lineColour: groupColour, onClick,
+  data, railMap, elevation, runtimes, type, isSelected, lineColour: groupColour, onClick,
   isDragging, dragCell,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
@@ -91,8 +94,10 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
         head.z + head.heading.z
       );
       // OpenTTD風のトンネル演出: トンネル内部にいる車両は地形ブロックに埋もれて
-      // 見えなくなるよう非表示にする(坑口の外に出たら再表示)。
-      groupRef.current.visible = !isInTunnelInterior(railMap, head.x, head.z);
+      // 見えなくなるよう非表示にする(坑口の外に出たら再表示)。地平・高架(山岳内部を
+      // 通る高架レール)どちらのトンネルにも対応する(isTrainHiddenInTunnelがyから
+      // 高架レベルを判定して切り替える)。
+      groupRef.current.visible = !isTrainHiddenInTunnel(railMap, elevation, head.x, head.z, head.y);
     }
 
     // 2両目以降: 先頭からの弧長ベースで連続的に後方配置する(carPositions)。
@@ -105,7 +110,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       const groupPos = carGroupPosition(pos, pos.heading);
       carGroup.position.set(groupPos.x, groupPos.y, groupPos.z);
       carGroup.lookAt(pos.x + pos.heading.x, pos.y + pos.heading.y, pos.z + pos.heading.z);
-      carGroup.visible = !isInTunnelInterior(railMap, pos.x, pos.z);
+      carGroup.visible = !isTrainHiddenInTunnel(railMap, elevation, pos.x, pos.z, pos.y);
     }
 
     if (isSelected) {

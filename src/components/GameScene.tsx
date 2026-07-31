@@ -21,7 +21,7 @@ import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction';
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
-import { tunnelPortals } from '../sim/tunnel';
+import { tunnelPortals, elevatedTunnelPortals } from '../sim/tunnel';
 import { computeElevation, buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
@@ -31,7 +31,7 @@ import {
 } from '../render/tunnelPortalGeometry';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
-import { OVERPASS_HEIGHT } from '../sim/trackPath';
+import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
 import {
   groundStationCells, elevatedStationCells, computeStationEndKeys, elevatedCellCandidateFromGroundClick,
 } from '../render/stationLayers';
@@ -317,7 +317,17 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // 埋め込む(TerrainBlocks側)ため、坑口だけをこちらで別途描く。行き止まり坑口が
   // 山の内部を突き破らないよう、標高(TerrainBlocksと同じcomputeElevation)を渡す。
   const terrainElevation = useMemo(() => computeElevation(terrain), [terrain]);
-  const tunnelPortalList = useMemo(() => tunnelPortals(railMap, terrainElevation), [railMap, terrainElevation]);
+  // 地平の坑口(level:0)+高架レール(uppers[L])が山岳内部を通る区間の坑口を合成する。
+  // 高架は保存済みのtunnelフラグを持たないため、elevatedTunnelPortalsがその場の標高から
+  // 動的に「山に埋もれているか」を導出する(sim/tunnel.tsのisMountainInteriorAtLevel)。
+  const tunnelPortalList = useMemo(() => {
+    const ground = tunnelPortals(railMap, terrainElevation).map(p => ({ ...p, level: 0 as const }));
+    const elevatedLevels: (1 | 2 | 3)[] = Array.from(
+      { length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3,
+    );
+    const elevated = elevatedLevels.flatMap(level => elevatedTunnelPortals(railMap, terrainElevation, level));
+    return [...ground, ...elevated];
+  }, [railMap, terrainElevation]);
   // 坑口の開口を斜面へ沿わせる傾き計算に使うコーナー標高の共有マップ(TerrainBlocksと同じ導出)。
   const terrainCornerMap = useMemo(() => buildCornerElevationMap(terrainElevation), [terrainElevation]);
 
@@ -492,13 +502,18 @@ export const GameScene: React.FC<GameSceneProps> = ({
           開口を覗くとreveal(壁厚ぶん)のすぐ奥が黒く読め、斜めから見ても石色の内側面が
           支配的にならない。光源が-x側にあるため+x向きの坑口正面が陰りやすく、石壁が
           真っ黒に潰れないよう軽いemissiveを持たせる。トンネル内のレールは地表と同じ
-          高さを走るため、開口の基準点は常に地面レベル(y=0)に置く(ヘッドウォールは
-          垂直=傾けない)。装飾であり選択対象ではないため地面クリックを奪わないよう
+          高さを走るため、開口の基準点は地平(level:0)ならy=0に置く(ヘッドウォールは
+          垂直=傾けない)。高架レール(uppers[L])が山岳内部を通る区間の坑口(level>0、
+          sim/tunnel.tsのelevatedTunnelPortals)はその高架レベルの高さ(level*OVERPASS_HEIGHT)
+          に同じジオメトリを平行移動して置くだけで、地平と同じ見た目の坑口を高架にも
+          流用できる。装飾であり選択対象ではないため地面クリックを奪わないよう
           全meshのレイキャストを外す。 */}
       {portalGeometryData.map(({ portal, wallHeight, embedDepth, headwallGeometry }) => {
-        // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。
+        // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。高架の坑口(level>0)はそのレベルの
+        // 高さぶん(level*OVERPASS_HEIGHT)持ち上げる。
         const faceX = portal.x + portal.dx * 0.5;
         const faceZ = portal.z + portal.dz * 0.5;
+        const faceY = portal.level * OVERPASS_HEIGHT;
         // groupをdx/dz方向(非mountain側)へ向ける。ローカル+Zがこの方向に一致する
         // (=局所+Zが坑口の外向き=手前側、局所-Zが山の内側=奥)。
         const angle = Math.atan2(portal.dx, portal.dz);
@@ -518,8 +533,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
         return (
           <group
-            key={`portal-${portal.x},${portal.z},${portal.dx},${portal.dz}`}
-            position={[faceX, 0, faceZ]}
+            key={`portal-${portal.x},${portal.z},${portal.dx},${portal.dz},${portal.level}`}
+            position={[faceX, faceY, faceZ]}
             rotation-y={angle}
           >
             {/* ヘッドウォール本体(壁+アーチ開口を一体成形、深さは壁厚のみ)。陰でも
@@ -639,7 +654,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       {trains.map(train => (
         <DynamicTrain
-          key={train.id} data={train} railMap={railMap} runtimes={world.current.runtimes} type="commuter"
+          key={train.id} data={train} railMap={railMap} elevation={terrainElevation}
+          runtimes={world.current.runtimes} type="commuter"
           isSelected={train.id === selectedTrainId}
           lineColour={findGroup(groups, train.groupId)?.colour}
           onClick={() => {

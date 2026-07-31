@@ -3,7 +3,9 @@ import { toKey, DIR } from '../utils';
 import type { CellData } from '../types';
 import {
   tunnelPortals, isInTunnelInterior, elevatedTunnelPortals, isInElevatedTunnelInterior,
+  isTrainHiddenInTunnel,
 } from './tunnel';
+import { OVERPASS_HEIGHT } from './trackPath';
 
 describe('tunnelPortals', () => {
   it('直線トンネル3セルで坑口が両端の2つだけになる', () => {
@@ -236,5 +238,43 @@ describe('isInElevatedTunnelInterior', () => {
     const elevation = new Map<string, number>([[toKey(3, 4), 1]]);
 
     expect(isInElevatedTunnelInterior(railMap, elevation, 3, 4, 2)).toBe(false);
+  });
+});
+
+describe('isTrainHiddenInTunnel', () => {
+  it('y=0.5(地平)は地平のtunnelフラグで判定する', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
+    ]);
+    const elevation = new Map<string, number>();
+
+    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5)).toBe(true);
+  });
+
+  it('y=0.5+level*OVERPASS_HEIGHT(高架)は、そのレベルの高架トンネル判定を使う', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(0, 0), 1]]);
+
+    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5 + OVERPASS_HEIGHT)).toBe(true);
+  });
+
+  it('高架レベルの高さだが、そのセルがまだ山に埋もれていなければ非表示にしない', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: 0, uppers: { 1: { connections: DIR.N | DIR.S } } }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(0, 0), 0]]);
+
+    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5 + OVERPASS_HEIGHT)).toBe(false);
+  });
+
+  it('坂の途中など中途半端な高さは、対応する高架セルが無ければ非表示にしない', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S }],
+    ]);
+    const elevation = new Map<string, number>([[toKey(0, 0), 1]]);
+
+    expect(isTrainHiddenInTunnel(railMap, elevation, 0, 0, 0.5 + OVERPASS_HEIGHT * 0.5)).toBe(false);
   });
 });

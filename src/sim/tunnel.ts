@@ -7,6 +7,7 @@
 import { toKey, fromKey, getVectorFromDir, getOppositeDir, DIR } from '../utils';
 import type { CellData } from '../types';
 import { elevationAt } from './terrain';
+import { OVERPASS_HEIGHT } from './trackPath';
 
 const ALL_DIRS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
 
@@ -153,4 +154,21 @@ export function isInElevatedTunnelInterior(
   const rz = Math.round(z);
   const upper = railMap.get(toKey(rx, rz))?.uppers?.[level as 1 | 2 | 3];
   return !!upper && isMountainInteriorAtLevel(elevation, rx, rz, level);
+}
+
+/**
+ * 列車の描画位置(x,z,renderPos.y)から、地平・高架どちらのトンネルにも対応した
+ * 「非表示にすべきか」を判定する。DynamicTrainのuseFrameで先頭車・後続車の座標に
+ * 使う。renderPos.yは0.5(地平)または0.5+level*OVERPASS_HEIGHT(高架レベルlevel)
+ * が基準(sim/consist.ts・sim/simulation.ts参照)なので、そこからlevelを逆算する。
+ * 坂の途中などlevelの境界に満たない半端なyは四捨五入で最寄りのレベルに寄せるが、
+ * そのレベルの高架セルが実際には無い(=まだ坂の途中)場合はisInElevatedTunnelInterior
+ * 側がfalseを返すため、誤って隠れることはない。
+ */
+export function isTrainHiddenInTunnel(
+  railMap: Map<string, CellData>, elevation: Map<string, number>, x: number, z: number, y: number,
+): boolean {
+  const level = Math.round((y - 0.5) / OVERPASS_HEIGHT);
+  if (level <= 0) return isInTunnelInterior(railMap, x, z);
+  return isInElevatedTunnelInterior(railMap, elevation, x, z, level);
 }
