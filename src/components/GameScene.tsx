@@ -326,14 +326,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const openingHalfWidth = 0.26;
   const openingStraightHeight = 0.26;
   const archRadius = openingHalfWidth;
-  // トンネル内部の暗がり(開口断面と同じ形の押し出し)。斜面を突き抜けないよう短く抑える。
-  // 0.3ではExtrudeGeometryの奥側キャップ(押し出しの終端の平面)が、見上げるアイソメ
-  // カメラでは近い側キャップより画面上で上へずれて投影され、袖壁の高さ(壁の50%)を
-  // 越えて壁の脇からはみ出し、開口とは無関係な向きの黒い破片に見える不具合があった
-  // (N/S向き坑口で顕著。scene.traverseで奥側キャップの中心を投影し、実際にその位置に
-  // 不具合の黒片が一致することを確認した)。奥行きを浅くし、奥側キャップの投影ズレを
-  // 袖壁の陰に収まる範囲まで抑える。
-  const tunnelMouthDepth = 0.15;
+  // トンネル内部の暗がりの奥行き(壁面からのわずかなオフセットのみ)。0.3→0.15とdepthを
+  // 縮めても、山の反対側(N坑口)から見ると、境界セル付近のフリンジ斜面は標高がほぼ0
+  // (地面レベル)しかないため、奥行きのある筒の端面キャップが斜面より高く突き出て
+  // 黒いアーチ形の面として露出してしまう不具合が残った。奥行きのある筒(Extrude)を
+  // やめ、壁の厚み(wallThickness)からは一切はみ出さない「壁背面と面一の薄い平板」に
+  // 変更し、この露出が構造的に起こらないようにする。tunnelMouthPlateDepthは板の厚み
+  // (見た目上ごくわずかで良い。0扱いにはせず、z-fightingを避ける最小限の厚みを持たせる)。
+  const tunnelMouthPlateDepth = 0.01;
 
   // ヘッドウォールのジオメトリ(壁+アーチ開口を1枚のExtrudeGeometryとして一体成形)。
   // 「黒い開口パネル+奥の暗箱」を壁の手前に重ねる張りぼて構成だと、斜めから見たときに
@@ -367,14 +367,15 @@ export const GameScene: React.FC<GameSceneProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tunnelPortalList, terrainCornerMap]);
 
-  // トンネル内部の暗がりのジオメトリ(開口断面と同形、寸法は固定なので1度だけ生成)。
+  // トンネル内部の暗がりのジオメトリ(開口断面と同形の薄い平板。壁の厚みからはみ出さない
+  // よう、壁背面と面一の位置に置く想定。寸法は固定なので1度だけ生成する)。
   const tunnelMouthGeometry = useMemo(() => {
     const outline = buildArchOutline(openingHalfWidth, openingStraightHeight, archRadius);
     const shape = new THREE.Shape();
     outline.forEach((p: Point2D, i: number) => (i === 0 ? shape.moveTo(p.x, p.y) : shape.lineTo(p.x, p.y)));
     shape.closePath();
-    const geometry = new THREE.ExtrudeGeometry(shape, { depth: tunnelMouthDepth, bevelEnabled: false });
-    geometry.translate(0, 0, -tunnelMouthDepth);
+    const geometry = new THREE.ExtrudeGeometry(shape, { depth: tunnelMouthPlateDepth, bevelEnabled: false });
+    geometry.translate(0, 0, -tunnelMouthPlateDepth);
     return geometry;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -542,13 +543,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
               <boxGeometry args={[copingWidth, copingHeight, copingThickness]} />
               <meshStandardMaterial color="#8b9097" roughness={1} emissive="#2c2f33" emissiveIntensity={0.3} />
             </mesh>
-            {/* トンネル内部の暗がり。開口と同じ断面形状(アーチ)を壁背面から短く押し出し、
-                覗き込んでも中が透けないようにする。断面が開口と同形なので壁の輪郭からは
-                み出ず、長い箱と違って斜面を突き抜けない。
-                側面をDoubleSideにすると、山側の奥まった面(押し出しの終端キャップ)が
-                斜面に覆われず露出する角度で、開口とは無関係な向きの黒い断片として
-                見えてしまう不具合があった(N/S向き坑口で顕著)。FrontSide(既定)にし、
-                カメラに背を向ける終端キャップは通常のバックフェースカリングで隠す。 */}
+            {/* トンネル内部の暗がり。開口と同じ断面形状(アーチ)の薄い平板を壁背面と
+                面一(フラッシュ)に置くだけにする。以前は奥行きのある筒(Extrude)を
+                山側へ押し出していたが、坑口セル境界付近のフリンジ斜面はほぼ地面の高さ
+                しかないため、depthを縮めても筒の端面キャップが斜面より高く突き出し、
+                山の反対側から見ると黒いアーチ形の面として露出する不具合があった。
+                壁の厚み(wallThickness)から一切はみ出さない薄い平板にすることで、
+                この露出が構造的に起こらないようにしている。正面からは開口の奥に
+                続く暗がりとして、実開口の内側面(reveal)と合わせて立体感が出る。 */}
             <mesh geometry={tunnelMouthGeometry} position={[0, 0, backFaceZ]} raycast={() => null}>
               <meshStandardMaterial color="#0b0e12" roughness={1} />
             </mesh>
