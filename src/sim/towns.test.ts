@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { StationData, TerrainType, TownData } from '../types';
+import type { CellData, StationData, TerrainType, TownData } from '../types';
+import { generateMap } from './terrain';
 import {
   mulberry32, generateTowns, growTown, townServiceLevel,
   TOWN_MIN_DISTANCE, TOWN_COORD_RANGE, TOWN_POPULATION_MIN, TOWN_POPULATION_MAX, TOWN_POPULATION_CAP,
@@ -82,6 +83,21 @@ describe('generateTowns', () => {
     const towns = generateTowns(mulberry32(7), 8);
     const ids = new Set(towns.map(t => t.id));
     expect(ids.size).toBe(towns.length);
+  });
+
+  it('標高地形(generateMap)を渡しても、街は必ず平地(標高0の草地)に8つ生成される', () => {
+    // 標高が一次データになりmountainセルが数千個規模になっても、
+    // rejection samplingが平地を見つけて8つの街を置けることを確認する。
+    for (const seed of [1, 42, 2026]) {
+      const { terrain, heights } = generateMap(mulberry32(seed));
+      const towns = generateTowns(mulberry32(seed + 1), 8, terrain);
+      expect(towns.length).toBe(8);
+      for (const town of towns) {
+        const key = `${town.centre.x},${town.centre.z}`;
+        expect(terrain.has(key)).toBe(false); // 水域・山岳ではない
+        expect(heights.has(key)).toBe(false); // 標高0の平地
+      }
+    }
   });
 
   it('terrainを渡すと水域セルの半径3タイル以内には街が生成されない', () => {
@@ -342,5 +358,33 @@ describe('resolveTownSpawnTick', () => {
     const alwaysZero = () => 0;
     const result = resolveTownSpawnTick(infos, [], terrain, alwaysZero);
     expect(result.spawnedTowns).toEqual([]);
+  });
+
+  it('線路・駅・車庫が地面を占有するセルの上には町の中心を置かない', () => {
+    // 駅(100,100)の周囲1〜3タイルの全候補セルに地平の線路を敷き詰める
+    const railMap = new Map<string, CellData>();
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        railMap.set(`${100 + dx},${100 + dz}`, { type: 'rail', connections: 1 });
+      }
+    }
+    const infos: StationTransportInfo[] = [
+      { stationId: 's1', pos: { x: 100, z: 100 }, capacity: TOWN_SPAWN_CAPACITY_THRESHOLD },
+    ];
+    const alwaysZero = () => 0;
+    const blocked = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero, railMap);
+    expect(blocked.spawnedTowns).toEqual([]);
+
+    // 純粋な高架専用セル(地平接続なし)は地面を塞がないので湧ける
+    const elevatedOnly = new Map<string, CellData>();
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        elevatedOnly.set(`${100 + dx},${100 + dz}`, {
+          type: 'rail', connections: 0, uppers: { 1: { connections: 1 } },
+        });
+      }
+    }
+    const allowed = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero, elevatedOnly);
+    expect(allowed.spawnedTowns.length).toBe(1);
   });
 });

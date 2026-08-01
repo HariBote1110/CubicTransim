@@ -17,7 +17,7 @@
 // 曲線にしてもセル間で線路が途切れない。分岐(3方向以上)と行き止まり(1方向)は
 // 従来どおり中心からの直線の腕で描く。
 import * as THREE from 'three';
-import { DIR, getVectorFromDir } from '../utils';
+import { DIR, getOppositeDir, getVectorFromDir } from '../utils';
 import { angleFromVector } from './palette';
 import { mergeAndDispose } from './mergeGeometry';
 import { rampHeightAtPos } from '../sim/trackPath';
@@ -150,12 +150,21 @@ export function buildTrackCentreLines(connections: number): TrackPoint[][] {
   }
 
   for (const branch of branches) {
+    const cn = norm(branch.x, branch.z);
     const source = [...main].sort((a, b) => {
       const an = norm(a.x, a.z);
       const bn = norm(b.x, b.z);
-      const cn = norm(branch.x, branch.z);
       return (an.x * cn.x + an.z * cn.z) - (bn.x * cn.x + bn.z * cn.z);
     })[0];
+    const sn = norm(source.x, source.z);
+    if (sn.x * cn.x + sn.z * cn.z > 0) {
+      // 本線が曲線で、最も反対向きの端すら分岐と同じ大まかな向き(dot>0)の場合。
+      // どちらの端へ寄せても分岐線が本線の中心線をまたぐS字になってしまうため、
+      // 行き止まりと同じくセル中心から境界点への直線の腕として描き、
+      // 本線を横切らせない。
+      routes.push([{ x: 0, z: 0 }, branch]);
+      continue;
+    }
     const join = { x: source.x * TURNOUT_JOIN_RATIO, z: source.z * TURNOUT_JOIN_RATIO };
     routes.push(curvePoints(branch, join));
   }
@@ -326,7 +335,10 @@ export function buildRampTrackParts(
       y: rampHeightAtPos(pos, base),
     });
   }
-  layTrackAlong(parts, points, originX, originZ, 0, true);
+  // バラスト(砂利)は地平に接する坂(base=0)だけに敷く。base>=1の坂は空中に
+  // 架かる桁の上なので、砂利が宙に浮いて見えないよう枕木とレールだけを描く
+  // (高架の桁上の線路(buildCellTrackPartsのwithBallast=false)と同じ扱い)。
+  layTrackAlong(parts, points, originX, originZ, 0, base === 0);
   return parts;
 }
 
@@ -342,9 +354,21 @@ function makeCurvedWedgeGeometry(length: number, width: number, heights: number[
   const hw = width / 2;
   const hl = length / 2;
   const n = heights.length - 1;
+  const maxH = Math.max(...heights, 1e-6);
 
   const positions: number[] = [];
-  const push = (a: number[], b: number[], c: number[]) => positions.push(...a, ...b, ...c);
+  const uvs: number[] = [];
+  // uvはBox系ジオメトリ(position/normal/uv)と同じ配列でマージできるようにするための
+  // 平面投影(単色マテリアルなので見た目には使われない)。
+  const pushVertex = (v: number[]) => {
+    positions.push(...v);
+    uvs.push((v[2] + hl) / length, v[1] / maxH);
+  };
+  const push = (a: number[], b: number[], c: number[]) => {
+    pushVertex(a);
+    pushVertex(b);
+    pushVertex(c);
+  };
 
   const zAt = (i: number) => -hl + (length * i) / n;
 
@@ -388,6 +412,7 @@ function makeCurvedWedgeGeometry(length: number, width: number, heights: number[
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.computeVertexNormals();
   return geo;
 }
@@ -470,6 +495,20 @@ const firstDirBit = (connections: number): number => {
 };
 
 /**
+ * 橋脚の間引き(shouldPlacePier)に使う軸を選ぶ。正反対の2ビットが揃った組
+ * (=直線の本線)があればその軸を優先する。firstDirBitの固定順(N,NE,E,...)だと、
+ * 本線E-Wに分岐NEが付いただけでNE軸の偶奇に切り替わってしまい、本線沿いの
+ * 交互配置が崩れて二重橋脚や連続した欠落が出るため。直線の組が無いカーブでは、
+ * 従来どおり最初の接続ビット(=いずれかの隣接直線区間の軸と一致する)を使う。
+ */
+const pierAxisBit = (connections: number): number => {
+  for (const bit of DIR_BITS) {
+    if ((connections & bit) && (connections & getOppositeDir(bit))) return bit;
+  }
+  return firstDirBit(connections);
+};
+
+/**
  * 橋脚を間引く判定。橋の軸方向に沿ったセル整数インデックスの偶奇で判定するので、
  * 軸が斜めでも(x, z)いずれかが変化しない方向でも、隣接セル間で必ず交互になる。
  */
@@ -491,7 +530,7 @@ export function buildOverpassSupportParts(connections: number, x = 0, z = 0, ori
   for (const route of buildTrackCentreLines(connections)) layDeckAlong(decks, route, x, z, originY);
 
   const piers: THREE.BufferGeometry[] = [];
-  const dir = firstDirBit(connections);
+  const dir = pierAxisBit(connections);
   if (shouldPlacePier(x, z, dir)) {
     const pierBottom = 0;
     const pierTop = originY - DECK_THICKNESS;

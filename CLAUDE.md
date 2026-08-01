@@ -18,6 +18,9 @@ OpenTTD・A列車で行こう系を目指すインフラ整備ゲームのプロ
   - `buildPreview.ts` — 建設のコスト・可否判定。UIに条件を書き写さず、construction.ts の apply系に問い合わせて判定する
   - `trackPath.ts` — 線路の中心線（セルを通る2次ベジェ）。`renderPos` と `carPositions` の走行線はこれに載せる。描画側 `render/trackGeometry.ts` と同じ定義なので、レールと列車がずれない
   - `groups.ts` — 運用グループ（共有運行表＋発車間隔による等間隔化）
+  - `townTiles.ts` — タイルベースの町（家・道路）。町id・人口・地形・線路網から決定的に再生成（セーブ不要）。地平の線路は家タイル不可・道路タイルは踏切として可、高架の桁は上空通過可（坂は不可）、駅/車庫/信号は町タイル不可。索引は useGameLogic の townTileIndex（useMemo）を全経路で共有する
+  - `terrainEdit.ts` — OpenTTD風の地形編集(盛土/切土)。矩形選択を±1段し、段差1以下を方向つきBFS伝播で回復。線路・町・水域・範囲外が絡む編集は同一参照のno-op
+  - `terrain.ts` — 標高が一次データ（`heights: Map<string, number>`、セルごとの整数段数・未登録=0・最大 `TERRAIN_HEIGHT_MAX`=10）。`generateMap` がノイズ生成→`normaliseHeights`（隣接段差1以下を保証）→地形種別導出（標高1以上=mountain）の順で作る。`computeElevation` は旧セーブ移行専用
 - `src/hooks/useGameLogic.ts` — React state（railMap/stations/trains）と `worldRef: SimWorld` の同期、建設・購入ロジック
 - `src/components/` — 描画専任。`SimulationDriver` が useFrame から stepWorld を呼ぶ。`DynamicTrain` は runtime.renderPos を反映するだけ
 - `src/render/` — 描画専用のパレット・共有マテリアル・ジオメトリ生成。sim層からは参照しない

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TerrainType } from '../types';
 import {
-  RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, CAPACITY_PER_CAR,
+  RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   demandFactor, clockToDate,
@@ -10,6 +10,7 @@ import type { MonthlyLedger } from '../sim/economy';
 import { ANNUAL_INTEREST_RATE, LOAN_LIMIT, LOAN_STEP, maxAdditionalLoan, monthlyInterest } from '../sim/loans';
 import type { PassengerCohort } from '../sim/passengers';
 import { evaluateBuild } from '../sim/buildPreview';
+import type { TownTileIndex } from '../sim/townTiles';
 import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES, averageInterval, suggestsShuttle } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
@@ -26,7 +27,7 @@ const CLOCK_POLL_INTERVAL_MS = 500;
 // 選択中列車の乗客数・駅の待ち人数の更新間隔(ms)。
 const POLL_INTERVAL_MS = 400;
 
-export type BuildMode = CellType | 'none' | 'remove' | 'signal';
+export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'raise' | 'lower';
 
 interface GameUIProps {
   buildMode: BuildMode;
@@ -39,6 +40,10 @@ interface GameUIProps {
   stations: Map<string, StationData>;
   railMap: Map<string, CellData>;
   terrain: Map<string, TerrainType>;
+  /** セルごとの標高(整数段数、未登録=0)。地形編集(盛土/切土)プレビューの可否判定に使う。 */
+  heights: Map<string, number>;
+  /** 町タイル索引(useGameLogicのtownTileIndex)。建設プレビューの可否判定に使う。 */
+  townTiles: TownTileIndex;
   isEditingSchedule: boolean;
   setIsEditingSchedule: (v: boolean) => void;
   onDeploy: (trainId: string) => void;
@@ -92,6 +97,8 @@ const BUILD_TOOLS: {
   { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
+  { mode: 'raise', label: '盛土', key: '7', accent: T.terrain, cost: `¥${TERRAIN_EDIT_COST}/マス`, hint: 'ドラッグした矩形範囲を1段盛り上げる。段差1以下を保つため周囲も自動でならされる(その分も課金)。線路・町・水の上は不可' },
+  { mode: 'lower', label: '切土', key: '8', accent: T.terrain, cost: `¥${TERRAIN_EDIT_COST}/マス`, hint: 'ドラッグした矩形範囲を1段掘り下げる。段差1以下を保つため周囲も自動でならされる(その分も課金)。線路・町・水の上は不可' },
 ];
 
 const SPEEDS: (0 | 1 | 2 | 4)[] = [0, 1, 2, 4];
@@ -111,7 +118,7 @@ const STOP_LOCATION_LABEL = {
 export const GameUI: React.FC<GameUIProps> = ({
   buildMode, setBuildMode,
   buildLevel, setBuildLevel,
-  selectedTrainId, trains, stations, railMap, terrain,
+  selectedTrainId, trains, stations, railMap, terrain, heights, townTiles,
   isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar,
   scheduleClipboard, onCopySchedule, onPasteSchedule,
@@ -214,8 +221,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
   const preview = useMemo(() => {
     if (buildMode === 'none' || previewPath.length === 0) return null;
-    return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money, buildLevel);
-  }, [buildMode, previewPath, railMap, stations, terrain, money, buildLevel]);
+    return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money, buildLevel, townTiles, heights);
+  }, [buildMode, previewPath, railMap, stations, terrain, money, buildLevel, townTiles, heights]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(
@@ -485,6 +492,8 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
 
   const detail: string[] = [];
   if (mode === 'rail' || mode === 'remove') detail.push(`${cellCount}マス`);
+  // 地形編集は伝播で動くセルを含む課金対象セル数を出す。
+  if (mode === 'raise' || mode === 'lower') detail.push(`${cellCount}マス`);
   if (bridgeCells > 0) detail.push(`橋 ${bridgeCells}`);
   if (tunnelCells > 0) detail.push(`隧道 ${tunnelCells}`);
   if (isElevatedRail) {

@@ -91,6 +91,17 @@ export const TRAIN_COST = 5_000; // 新造時(2両編成)の価格
 export const CAR_COST = 2_000; // 増結1両あたり
 export const CAR_REFUND = 1_000; // 解結1両あたりの払い戻し
 
+// 地形編集(盛土/切土)の1セル・1段あたりのコスト。線路(RAIL_COST=100)の半分にして、
+// OpenTTD同様「整地してから敷くほうがトンネル(8倍)・橋(5倍)より安いが、
+// 広範囲の造成は財布に響く」バランスにする。
+export const TERRAIN_EDIT_COST = 50;
+
+// 地形編集のコスト。cellSteps=変化したセル段数(applyTerrainEditのchangedCells件数。
+// 1回の編集で各セルの変化は常に±1段なので件数=総段数)。
+export function costOfTerrainEdit(cellSteps: number): number {
+  return cellSteps * TERRAIN_EDIT_COST;
+}
+
 // 水上は「橋」、山岳は「トンネル」としてRAIL_COSTに乗算する倍率
 export const BRIDGE_COST_MULTIPLIER = 5;
 export const TUNNEL_COST_MULTIPLIER = 8;

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import type { CellData, TerrainType, TownData } from '../types';
+import type { CellData, TerrainType } from '../types';
+import type { TownTileIndex } from '../sim/townTiles';
 import { toKey } from '../utils';
 import { MATERIALS, hash01 } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
@@ -8,15 +9,17 @@ import { mergeAndDispose } from '../render/mergeGeometry';
 interface Props {
   terrain: Map<string, TerrainType>;
   railMap: Map<string, CellData>;
-  towns: TownData[];
+  /** 町タイル索引(sim/townTiles.tsのbuildTownTileIndex)。市街地には樹木を置かない。 */
+  townTiles: TownTileIndex;
   /** 装飾を置く範囲(-RANGE..RANGE)。sim/terrain.ts の生成範囲に合わせる。 */
   range?: number;
 }
 
 // 草地セルに樹木を置く確率。上げすぎると森で埋まって線路が見づらくなる。
 const TREE_DENSITY = 0.055;
-// 街の中心からこの距離以内には樹木を置かない(市街地に見せるため)。
-const TOWN_CLEARANCE = 3.5;
+// 町タイル(家・道路)とその周囲この距離(チェビシェフ)以内には樹木を置かない
+// (市街地の輪郭に沿って空き地を作るため)。
+const TOWN_TILE_MARGIN = 1;
 
 /**
  * 平地(草地)に置く装飾物(樹木)。
@@ -26,7 +29,7 @@ const TOWN_CLEARANCE = 3.5;
  * 同じ座標には必ず同じ木が生えるので見た目は安定する)。
  * 数百本規模になるのでマテリアルごとにジオメトリをマージして3ドローコールに収める。
  */
-export const Scenery: React.FC<Props> = ({ terrain, railMap, towns, range = 45 }) => {
+export const Scenery: React.FC<Props> = ({ terrain, railMap, townTiles, range = 45 }) => {
   // 地形と街だけに依存する候補リスト(建設のたびに全セル走査しないよう分離する)。
   const candidates = useMemo(() => {
     const list: { x: number; z: number }[] = [];
@@ -34,12 +37,19 @@ export const Scenery: React.FC<Props> = ({ terrain, railMap, towns, range = 45 }
       for (let z = -range; z <= range; z++) {
         if (hash01(x, z, 11) >= TREE_DENSITY) continue;
         if (terrain.has(toKey(x, z))) continue; // 水域・山岳は除外
-        if (towns.some(t => Math.hypot(t.centre.x - x, t.centre.z - z) < TOWN_CLEARANCE)) continue;
+        // 町タイル(家・道路)とその周囲1タイルは市街地として空けておく
+        let nearTown = false;
+        for (let dx = -TOWN_TILE_MARGIN; dx <= TOWN_TILE_MARGIN && !nearTown; dx++) {
+          for (let dz = -TOWN_TILE_MARGIN; dz <= TOWN_TILE_MARGIN && !nearTown; dz++) {
+            if (townTiles.has(toKey(x + dx, z + dz))) nearTown = true;
+          }
+        }
+        if (nearTown) continue;
         list.push({ x, z });
       }
     }
     return list;
-  }, [terrain, towns, range]);
+  }, [terrain, townTiles, range]);
 
   const merged = useMemo(() => {
     const trunks: THREE.BufferGeometry[] = [];

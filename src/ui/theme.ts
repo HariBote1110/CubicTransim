@@ -25,6 +25,8 @@ export const T = {
   depot: '#4d90d8',
   signal: '#ef4444',
   bridge: '#c98a4b',
+  /** 地形編集(盛土/切土)ツールの差し色。土と草地の中間の色。 */
+  terrain: '#a2b45c',
 
   // --- 形 ---
   radius: 10,

@@ -190,7 +190,7 @@ describe('applyStation（特性テスト）', () => {
     expect(after.uppers?.[1]).toEqual(before.uppers?.[1]);
   });
 
-  it('坂(ramp)のセルに駅を置いても ramp が消えない', () => {
+  it('坂(ramp)のセルに駅を置いても ramp が消えない(設置自体がno-opになる)', () => {
     // (0,0)を地平の既存線路に接続し、長さ4の経路の始点側2セルが坂になるようにする
     let state = emptyState();
     state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
@@ -198,9 +198,13 @@ describe('applyStation（特性テスト）', () => {
     const before = state.railMap.get(toKey(0, 0))!;
     expect(before.ramp).toBeDefined();
 
-    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
-    const after = state.railMap.get(toKey(0, 0))!;
-    expect(after.type).toBe('station');
+    // 坂セルは直線の斜面専用なので駅は置けない。以前は「駅化しつつrampを保持」して
+    // いたが、駅の軸ビット(ここではns)が坂の軸(ew)と直交して描画できない状態に
+    // 壊れるため、設置全体をno-op(同一state参照)にする。rampは当然消えない。
+    const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    expect(result).toBe(state);
+    const after = result.railMap.get(toKey(0, 0))!;
+    expect(after.type).toBe('rail');
     expect(after.ramp).toEqual(before.ramp);
   });
 });
@@ -1215,5 +1219,87 @@ describe('坂セルは、別々の建設で後から直交する接続を足さ�
     // 同じ軸(東西)方向で、坂セルを含む区間を重ねて引き直す
     const result = applyRailPath(state, [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }]);
     expect(result.railMap.get(toKey(3, 0))!.ramp).toBeDefined();
+  });
+});
+
+describe('applyStation: 坂(ramp)セルへの設置', () => {
+  it('坂セルへの駅設置はno-op(同一state参照を返す)', () => {
+    // applyBridgeで両端2セルずつが坂になる橋を作る(0,1が始点側の坂)
+    let state = emptyState();
+    state = applyBridge(state, Array.from({ length: 6 }, (_, i) => ({ x: i, z: 0 })));
+    const rampCell = state.railMap.get(toKey(1, 0))!;
+    expect(rampCell.ramp).toBeDefined();
+
+    // 坂セルは直線専用(斜面)なので駅ホームは置けない。stateを一切変えず
+    // 同一参照を返す(buildPreview側はこの「無効果」で建設不可と判定する)。
+    const result = applyStation(state, { x: 1, z: 0 });
+    expect(result).toBe(state);
+    // 軸を明示しても同じ
+    expect(applyStation(state, { x: 1, z: 0 }, undefined, [], 'ns')).toBe(state);
+  });
+});
+
+describe('removePath: uppersの後始末({1: undefined}を残さない)', () => {
+  it('隣の桁の撤去でuppersが空になったセルは、uppers自体がundefinedになる', () => {
+    let state = emptyState();
+    state = applyElevatedPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }], undefined, 1);
+    const result = removePath(state, [{ x: 1, z: 0 }]);
+    // (0,0)のuppers[1].connectionsはEだけだったので空になる。
+    // {1: undefined}(truthyな空オブジェクト)を残すと、次の撤去が高架撤去の
+    // 分岐へ誤って入り、セルが消えない・隣の掃除が走らないバグになる。
+    expect(result.railMap.get(toKey(0, 0))!.uppers).toBeUndefined();
+  });
+
+  it('uppersが空になった地平セルは、その後の撤去でセル削除と隣接の掃除が正しく行われる', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(-1, 0), { type: 'rail', connections: DIR.E });
+    railMap.set(toKey(0, 0), { type: 'rail', connections: DIR.W, uppers: { 1: { connections: DIR.E } } });
+    railMap.set(toKey(1, 0), { type: 'rail', uppers: { 1: { connections: DIR.W } } });
+    const state: ConstructionState = { railMap, stations: new Map<string, StationData>() };
+
+    const after1 = removePath(state, [{ x: 1, z: 0 }]);
+    expect(after1.railMap.get(toKey(0, 0))!.uppers).toBeUndefined();
+
+    // 続けて(0,0)を撤去: セル自体が消え、(-1,0)のE接続も掃除される
+    const after2 = removePath(after1, [{ x: 0, z: 0 }]);
+    expect(after2.railMap.has(toKey(0, 0))).toBe(false);
+    expect(after2.railMap.get(toKey(-1, 0))!.connections! & DIR.E).toBe(0);
+  });
+});
+
+describe('removePath: 高架撤去に伴う坂と地平接続の掃除', () => {
+  it('純高架セルの撤去で、隣の坂セルの地平接続ビットも掃除される', () => {
+    const railMap = new Map<string, CellData>();
+    railMap.set(toKey(0, 0), { type: 'rail', connections: DIR.E });
+    railMap.set(toKey(1, 0), { type: 'rail', connections: DIR.E | DIR.W, ramp: { dir: DIR.E, level: 2, base: 0 } });
+    railMap.set(toKey(2, 0), { type: 'rail', uppers: { 1: { connections: DIR.W } } });
+    const state: ConstructionState = { railMap, stations: new Map<string, StationData>() };
+
+    const result = removePath(state, [{ x: 2, z: 0 }]);
+    const rampCell = result.railMap.get(toKey(1, 0))!;
+    // 存在しないセルへ向かう平坦なレールの腕(E)が宙に残らない
+    expect(rampCell.connections).toBe(DIR.W);
+    // 行き先を失った坂は平坦へ戻る
+    expect(rampCell.ramp).toBeUndefined();
+  });
+
+  it('2段の坂は撤去セルの8近傍を超えて連鎖的に地平へ戻る', () => {
+    let state = emptyState();
+    const path = Array.from({ length: 6 }, (_, i) => ({ x: i, z: 0 }));
+    // 0:base0/lv1, 1:base0/lv2, 2:base1/lv1, 3:base1/lv2, 4-5: uppers[2]の桁
+    state = applyElevatedPath(state, path, undefined, 2, {
+      start: { kind: 'connect', level: 0 },
+      end: { kind: 'flat' },
+    });
+    expect(state.railMap.get(toKey(2, 0))!.ramp).toBeDefined();
+    expect(state.railMap.get(toKey(3, 0))!.ramp).toBeDefined();
+
+    const result = removePath(state, [{ x: 5, z: 0 }, { x: 4, z: 0 }]);
+    // (3,0)は行き先の桁が消えたので戻る。(2,0)は(3,0)の坂が消えたので連鎖して戻る
+    // ((4,0)の8近傍の外にあるため、従来の実装では坂の半分が宙に浮いたまま残った)。
+    expect(result.railMap.get(toKey(3, 0))!.ramp).toBeUndefined();
+    expect(result.railMap.get(toKey(2, 0))!.ramp).toBeUndefined();
+    // base0の坂は登り先のレベル1線路(uppers[1])が残っている限り維持される
+    expect(result.railMap.get(toKey(1, 0))!.ramp).toBeDefined();
   });
 });

@@ -3,6 +3,7 @@ import type { TrainRuntime } from './simulation';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
 import { fallbackTownName } from './towns';
+import { computeElevation } from './terrain';
 
 export interface SaveDataV1 {
   version: 1;
@@ -167,10 +168,18 @@ export interface SaveDataV13 extends Omit<SaveDataV12, 'version'> {
   version: 13;
 }
 
+// v14: 標高(heights)を一次データとして保存する。v13以前にはheightsが無いため、
+// 移行時は旧来の導出(computeElevation: mountainセルの縁からの距離、最大3段)で補う。
+export interface SaveDataV14 extends Omit<SaveDataV13, 'version'> {
+  version: 14;
+  /** セルごとの標高(整数段数)。標高0のセルは含めない(未登録=0)。 */
+  heights: [string, number][];
+}
+
 export type SaveData =
   | SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5
   | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10 | SaveDataV11
-  | SaveDataV12 | SaveDataV13;
+  | SaveDataV12 | SaveDataV13 | SaveDataV14;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -194,10 +203,12 @@ export function serialiseWorld(
   groups: TrainGroupData[] = [],
   groupDepartures: Map<string, number> = new Map(),
   loan = 0,
-  demand: Map<string, PassengerCohort[]> = new Map()
-): SaveDataV13 {
+  demand: Map<string, PassengerCohort[]> = new Map(),
+  heights: Map<string, number> = new Map()
+): SaveDataV14 {
   return {
-    version: 13,
+    version: 14,
+    heights: Array.from(heights.entries()),
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -217,7 +228,7 @@ export function serialiseWorld(
   };
 }
 
-export function deserialiseWorld(data: SaveData): {
+export interface RestoredWorld {
   railMap: Map<string, CellData>;
   stations: Map<string, StationData>;
   trains: TrainData[];
@@ -226,6 +237,8 @@ export function deserialiseWorld(data: SaveData): {
   money: number;
   towns: TownData[];
   terrain: Map<string, TerrainType>;
+  /** セルごとの標高(整数段数、未登録=0)。v13以前はcomputeElevationで導出する。 */
+  heights: Map<string, number>;
   clock: { elapsed: number };
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
@@ -234,7 +247,20 @@ export function deserialiseWorld(data: SaveData): {
   groupDepartures: Map<string, number>;
   loan: number;
   demand: Map<string, PassengerCohort[]>;
-} {
+}
+
+export function deserialiseWorld(data: SaveData): RestoredWorld {
+  if (data.version === 14) {
+    // v14はv13にheightsを加えただけなので、本体はv13と同じ移行経路を通す。
+    const base = deserialiseWorldWithoutHeights({ ...data, version: 13 });
+    return { ...base, heights: new Map(data.heights) };
+  }
+  const base = deserialiseWorldWithoutHeights(data);
+  // v13以前にはheightsが無い。旧来どおりmountainセルの縁からの距離(最大3段)で導出する。
+  return { ...base, heights: computeElevation(base.terrain) };
+}
+
+function deserialiseWorldWithoutHeights(data: Exclude<SaveData, SaveDataV14>): Omit<RestoredWorld, 'heights'> {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
   const runtimes = new Map(

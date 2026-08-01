@@ -59,6 +59,9 @@ export const PALETTE = {
   buildingB: '#c0b8ab',
   buildingC: '#a8b3bd',
   buildingRoof: '#8a5a4a',
+  buildingRoofFlat: '#9a958c',
+  roadAsphalt: '#5a5e63',
+  roadKerb: '#a3a099',
 
   // --- 樹木 ---
   foliage: '#4f7c3a',
@@ -99,6 +102,14 @@ export const MATERIALS = {
     color: PALETTE.water, roughness: 0.15, metalness: 0.2, transparent: true, opacity: 0.85,
   }),
   shore: std(PALETTE.shore, { roughness: 1 }),
+
+  buildingA: std(PALETTE.buildingA, { roughness: 0.9 }),
+  buildingB: std(PALETTE.buildingB, { roughness: 0.9 }),
+  buildingC: std(PALETTE.buildingC, { roughness: 0.9 }),
+  buildingRoof: std(PALETTE.buildingRoof, { roughness: 0.85, flatShading: true }),
+  buildingRoofFlat: std(PALETTE.buildingRoofFlat, { roughness: 0.9 }),
+  roadAsphalt: std(PALETTE.roadAsphalt, { roughness: 1 }),
+  roadKerb: std(PALETTE.roadKerb, { roughness: 1 }),
 
   foliage: std(PALETTE.foliage, { flatShading: true, roughness: 1 }),
   foliageDark: std(PALETTE.foliageDark, { flatShading: true, roughness: 1 }),

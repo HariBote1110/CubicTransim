@@ -101,14 +101,24 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       for (const level of ELEVATED_LEVELS) {
         const upper = data.uppers?.[level];
         if (!upper) continue;
+
+        // 多段の坂セル(base>=1)は、construction.tsのorIntoBaseLevelが坂の軸ビットを
+        // uppers[base].connectionsへ書き込む。そのビットをこのループが平坦な
+        // 桁・レールとして描くと、坂の専用パーツ(buildRampTrackParts)と二重描画に
+        // なる(地平のconnectionsからrampAxisBitsを除くのと同じ理屈で、baseレベル
+        // からも除く)。坂の軸と交差する別方向の接続(あれば)は平坦なまま残す。
+        const upperConnections = data.ramp && (data.ramp.base ?? 0) === level
+          ? upper.connections & ~rampAxisBits
+          : upper.connections;
+        if (upperConnections === 0) continue;
         const originY = level * OVERPASS_HEIGHT;
 
         // 高架側はバラストを敷かず、枕木とレールだけを桁の上に置く。
-        const upperParts = buildCellTrackParts(upper.connections, x, z, originY, false);
+        const upperParts = buildCellTrackParts(upperConnections, x, z, originY, false);
         all.sleepers.push(...upperParts.sleepers);
         all.rails.push(...upperParts.rails);
 
-        const support = buildOverpassSupportParts(upper.connections, x, z, originY);
+        const support = buildOverpassSupportParts(upperConnections, x, z, originY);
         supports.piers.push(...support.piers);
         supports.decks.push(...support.decks);
       }

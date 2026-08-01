@@ -10,6 +10,7 @@ import {
   TUNNEL_COST_MULTIPLIER,
   OVERPASS_COST_MULTIPLIER,
   ELEVATED_STATION_COST,
+  TERRAIN_EDIT_COST,
 } from './economy';
 import { applyElevatedPath } from './construction';
 
@@ -249,6 +250,43 @@ describe('evaluateBuild(station, level>=1) 高架駅タイル1枚', () => {
   it('高架の線路が無ければno-effect', () => {
     const { railMap, stations, terrain } = emptyMaps();
     const p = evaluateBuild('station', [{ x: 2, z: 0 }], railMap, stations, terrain, 100_000, 1);
+    expect(p.reason).toBe('no-effect');
+  });
+});
+
+describe('evaluateBuild: 地形編集(盛土/切土)', () => {
+  it('平地の盛土は変化セル数×TERRAIN_EDIT_COSTでok', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const p = evaluateBuild('raise', [{ x: 0, z: 0 }, { x: 1, z: 0 }], railMap, stations, terrain, 100_000);
+    expect(p.reason).toBe('ok');
+    expect(p.cellCount).toBe(2);
+    expect(p.cost).toBe(2 * TERRAIN_EDIT_COST);
+  });
+
+  it('伝播で動くセルもコスト・セル数に含まれる', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    terrain.set('0,0', 'mountain');
+    const heights = new Map<string, number>([['0,0', 1]]);
+    // 高さ1→2の盛土は4近傍も引き上げる(計5セル)
+    const p = evaluateBuild('raise', [{ x: 0, z: 0 }], railMap, stations, terrain, 100_000, 0, new Map(), heights);
+    expect(p.reason).toBe('ok');
+    expect(p.cellCount).toBe(5);
+    expect(p.cost).toBe(5 * TERRAIN_EDIT_COST);
+  });
+
+  it('線路のあるセルはno-effect、資金不足はinsufficient-funds', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    railMap.set('0,0', { type: 'rail', connections: 0 });
+    const blocked = evaluateBuild('raise', [{ x: 0, z: 0 }], railMap, stations, terrain, 100_000);
+    expect(blocked.reason).toBe('no-effect');
+
+    const poor = evaluateBuild('raise', [{ x: 5, z: 5 }], new Map(), stations, terrain, 10);
+    expect(poor.reason).toBe('insufficient-funds');
+  });
+
+  it('高さ0の切土はno-effect', () => {
+    const { railMap, stations, terrain } = emptyMaps();
+    const p = evaluateBuild('lower', [{ x: 0, z: 0 }], railMap, stations, terrain, 100_000);
     expect(p.reason).toBe('no-effect');
   });
 });

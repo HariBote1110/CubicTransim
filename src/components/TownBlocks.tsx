@@ -1,111 +1,130 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
+import * as THREE from 'three';
 import { Html } from '@react-three/drei';
 import type { TownData } from '../types';
-import { mulberry32 } from '../sim/towns';
-import { PALETTE } from '../render/palette';
+import { fromKey } from '../utils';
+import type { TownTileIndex } from '../sim/townTiles';
+import { MATERIALS, hash01 } from '../render/palette';
+import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
   towns: TownData[];
+  /** 町タイル索引(sim/townTiles.tsのbuildTownTileIndex)。家・道路をこのタイル通りに描く。 */
+  townTiles: TownTileIndex;
 }
 
-const TOWN_BLOCK_RADIUS = 3; // 建物群を配置する街半径(タイル)
-const BUILDING_COLOURS = [PALETTE.buildingA, PALETTE.buildingB, PALETTE.buildingC];
-
-// 街のidから決定的な数値シードを作る(文字列ハッシュ)。
-const seedFromId = (id: string): number => {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = (Math.imul(31, hash) + id.charCodeAt(i)) | 0;
-  }
-  return hash >>> 0;
-};
+// この人口以上の町には、中心近くのタイルに高層ビルが混ざる。
+const TALL_BUILDING_POPULATION = 4000;
 
 // 人口を "2.3k" のような簡易表記に変換する。
 const formatPopulation = (population: number): string =>
   population >= 1000 ? `${(population / 1000).toFixed(1)}k` : `${Math.round(population)}`;
 
-interface Building {
-  x: number;
-  z: number;
-  width: number;
-  depth: number;
-  height: number;
-  colour: string;
-  rotation: number;
-  gabled: boolean;
-}
+/**
+ * タイルベースの町の描画。sim/townTiles.tsが決めたタイル(家・道路)を、そのセルの
+ * 中央に建てる。家の大きさ・高さ・色はセル座標のハッシュから決定的に散らす。
+ * 数百タイル規模になるためマテリアルごとにジオメトリをマージして少数ドローコールに収める。
+ *
+ * 道路タイルは地平の線路と同居できる(踏切)。その場合も路面スラブは描いたままにする
+ * ことで、線路が路面を横切る見た目(簡易的な踏切)になる。遮断機・警報機の描画は未実装
+ * (progress/tile-based-towns.md参照)。
+ */
+export const TownBlocks: React.FC<Props> = ({ towns, townTiles }) => {
+  const merged = useMemo(() => {
+    const populationByTown = new Map(towns.map(t => [t.id, t.population]));
+    const wallsA: THREE.BufferGeometry[] = [];
+    const wallsB: THREE.BufferGeometry[] = [];
+    const wallsC: THREE.BufferGeometry[] = [];
+    const roofs: THREE.BufferGeometry[] = [];
+    const roofsFlat: THREE.BufferGeometry[] = [];
+    const roads: THREE.BufferGeometry[] = [];
+    const kerbs: THREE.BufferGeometry[] = [];
 
-const TownBlock: React.FC<{ town: TownData }> = ({ town }) => {
-  // 街ごとにidから決定的なシードを作り、建物配置を安定させる。
-  const buildings = useMemo<Building[]>(() => {
-    const rng = mulberry32(seedFromId(town.id));
-    const count = 6 + Math.floor((town.population / 5000) * 10); // 6〜16棟
-    const result: Building[] = [];
-    for (let i = 0; i < count; i++) {
-      const angle = rng() * Math.PI * 2;
-      const dist = Math.sqrt(rng()) * TOWN_BLOCK_RADIUS; // 中心寄りに密になるよう平方根で分布
-      // 中心に近いほど高い建物が建つ(都心→郊外のシルエット)
-      const centreness = 1 - dist / TOWN_BLOCK_RADIUS;
-      const tall = rng() < 0.25 + centreness * 0.5;
-      result.push({
-        x: Math.cos(angle) * dist,
-        z: Math.sin(angle) * dist,
-        width: 0.32 + rng() * 0.3,
-        depth: 0.32 + rng() * 0.3,
-        height: tall ? 0.8 + rng() * 1.6 * (0.4 + centreness) : 0.3 + rng() * 0.35,
-        colour: BUILDING_COLOURS[Math.floor(rng() * BUILDING_COLOURS.length)],
-        rotation: Math.floor(rng() * 4) * (Math.PI / 8),
-        gabled: !tall,
-      });
+    for (const [key, entry] of townTiles) {
+      const { x, z } = fromKey(key);
+
+      if (entry.kind === 'road') {
+        // 縁石(タイル全面のわずかに明るい下地)+アスファルトの路面スラブ。
+        const kerb = new THREE.BoxGeometry(1.0, 0.03, 1.0);
+        kerb.translate(x, 0.015, z);
+        kerbs.push(kerb);
+        const slab = new THREE.BoxGeometry(0.86, 0.045, 0.86);
+        slab.translate(x, 0.0225, z);
+        roads.push(slab);
+        continue;
+      }
+
+      // 家: セル座標ハッシュで大きさ・高さ・色を決定的に散らす。
+      const population = populationByTown.get(entry.townId) ?? 0;
+      const width = 0.4 + hash01(x, z, 21) * 0.2;
+      const depth = 0.4 + hash01(x, z, 22) * 0.2;
+      const tall = population >= TALL_BUILDING_POPULATION && hash01(x, z, 25) < 0.18;
+      const height = tall
+        ? 0.9 + hash01(x, z, 26) * 1.3
+        : 0.3 + hash01(x, z, 26) * 0.35;
+
+      const wall = new THREE.BoxGeometry(width, height, depth);
+      wall.translate(x, height / 2, z);
+      const bucket = hash01(x, z, 23);
+      (bucket < 0.34 ? wallsA : bucket < 0.67 ? wallsB : wallsC).push(wall);
+
+      if (tall) {
+        // 高層はパラペット(平屋根)で「ビル」らしく。
+        const parapet = new THREE.BoxGeometry(width + 0.04, 0.05, depth + 0.04);
+        parapet.translate(x, height + 0.025, z);
+        roofsFlat.push(parapet);
+        const plant = new THREE.BoxGeometry(width * 0.4, 0.09, depth * 0.4);
+        plant.translate(x, height + 0.09, z);
+        roofsFlat.push(plant);
+      } else {
+        // 低層の住宅には寄棟屋根を載せる。
+        const roof = new THREE.ConeGeometry(Math.max(width, depth) * 0.8, 0.2, 4);
+        roof.rotateY(Math.PI / 4);
+        roof.translate(x, height + 0.1, z);
+        roofs.push(roof);
+      }
     }
-    return result;
-  }, [town.id, town.population]);
+
+    return {
+      wallsA: mergeAndDispose(wallsA),
+      wallsB: mergeAndDispose(wallsB),
+      wallsC: mergeAndDispose(wallsC),
+      roofs: mergeAndDispose(roofs),
+      roofsFlat: mergeAndDispose(roofsFlat),
+      roads: mergeAndDispose(roads),
+      kerbs: mergeAndDispose(kerbs),
+    };
+  }, [towns, townTiles]);
+
+  useEffect(() => () => {
+    Object.values(merged).forEach(g => g?.dispose());
+  }, [merged]);
+
+  // 町の建物・道路は装飾であり選択対象ではない。地面クリックを奪わないようレイキャストを外す。
+  const noRaycast = () => null;
 
   return (
-    <group position={[town.centre.x, 0, town.centre.z]}>
-      {/* 街の建物は装飾であり選択対象ではない。地面クリックを奪わないようレイキャストを外す。 */}
-      {buildings.map((b, i) => (
-        <group key={i} position={[b.x, 0, b.z]} rotation={[0, b.rotation, 0]}>
-          <mesh position={[0, b.height / 2, 0]} castShadow receiveShadow raycast={() => null}>
-            <boxGeometry args={[b.width, b.height, b.depth]} />
-            <meshStandardMaterial color={b.colour} roughness={0.9} />
-          </mesh>
-          {b.gabled ? (
-            // 低層の住宅には寄棟屋根を載せる
-            <mesh position={[0, b.height + 0.08, 0]} rotation={[0, Math.PI / 4, 0]} castShadow raycast={() => null}>
-              <coneGeometry args={[Math.max(b.width, b.depth) * 0.78, 0.18, 4]} />
-              <meshStandardMaterial color={PALETTE.buildingRoof} roughness={0.85} flatShading />
-            </mesh>
-          ) : (
-            // 高層はパラペットと屋上設備で「ビル」らしく
-            <>
-              <mesh position={[0, b.height + 0.02, 0]} raycast={() => null}>
-                <boxGeometry args={[b.width + 0.03, 0.04, b.depth + 0.03]} />
-                <meshStandardMaterial color="#9a958c" roughness={0.9} />
-              </mesh>
-              <mesh position={[0, b.height + 0.09, 0]} raycast={() => null}>
-                <boxGeometry args={[b.width * 0.4, 0.1, b.depth * 0.4]} />
-                <meshStandardMaterial color="#8e8a82" roughness={0.9} />
-              </mesh>
-            </>
-          )}
-        </group>
-      ))}
+    <group>
+      {merged.kerbs && <mesh geometry={merged.kerbs} material={MATERIALS.roadKerb} receiveShadow raycast={noRaycast} />}
+      {merged.roads && <mesh geometry={merged.roads} material={MATERIALS.roadAsphalt} receiveShadow raycast={noRaycast} />}
+      {merged.wallsA && <mesh geometry={merged.wallsA} material={MATERIALS.buildingA} castShadow receiveShadow raycast={noRaycast} />}
+      {merged.wallsB && <mesh geometry={merged.wallsB} material={MATERIALS.buildingB} castShadow receiveShadow raycast={noRaycast} />}
+      {merged.wallsC && <mesh geometry={merged.wallsC} material={MATERIALS.buildingC} castShadow receiveShadow raycast={noRaycast} />}
+      {merged.roofs && <mesh geometry={merged.roofs} material={MATERIALS.buildingRoof} castShadow raycast={noRaycast} />}
+      {merged.roofsFlat && <mesh geometry={merged.roofsFlat} material={MATERIALS.buildingRoofFlat} raycast={noRaycast} />}
 
-      <Html position={[0, 2.6, 0]} center style={{ pointerEvents: 'none' }}>
-        <div style={{
-          background: 'rgba(24,30,38,0.62)', color: '#f2f5f8', padding: '2px 7px',
-          borderRadius: '999px', fontSize: '10px', whiteSpace: 'nowrap',
-          backdropFilter: 'blur(3px)', border: '1px solid rgba(255,255,255,0.14)',
-        }}>
-          <span style={{ fontWeight: 700, marginRight: 5 }}>{town.name}</span>
-          {formatPopulation(town.population)}
-        </div>
-      </Html>
+      {towns.map(town => (
+        <Html key={town.id} position={[town.centre.x, 2.6, town.centre.z]} center style={{ pointerEvents: 'none' }}>
+          <div style={{
+            background: 'rgba(24,30,38,0.62)', color: '#f2f5f8', padding: '2px 7px',
+            borderRadius: '999px', fontSize: '10px', whiteSpace: 'nowrap',
+            backdropFilter: 'blur(3px)', border: '1px solid rgba(255,255,255,0.14)',
+          }}>
+            <span style={{ fontWeight: 700, marginRight: 5 }}>{town.name}</span>
+            {formatPopulation(town.population)}
+          </div>
+        </Html>
+      ))}
     </group>
   );
 };
-
-export const TownBlocks: React.FC<Props> = ({ towns }) => (
-  <>{towns.map(town => <TownBlock key={town.id} town={town} />)}</>
-);

@@ -28,7 +28,7 @@ export default function App() {
   }, []);
 
   const {
-    railMap, stations, trains, towns, terrain, selectedTrainId, setSelectedTrainId,
+    railMap, stations, trains, towns, townTileIndex, terrain, heights, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
@@ -55,7 +55,9 @@ export default function App() {
           stations={stations}
           trains={trains}
           towns={towns}
+          townTiles={townTileIndex}
           terrain={terrain}
+          heights={heights}
           world={worldRef}
           buildMode={buildMode}
           buildLevel={buildLevel}
@@ -92,6 +94,8 @@ export default function App() {
         stations={stations}
         railMap={railMap}
         terrain={terrain}
+        heights={heights}
+        townTiles={townTileIndex}
         isEditingSchedule={isEditingSchedule}
         setIsEditingSchedule={setIsEditingSchedule}
         onDeploy={deployTrain}

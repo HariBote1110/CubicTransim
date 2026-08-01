@@ -5,7 +5,7 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v13)', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v14)', () => {
   it('railMap/stations/trains/runtimes/waiting/money/towns/terrain/clock/台帳/stopLocation/運用グループ/借入残高/行き先つき待ち客 が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
@@ -54,11 +54,14 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const groupDepartures = new Map<string, number>([['g1|stA', 987]]);
     const demand = new Map<string, PassengerCohort[]>([['stA', [{ destinationId: 'stB', count: 12.5 }]]]);
 
+    const heights = new Map<string, number>([['3,3', 1], ['4,4', 7]]);
+
     const saveData = serialiseWorld(
       railMap, stations, trains, runtimes, waiting, money, towns, terrain,
-      clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand
+      clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand,
+      heights
     );
-    expect(saveData.version).toBe(13);
+    expect(saveData.version).toBe(14);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -75,6 +78,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored.money).toBe(money);
     expect(restored.towns).toEqual(towns);
     expect(restored.terrain).toEqual(terrain);
+    expect(restored.heights).toEqual(heights);
     expect(restored.stopLocation).toBe('far');
     expect(restored.groups).toEqual(groups);
     expect(restored.groupDepartures).toEqual(groupDepartures);
@@ -468,5 +472,55 @@ describe('persistence: v12(upper形式)からv13(uppers形式)への移行', () 
     expect(rampCell.ramp).toEqual({ dir: 2, level: 1, base: 0 });
 
     expect(restored.stations.get('stUP')!.cells).toEqual([{ x: 2, z: 0, layer: 1 }]);
+  });
+});
+
+describe('persistence: v13(heights無し)からv14(heights保存)への移行', () => {
+  it('v13データを読み込むと、heightsがterrainのmountainセルから旧来の導出(縁からの距離、最大3段)で補われる', () => {
+    // 3x3のmountain塊: 縁は標高1、中心は標高2になる(computeElevationの仕様)。
+    const terrain: [string, TerrainType][] = [];
+    for (let x = -1; x <= 1; x++) {
+      for (let z = -1; z <= 1; z++) {
+        terrain.push([`${x},${z}`, 'mountain']);
+      }
+    }
+    const v13Data = {
+      version: 13,
+      railMap: [], stations: [], trains: [], runtimes: [], waiting: [],
+      money: 10_000, towns: [], terrain,
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
+      stopLocation: 'middle',
+      groups: [], groupDepartures: [],
+      loan: 0, demand: [],
+    };
+
+    const restored = deserialiseWorld(v13Data as never);
+
+    expect(restored.terrain.size).toBe(9);
+    expect(restored.heights.get('0,0')).toBe(2);
+    expect(restored.heights.get('1,0')).toBe(1);
+    expect(restored.heights.get('1,1')).toBe(1);
+    expect(restored.heights.has('5,5')).toBe(false);
+  });
+
+  it('v14データのheightsはそのまま復元される(導出し直さない)', () => {
+    const v14Data = {
+      version: 14,
+      railMap: [], stations: [], trains: [], runtimes: [], waiting: [],
+      money: 10_000, towns: [],
+      terrain: [['0,0', 'mountain']] as [string, TerrainType][],
+      heights: [['0,0', 9] as [string, number]],
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(),
+      ledgerHistory: [],
+      stopLocation: 'middle',
+      groups: [], groupDepartures: [],
+      loan: 0, demand: [],
+    };
+
+    const restored = deserialiseWorld(v14Data as never);
+    expect(restored.heights).toEqual(new Map([['0,0', 9]]));
   });
 });

@@ -1,7 +1,8 @@
 // 街(town)の生成ロジック。純粋関数のみ。React/THREE には依存しない。
-import type { StationData, TerrainType, TownData } from '../types';
-import { fromKey } from '../utils';
+import type { CellData, StationData, TerrainType, TownData } from '../types';
+import { toKey } from '../utils';
 import { terrainAt } from './terrain';
+import { cellOccupiesGround } from './townTiles';
 
 type Pos = { x: number; z: number };
 
@@ -19,15 +20,20 @@ export const TOWN_TERRAIN_AVOID_RADIUS = 3; // 水域・山岳セルからこの
 const MAX_ATTEMPTS_PER_TOWN = 500; // rejection samplingの試行回数上限
 
 // 候補座標が水域・山岳セルの半径TOWN_TERRAIN_AVOID_RADIUS以内にあるかどうかを判定する。
+// 標高地形の導入で水域・山岳セルは数千個規模になったため、terrain全走査ではなく
+// 候補の周囲O(radius^2)セルの直接参照で判定する(rejection samplingの試行×500に耐える)。
 const isNearTerrain = (
   x: number,
   z: number,
   terrain: Map<string, TerrainType>,
   radius: number
 ): boolean => {
-  for (const key of terrain.keys()) {
-    const { x: tx, z: tz } = fromKey(key);
-    if (Math.hypot(tx - x, tz - z) <= radius) return true;
+  const r = Math.ceil(radius);
+  for (let dx = -r; dx <= r; dx++) {
+    for (let dz = -r; dz <= r; dz++) {
+      if (Math.hypot(dx, dz) > radius) continue;
+      if (terrain.has(toKey(x + dx, z + dz))) return true;
+    }
   }
   return false;
 };
@@ -217,12 +223,15 @@ export const NEW_TOWN_POPULATION_MAX = 400;
  * pos の周辺(1〜3タイル、水域・山岳を除く平地)から町の中心候補を1つ選び、
  * 新しい町を生成する(呼び出し側は既に「生やしてよい」と判定済みの前提)。
  * 候補が無ければnull。rngは呼び出し側から注入する。
+ * railMapを渡すと、地面を占有する線路セル(線路・駅・車庫・坂)の上には町の中心を
+ * 置かない(町の中心は道路タイルになるため。sim/townTiles.ts参照)。
  */
 const spawnTownNear = (
   pos: Pos,
   towns: TownData[],
   terrain: Map<string, TerrainType>,
-  rng: () => number
+  rng: () => number,
+  railMap?: Map<string, CellData>
 ): TownData | null => {
   const candidates: Pos[] = [];
   for (let dz = -NEW_TOWN_SPAWN_RADIUS_MAX; dz <= NEW_TOWN_SPAWN_RADIUS_MAX; dz++) {
@@ -232,6 +241,7 @@ const spawnTownNear = (
       const x = pos.x + dx;
       const z = pos.z + dz;
       if (terrainAt(terrain, x, z) !== 'grass') continue;
+      if (railMap && cellOccupiesGround(railMap.get(toKey(x, z)))) continue;
       candidates.push({ x, z });
     }
   }
@@ -288,7 +298,9 @@ export function resolveTownSpawnTick(
   stationInfos: StationTransportInfo[],
   towns: TownData[],
   terrain: Map<string, TerrainType>,
-  rng: () => number
+  rng: () => number,
+  // 既存の線路網(省略可)。町の中心を線路・駅・車庫の上に置かないために使う。
+  railMap?: Map<string, CellData>
 ): TownSpawnTickResult {
   let currentTowns = towns;
   const spawnedTowns: TownData[] = [];
@@ -298,7 +310,7 @@ export function resolveTownSpawnTick(
     if (nearestTownWithinRadius(info.pos, currentTowns, TOWN_STATION_RADIUS)) continue;
     if (rng() >= townSpawnChance(info.capacity)) continue;
 
-    const spawned = spawnTownNear(info.pos, currentTowns, terrain, rng);
+    const spawned = spawnTownNear(info.pos, currentTowns, terrain, rng, railMap);
     if (!spawned) continue;
     currentTowns = [...currentTowns, spawned];
     spawnedTowns.push(spawned);

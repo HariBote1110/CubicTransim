@@ -22,7 +22,9 @@ import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
-import { computeElevation, buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
+import { buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
+import { rectCells } from '../sim/terrainEdit';
+import type { TownTileIndex } from '../sim/townTiles';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import {
@@ -94,7 +96,11 @@ interface GameSceneProps {
   stations: Map<string, StationData>;
   trains: TrainData[];
   towns: TownData[];
+  /** 町タイル索引(useGameLogicのtownTileIndex)。町の描画と樹木の間引きに使う。 */
+  townTiles: TownTileIndex;
   terrain: Map<string, TerrainType>;
+  /** セルごとの標高(整数段数、未登録=0)。地形の一次データ(sim/terrain.tsのgenerateMap)。 */
+  heights: Map<string, number>;
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
   // ★変更: 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜MAX_ELEVATED_LEVEL)。
@@ -106,7 +112,7 @@ interface GameSceneProps {
 
   onCommitPath: (
     path: { x: number; z: number }[],
-    mode: CellType | 'none' | 'remove' | 'signal',
+    mode: CellType | 'none' | 'remove' | 'signal' | 'raise' | 'lower',
     // 駅設置(station)専用: ドラッグ方向から決まる軸のヒント(南北/東西)。
     stationAxisHint?: StationAxis,
     // 線路(rail)・駅(station)専用: 建設対象レベル。省略時は0(地平)。
@@ -129,7 +135,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, terrain, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, townTiles, terrain, heights, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -161,14 +167,20 @@ export const GameScene: React.FC<GameSceneProps> = ({
     return !!canPlaceTrainAt(world.current, draggingTrainId, cursorPos);
   }, [draggingTrainId, cursorPos, world]);
 
+  // 地形編集(盛土/切土)モードか。選択はOpenTTD風の矩形ドラッグになり、
+  // 地形メッシュ(TerrainBlocks)を直接ポインタで拾えるようにする。
+  const terrainEditActive = buildMode === 'raise' || buildMode === 'lower';
+
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
     if (!dragStartPos) return [cursorPos];
     if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal') {
       return [cursorPos];
     }
+    // 地形編集は8方向の直線ではなく矩形範囲を選択する(OpenTTD流)。
+    if (terrainEditActive) return rectCells(dragStartPos, cursorPos);
     return getConstrainedPath(dragStartPos, cursorPos);
-  }, [dragStartPos, cursorPos, buildMode]);
+  }, [dragStartPos, cursorPos, buildMode, terrainEditActive]);
 
   // 高架の線路(buildMode==='rail' かつ buildLevel>=1)プレビューの各セルの役割
   // (坂/高架のまま)。construction.tsのresolveElevatedPathEnd/pickElevatedConnection/
@@ -241,6 +253,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
       const pos = getGridPosFromEvent(e);
       const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
         ? [pos]
+        : terrainEditActive
+        ? rectCells(start, pos)
         : getConstrainedPath(start, pos);
       // 駅設置(station)は常に単一セルを置くが、ドラッグした向きを軸のヒントとしてUI側から渡す。
       // (押下位置=解放位置で向きが分からない場合はヒント無しにし、隣接セルからの推測に任せる)
@@ -307,6 +321,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
     if (buildMode === 'depot') return DEPOT_COLOUR;
     if (buildMode === 'remove') return REMOVE_COLOUR;
     if (buildMode === 'signal') return SIGNAL_COLOUR;
+    if (buildMode === 'raise') return T.terrain;
+    if (buildMode === 'lower') return T.warning;
     if (buildMode === 'rail' && buildLevel > 0) return T.bridge;
     return '#3ab6ff';
   };
@@ -315,8 +331,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   // トンネルの坑口(山肌に面した出入口)。OpenTTD風にトンネル内部は地形メッシュへ
   // 埋め込む(TerrainBlocks側)ため、坑口だけをこちらで別途描く。行き止まり坑口が
-  // 山の内部を突き破らないよう、標高(TerrainBlocksと同じcomputeElevation)を渡す。
-  const terrainElevation = useMemo(() => computeElevation(terrain), [terrain]);
+  // 山の内部を突き破らないよう、標高(TerrainBlocksと同じheights一次データ)を渡す。
+  const terrainElevation = heights;
   // 坑口の開口を斜面へ沿わせる傾き計算に使うコーナー標高の共有マップ(TerrainBlocksと同じ導出)。
   const terrainCornerMap = useMemo(() => buildCornerElevationMap(terrainElevation), [terrainElevation]);
   // 高架レール(uppers[L])が山岳内部を通る区間の坑口・内部判定(sim/tunnel.tsの
@@ -435,6 +451,9 @@ export const GameScene: React.FC<GameSceneProps> = ({
           ? 0.2 + (role?.kind === 'ramp' ? role.base : buildLevel) * OVERPASS_HEIGHT
           : buildMode === 'station' && buildLevel > 0
           ? 0.2 + buildLevel * OVERPASS_HEIGHT
+          // 地形編集はセルの現在の標高の上にゴーストを重ねる(丘の上でも埋もれない)。
+          : terrainEditActive
+          ? 0.2 + (heights.get(toKey(pos.x, pos.z)) ?? 0) * OVERPASS_HEIGHT
           : 0.2;
         return (
           <mesh key={`preview-${i}`} position={[pos.x, previewY, pos.z]} raycast={() => null}>
@@ -444,8 +463,20 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TerrainBlocks terrain={terrain} />
-      <Scenery terrain={terrain} railMap={railMap} towns={towns} />
+      {/* 地形編集モード中は地形メッシュ自体をポインタで拾い、丘の上でもe.pointが
+          実際の地表(=真上のセル)に当たるようにする。地面プレーン(y=0)だけだと、
+          直交カメラの見え方のずれで高い地形の頂上をクリックしても手前のセルが選ばれて
+          しまうため。ハンドラ内でstopPropagationし、背後の地面プレーンのハンドラが
+          プレーン上の(ずれた)e.pointで二重に発火しないようにする。 */}
+      <TerrainBlocks
+        terrain={terrain}
+        heights={heights}
+        pickable={terrainEditActive}
+        onPointerMove={(e) => { e.stopPropagation(); handlePointerMove(e); }}
+        onPointerDown={handlePointerDown}
+        onPointerUp={(e) => { e.stopPropagation(); handlePointerUp(e); }}
+      />
+      <Scenery terrain={terrain} railMap={railMap} townTiles={townTiles} />
       <TrackNetwork railMap={railMap} />
 
       {Array.from(railMap.entries()).map(([key, data]) => {
@@ -587,7 +618,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TownBlocks towns={towns} />
+      <TownBlocks towns={towns} townTiles={townTiles} />
 
       {Array.from(stations.values()).map(station => {
         const orderIndices: number[] = [];

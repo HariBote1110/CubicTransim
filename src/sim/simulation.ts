@@ -155,6 +155,9 @@ export interface SimWorld {
   towns?: TownData[];
   // 地形(水域・山岳)。デバッグ表示・描画同期用。旧セーブ(v4以前)には存在しないため任意とする。
   terrain?: Map<string, TerrainType>;
+  // セルごとの標高(整数段数、未登録=0)。地形の一次データ(sim/terrain.tsのgenerateMap)。
+  // 旧セーブ(v13以前)には存在しないため任意とする(移行時はcomputeElevationから導出)。
+  heights?: Map<string, number>;
   // ゲーム内暦(シミュレーション累積秒)。旧セーブ(v5以前)には存在しないため任意とする。
   clock?: { elapsed: number };
   // PBS風のセル予約テーブル(セルキー→列車ID)。セーブデータには含めない。
@@ -1003,7 +1006,8 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
     const stationInfos = computeStationTransportInfos(world);
     for (let d = prevDayIndex; d < newDayIndex; d++) {
       if (stationInfos.length === 0) break;
-      const result = resolveTownSpawnTick(stationInfos, world.towns ?? [], world.terrain, world.rng);
+      // railMapを渡し、線路・駅・車庫が地面を占有するセルの上に町の中心が湧かないようにする。
+      const result = resolveTownSpawnTick(stationInfos, world.towns ?? [], world.terrain, world.rng, world.railMap);
       if (result.spawnedTowns.length > 0) {
         world.towns = result.towns;
         events.push({ type: 'townGrowth', towns: world.towns });

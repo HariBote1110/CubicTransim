@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
+import type { ThreeEvent } from '@react-three/fiber';
 import type { TerrainType } from '../types';
 import { fromKey } from '../utils';
 import {
-  computeElevation,
   elevationAt,
   buildCornerElevationMap,
   cellCornersFromMap,
-  MOUNTAIN_ELEVATION_MAX,
+  TERRAIN_HEIGHT_MAX,
 } from '../sim/terrain';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import { MATERIALS } from '../render/palette';
@@ -15,7 +15,22 @@ import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
   terrain: Map<string, TerrainType>;
+  /** セルごとの標高(整数段数、未登録=0)。地形の一次データ(sim/terrain.tsのgenerateMap)。 */
+  heights: Map<string, number>;
+  /**
+   * trueのとき、地形の上面メッシュ(草地・雪)をポインタで拾えるようにし、
+   * 渡されたハンドラを発火させる(地形編集モード用。e.pointが実際の地表に当たるので、
+   * 高い地形でも真上のセルが正しく選べる)。falseのときは従来通り装飾扱いで
+   * レイキャストを外し、地面クリックを奪わない。
+   */
+  pickable?: boolean;
+  onPointerMove?: (e: ThreeEvent<PointerEvent>) => void;
+  onPointerDown?: (e: ThreeEvent<PointerEvent>) => void;
+  onPointerUp?: (e: ThreeEvent<PointerEvent>) => void;
 }
+
+// この標高以上の上面を雪化粧にする(最大段数に対する相対しきい値)。
+const SNOW_HEIGHT_MIN = TERRAIN_HEIGHT_MAX - 2;
 
 const WATER_LEVEL = -0.07;
 
@@ -53,8 +68,10 @@ const pushTri = (
  * セル数が数百規模になり得るのでマテリアルごとにマージして描く。
  * 地形データ(sim/terrain.ts)そのものは変更していない。
  */
-export const TerrainBlocks: React.FC<Props> = ({ terrain }) => {
-  const elevation = useMemo(() => computeElevation(terrain), [terrain]);
+export const TerrainBlocks: React.FC<Props> = ({
+  terrain, heights, pickable = false, onPointerMove, onPointerDown, onPointerUp,
+}) => {
+  const elevation = heights;
   // コーナー標高は「コーナー座標→標高」の共有マップとして1度だけ構築する
   // (buildCornerElevationMap)。セルごとに個別計算すると、同じコーナーを共有する
   // 隣接セル間で計算結果がずれ、上面メッシュに裂け目ができる恐れがある。
@@ -96,8 +113,8 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain }) => {
       });
       const [tl, tr, br, bl] = worldCorners;
 
-      // 上面の色: 標高3(芯)は雪、標高1〜2は草地(斜面も同じ扱いでよい)。
-      const topTarget = e >= MOUNTAIN_ELEVATION_MAX ? snowTop : grassTop;
+      // 上面の色: 高標高(SNOW_HEIGHT_MIN以上)は雪、それ以外は草地(斜面も同じ扱いでよい)。
+      const topTarget = e >= SNOW_HEIGHT_MIN ? snowTop : grassTop;
 
       // 対角線は「高さが等しい2隅を結ぶ側」を優先して分割する(ひねりの少ない自然な見た目になる)。
       // 頂点順は+Y(上方)から見てCCW(反時計回り)にすること。tl→tr→brの順は
@@ -138,6 +155,13 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain }) => {
   // 水域・山岳の地形装飾は選択対象ではない。地面クリックを奪わないようレイキャストを外す。
   const noRaycast = () => null;
 
+  // 地形編集モード(pickable)のときだけ、上面メッシュにポインタハンドラを付ける。
+  // それ以外はレイキャスト自体を外す(従来の装飾扱い)。raycastはpropを外す/付けるの
+  // トグルではなく常に明示的に渡す(prop除去時にr3fが既定へ戻すことへ依存しない)。
+  const topFaceProps = pickable
+    ? { raycast: THREE.Mesh.prototype.raycast, onPointerMove, onPointerDown, onPointerUp }
+    : { raycast: noRaycast };
+
   return (
     <group>
       {merged.shore && <mesh geometry={merged.shore} material={MATERIALS.shore} receiveShadow raycast={noRaycast} />}
@@ -154,11 +178,17 @@ export const TerrainBlocks: React.FC<Props> = ({ terrain }) => {
           material={MATERIALS.grassTerrace}
           castShadow
           receiveShadow
-          raycast={noRaycast}
+          {...topFaceProps}
         />
       )}
       {merged.snowTop && (
-        <mesh geometry={merged.snowTop} material={MATERIALS.rockSnow} castShadow receiveShadow raycast={noRaycast} />
+        <mesh
+          geometry={merged.snowTop}
+          material={MATERIALS.rockSnow}
+          castShadow
+          receiveShadow
+          {...topFaceProps}
+        />
       )}
     </group>
   );

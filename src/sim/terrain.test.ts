@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { mulberry32 } from './towns';
 import {
-  generateTerrain,
+  generateMap,
+  generateHeights,
+  normaliseHeights,
   terrainAt,
   computeElevation,
   elevationAt,
@@ -9,65 +11,196 @@ import {
   cellCornerElevations,
   buildCornerElevationMap,
   cellCornersFromMap,
-  dilateMountains,
   TERRAIN_COORD_RANGE,
+  TERRAIN_HEIGHT_MAX,
+  MOUNTAIN_HEIGHT_THRESHOLD,
   LAKE_COUNT_MIN,
   LAKE_COUNT_MAX,
   LAKE_SIZE_MAX,
-  MOUNTAIN_COUNT_MIN,
-  MOUNTAIN_COUNT_MAX,
-  MOUNTAIN_LENGTH_MAX,
-  MOUNTAIN_WIDTH_MAX,
 } from './terrain';
 import { fromKey, toKey } from '../utils';
 import type { TerrainType } from '../types';
 
-describe('generateTerrain', () => {
-  it('同じシードからは同じ地形が決定的に得られる', () => {
-    const terrainA = generateTerrain(mulberry32(42));
-    const terrainB = generateTerrain(mulberry32(42));
-    expect(Array.from(terrainA.entries())).toEqual(Array.from(terrainB.entries()));
+// 4近傍の標高差がすべて1以下(1-Lipschitz)であることを検証するヘルパー。
+// 未登録セル(マップ外含む)は標高0として扱うため、登録セルの周囲も必ず確認する。
+const expectLipschitz = (heights: Map<string, number>): void => {
+  for (const [key, h] of heights) {
+    const { x, z } = fromKey(key);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nh = heights.get(toKey(x + dx, z + dz)) ?? 0;
+      expect(Math.abs(h - nh)).toBeLessThanOrEqual(1);
+    }
+  }
+};
+
+describe('generateHeights', () => {
+  it('同じシードからは同じ標高マップが決定的に得られる', () => {
+    const a = generateHeights(mulberry32(42));
+    const b = generateHeights(mulberry32(42));
+    expect(Array.from(a.entries())).toEqual(Array.from(b.entries()));
   });
 
-  it('water/mountainのセルはいずれも仕様範囲内の個数になる', () => {
-    const terrain = generateTerrain(mulberry32(42));
-    const waterCount = Array.from(terrain.values()).filter(t => t === 'water').length;
-    const mountainCount = Array.from(terrain.values()).filter(t => t === 'mountain').length;
-
-    expect(waterCount).toBeGreaterThan(0);
-    expect(waterCount).toBeLessThanOrEqual(LAKE_COUNT_MAX * LAKE_SIZE_MAX);
-    expect(mountainCount).toBeGreaterThan(0);
-    // 尾根の描画崩れ対策(dilateMountains)で4近傍ぶん膨張するため、元の上限の最大5倍まで許容する。
-    expect(mountainCount).toBeLessThanOrEqual(MOUNTAIN_COUNT_MAX * MOUNTAIN_LENGTH_MAX * MOUNTAIN_WIDTH_MAX * 5);
+  it('標高は1以上TERRAIN_HEIGHT_MAX以下の整数のみを登録する(0は未登録で表す)', () => {
+    const heights = generateHeights(mulberry32(7));
+    expect(heights.size).toBeGreaterThan(0);
+    for (const h of heights.values()) {
+      expect(Number.isInteger(h)).toBe(true);
+      expect(h).toBeGreaterThanOrEqual(1);
+      expect(h).toBeLessThanOrEqual(TERRAIN_HEIGHT_MAX);
+    }
   });
 
   it('生成される座標はすべて-45..45の範囲に収まる', () => {
-    const terrain = generateTerrain(mulberry32(7));
-    for (const key of terrain.keys()) {
+    const heights = generateHeights(mulberry32(3));
+    for (const key of heights.keys()) {
       const { x, z } = fromKey(key);
-      expect(x).toBeGreaterThanOrEqual(-TERRAIN_COORD_RANGE);
-      expect(x).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
-      expect(z).toBeGreaterThanOrEqual(-TERRAIN_COORD_RANGE);
-      expect(z).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
+      expect(Math.abs(x)).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
+      expect(Math.abs(z)).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
+    }
+  });
+});
+
+describe('normaliseHeights', () => {
+  it('どの4近傍間も標高差1以下(1-Lipschitz)になる(ランダム入力のプロパティテスト)', () => {
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const rng = mulberry32(seed * 101);
+      const raw = new Map<string, number>();
+      for (let i = 0; i < 400; i++) {
+        const x = Math.floor(rng() * 41) - 20;
+        const z = Math.floor(rng() * 41) - 20;
+        raw.set(toKey(x, z), Math.floor(rng() * (TERRAIN_HEIGHT_MAX + 1)));
+      }
+      const normalised = normaliseHeights(raw, 20);
+      expectLipschitz(normalised);
     }
   });
 
-  it('異なるシードでは湖・山脈の個数が仕様範囲内で決定される(下限・上限のsanityチェック)', () => {
-    // 複数シードで試し、常に妥当な範囲であることを確認する
-    for (const seed of [1, 2, 3, 4, 5]) {
-      const terrain = generateTerrain(mulberry32(seed));
-      expect(terrain.size).toBeGreaterThan(0);
+  it('標高を持ち上げることはない(引き下げのみで整合させる)', () => {
+    const raw = new Map<string, number>([
+      [toKey(0, 0), 10],
+      [toKey(5, 5), 4],
+    ]);
+    const normalised = normaliseHeights(raw, 10);
+    for (const [key, h] of normalised) {
+      expect(h).toBeLessThanOrEqual(raw.get(key) ?? 0);
     }
+  });
+
+  it('孤立した高いセルは周囲0との差が1になるまで引き下げられる', () => {
+    const raw = new Map<string, number>([[toKey(0, 0), 10]]);
+    const normalised = normaliseHeights(raw, 10);
+    expect(normalised.get(toKey(0, 0))).toBe(1);
+  });
+
+  it('既に1-Lipschitzな入力は変化しない(冪等)', () => {
+    // 十字型: 中心2、4近傍1、その外は0 — どの隣接段差も1以下。
+    const raw = new Map<string, number>([
+      [toKey(0, 0), 2],
+      [toKey(1, 0), 1],
+      [toKey(-1, 0), 1],
+      [toKey(0, 1), 1],
+      [toKey(0, -1), 1],
+    ]);
+    const once = normaliseHeights(raw, 10);
+    const twice = normaliseHeights(once, 10);
+    expect(Array.from(once.entries()).sort()).toEqual(Array.from(raw.entries()).sort());
+    expect(Array.from(twice.entries()).sort()).toEqual(Array.from(once.entries()).sort());
+  });
+
+  it('標高0のセルはマップに登録しない(未登録=0の規約を保つ)', () => {
+    const raw = new Map<string, number>([
+      [toKey(0, 0), 0],
+      [toKey(1, 0), 1],
+    ]);
+    const normalised = normaliseHeights(raw, 10);
+    expect(normalised.has(toKey(0, 0))).toBe(false);
+    expect(normalised.get(toKey(1, 0))).toBe(1);
+  });
+});
+
+describe('generateMap', () => {
+  it('同じシードからは同じ地形・標高が決定的に得られる', () => {
+    const a = generateMap(mulberry32(42));
+    const b = generateMap(mulberry32(42));
+    expect(Array.from(a.terrain.entries())).toEqual(Array.from(b.terrain.entries()));
+    expect(Array.from(a.heights.entries())).toEqual(Array.from(b.heights.entries()));
+  });
+
+  it('標高は1-Lipschitz(隣接段差1以下)を満たす', () => {
+    for (const seed of [1, 42, 2026]) {
+      const { heights } = generateMap(mulberry32(seed));
+      expectLipschitz(heights);
+    }
+  });
+
+  it('waterセルの標高は必ず0(未登録)になる', () => {
+    for (const seed of [1, 42, 2026]) {
+      const { terrain, heights } = generateMap(mulberry32(seed));
+      for (const [key, type] of terrain) {
+        if (type === 'water') expect(heights.has(key)).toBe(false);
+      }
+    }
+  });
+
+  it('mountainセルと「標高がMOUNTAIN_HEIGHT_THRESHOLD以上のセル」は一致する', () => {
+    const { terrain, heights } = generateMap(mulberry32(42));
+    for (const [key, h] of heights) {
+      if (h >= MOUNTAIN_HEIGHT_THRESHOLD) {
+        expect(terrain.get(key)).toBe('mountain');
+      }
+    }
+    for (const [key, type] of terrain) {
+      if (type === 'mountain') {
+        expect(heights.get(key) ?? 0).toBeGreaterThanOrEqual(MOUNTAIN_HEIGHT_THRESHOLD);
+      }
+    }
+  });
+
+  it('がっつり高低差: 標高6以上のセルが必ず存在する', () => {
+    for (const seed of [1, 2, 3, 42, 2026]) {
+      const { heights } = generateMap(mulberry32(seed));
+      const max = Math.max(...heights.values());
+      expect(max).toBeGreaterThanOrEqual(6);
+    }
+  });
+
+  it('駅・車庫・街を置ける平地(標高0の陸地)が十分に残る(全セルの30%以上)', () => {
+    for (const seed of [1, 2, 3, 42, 2026]) {
+      const { terrain, heights } = generateMap(mulberry32(seed));
+      const side = TERRAIN_COORD_RANGE * 2 + 1;
+      const total = side * side;
+      let flatLand = 0;
+      for (let x = -TERRAIN_COORD_RANGE; x <= TERRAIN_COORD_RANGE; x++) {
+        for (let z = -TERRAIN_COORD_RANGE; z <= TERRAIN_COORD_RANGE; z++) {
+          const key = toKey(x, z);
+          if (!heights.has(key) && terrain.get(key) !== 'water') flatLand++;
+        }
+      }
+      expect(flatLand / total).toBeGreaterThanOrEqual(0.3);
+    }
+  });
+
+  it('waterセルは仕様範囲内の個数になる(湖は従来通り生成される)', () => {
+    const { terrain } = generateMap(mulberry32(42));
+    const waterCount = Array.from(terrain.values()).filter(t => t === 'water').length;
+    expect(waterCount).toBeGreaterThan(0);
+    expect(waterCount).toBeLessThanOrEqual(LAKE_COUNT_MAX * LAKE_SIZE_MAX);
     expect(LAKE_COUNT_MIN).toBe(3);
-    expect(LAKE_COUNT_MAX).toBe(5);
-    expect(MOUNTAIN_COUNT_MIN).toBe(2);
-    expect(MOUNTAIN_COUNT_MAX).toBe(3);
+  });
+
+  it('生成される座標はすべて-45..45の範囲に収まる', () => {
+    const { terrain, heights } = generateMap(mulberry32(7));
+    for (const key of [...terrain.keys(), ...heights.keys()]) {
+      const { x, z } = fromKey(key);
+      expect(Math.abs(x)).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
+      expect(Math.abs(z)).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
+    }
   });
 });
 
 describe('terrainAt', () => {
   it('Mapに登録が無いセルは既定値grassを返す', () => {
-    const terrain = generateTerrain(mulberry32(1));
+    const { terrain } = generateMap(mulberry32(1));
     expect(terrainAt(new Map(), 0, 0)).toBe('grass');
     // 実データでも登録の無い座標(範囲外)はgrass
     expect(terrainAt(terrain, 9999, 9999)).toBe('grass');
@@ -79,7 +212,8 @@ describe('terrainAt', () => {
   });
 });
 
-describe('computeElevation', () => {
+// computeElevationは旧セーブ(v13以前: heights無し)の移行専用として残している。
+describe('computeElevation (旧セーブ移行用)', () => {
   const makeTerrain = (mountainCells: Array<[number, number]>): Map<string, TerrainType> => {
     const terrain = new Map<string, TerrainType>();
     for (const [x, z] of mountainCells) {
@@ -124,7 +258,7 @@ describe('computeElevation', () => {
   });
 
   it('同じ入力からは同じ標高マップが決定的に得られる', () => {
-    const terrain = generateTerrain(mulberry32(42));
+    const { terrain } = generateMap(mulberry32(42));
     const elevA = computeElevation(terrain);
     const elevB = computeElevation(terrain);
     expect(Array.from(elevA.entries())).toEqual(Array.from(elevB.entries()));
@@ -176,61 +310,6 @@ describe('cornerElevation / cellCornerElevations', () => {
     // 北隣が平地(0)なのでmin則で北側2隅は0のまま
     expect(corners[0]).toBe(0);
     expect(corners[1]).toBe(0);
-  });
-});
-
-describe('dilateMountains', () => {
-  it('孤立した1セルは膨張後、自身+4近傍の十字5セルがmountainになる', () => {
-    const terrain = new Map<string, TerrainType>([[toKey(0, 0), 'mountain']]);
-    const dilated = dilateMountains(terrain);
-
-    expect(terrainAt(dilated, 0, 0)).toBe('mountain');
-    expect(terrainAt(dilated, 1, 0)).toBe('mountain');
-    expect(terrainAt(dilated, -1, 0)).toBe('mountain');
-    expect(terrainAt(dilated, 0, 1)).toBe('mountain');
-    expect(terrainAt(dilated, 0, -1)).toBe('mountain');
-    // 斜めは膨張対象ではない
-    expect(terrainAt(dilated, 1, 1)).toBe('grass');
-  });
-
-  it('膨張後、元の細片セルの内部(両端を除く)は4隅のコーナー標高がすべて0より大きくなる(平地化しない)', () => {
-    // z=16の一列だけの細片(尾根)を模す。実際の山脈生成は15〜40セルの長さがあり、
-    // 平地化する恐れがあるのは尾根の両端(自然な先端の傾斜)ではなく内部のセル。
-    const terrain = new Map<string, TerrainType>();
-    for (let x = -2; x <= 2; x++) {
-      terrain.set(toKey(x, 16), 'mountain');
-    }
-    const dilated = dilateMountains(terrain);
-    const elev = computeElevation(dilated);
-
-    for (let x = -1; x <= 1; x++) {
-      const corners = cellCornerElevations(elev, x, 16);
-      for (const c of corners) {
-        expect(c).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  it('生成範囲(TERRAIN_COORD_RANGE)の端セルを膨張しても範囲外座標は生成されない', () => {
-    const edge = TERRAIN_COORD_RANGE;
-    const terrain = new Map<string, TerrainType>([[toKey(edge, 0), 'mountain']]);
-    const dilated = dilateMountains(terrain);
-    for (const key of dilated.keys()) {
-      const { x, z } = fromKey(key);
-      expect(x).toBeGreaterThanOrEqual(-TERRAIN_COORD_RANGE);
-      expect(x).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
-      expect(z).toBeGreaterThanOrEqual(-TERRAIN_COORD_RANGE);
-      expect(z).toBeLessThanOrEqual(TERRAIN_COORD_RANGE);
-    }
-  });
-
-  it('mountainはwaterより優先される(後勝ちではなくmountain優先で上書き)', () => {
-    const terrain = new Map<string, TerrainType>([
-      [toKey(0, 0), 'mountain'],
-      [toKey(1, 0), 'water'],
-    ]);
-    const dilated = dilateMountains(terrain);
-    expect(terrainAt(dilated, 1, 0)).toBe('mountain');
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DIR } from '../utils';
 import {
   buildCellTrackParts, buildRampTrackParts, buildRampAbutmentPart, buildTrackCentreLines,
+  buildOverpassSupportParts,
 } from './trackGeometry';
 import { rampHeightAtPos, rampSegmentPositions } from '../sim/trackPath';
 
@@ -120,5 +121,55 @@ describe('buildRampAbutmentPart: 坂の橋台くさび', () => {
   it('posHighがposLow以下なら null を返す', () => {
     const geo = buildRampAbutmentPart(DIR.E, 0, 0, 0, 0);
     expect(geo).toBeNull();
+  });
+});
+
+describe('buildRampTrackParts: 空中に架かる坂(base>=1)のバラスト', () => {
+  it('base>=1の坂にはバラスト(砂利)を敷かない(宙に浮いた砂利を描かせない)', () => {
+    const parts = buildRampTrackParts(DIR.E, 0, 0, 0, 1, 4, 1);
+    expect(parts.ballast.length).toBe(0);
+    expect(parts.rails.length).toBeGreaterThan(0);
+    expect(parts.sleepers.length).toBeGreaterThan(0);
+  });
+
+  it('地平に接する坂(base=0)は従来どおりバラスト付き', () => {
+    const parts = buildRampTrackParts(DIR.E, 0, 0, 0, 1, 4, 0);
+    expect(parts.ballast.length).toBeGreaterThan(0);
+  });
+});
+
+describe('buildRampAbutmentPart: 合成互換のための属性', () => {
+  it('生成するくさびはuv属性を持つ(BoxGeometry製の橋台とマージできるように)', () => {
+    const geo = buildRampAbutmentPart(DIR.E, 0, 0, 0.5, 0)!;
+    expect(geo.getAttribute('uv')).toBeDefined();
+    expect(geo.getAttribute('uv').count).toBe(geo.getAttribute('position').count);
+  });
+});
+
+describe('buildOverpassSupportParts: 橋脚の間引き軸', () => {
+  it('分岐ビットが混ざっても、直線の軸(正反対の組)で橋脚の偶奇を決める', () => {
+    const originY = 3.2;
+    // E-W本線: xの偶奇で交互に橋脚が立つ
+    expect(buildOverpassSupportParts(DIR.E | DIR.W, 2, 0, originY).piers).toHaveLength(1);
+    expect(buildOverpassSupportParts(DIR.E | DIR.W, 3, 0, originY).piers).toHaveLength(0);
+    // NEの分岐が付いても本線(E-W)の交互配置が崩れない(従来はfirstDirBitがNEを
+    // 選び、NE軸の偶奇になって本線の並びと食い違い、二重橋脚や欠落が出ていた)
+    expect(buildOverpassSupportParts(DIR.NE | DIR.E | DIR.W, 2, 0, originY).piers).toHaveLength(1);
+    expect(buildOverpassSupportParts(DIR.NE | DIR.E | DIR.W, 3, 0, originY).piers).toHaveLength(0);
+  });
+});
+
+describe('buildTrackCentreLines: 曲線本線の外側へ生える分岐', () => {
+  it('本線(NE-SE)の両端が分岐(E)と同じ大まかな向きのときは、本線を横切るS字にしない', () => {
+    const routes = buildTrackCentreLines(DIR.NE | DIR.SE | DIR.E);
+    expect(routes).toHaveLength(2);
+    const branch = routes[1];
+    // 分岐線(E)は本線の対称軸(z=0)上に留まり、本線の反対側へ回り込まない。
+    // 従来は「最も反対向きの本線端」へ必ず寄せていたため、z<0側へ食い込む
+    // S字が本線をまたいで描かれていた。
+    for (const p of branch) {
+      expect(Math.abs(p.z)).toBeLessThan(1e-9);
+    }
+    expect(branch[branch.length - 1]).toEqual(expect.objectContaining({ x: 0.5, z: 0 }));
   });
 });
