@@ -48,24 +48,39 @@ export type TownSubTileIndex = Map<string, TownTileEntry>;
 export const SUB_TILES_PER_TILE = 2;
 /** 道路格子の間隔(サブタイル)。5=2.5タイルで、格子の間に2x2タイル分の街区ができる。 */
 export const TOWN_ROAD_SUB_SPACING = 5;
-/** 町タイルの最大半径(タイル、チェビシェフ距離)。TOWN_MIN_DISTANCE=12と重なりすぎない値。 */
-export const TOWN_TILE_RADIUS_MAX = 7;
+/**
+ * 町タイルの最大半径(タイル、チェビシェフ距離)。人口上限(TOWN_POPULATION_CAP=50000)の
+ * 直前(約47000人)で初めて到達する値にし、成長が上限近くまで見た目に反映されるようにする。
+ * 隣接する町とはTOWN_MIN_DISTANCE(towns.ts、16)+先勝ちのoccupied索引で棲み分ける。
+ */
+export const TOWN_TILE_RADIUS_MAX = 16;
 /** 町サブタイルの最大半径(サブタイル、チェビシェフ距離)。 */
 export const TOWN_SUB_TILE_RADIUS_MAX = TOWN_TILE_RADIUS_MAX * 2 + 1;
 /** 道路の刈り込み距離(サブタイル、チェビシェフ)。家からこの距離を超える道路は落とす。 */
 export const TOWN_ROAD_PRUNE_DISTANCE = 2;
 
-/** 人口から町タイルの半径(タイル、チェビシェフ距離)を決める。人口が増えると広がる。 */
+/**
+ * 人口から町タイルの半径(タイル、チェビシェフ距離)を決める。人口が増えると広がる。
+ * 500人≈半径2、5000人≈6、20000人≈10、50000人(人口上限)=16。飽和は約47000人と
+ * 上限直前なので、成長のほぼ全域で町が視覚的に大きくなり続ける。
+ */
+export const TOWN_TILE_RADIUS_MAX_POPULATION = 210; // radius = 1 + floor(sqrt(pop/この値))
 export const townTileRadius = (population: number): number =>
-  Math.min(TOWN_TILE_RADIUS_MAX, 2 + Math.floor(Math.sqrt(Math.max(0, population) / 800)));
+  Math.min(
+    TOWN_TILE_RADIUS_MAX,
+    1 + Math.floor(Math.sqrt(Math.max(0, population) / TOWN_TILE_RADIUS_MAX_POPULATION))
+  );
 
 /** 人口から町の半径(サブタイル)を決める。タイル半径の約2倍。 */
 export const townSubTileRadius = (population: number): number =>
   Math.min(TOWN_SUB_TILE_RADIUS_MAX, SUB_TILES_PER_TILE * townTileRadius(population) + 1);
 
-/** 人口から家サブタイルの目標数を決める(候補が足りなければ候補数まで)。旧タイル版の約4倍。 */
+/**
+ * 人口から家サブタイルの目標数を決める(候補が足りなければ候補数まで)。
+ * 50000人で約1000軒になり、拡大した半径(最大16タイル)の街区を密に埋める。
+ */
 export const townHouseTarget = (population: number): number =>
-  Math.max(20, Math.round(Math.max(0, population) / 75));
+  Math.max(20, Math.round(Math.max(0, population) / 50));
 
 /** サブタイル座標→親ゲームタイル座標。sx = 2x + i (i∈{0,1})。負数もfloorで正しく戻る。 */
 export const parentTileOfSub = (s: number): number => Math.floor(s / SUB_TILES_PER_TILE);

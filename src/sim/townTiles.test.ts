@@ -137,6 +137,38 @@ describe('townTiles: サブタイル生成', () => {
     expect(countHouses(large)).toBeGreaterThan(countHouses(small));
   });
 
+  it('半径は人口に対して単調非減少で、人口上限(50000)の直前まで飽和しない', () => {
+    let prev = townTileRadius(0);
+    for (let pop = 500; pop <= 50000; pop += 500) {
+      const r = townTileRadius(pop);
+      expect(r).toBeGreaterThanOrEqual(prev);
+      prev = r;
+    }
+    // 20000人で頭打ちだった旧スケールと違い、45000人時点でもまだ最大半径に達しない
+    expect(townTileRadius(20000)).toBeLessThan(TOWN_TILE_RADIUS_MAX);
+    expect(townTileRadius(45000)).toBeLessThan(TOWN_TILE_RADIUS_MAX);
+    expect(townTileRadius(45000)).toBeGreaterThan(townTileRadius(20000));
+    expect(townTileRadius(50000)).toBe(TOWN_TILE_RADIUS_MAX);
+    // 序盤〜終盤のスケール感: 500人≈2タイル → 50000人=16タイル
+    expect(townTileRadius(500)).toBe(2);
+    expect(TOWN_TILE_RADIUS_MAX).toBe(16);
+  });
+
+  it('人口上限の大都市は広い半径を家で密に埋める(決定的)', () => {
+    const t = town('town-metro', 0, 0, 50000);
+    const a = generateTownSubTiles(t, emptyTerrain);
+    const b = generateTownSubTiles(t, emptyTerrain);
+    expect(Array.from(a.entries()).sort()).toEqual(Array.from(b.entries()).sort());
+
+    const houses = Array.from(a.entries()).filter(([, k]) => k === 'house').map(([k]) => fromKey(k));
+    // 目標は約1000軒(pop/50)。候補不足を差し引いても大半は埋まる
+    expect(houses.length).toBeGreaterThanOrEqual(800);
+    expect(houses.length).toBeLessThanOrEqual(townHouseTarget(50000));
+    // 実際に外周近くまで市街地が広がっている(サブタイル半径33の8割以上)
+    const extent = Math.max(...houses.map(h => Math.max(Math.abs(h.x), Math.abs(h.z))));
+    expect(extent).toBeGreaterThanOrEqual(Math.floor(TOWN_SUB_TILE_RADIUS_MAX * 0.8));
+  });
+
   it('人口が増えても既存の家の位置は保たれる(外側へ広がるだけ)', () => {
     const small = generateTownSubTiles(town('town-5', 0, 0, 1500), emptyTerrain);
     const large = generateTownSubTiles(town('town-5', 0, 0, 3000), emptyTerrain);

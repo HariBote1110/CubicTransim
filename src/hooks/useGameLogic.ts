@@ -29,6 +29,7 @@ import type { LineMode } from '../sim/groups';
 import { generateMap } from '../sim/terrain';
 import { relocateTrain } from '../sim/relocate';
 import { createDebugScenario } from '../sim/debugScenario';
+import type { DebugScenarioWorld } from '../sim/debugScenarios';
 
 const SAVE_KEY = 'cubictransim-save-v1';
 
@@ -606,16 +607,19 @@ export const useGameLogic = () => {
     worldRef.current.serviceSignature = undefined;
   };
 
-  /** 起動時デバッグ用の坂・高架・往復列車を読み込む。セーブデータは変更しない。 */
-  const loadDebugScenario = () => {
-    const scenario = createDebugScenario();
+  /**
+   * 起動時デバッグ用のシナリオ世界を読み込む。セーブデータは変更しない。
+   * 引数省略時は従来の「坂・高架・往復列車」。シナリオ一覧はsim/debugScenarios.tsを参照。
+   */
+  const loadDebugScenario = (scenario: DebugScenarioWorld = createDebugScenario()) => {
     setRailMap(scenario.railMap);
     setStations(scenario.stations);
     setTrains(scenario.trains);
-    setTerrain(new Map());
-    setHeights(new Map());
-    setTowns([]);
-    setGroups([]);
+    setTerrain(scenario.terrain ?? new Map());
+    setHeights(scenario.heights ?? new Map());
+    setTowns(scenario.towns ?? []);
+    setGroups(scenario.groups ?? []);
+    if (scenario.money !== undefined) setMoney(scenario.money);
     setSelectedTrainId(null);
     setSelectedStationId(null);
     worldRef.current.runtimes.clear();

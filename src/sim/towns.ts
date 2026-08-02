@@ -7,7 +7,10 @@ import { cellOccupiesGround } from './townTiles';
 type Pos = { x: number; z: number };
 
 export const TOWN_COORD_RANGE = 40; // 中心座標は -40..40
-export const TOWN_MIN_DISTANCE = 12; // 街同士の最低距離(タイル)
+// 街同士の最低距離(タイル)。町タイルの最大半径(townTiles.ts、16)まで成長した
+// 大都市が隣町を丸ごと飲み込まないよう、旧値12から引き上げた(重なり自体は
+// buildTownIndexesの先勝ちoccupied索引が防ぐが、間隔を空けたほうが見た目がよい)。
+export const TOWN_MIN_DISTANCE = 16;
 export const TOWN_POPULATION_MIN = 500;
 export const TOWN_POPULATION_MAX = 5000;
 /** 人口の上限。鉄道が便利でもこれ以上は増えない。 */

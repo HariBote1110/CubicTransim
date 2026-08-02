@@ -5,9 +5,13 @@ import { GameScene } from './components/GameScene';
 import { GameUI } from './components/GameUI';
 import type { BuildMode } from './components/GameUI';
 import type { BuildLevel } from './sim/construction';
+import { DEBUG_SCENARIOS } from './sim/debugScenarios';
+import { T, button as themeButton } from './ui/theme';
 
 export default function App() {
   const [showStartupOptions, setShowStartupOptions] = useState(true);
+  // 起動ダイアログで「デバッグモード」を押すと、シナリオ一覧(sim/debugScenarios.ts)を表示する。
+  const [showDebugScenarios, setShowDebugScenarios] = useState(false);
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
@@ -136,11 +140,52 @@ export default function App() {
         <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: 'rgba(11, 17, 22, 0.48)', zIndex: 10 }}>
           <div style={{ width: 360, padding: 24, borderRadius: 14, background: '#202a33', color: '#f4f7fa', boxShadow: '0 16px 42px rgba(0,0,0,0.38)' }}>
             <div style={{ fontSize: 20, fontWeight: 800 }}>CubicTransim</div>
-            <p style={{ color: '#b9c3cc', lineHeight: 1.55 }}>開始方法を選択してください。</p>
-            <button style={{ width: '100%', marginBottom: 10 }} onClick={() => setShowStartupOptions(false)}>通常のゲームを開始</button>
-            <button style={{ width: '100%' }} onClick={() => { loadDebugScenario(); setSimSpeed(2); setShowStartupOptions(false); }}>
-              デバッグモード（坂・高架・往復列車）
-            </button>
+            {!showDebugScenarios ? (
+              <>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55 }}>開始方法を選択してください。</p>
+                <button
+                  style={{ ...themeButton({ active: true }), width: '100%', marginBottom: T.gap }}
+                  onClick={() => setShowStartupOptions(false)}
+                >
+                  通常のゲームを開始
+                </button>
+                <button
+                  style={{ ...themeButton(), width: '100%' }}
+                  onClick={() => setShowDebugScenarios(true)}
+                >
+                  デバッグモード（シナリオを選択）
+                </button>
+              </>
+            ) : (
+              <>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55 }}>デバッグシナリオを選択してください。</p>
+                <div style={{ display: 'grid', gap: T.gap, maxHeight: '56vh', overflowY: 'auto' }}>
+                  {DEBUG_SCENARIOS.map(scenario => (
+                    <button
+                      key={scenario.id}
+                      style={{ ...themeButton(), width: '100%', textAlign: 'left' }}
+                      onClick={() => {
+                        loadDebugScenario(scenario.build());
+                        setSimSpeed(2);
+                        setShowStartupOptions(false);
+                        setShowDebugScenarios(false);
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{scenario.label}</div>
+                      <div style={{ fontSize: 11, fontWeight: 400, color: T.textMuted, marginTop: 2 }}>
+                        {scenario.description}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  style={{ ...themeButton({ compact: true }), width: '100%', marginTop: T.gap }}
+                  onClick={() => setShowDebugScenarios(false)}
+                >
+                  戻る
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
