@@ -3,17 +3,18 @@ import * as THREE from 'three';
 import { Html } from '@react-three/drei';
 import type { TownData } from '../types';
 import { fromKey } from '../utils';
-import type { TownTileIndex } from '../sim/townTiles';
+import type { TownSubTileIndex } from '../sim/townTiles';
+import { subTileWorldCentre } from '../sim/townTiles';
 import { MATERIALS, hash01 } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
   towns: TownData[];
-  /** 町タイル索引(sim/townTiles.tsのbuildTownTileIndex)。家・道路をこのタイル通りに描く。 */
-  townTiles: TownTileIndex;
+  /** 町サブタイル索引(sim/townTiles.tsのbuildTownIndexes)。家・道路をこのサブタイル通りに描く。 */
+  townSubTiles: TownSubTileIndex;
 }
 
-// この人口以上の町には、中心近くのタイルに高層ビルが混ざる。
+// この人口以上の町には、一部のサブタイルに高層ビルが混ざる。
 const TALL_BUILDING_POPULATION = 4000;
 
 // 人口を "2.3k" のような簡易表記に変換する。
@@ -21,15 +22,17 @@ const formatPopulation = (population: number): string =>
   population >= 1000 ? `${(population / 1000).toFixed(1)}k` : `${Math.round(population)}`;
 
 /**
- * タイルベースの町の描画。sim/townTiles.tsが決めたタイル(家・道路)を、そのセルの
- * 中央に建てる。家の大きさ・高さ・色はセル座標のハッシュから決定的に散らす。
- * 数百タイル規模になるためマテリアルごとにジオメトリをマージして少数ドローコールに収める。
+ * タイルベースの町の描画。sim/townTiles.tsが決めたサブタイル(1ゲームタイルを2x2分割、
+ * 一辺0.5)の中央に建てる。道路は幅0.5の帯になり、1タイル幅の線路より明確に細く、
+ * 家は道路沿いに並ぶ小さな建物になる。家の大きさ・高さ・色はサブタイル座標のハッシュ
+ * から決定的に散らす。
+ * 千サブタイル規模になるためマテリアルごとにジオメトリをマージして少数ドローコールに収める。
  *
- * 道路タイルは地平の線路と同居できる(踏切)。その場合も路面スラブは描いたままにする
+ * 道路サブタイルは地平の線路と同居できる(踏切)。その場合も路面スラブは描いたままにする
  * ことで、線路が路面を横切る見た目(簡易的な踏切)になる。遮断機・警報機の描画は未実装
  * (progress/tile-based-towns.md参照)。
  */
-export const TownBlocks: React.FC<Props> = ({ towns, townTiles }) => {
+export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles }) => {
   const merged = useMemo(() => {
     const populationByTown = new Map(towns.map(t => [t.id, t.population]));
     const wallsA: THREE.BufferGeometry[] = [];
@@ -40,47 +43,51 @@ export const TownBlocks: React.FC<Props> = ({ towns, townTiles }) => {
     const roads: THREE.BufferGeometry[] = [];
     const kerbs: THREE.BufferGeometry[] = [];
 
-    for (const [key, entry] of townTiles) {
-      const { x, z } = fromKey(key);
+    for (const [key, entry] of townSubTiles) {
+      const { x: sx, z: sz } = fromKey(key);
+      const wx = subTileWorldCentre(sx);
+      const wz = subTileWorldCentre(sz);
 
       if (entry.kind === 'road') {
-        // 縁石(タイル全面のわずかに明るい下地)+アスファルトの路面スラブ。
-        const kerb = new THREE.BoxGeometry(1.0, 0.03, 1.0);
-        kerb.translate(x, 0.015, z);
+        // 縁石(サブタイル全面のわずかに明るい下地)+アスファルトの路面スラブ。
+        // 隣接する道路サブタイル同士はスラブが繋がって幅0.5の帯になる。
+        const kerb = new THREE.BoxGeometry(0.5, 0.03, 0.5);
+        kerb.translate(wx, 0.015, wz);
         kerbs.push(kerb);
-        const slab = new THREE.BoxGeometry(0.86, 0.045, 0.86);
-        slab.translate(x, 0.0225, z);
+        const slab = new THREE.BoxGeometry(0.44, 0.045, 0.44);
+        slab.translate(wx, 0.0225, wz);
         roads.push(slab);
         continue;
       }
 
-      // 家: セル座標ハッシュで大きさ・高さ・色を決定的に散らす。
+      // 家: サブタイル座標ハッシュで大きさ・高さ・色を決定的に散らす。
+      // 一辺0.5のサブタイルに収まる 0.30..0.42 の足元。
       const population = populationByTown.get(entry.townId) ?? 0;
-      const width = 0.4 + hash01(x, z, 21) * 0.2;
-      const depth = 0.4 + hash01(x, z, 22) * 0.2;
-      const tall = population >= TALL_BUILDING_POPULATION && hash01(x, z, 25) < 0.18;
+      const width = 0.3 + hash01(sx, sz, 21) * 0.12;
+      const depth = 0.3 + hash01(sx, sz, 22) * 0.12;
+      const tall = population >= TALL_BUILDING_POPULATION && hash01(sx, sz, 25) < 0.12;
       const height = tall
-        ? 0.9 + hash01(x, z, 26) * 1.3
-        : 0.3 + hash01(x, z, 26) * 0.35;
+        ? 0.9 + hash01(sx, sz, 26) * 1.2
+        : 0.24 + hash01(sx, sz, 26) * 0.28;
 
       const wall = new THREE.BoxGeometry(width, height, depth);
-      wall.translate(x, height / 2, z);
-      const bucket = hash01(x, z, 23);
+      wall.translate(wx, height / 2, wz);
+      const bucket = hash01(sx, sz, 23);
       (bucket < 0.34 ? wallsA : bucket < 0.67 ? wallsB : wallsC).push(wall);
 
       if (tall) {
         // 高層はパラペット(平屋根)で「ビル」らしく。
-        const parapet = new THREE.BoxGeometry(width + 0.04, 0.05, depth + 0.04);
-        parapet.translate(x, height + 0.025, z);
+        const parapet = new THREE.BoxGeometry(width + 0.03, 0.04, depth + 0.03);
+        parapet.translate(wx, height + 0.02, wz);
         roofsFlat.push(parapet);
-        const plant = new THREE.BoxGeometry(width * 0.4, 0.09, depth * 0.4);
-        plant.translate(x, height + 0.09, z);
+        const plant = new THREE.BoxGeometry(width * 0.4, 0.07, depth * 0.4);
+        plant.translate(wx, height + 0.07, wz);
         roofsFlat.push(plant);
       } else {
         // 低層の住宅には寄棟屋根を載せる。
-        const roof = new THREE.ConeGeometry(Math.max(width, depth) * 0.8, 0.2, 4);
+        const roof = new THREE.ConeGeometry(Math.max(width, depth) * 0.8, 0.15, 4);
         roof.rotateY(Math.PI / 4);
-        roof.translate(x, height + 0.1, z);
+        roof.translate(wx, height + 0.075, wz);
         roofs.push(roof);
       }
     }
@@ -94,7 +101,7 @@ export const TownBlocks: React.FC<Props> = ({ towns, townTiles }) => {
       roads: mergeAndDispose(roads),
       kerbs: mergeAndDispose(kerbs),
     };
-  }, [towns, townTiles]);
+  }, [towns, townSubTiles]);
 
   useEffect(() => () => {
     Object.values(merged).forEach(g => g?.dispose());

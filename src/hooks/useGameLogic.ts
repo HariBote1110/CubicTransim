@@ -23,7 +23,7 @@ const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
 import { mulberry32, generateTowns } from '../sim/towns';
-import { buildTownTileIndex } from '../sim/townTiles';
+import { buildTownIndexes } from '../sim/townTiles';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import { generateMap } from '../sim/terrain';
@@ -164,10 +164,13 @@ export const useGameLogic = () => {
   // ★追加: 町タイル索引(セルキー→ 町id/'house'|'road')。町・地形・線路網から決定的に
   // 再生成されるためセーブ不要。railMapを渡すことで、家が既存の地平線路と重ならない。
   // マップは約91x91・町は十数個なので、建設のたびの再計算で十分軽い。
-  const townTileIndex = useMemo(
-    () => buildTownTileIndex(towns, terrain, heights, railMap),
+  // タイル索引(建設ガード用)とサブタイル索引(描画用)を同じuseMemoで導出する。
+  const townIndexes = useMemo(
+    () => buildTownIndexes(towns, terrain, heights, railMap),
     [towns, terrain, heights, railMap]
   );
+  const townTileIndex = townIndexes.tiles;
+  const townSubTileIndex = townIndexes.subTiles;
 
   // --- Commit Path ---
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
@@ -628,6 +631,7 @@ export const useGameLogic = () => {
     trains, setTrains,
     towns,
     townTileIndex,
+    townSubTileIndex,
     terrain,
     heights,
     selectedTrainId, setSelectedTrainId: selectTrain,

@@ -3,21 +3,32 @@
 // 設計方針(progress/tile-based-towns.md参照):
 // - タイル配置は町のid・人口・地形だけから決定的に再生成する(セーブデータには保存しない)。
 //   人口が増えると半径・家の数が増え、町が視覚的に成長する。
-// - 道路は町の中心を通る3タイル間隔の格子(OpenTTD風)。中心から4近傍で辿れる
-//   道路タイルだけを採用する(水域などで分断された飛び地の道路は作らない)。
-// - 家は「採用された道路タイルに4近傍で隣接する平地」から、中心に近い順に
+// - レイアウトは1ゲームタイルを2x2に分割した「サブタイル」粒度で決める。
+//   道路は幅1サブタイル(=半タイル幅)の帯、家は1サブタイルに1軒。線路のタイルと
+//   比べて道路が明確に細くなり、スケール感が合う。
+// - 道路はサブタイル格子(TOWN_ROAD_SUB_SPACING間隔)のOpenTTD風レイアウト。中心から
+//   4近傍で辿れる道路サブタイルだけを採用する(飛び地の道路は作らない)。
+// - 家は「採用された道路サブタイルに4近傍で隣接するサブタイル」から、中心に近い順に
 //   人口ぶんだけ選ぶ。
-// - 線路との関係:
+// - 家の配置後、家からチェビシェフ距離TOWN_ROAD_PRUNE_DISTANCE以内に無い道路サブタイル
+//   を刈り込む(中心へのBFS木経路上の道路は連結性のため残す)。空の道路格子が
+//   集落の外へ放射状に突き出ない。
+// - 適地判定(水域・山岳・標高・他町・線路)は親ゲームタイル単位で行う。線路の衝突
+//   判定はタイルベースなので、それより細かい粒度に意味はない。
+// - 線路との関係(親タイル単位):
 //   * 家は地平の線路・駅・車庫・坂セルには絶対に生成しない(建設側のガードと対で、
 //     家と地平線路は決して同居しない)。
 //   * 道路は素の線路(type 'rail'、坂を除く)との同居を許す=踏切になる。既存の駅・
 //     車庫・坂セルには道路も作らない。
 //   * 純粋な高架専用セル(地平のconnectionsが無くuppersのみ)は地面を塞がないため、
 //     家・道路とも同居できる(高架は町の上を通過できる)。
+// - 建設ガードが参照するタイル粒度の索引は、サブタイルから導出する:
+//   タイル内に家サブタイルが1つでもあれば 'house'(地平線路を遮る)、道路サブタイル
+//   のみなら 'road'(踏切として通過可)。
 // - 複数の町が近接する場合は、buildTownTileIndexが towns 配列の順(先勝ち)で
-//   タイルの所有を決める。
+//   タイル(親タイル単位)の所有を決める。
 import type { CellData, TerrainType, TownData } from '../types';
-import { toKey } from '../utils';
+import { toKey, fromKey } from '../utils';
 import { terrainAt } from './terrain';
 
 export type TownTileKind = 'house' | 'road';
@@ -27,21 +38,40 @@ export interface TownTileEntry {
   kind: TownTileKind;
 }
 
-/** 全町を合成した「セルキー→(町id, タイル種別)」の索引。 */
+/** 全町を合成した「セルキー→(町id, タイル種別)」のタイル粒度の索引。 */
 export type TownTileIndex = Map<string, TownTileEntry>;
 
-/** 道路格子の間隔(タイル)。OpenTTDの2x2/3x3レイアウトに倣い3を採用。 */
-export const TOWN_ROAD_GRID_SPACING = 3;
-/** 町タイルの最大半径(チェビシェフ距離)。TOWN_MIN_DISTANCE=12と重なりすぎない値。 */
-export const TOWN_TILE_RADIUS_MAX = 7;
+/** 全町を合成した「サブタイルキー→(町id, 種別)」のサブタイル粒度の索引(描画用)。 */
+export type TownSubTileIndex = Map<string, TownTileEntry>;
 
-/** 人口から町タイルの半径(チェビシェフ距離)を決める。人口が増えると広がる。 */
+/** 1ゲームタイルの一辺あたりのサブタイル数(2x2分割)。 */
+export const SUB_TILES_PER_TILE = 2;
+/** 道路格子の間隔(サブタイル)。5=2.5タイルで、格子の間に2x2タイル分の街区ができる。 */
+export const TOWN_ROAD_SUB_SPACING = 5;
+/** 町タイルの最大半径(タイル、チェビシェフ距離)。TOWN_MIN_DISTANCE=12と重なりすぎない値。 */
+export const TOWN_TILE_RADIUS_MAX = 7;
+/** 町サブタイルの最大半径(サブタイル、チェビシェフ距離)。 */
+export const TOWN_SUB_TILE_RADIUS_MAX = TOWN_TILE_RADIUS_MAX * 2 + 1;
+/** 道路の刈り込み距離(サブタイル、チェビシェフ)。家からこの距離を超える道路は落とす。 */
+export const TOWN_ROAD_PRUNE_DISTANCE = 2;
+
+/** 人口から町タイルの半径(タイル、チェビシェフ距離)を決める。人口が増えると広がる。 */
 export const townTileRadius = (population: number): number =>
   Math.min(TOWN_TILE_RADIUS_MAX, 2 + Math.floor(Math.sqrt(Math.max(0, population) / 800)));
 
-/** 人口から家タイルの目標数を決める(候補が足りなければ候補数まで)。 */
+/** 人口から町の半径(サブタイル)を決める。タイル半径の約2倍。 */
+export const townSubTileRadius = (population: number): number =>
+  Math.min(TOWN_SUB_TILE_RADIUS_MAX, SUB_TILES_PER_TILE * townTileRadius(population) + 1);
+
+/** 人口から家サブタイルの目標数を決める(候補が足りなければ候補数まで)。旧タイル版の約4倍。 */
 export const townHouseTarget = (population: number): number =>
-  Math.max(5, Math.round(Math.max(0, population) / 300));
+  Math.max(20, Math.round(Math.max(0, population) / 75));
+
+/** サブタイル座標→親ゲームタイル座標。sx = 2x + i (i∈{0,1})。負数もfloorで正しく戻る。 */
+export const parentTileOfSub = (s: number): number => Math.floor(s / SUB_TILES_PER_TILE);
+
+/** サブタイル座標→ワールド座標(サブタイル中央)。1タイルは x±0.5 に広がる。 */
+export const subTileWorldCentre = (s: number): number => s * 0.5 - 0.25;
 
 // 町のidから決定的な数値シードを作る(文字列ハッシュ)。旧TownBlocks.tsxから移設。
 export const seedFromId = (id: string): number => {
@@ -52,7 +82,7 @@ export const seedFromId = (id: string): number => {
   return hash >>> 0;
 };
 
-// (seed, x, z) からの決定的ハッシュ(0..1)。逐次消費するrngと違い走査順に依存しない。
+// (seed, sx, sz) からの決定的ハッシュ(0..1)。逐次消費するrngと違い走査順に依存しない。
 const tileHash = (seed: number, x: number, z: number): number => {
   let h = (seed ^ Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(z | 0, 0x165667b1)) | 0;
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
@@ -77,7 +107,7 @@ const cellAllowsRoadCrossing = (cell: CellData | undefined): boolean => {
 };
 
 export interface TownTileOptions {
-  /** 他の町のタイルなど、道路・家のどちらも置けないセルキーの集合。 */
+  /** 他の町のタイルなど、道路・家のどちらも置けない親タイルのセルキーの集合。 */
   occupied?: Set<string>;
   /** 既存の線路網。家は地面を占有するセルを避け、道路は素の線路のみ許す(踏切)。 */
   railMap?: Map<string, CellData>;
@@ -91,10 +121,11 @@ const NEIGHBOURS_4: ReadonlyArray<[number, number]> = [
 ];
 
 /**
- * 1つの町のタイル配置(セルキー→'house'|'road')を決定的に生成する。
+ * 1つの町のサブタイル配置(サブタイルキー→'house'|'road')を決定的に生成する。
+ * サブタイル座標は sx = 2x + i, sz = 2z + j (i,j∈{0,1})。
  * 町の中心が平地でない(理論上は起きない)場合は空マップを返す。
  */
-export function generateTownTiles(
+export function generateTownSubTiles(
   town: TownData,
   terrain: Map<string, TerrainType>,
   heights: Map<string, number> = new Map(),
@@ -103,29 +134,53 @@ export function generateTownTiles(
   const occupied = options.occupied ?? new Set<string>();
   const railMap = options.railMap;
   const seed = seedFromId(town.id);
-  const radius = townTileRadius(town.population);
-  const cx = town.centre.x;
-  const cz = town.centre.z;
+  const subRadius = townSubTileRadius(town.population);
+  // 中心サブタイル: 中心タイルの北西側サブタイル(2cx, 2cz)。
+  const scx = town.centre.x * SUB_TILES_PER_TILE;
+  const scz = town.centre.z * SUB_TILES_PER_TILE;
 
-  // 平地(標高0の草地)かどうか。mountainは標高1以上なので実質terrain判定で足りるが、
-  // heightsが一次データである以上、両方を明示的に確認しておく。
+  // 親タイルが平地(標高0の草地)かどうか。mountainは標高1以上なので実質terrain判定で
+  // 足りるが、heightsが一次データである以上、両方を明示的に確認しておく。
   const isFlatGrass = (x: number, z: number): boolean =>
     terrainAt(terrain, x, z) === 'grass' && (heights.get(toKey(x, z)) ?? 0) === 0;
 
-  const roadPlaceable = (x: number, z: number): boolean =>
-    Math.abs(x - cx) <= radius &&
-    Math.abs(z - cz) <= radius &&
-    ((x - cx) % TOWN_ROAD_GRID_SPACING === 0 || (z - cz) % TOWN_ROAD_GRID_SPACING === 0) &&
-    isFlatGrass(x, z) &&
-    !occupied.has(toKey(x, z)) &&
-    cellAllowsRoadCrossing(railMap?.get(toKey(x, z)));
+  // 親タイル単位の適地判定(道路用/家用)。線路衝突がタイルベースなので粒度もタイル。
+  const parentAllowsRoad = (sx: number, sz: number): boolean => {
+    const px = parentTileOfSub(sx);
+    const pz = parentTileOfSub(sz);
+    return (
+      isFlatGrass(px, pz) &&
+      !occupied.has(toKey(px, pz)) &&
+      cellAllowsRoadCrossing(railMap?.get(toKey(px, pz)))
+    );
+  };
+  const parentAllowsHouse = (sx: number, sz: number): boolean => {
+    const px = parentTileOfSub(sx);
+    const pz = parentTileOfSub(sz);
+    return (
+      isFlatGrass(px, pz) &&
+      !occupied.has(toKey(px, pz)) &&
+      !cellOccupiesGround(railMap?.get(toKey(px, pz)))
+    );
+  };
 
-  const tiles = new Map<string, TownTileKind>();
-  if (!roadPlaceable(cx, cz)) return tiles;
+  const roadPlaceable = (sx: number, sz: number): boolean =>
+    Math.abs(sx - scx) <= subRadius &&
+    Math.abs(sz - scz) <= subRadius &&
+    ((sx - scx) % TOWN_ROAD_SUB_SPACING === 0 || (sz - scz) % TOWN_ROAD_SUB_SPACING === 0) &&
+    parentAllowsRoad(sx, sz);
 
-  // 中心から4近傍で辿れる道路タイルだけを採用する(飛び地の道路を作らない)。
-  const roadKeys = new Set<string>([toKey(cx, cz)]);
-  const queue: Array<{ x: number; z: number }> = [{ x: cx, z: cz }];
+  const subTiles = new Map<string, TownTileKind>();
+  if (!roadPlaceable(scx, scz)) return subTiles;
+
+  const centreKey = toKey(scx, scz);
+
+  // 中心から4近傍で辿れる道路サブタイルだけを採用する(飛び地の道路を作らない)。
+  // BFS木の親を記録しておき、あとの刈り込みで「中心への接続経路」を残すのに使う。
+  // 訪問順は固定(FIFO+固定近傍順)なので親も決定的。
+  const roadKeys = new Set<string>([centreKey]);
+  const roadParent = new Map<string, string>();
+  const queue: Array<{ x: number; z: number }> = [{ x: scx, z: scz }];
   while (queue.length > 0) {
     const p = queue.shift()!;
     for (const [dx, dz] of NEIGHBOURS_4) {
@@ -135,63 +190,134 @@ export function generateTownTiles(
       if (roadKeys.has(nKey)) continue;
       if (!roadPlaceable(nx, nz)) continue;
       roadKeys.add(nKey);
+      roadParent.set(nKey, toKey(p.x, p.z));
       queue.push({ x: nx, z: nz });
     }
   }
-  for (const key of roadKeys) tiles.set(key, 'road');
 
-  // 家の候補: 採用済み道路タイルに4近傍で隣接する、地面が空いた平地。
-  // 中心に近い順(同距離はセルハッシュ順)に人口ぶん選ぶことで、人口増加時は
+  // 家の候補: 採用済み道路サブタイルに4近傍で隣接する、地面が空いたサブタイル。
+  // 中心に近い順(同距離はサブタイルハッシュ順)に人口ぶん選ぶことで、人口増加時は
   // 既存の家を保ったまま外側へ広がる。
-  const housePlaceable = (x: number, z: number): boolean =>
-    isFlatGrass(x, z) &&
-    !occupied.has(toKey(x, z)) &&
-    !cellOccupiesGround(railMap?.get(toKey(x, z)));
-
-  const candidates: Array<{ x: number; z: number; order: number }> = [];
-  for (let x = cx - radius; x <= cx + radius; x++) {
-    for (let z = cz - radius; z <= cz + radius; z++) {
-      const key = toKey(x, z);
+  const candidates: Array<{ sx: number; sz: number; order: number }> = [];
+  for (let sx = scx - subRadius; sx <= scx + subRadius; sx++) {
+    for (let sz = scz - subRadius; sz <= scz + subRadius; sz++) {
+      const key = toKey(sx, sz);
       if (roadKeys.has(key)) continue;
-      if (!housePlaceable(x, z)) continue;
-      const adjacentToRoad = NEIGHBOURS_4.some(([dx, dz]) => roadKeys.has(toKey(x + dx, z + dz)));
+      if (!parentAllowsHouse(sx, sz)) continue;
+      const adjacentToRoad = NEIGHBOURS_4.some(([dx, dz]) => roadKeys.has(toKey(sx + dx, sz + dz)));
       if (!adjacentToRoad) continue;
-      const dist = Math.hypot(x - cx, z - cz);
-      candidates.push({ x, z, order: dist + tileHash(seed, x, z) * 0.9 });
+      const dist = Math.hypot(sx - scx, sz - scz);
+      candidates.push({ sx, sz, order: dist + tileHash(seed, sx, sz) * 0.9 });
     }
   }
   candidates.sort((a, b) => a.order - b.order);
 
   const target = Math.min(candidates.length, townHouseTarget(town.population));
-  for (let i = 0; i < target; i++) {
-    tiles.set(toKey(candidates[i].x, candidates[i].z), 'house');
+  const houses = candidates.slice(0, target);
+
+  // 道路の刈り込み: 家の集落から離れた空の道路格子(人口が少ない町で半径いっぱいに
+  // 伸びる十字)を落とす。家からチェビシェフ距離TOWN_ROAD_PRUNE_DISTANCE以内の道路
+  // を残し、それぞれについてBFS木の親を中心まで辿った経路も残す(連結性の保証)。
+  // 家の隣の道路は距離1なので必ず残り、家の道路隣接は崩れない。
+  const keptRoads = new Set<string>([centreKey]);
+  const keepWithPathToCentre = (key: string): void => {
+    let current: string | undefined = key;
+    while (current !== undefined && !keptRoads.has(current)) {
+      keptRoads.add(current);
+      current = roadParent.get(current);
+    }
+  };
+  for (const { sx, sz } of houses) {
+    for (let dx = -TOWN_ROAD_PRUNE_DISTANCE; dx <= TOWN_ROAD_PRUNE_DISTANCE; dx++) {
+      for (let dz = -TOWN_ROAD_PRUNE_DISTANCE; dz <= TOWN_ROAD_PRUNE_DISTANCE; dz++) {
+        const key = toKey(sx + dx, sz + dz);
+        if (roadKeys.has(key)) keepWithPathToCentre(key);
+      }
+    }
   }
 
+  for (const key of keptRoads) subTiles.set(key, 'road');
+  for (const { sx, sz } of houses) {
+    subTiles.set(toKey(sx, sz), 'house');
+  }
+
+  return subTiles;
+}
+
+/**
+ * サブタイル配置からタイル粒度の種別を導出する。タイル内に家サブタイルが1つでも
+ * あれば 'house'(地平線路を遮る)、道路サブタイルのみなら 'road'(踏切可)。
+ */
+export function deriveTileKinds(subTiles: Map<string, TownTileKind>): Map<string, TownTileKind> {
+  const tiles = new Map<string, TownTileKind>();
+  for (const [key, kind] of subTiles) {
+    const { x: sx, z: sz } = fromKey(key);
+    const parentKey = toKey(parentTileOfSub(sx), parentTileOfSub(sz));
+    if (kind === 'house') {
+      tiles.set(parentKey, 'house');
+    } else if (tiles.get(parentKey) !== 'house') {
+      tiles.set(parentKey, 'road');
+    }
+  }
   return tiles;
 }
 
 /**
- * 全町のタイルを合成した索引を作る。towns配列の順に生成し、先の町が確保した
- * セルは後の町から見て occupied になる(先勝ち)。
+ * 1つの町のタイル粒度の配置(セルキー→'house'|'road')を決定的に生成する。
+ * サブタイル生成(generateTownSubTiles)から導出する。建設ガード互換のための公開API。
+ */
+export function generateTownTiles(
+  town: TownData,
+  terrain: Map<string, TerrainType>,
+  heights: Map<string, number> = new Map(),
+  options: TownTileOptions = {}
+): Map<string, TownTileKind> {
+  return deriveTileKinds(generateTownSubTiles(town, terrain, heights, options));
+}
+
+export interface TownIndexes {
+  /** タイル粒度の索引(建設ガード・地形編集・樹木の間引きに使う)。 */
+  tiles: TownTileIndex;
+  /** サブタイル粒度の索引(描画に使う)。 */
+  subTiles: TownSubTileIndex;
+}
+
+/**
+ * 全町のタイル・サブタイル索引を合成して作る。towns配列の順に生成し、先の町が
+ * 確保した親タイルは後の町から見て occupied になる(先勝ち)。
  * railMapを渡すと、家は地面を占有する線路セルを避ける(描画と建設ガードで同じ
  * railMapを渡せば、家と地平線路が重なることはない)。
  */
+export function buildTownIndexes(
+  towns: TownData[],
+  terrain: Map<string, TerrainType>,
+  heights: Map<string, number> = new Map(),
+  railMap?: Map<string, CellData>
+): TownIndexes {
+  const tiles: TownTileIndex = new Map();
+  const subTiles: TownSubTileIndex = new Map();
+  const occupied = new Set<string>();
+  for (const town of towns) {
+    const subs = generateTownSubTiles(town, terrain, heights, { occupied, railMap });
+    for (const [key, kind] of subs) {
+      subTiles.set(key, { townId: town.id, kind });
+    }
+    for (const [key, kind] of deriveTileKinds(subs)) {
+      tiles.set(key, { townId: town.id, kind });
+      occupied.add(key);
+    }
+  }
+  return { tiles, subTiles };
+}
+
+/** 全町を合成したタイル粒度の索引を作る(buildTownIndexesのタイル側のみ)。 */
 export function buildTownTileIndex(
   towns: TownData[],
   terrain: Map<string, TerrainType>,
   heights: Map<string, number> = new Map(),
   railMap?: Map<string, CellData>
 ): TownTileIndex {
-  const index: TownTileIndex = new Map();
-  const occupied = new Set<string>();
-  for (const town of towns) {
-    const tiles = generateTownTiles(town, terrain, heights, { occupied, railMap });
-    for (const [key, kind] of tiles) {
-      index.set(key, { townId: town.id, kind });
-      occupied.add(key);
-    }
-  }
-  return index;
+  return buildTownIndexes(towns, terrain, heights, railMap).tiles;
 }
 
 /** セル(x,z)の町タイル(あれば)。 */

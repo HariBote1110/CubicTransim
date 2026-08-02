@@ -24,7 +24,7 @@ import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
 import { buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
 import { rectCells } from '../sim/terrainEdit';
-import type { TownTileIndex } from '../sim/townTiles';
+import type { TownTileIndex, TownSubTileIndex } from '../sim/townTiles';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import {
@@ -96,8 +96,10 @@ interface GameSceneProps {
   stations: Map<string, StationData>;
   trains: TrainData[];
   towns: TownData[];
-  /** 町タイル索引(useGameLogicのtownTileIndex)。町の描画と樹木の間引きに使う。 */
+  /** 町タイル索引(useGameLogicのtownTileIndex)。樹木の間引きに使う。 */
   townTiles: TownTileIndex;
+  /** 町サブタイル索引(useGameLogicのtownSubTileIndex)。家・道路の描画に使う。 */
+  townSubTiles: TownSubTileIndex;
   terrain: Map<string, TerrainType>;
   /** セルごとの標高(整数段数、未登録=0)。地形の一次データ(sim/terrain.tsのgenerateMap)。 */
   heights: Map<string, number>;
@@ -135,7 +137,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, townTiles, terrain, heights, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, townTiles, townSubTiles, terrain, heights, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -618,7 +620,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TownBlocks towns={towns} townTiles={townTiles} />
+      <TownBlocks towns={towns} townSubTiles={townSubTiles} />
 
       {Array.from(stations.values()).map(station => {
         const orderIndices: number[] = [];

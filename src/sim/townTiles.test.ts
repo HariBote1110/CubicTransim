@@ -2,14 +2,22 @@ import { describe, it, expect } from 'vitest';
 import type { CellData, TerrainType, TownData } from '../types';
 import { toKey, fromKey } from '../utils';
 import {
+  generateTownSubTiles,
   generateTownTiles,
+  deriveTileKinds,
+  buildTownIndexes,
   buildTownTileIndex,
   isTownBlocked,
   townTileAt,
   townTileRadius,
+  townSubTileRadius,
   townHouseTarget,
   cellOccupiesGround,
+  parentTileOfSub,
+  subTileWorldCentre,
   TOWN_TILE_RADIUS_MAX,
+  TOWN_SUB_TILE_RADIUS_MAX,
+  TOWN_ROAD_PRUNE_DISTANCE,
 } from './townTiles';
 import {
   applyRailPath,
@@ -31,24 +39,44 @@ const town = (id: string, x: number, z: number, population: number): TownData =>
 
 const emptyTerrain = new Map<string, TerrainType>();
 
-describe('townTiles: 生成', () => {
-  it('同じ入力からは常に同じタイル配置になる(決定的)', () => {
+describe('townTiles: サブタイル座標', () => {
+  it('parentTileOfSubは負のサブ座標も正しく親タイルへ写す', () => {
+    expect(parentTileOfSub(0)).toBe(0);
+    expect(parentTileOfSub(1)).toBe(0);
+    expect(parentTileOfSub(2)).toBe(1);
+    expect(parentTileOfSub(-1)).toBe(-1);
+    expect(parentTileOfSub(-2)).toBe(-1);
+    expect(parentTileOfSub(-3)).toBe(-2);
+  });
+
+  it('subTileWorldCentreはタイル(x±0.5)内の4分割中央に来る', () => {
+    // タイル0のサブタイル(0,1)は -0.25 / +0.25
+    expect(subTileWorldCentre(0)).toBeCloseTo(-0.25);
+    expect(subTileWorldCentre(1)).toBeCloseTo(0.25);
+    // タイル-1のサブタイル(-2,-1)は -1.25 / -0.75
+    expect(subTileWorldCentre(-2)).toBeCloseTo(-1.25);
+    expect(subTileWorldCentre(-1)).toBeCloseTo(-0.75);
+  });
+});
+
+describe('townTiles: サブタイル生成', () => {
+  it('同じ入力からは常に同じサブタイル配置になる(決定的)', () => {
     const t = town('town-0', 5, -3, 2400);
-    const a = generateTownTiles(t, emptyTerrain);
-    const b = generateTownTiles(t, emptyTerrain);
+    const a = generateTownSubTiles(t, emptyTerrain);
+    const b = generateTownSubTiles(t, emptyTerrain);
     expect(a.size).toBeGreaterThan(0);
     expect(Array.from(a.entries()).sort()).toEqual(Array.from(b.entries()).sort());
   });
 
-  it('中心タイルは道路になり、全道路タイルは中心から4近傍で辿れる', () => {
+  it('中心サブタイルは道路になり、全道路サブタイルは中心から4近傍で辿れる', () => {
     const t = town('town-1', 0, 0, 6000);
-    const tiles = generateTownTiles(t, emptyTerrain);
-    expect(tiles.get(toKey(0, 0))).toBe('road');
+    const subs = generateTownSubTiles(t, emptyTerrain);
+    expect(subs.get(toKey(0, 0))).toBe('road');
 
     const roads = new Set(
-      Array.from(tiles.entries()).filter(([, k]) => k === 'road').map(([key]) => key)
+      Array.from(subs.entries()).filter(([, k]) => k === 'road').map(([key]) => key)
     );
-    // BFSで中心から到達できる道路タイルを数える
+    // BFSで中心から到達できる道路サブタイルを数える
     const reached = new Set<string>([toKey(0, 0)]);
     const queue = [{ x: 0, z: 0 }];
     while (queue.length > 0) {
@@ -63,82 +91,144 @@ describe('townTiles: 生成', () => {
     expect(reached.size).toBe(roads.size);
   });
 
-  it('家は必ず道路タイルに4近傍で隣接する', () => {
+  it('家は必ず道路サブタイルに4近傍で隣接する', () => {
     const t = town('town-2', 0, 0, 4000);
-    const tiles = generateTownTiles(t, emptyTerrain);
-    const houses = Array.from(tiles.entries()).filter(([, k]) => k === 'house');
+    const subs = generateTownSubTiles(t, emptyTerrain);
+    const houses = Array.from(subs.entries()).filter(([, k]) => k === 'house');
     expect(houses.length).toBeGreaterThan(0);
     for (const [key] of houses) {
       const { x, z } = fromKey(key);
       const adjacent = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(
-        ([dx, dz]) => tiles.get(toKey(x + dx, z + dz)) === 'road'
+        ([dx, dz]) => subs.get(toKey(x + dx, z + dz)) === 'road'
       );
       expect(adjacent).toBe(true);
     }
   });
 
-  it('水域・山岳・標高1以上のセルにはタイルを置かない', () => {
+  it('水域・山岳・標高1以上の親タイルにはサブタイルを置かない', () => {
     const terrain = new Map<string, TerrainType>();
     const heights = new Map<string, number>();
-    // 中心の東側を水域、西側を山岳(標高1)にする
-    for (let z = -8; z <= 8; z++) {
+    // 中心の東側を水域、西側を山岳(標高1)にする(親タイル単位)
+    for (let z = -16; z <= 16; z++) {
       terrain.set(toKey(2, z), 'water');
       terrain.set(toKey(-2, z), 'mountain');
       heights.set(toKey(-2, z), 1);
     }
     const t = town('town-3', 0, 0, 8000);
-    const tiles = generateTownTiles(t, terrain, heights);
-    for (const key of tiles.keys()) {
-      const { x } = fromKey(key);
-      expect(x).not.toBe(2);
-      expect(x).not.toBe(-2);
+    const subs = generateTownSubTiles(t, terrain, heights);
+    for (const key of subs.keys()) {
+      const px = parentTileOfSub(fromKey(key).x);
+      expect(px).not.toBe(2);
+      expect(px).not.toBe(-2);
     }
   });
 
   it('人口が多いほど半径・家の数が増える(視覚的に成長する)', () => {
     expect(townTileRadius(500)).toBeLessThan(townTileRadius(20000));
     expect(townTileRadius(10 ** 9)).toBe(TOWN_TILE_RADIUS_MAX);
+    expect(townSubTileRadius(500)).toBeLessThan(townSubTileRadius(20000));
+    expect(townSubTileRadius(10 ** 9)).toBe(TOWN_SUB_TILE_RADIUS_MAX);
     expect(townHouseTarget(500)).toBeLessThan(townHouseTarget(20000));
 
-    const small = generateTownTiles(town('town-4', 0, 0, 600), emptyTerrain);
-    const large = generateTownTiles(town('town-4', 0, 0, 12000), emptyTerrain);
+    const small = generateTownSubTiles(town('town-4', 0, 0, 600), emptyTerrain);
+    const large = generateTownSubTiles(town('town-4', 0, 0, 12000), emptyTerrain);
     const countHouses = (m: Map<string, string>) =>
       Array.from(m.values()).filter(k => k === 'house').length;
     expect(countHouses(large)).toBeGreaterThan(countHouses(small));
   });
 
   it('人口が増えても既存の家の位置は保たれる(外側へ広がるだけ)', () => {
-    const small = generateTownTiles(town('town-5', 0, 0, 1500), emptyTerrain);
-    const large = generateTownTiles(town('town-5', 0, 0, 3000), emptyTerrain);
+    const small = generateTownSubTiles(town('town-5', 0, 0, 1500), emptyTerrain);
+    const large = generateTownSubTiles(town('town-5', 0, 0, 3000), emptyTerrain);
     for (const [key, kind] of small) {
       if (kind !== 'house') continue;
-      // 半径拡大で道路格子上に乗ることはある(kindが変わる)が、タイルが消えることはない
+      // 半径拡大で道路格子上に乗ることはある(kindが変わる)が、サブタイルが消えることはない
       expect(large.has(key)).toBe(true);
     }
   });
 
-  it('家は地面を占有する線路セル(線路・駅・車庫・坂)を避ける', () => {
+  it('家は地面を占有する線路の親タイル(線路・駅・車庫・坂)を避ける', () => {
     const railMap = new Map<string, CellData>();
-    for (let x = -7; x <= 7; x++) {
+    for (let x = -15; x <= 15; x++) {
       railMap.set(toKey(x, 1), { type: 'rail', connections: DIR.E | DIR.W });
     }
-    const tiles = generateTownTiles(town('town-6', 0, 0, 9000), emptyTerrain, new Map(), { railMap });
-    for (const [key, kind] of tiles) {
+    const subs = generateTownSubTiles(town('town-6', 0, 0, 9000), emptyTerrain, new Map(), { railMap });
+    for (const [key, kind] of subs) {
       if (kind !== 'house') continue;
-      expect(fromKey(key).z).not.toBe(1);
+      expect(parentTileOfSub(fromKey(key).z)).not.toBe(1);
     }
   });
 
-  it('道路は素の線路セルと同居できる(踏切)が、駅・車庫セルには置かれない', () => {
+  it('道路は素の線路の親タイルと同居できる(踏切)が、駅・車庫の親タイルには置かれない', () => {
     const railMap = new Map<string, CellData>();
-    for (let x = -7; x <= 7; x++) {
+    for (let x = -15; x <= 15; x++) {
       railMap.set(toKey(x, 1), { type: 'rail', connections: DIR.E | DIR.W });
     }
     railMap.set(toKey(0, -3), { type: 'depot', connections: DIR.N });
-    const tiles = generateTownTiles(town('town-7', 0, 0, 9000), emptyTerrain, new Map(), { railMap });
-    // 中心(0,0)から南北の道路が線路(z=1)を跨いで続いている=踏切
-    expect(tiles.get(toKey(0, 1))).toBe('road');
-    expect(tiles.get(toKey(0, -3))).toBeUndefined();
+    const subs = generateTownSubTiles(town('town-7', 0, 0, 9000), emptyTerrain, new Map(), { railMap });
+    // 中心(サブ0,0)から南の道路が線路タイル(z=1、サブz∈{2,3})を跨いで続いている=踏切
+    expect(subs.get(toKey(0, 2))).toBe('road');
+    expect(subs.get(toKey(0, 3))).toBe('road');
+    // 車庫タイル(0,-3)=サブz∈{-6,-5}には道路も家も無い
+    for (const key of subs.keys()) {
+      const { x, z } = fromKey(key);
+      expect(`${parentTileOfSub(x)},${parentTileOfSub(z)}`).not.toBe('0,-3');
+    }
+  });
+
+  it('空の道路格子は刈り込まれる: 全道路サブタイルは家からチェビシェフ距離2以内(平地)', () => {
+    for (const pop of [800, 1500, 6000]) {
+      const subs = generateTownSubTiles(town('town-prune', 0, 0, pop), emptyTerrain);
+      const houses = Array.from(subs.entries()).filter(([, k]) => k === 'house').map(([k]) => fromKey(k));
+      const roads = Array.from(subs.entries()).filter(([, k]) => k === 'road').map(([k]) => fromKey(k));
+      expect(houses.length).toBeGreaterThan(0);
+      for (const r of roads) {
+        const dist = Math.min(...houses.map(h => Math.max(Math.abs(h.x - r.x), Math.abs(h.z - r.z))));
+        expect(dist).toBeLessThanOrEqual(TOWN_ROAD_PRUNE_DISTANCE);
+      }
+      // 町の外周に空の道路が突き出ない(家の広がり+刈り込み距離に収まる)
+      const roadExtent = Math.max(...roads.map(r => Math.max(Math.abs(r.x), Math.abs(r.z))));
+      const houseExtent = Math.max(...houses.map(h => Math.max(Math.abs(h.x), Math.abs(h.z))));
+      expect(roadExtent).toBeLessThanOrEqual(houseExtent + TOWN_ROAD_PRUNE_DISTANCE);
+    }
+  });
+
+  it('刈り込み後も道路は中心から連結で、家から遠い道路は経路上(行き止まりにならない)', () => {
+    // 水域で分断気味の地形でも成立することを確認する
+    const terrain = new Map<string, TerrainType>();
+    for (let z = -16; z <= 16; z++) {
+      if (z !== 0) terrain.set(toKey(2, z), 'water');
+    }
+    const subs = generateTownSubTiles(town('town-prune2', 0, 0, 9000), terrain);
+    const roads = new Set(
+      Array.from(subs.entries()).filter(([, k]) => k === 'road').map(([key]) => key)
+    );
+    const houses = Array.from(subs.entries()).filter(([, k]) => k === 'house').map(([k]) => fromKey(k));
+    expect(roads.has(toKey(0, 0))).toBe(true);
+    // 連結性: 中心からBFSで全道路に到達できる
+    const reached = new Set<string>([toKey(0, 0)]);
+    const queue = [{ x: 0, z: 0 }];
+    while (queue.length > 0) {
+      const p = queue.shift()!;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const key = toKey(p.x + dx, p.z + dz);
+        if (reached.has(key) || !roads.has(key)) continue;
+        reached.add(key);
+        queue.push({ x: p.x + dx, z: p.z + dz });
+      }
+    }
+    expect(reached.size).toBe(roads.size);
+    // 家から刈り込み距離を超えて残る道路は、中心への接続経路上にある
+    // (=行き止まりではない: 道路グラフ上で次数2以上を持つ)
+    for (const key of roads) {
+      const { x, z } = fromKey(key);
+      if (x === 0 && z === 0) continue; // 中心は常に残る
+      const dist = Math.min(...houses.map(h => Math.max(Math.abs(h.x - x), Math.abs(h.z - z))));
+      if (dist <= TOWN_ROAD_PRUNE_DISTANCE) continue;
+      const degree = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+        .filter(([dx, dz]) => roads.has(toKey(x + dx, z + dz))).length;
+      expect(degree).toBeGreaterThanOrEqual(2);
+    }
   });
 
   it('純粋な高架専用セル(地平接続なし)は地面を塞がず、家と同居できる', () => {
@@ -149,7 +239,56 @@ describe('townTiles: 生成', () => {
   });
 });
 
-describe('townTiles: 合成索引(buildTownTileIndex)', () => {
+describe('townTiles: タイル粒度への導出', () => {
+  it('deriveTileKinds: 家サブが1つでもあれば house、道路サブのみなら road', () => {
+    const subs = new Map<string, 'house' | 'road'>([
+      // タイル(0,0): 道路2つ+家1つ → house
+      [toKey(0, 0), 'road'],
+      [toKey(1, 0), 'road'],
+      [toKey(0, 1), 'house'],
+      // タイル(1,0): 道路のみ → road
+      [toKey(2, 0), 'road'],
+      // タイル(-1,-1): 家のみ → house
+      [toKey(-1, -1), 'house'],
+    ]);
+    const tiles = deriveTileKinds(subs);
+    expect(tiles.get(toKey(0, 0))).toBe('house');
+    expect(tiles.get(toKey(1, 0))).toBe('road');
+    expect(tiles.get(toKey(-1, -1))).toBe('house');
+    expect(tiles.size).toBe(3);
+  });
+
+  it('generateTownTilesはサブタイル生成の導出と一致する', () => {
+    const t = town('town-8', 3, -2, 5000);
+    const subs = generateTownSubTiles(t, emptyTerrain);
+    const tiles = generateTownTiles(t, emptyTerrain);
+    expect(tiles).toEqual(deriveTileKinds(subs));
+    expect(tiles.size).toBeGreaterThan(0);
+    // 全タイルキーはサブタイルの親タイルの集合と一致する
+    const parents = new Set(
+      Array.from(subs.keys()).map(key => {
+        const { x, z } = fromKey(key);
+        return toKey(parentTileOfSub(x), parentTileOfSub(z));
+      })
+    );
+    expect(new Set(tiles.keys())).toEqual(parents);
+  });
+
+  it('線路が横切るタイルは家サブが無いので road のまま(踏切になれる)', () => {
+    const railMap = new Map<string, CellData>();
+    for (let x = -15; x <= 15; x++) {
+      railMap.set(toKey(x, 1), { type: 'rail', connections: DIR.E | DIR.W });
+    }
+    const tiles = generateTownTiles(town('town-9', 0, 0, 9000), emptyTerrain, new Map(), { railMap });
+    for (const [key, kind] of tiles) {
+      if (fromKey(key).z === 1) expect(kind).toBe('road');
+    }
+    // 中心から南へ道路が線路を跨いでいる
+    expect(tiles.get(toKey(0, 1))).toBe('road');
+  });
+});
+
+describe('townTiles: 合成索引(buildTownIndexes)', () => {
   it('近接する2つの町のタイルは重複せず、先の町が先勝ちする', () => {
     const a = town('town-a', 0, 0, 20000);
     const b = town('town-b', 6, 0, 20000);
@@ -166,24 +305,44 @@ describe('townTiles: 合成索引(buildTownTileIndex)', () => {
     }
   });
 
+  it('buildTownIndexesはタイル索引とサブタイル索引を整合させて返す', () => {
+    const t = town('town-c2', 0, 0, 4000);
+    const { tiles, subTiles } = buildTownIndexes([t], emptyTerrain);
+    expect(subTiles.size).toBeGreaterThan(0);
+    // サブタイルの親タイルは必ずタイル索引にあり、家サブの親は必ず'house'
+    for (const [key, entry] of subTiles) {
+      const { x, z } = fromKey(key);
+      const parent = tiles.get(toKey(parentTileOfSub(x), parentTileOfSub(z)));
+      expect(parent?.townId).toBe('town-c2');
+      if (entry.kind === 'house') expect(parent?.kind).toBe('house');
+    }
+  });
+
   it('isTownBlockedは家のみtrue、道路・空地はfalse', () => {
     const t = town('town-c', 0, 0, 4000);
     const index = buildTownTileIndex([t], emptyTerrain);
-    expect(isTownBlocked(index, 0, 0)).toBe(false); // 中心=道路
     const houseKey = Array.from(index.entries()).find(([, e]) => e.kind === 'house')![0];
-    const { x, z } = fromKey(houseKey);
-    expect(isTownBlocked(index, x, z)).toBe(true);
+    const roadKey = Array.from(index.entries()).find(([, e]) => e.kind === 'road')![0];
+    const house = fromKey(houseKey);
+    const road = fromKey(roadKey);
+    expect(isTownBlocked(index, road.x, road.z)).toBe(false);
+    expect(isTownBlocked(index, house.x, house.z)).toBe(true);
     expect(isTownBlocked(index, 40, 40)).toBe(false);
-    expect(townTileAt(index, x, z)?.kind).toBe('house');
+    expect(townTileAt(index, house.x, house.z)?.kind).toBe('house');
   });
 });
 
 describe('construction: 町タイルの建設ガード', () => {
-  // (0,0)中心の町を作り、家タイル1つと道路タイル1つを見つけて使う
+  // (0,0)中心の町を作り、家タイル1つと「東西の隣が家でない道路タイル」を見つけて使う
   const t = town('town-guard', 0, 0, 4000);
   const index = buildTownTileIndex([t], emptyTerrain);
   const houseKey = Array.from(index.entries()).find(([, e]) => e.kind === 'house')![0];
   const house = fromKey(houseKey);
+  const crossable = Array.from(index.entries())
+    .filter(([, e]) => e.kind === 'road')
+    .map(([key]) => fromKey(key))
+    .find(p =>
+      !isTownBlocked(index, p.x - 1, p.z) && !isTownBlocked(index, p.x + 1, p.z));
   const emptyState = (): ConstructionState => ({ railMap: new Map(), stations: new Map() });
 
   it('地平の線路は家タイルを通れない(no-op、同一参照)', () => {
@@ -201,17 +360,18 @@ describe('construction: 町タイルの建設ガード', () => {
   });
 
   it('地平の線路は道路タイルを通れる(踏切)', () => {
+    expect(crossable).toBeDefined();
+    const { x, z } = crossable!;
     const state = emptyState();
-    // 中心(0,0)は道路。そこを東西に横切る
     const path = [
-      { x: -1, z: 0 },
-      { x: 0, z: 0 },
-      { x: 1, z: 0 },
+      { x: x - 1, z },
+      { x, z },
+      { x: x + 1, z },
     ];
-    expect(index.get(toKey(0, 0))?.kind).toBe('road');
+    expect(index.get(toKey(x, z))?.kind).toBe('road');
     const result = applyRailPath(state, path, emptyTerrain, undefined, index);
     expect(result.railMap).not.toBe(state.railMap);
-    expect(result.railMap.get(toKey(0, 0))?.connections).toBe(DIR.E | DIR.W);
+    expect(result.railMap.get(toKey(x, z))?.connections).toBe(DIR.E | DIR.W);
   });
 
   it('高架線は家タイルの上を通れるが、坂になるセルが家タイルだと建設できない', () => {
@@ -244,26 +404,28 @@ describe('construction: 町タイルの建設ガード', () => {
 
   it('駅・車庫は家タイルにも道路タイルにも置けない', () => {
     const state = emptyState();
+    const road = crossable!;
     expect(applyStation(state, house, emptyTerrain, [], undefined, index)).toBe(state);
-    expect(applyStation(state, { x: 0, z: 0 }, emptyTerrain, [], undefined, index)).toBe(state);
+    expect(applyStation(state, road, emptyTerrain, [], undefined, index)).toBe(state);
     expect(applyDepot(state, house, emptyTerrain, index)).toBe(state);
-    expect(applyDepot(state, { x: 0, z: 0 }, emptyTerrain, index)).toBe(state);
+    expect(applyDepot(state, road, emptyTerrain, index)).toBe(state);
     // 町の外には従来通り置ける
-    expect(applyDepot(state, { x: 30, z: 30 }, emptyTerrain, index)).not.toBe(state);
+    expect(applyDepot(state, { x: 40, z: 40 }, emptyTerrain, index)).not.toBe(state);
   });
 
   it('信号は道路タイル(踏切)には置けない', () => {
-    // 道路タイル(0,0)を線路が横切っている状態を作る
+    // 道路タイルを線路が横切っている状態を作る
+    const { x, z } = crossable!;
     const state = emptyState();
     const built = applyRailPath(state, [
-      { x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 },
+      { x: x - 1, z }, { x, z }, { x: x + 1, z },
     ], emptyTerrain, undefined, index);
-    const result = applySignal(built, [{ x: 0, z: 0 }], emptyTerrain, index);
+    const result = applySignal(built, [{ x, z }], emptyTerrain, index);
     expect(result).toBe(built);
     // 町の外の線路には従来通り置ける
     const outside = applyRailPath(emptyState(), [
-      { x: 30, z: 30 }, { x: 31, z: 30 },
+      { x: 40, z: 40 }, { x: 41, z: 40 },
     ], emptyTerrain);
-    expect(applySignal(outside, [{ x: 30, z: 30 }], emptyTerrain, index)).not.toBe(outside);
+    expect(applySignal(outside, [{ x: 40, z: 40 }], emptyTerrain, index)).not.toBe(outside);
   });
 });
