@@ -272,3 +272,33 @@
   `THREE.Vector3.prototype.project(camera)`(cameraの既存インスタンスの
   コンストラクタから`Vector3`を取得できる: `camera.position.constructor`)を
   使うほうが確実。
+
+## P8b-c可視性バグ再修正メモ(0.3.0-Alpha-40b→40c): opacity 0でも足りなかった
+
+- **症状**: 上記40bの修正(depthTest追加)後も、実機再検証で地下線が依然として
+  見えないケースが再現した。地面プレーン単体を`visible:false`にすると地下線は
+  正しく見えるが、`transparent:true, opacity:0`(色を出さずに`visible:true`のまま
+  ピッキングだけ残す案)にすると再び見えなくなる。
+- **根本原因**: `depthTest:false`のオブジェクトはZバッファを無視して「描画された
+  順序」だけで上書きされる。地面プレーン(renderOrder=0)はopaque級の地下線
+  (renderOrder=10, `transparent:false`)より先に描かれるが、その後に描かれる
+  TerrainBlocks/Scenery/TownBlocksの`DIMMED_MATERIALS`(地下ビュー中はこれらも
+  `opacity:0.3, depthWrite:false, depthTest:false`)が多数積み重なって地下線の
+  上からアルファブレンドされる。理論上`opacity:0`ならブレンド結果は無変化の
+  はずだが、実機では地面プレーンを含めた半透明キュー全体の重なりが「地下線を
+  隠す」方向に働き、地面プレーンだけ`opacity:0`にしても解消しなかった
+  (この経路の正確な原因はブレンド式やドライバ依存の挙動まで追い切れていない。
+  再現条件は実機検証で確定させたが、理論的な完全解明はしていない)。
+- **修正**: 地面プレーンのマテリアルに`colorWrite:false`(地下ビュー中のみ)を
+  追加し、`transparent`/`opacity`はいじらないことにした。`colorWrite:false`は
+  フレームバッファへの色出力そのものを止めるため、上記のブレンド経路に一切
+  乗らない。レイキャスト(ポインタピッキング)はCPU側のジオメトリ交差判定で
+  `visible:true`であれば効くため、`colorWrite:false`でも建設ドラッグ等の
+  操作性は維持される。`GameScene.tsx`の地面プレーン用マテリアルを参照。
+- **検証手法の教訓**: `left_click_drag`(computerツール)は本アプリでは
+  ほぼ確実にドラッグとして成立しない(pointerdownとpointerupの間の
+  pointermoveが飛ばないためコード側のセル差分検知が働かない)。
+  `javascript_tool`でcanvasへ`pointerdown`→`pointermove`(複数)→`pointerup`を
+  直接dispatchする方式のみが安定して再現できた。この方式で地下1に
+  線路を敷設し、`window.__debugWorld.railMap`のセルに`uppers["-1"]`が
+  乗ることを確認してから見た目を検証する。

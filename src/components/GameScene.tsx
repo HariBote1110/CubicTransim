@@ -880,15 +880,24 @@ export const GameScene: React.FC<GameSceneProps> = ({
         onClick={handleClick}
       >
         <planeGeometry args={[groundSpan, groundSpan]} />
-        {/* P8b: 地下ビュー中はこの地面プレーンも半透明+depthWrite/depthTest無効に
-            しないと、地表が(視覚上は薄くても)下の地下線路を覆い隠してしまう
-            (TerrainBlocks/DIMMED_MATERIALSと同じ理由・同じ実測結果。
-            render/palette.tsのdim()のコメント参照)。ここは共有インスタンスではなく
-            地面プレーン専用の1つだけのメッシュなので、クローンではなくprops切替で
-            済ませる。 */}
+        {/* P8b/P8c: 地下ビュー中はこの地面プレーンを完全不可視にする。
+            半透明(opacity 0.3)はもちろん、transparent+opacity 0(アルファ0で
+            ブレンドさせて見た目だけ消す案)でも他の減光メッシュ(DIMMED_MATERIALS、
+            depthTest:false)が不透明キューの後にこのプレーンより後で重なり書きされる
+            際の合成結果として地下線路を覆い隠してしまうことが実機検証で判明した
+            (progress/underground-design.md参照。地表・地下ともにdepthTest:falseの
+            オブジェクトはZバッファに関係なく描画順だけで重なるため、alpha=0でも
+            透過ブレンドの過程で下地を巻き込む)。
+            visible=falseにするとポインタピッキング(onPointerMove/onClick等、
+            このメッシュがヒットテスト対象を兼ねている)まで無効になるため、
+            visibleはtrueのまま維持しつつcolorWrite:falseでフレームバッファへの
+            色出力そのものを止める(レイキャストはCPU側のジオメトリ交差判定なので
+            colorWrite/depthWriteの影響を受けず、ピッキングは効いたままになる)。
+            ここは共有インスタンスではなく地面プレーン専用の1つだけのメッシュなので、
+            クローンではなくprops切替で済ませる。 */}
         <meshStandardMaterial
           map={groundTexture} color="#ffffff" roughness={1}
-          transparent={undergroundView} opacity={undergroundView ? 0.3 : 1}
+          colorWrite={!undergroundView}
           depthWrite={!undergroundView} depthTest={!undergroundView}
         />
       </mesh>
