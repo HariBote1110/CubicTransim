@@ -5,6 +5,7 @@ import type { PassengerCohort } from './passengers';
 import { fallbackTownName } from './towns';
 import type { SerialisedCornerDiffs, CornerDiffs } from './terrainOverlay';
 import { serialiseCornerDiffs, deserialiseCornerDiffs } from './terrainOverlay';
+import type { TownDensity } from './towns';
 
 // v15: 地形の持ち方を「全セル実体化(terrain/heights Map)」から「決定的な純関数
 // (worldSeed)+疎な編集差分(cornerDiffs)」へ転換した(progress/16k-map-architecture.md
@@ -40,6 +41,13 @@ export interface SaveDataV15 {
   loan: number;
   /** 駅ごとの行き先つき待ち客。waitingはこの合計なので、こちらが正。 */
   demand: [string, PassengerCohort[]][];
+  /**
+   * 新規ゲーム開始時に選んだ町密度(sim/towns.tsのTownDensity)。additive optional:
+   * このセッションより前のv15セーブには存在しないため、読み込み時はnormalを既定にする
+   * (townsそのものはセーブに実体を持つため、この値からtownsを再生成することはない。
+   * UI表示や将来の追加生成の参考情報としてのみ保持する)。
+   */
+  townDensity?: TownDensity;
 }
 
 /** v14以前の旧セーブ。バージョン判定にのみ使う(内容は読まない。deserialiseWorldが即reject)。 */
@@ -70,13 +78,15 @@ export function serialiseWorld(
   loan = 0,
   demand: Map<string, PassengerCohort[]> = new Map(),
   halfExtent: number,
-  cornerDiffs: CornerDiffs = new Map()
+  cornerDiffs: CornerDiffs = new Map(),
+  townDensity: TownDensity = 'normal'
 ): SaveDataV15 {
   return {
     version: 15,
     seed,
     halfExtent,
     cornerDiffs: serialiseCornerDiffs(cornerDiffs),
+    townDensity,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -117,6 +127,8 @@ export interface RestoredWorld {
   groupDepartures: Map<string, number>;
   loan: number;
   demand: Map<string, PassengerCohort[]>;
+  /** 町密度(省略時=normal)。 */
+  townDensity: TownDensity;
 }
 
 /**
@@ -183,5 +195,6 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
     groupDepartures: new Map(data.groupDepartures ?? []),
     loan: data.loan,
     demand: new Map(data.demand),
+    townDensity: data.townDensity ?? 'normal',
   };
 }
