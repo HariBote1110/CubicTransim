@@ -202,3 +202,76 @@ OpenTTD の傾斜モデル(progress/openttd-slope-notes.md)を簡約して導入
   - (e) `multi-level-crossing`(高架Lv1〜3の立体交差)デバッグシナリオを`__dbgStep`で走らせ、
     高架・坂(ramp)の見た目・列車の走行が従来どおりであることを確認(地上標高絡みのP7cの変更が
     高架系統に影響していない)。
+
+## P7d実装メモ
+
+P7の最終仕上げ。標高上の建設(P7a〜P7c)を「町・樹木の配置」「UIの建設失敗フィードバック」まで
+一貫させた。
+
+- **mountain概念の廃止を町・タイル・樹木へ波及**: `terrainTypeAt==='mountain'`(標高1以上)を
+  機械的に建設不可の障害物として扱う旧ルールが、P7b(線路・駅・車庫・信号)に続いて
+  P7dで町(`sim/towns.ts`)・町タイル(`sim/townTiles.ts`)・樹木(`components/Scenery.tsx`)にも
+  適用された。3箇所とも同じ判定軸に統一している: 「水域でないこと」+「`slopes.slopeOf`で
+  flatと判定できること」。標高そのものは問わない(平坦な高原ならどこでも適地)。
+  - `towns.ts`の`isNearTerrain`: 旧実装は候補周辺セルが`terrainTypeAt!=='grass'`なら
+    1セルでも即棄却していた。新実装は「水域が近傍にあれば即棄却」は維持しつつ、
+    「flatである割合が`TOWN_FLAT_MAJORITY_RATIO`(0.85)未満なら棄却」という多数決に変えた
+    (傾斜(incline/other)だらけの地形に町を置くと道路・家が生成できないセルだらけになるため、
+    「平坦優勢」は引き続き要求する)。パフォーマンス(16Kマップ500msガード)を保つため、
+    水域走査は全セル、flat判定サンプリングは間引き格子(`TOWN_FLAT_SAMPLE_STRIDE`=2)にした
+    (両方を毎セル`cellCornerHeights`込みでフル走査すると実測でガードに抵触した)。
+  - `townTiles.ts`の`isFlatBuildable`(旧`isFlatGrass`): 親タイル単位で水域除外+
+    `slopeOf`のflat判定に置換。家・道路とも標高任意のflatセルに置けるようになった。
+    傾斜(incline/other)の親タイルには従来どおり置かない(サブタイルが平坦地前提の
+    レイアウトのため)。
+  - `Scenery.tsx`の樹木配置条件を`terrainTypeAt==='grass'`(=標高0限定)から
+    水域除外+`slopeOf`のflat判定へ変更。標高のある平坦地にも生えるようになった。
+- **描画側の標高追従**: `TownBlocks.tsx`は新たに`field`をpropで受け取り、サブタイルごとに
+  親タイル(`parentTileOfSub`)の`cellHeightAt×OVERPASS_HEIGHT`を全ジオメトリ(縁石・路面・
+  壁・屋根・町名ラベル)に加算する。サブタイルは親セルを跨がない(1ゲームタイル=2x2
+  サブタイル、それより細かい標高分岐は無い)ため、サブタイル単位で標高を持たせる必要は
+  無く、親タイル1つぶんの高さで足りることをtownTiles.tsのコメントで明文化した。
+  `Scenery.tsx`の樹木も同様に`cellHeightAt×OVERPASS_HEIGHT`を幹・葉の位置に加算する。
+  `GameScene.tsx`は`<TownBlocks>`に`field`を追加で渡すだけで済んだ(既存の駅・車庫と
+  同じ`field.cellHeightAt(x,z)*OVERPASS_HEIGHT`パターンを踏襲)。
+- **建設失敗理由のUIフィードバック**: `buildPreview.evaluateBuild`は従来
+  `reason:'ok'|'insufficient-funds'|'no-effect'`の3値しか返さず、「no-effect」の内訳
+  (資金以外のあらゆる建設不可)が一括りだった。地上レール(`mode:'rail'`, `level:0`)に限り、
+  `construction.ts`に新設した`resolveGroundRailPlanDetailed`(既存`resolveGroundRailPlan`を
+  ラップし、null化した理由も一緒に返す純関数)から`slopeIssue`
+  (`GroundRailPlanFailureReason`: `'other-slope'|'direction-blocked'|
+  'edge-discontinuous'|'tunnel-exit-mismatch'`)を`BuildPreview`へ持ち帰るようにした。
+  `resolveGroundRailPlan`自体は`.plan`だけを返す薄いラッパーへ縮小し、economy.ts等の
+  既存呼び出し側は無改修。`GameUI.tsx`の`BuildFeedback`は`reason==='no-effect'`かつ
+  `slopeIssue`があれば、汎用文言「ここには建設できません」の代わりに
+  `SLOPE_ISSUE_MESSAGES`(以下の4種)を表示する:
+  - `'other-slope'` → 「地形が線路に適していません(整地が必要)」
+  - `'direction-blocked'` → 「この向きには勾配レールを敷けません」
+  - `'edge-discontinuous'` → 「地形の標高がつながっていません」
+  - `'tunnel-exit-mismatch'` → 「トンネル出口の標高が合いません」
+  水域駅・既存セル上書きなど、地上レール以外・slopeIssueが無いno-effectは従来通り
+  汎用文言のまま(UI側にルールを書き写さない既存方針を維持: 理由の判定は
+  construction.ts/buildPreview.tsに一本化し、GameUI.tsxは文言マッピングのみを持つ)。
+- **レベルクロッシングは無改修で標高非依存化**: 道路タイルと素の地平線路の同居
+  (`cellAllowsRoadCrossing`)は元々標高を見ていなかったため、`isFlatBuildable`の
+  置き換えだけで標高1以上の高原でも従来どおり踏切として機能する。回帰確認のテストを
+  `townTiles.test.ts`に追加した(標高1のflatスタブfield上でのlevel crossing)。
+
+### ブラウザ検証(実地形での確認)
+
+UIのcanvasドラッグ操作(盛土ツールでの矩形選択)がgeometry的に安定せず今回は再現しづらかった
+ため、P7bと同じ方針で、実際に生成された地形(`terrain-playground`デバッグシナリオの
+`window.__debugWorld.terrainField`)に対して、sim層の関数を動的importで直接呼び出して検証した:
+
+- 実際に見つかった標高1のflatな高原セル(`x:-40,z:25`)を中心に`generateTownSubTiles`を
+  呼ぶと195個のサブタイル(家・道路)が生成されることを確認(mountain概念の廃止前は
+  この標高では0個だったはずの箇所)。
+- 実際に見つかった`other`スロープのセル(`x:-46,z:26`)を通る経路は、周囲の地形が
+  十分に高かったため`resolveGroundRailPlanDetailed`がtunnel化して`reason:'ok'`
+  (tunnelCells:2)を返すことを確認(otherスロープ=即失敗ではなく、design docどおり
+  「地形が高ければトンネルとして救済される」ことの実地形での確認)。
+- マップ全域を`resolveGroundRailPlanDetailed`で機械的に走査し、実際に
+  `reason:'tunnel-exit-mismatch'`でplanがnullになる経路(`x:-45..-47,z:32`)を発見。
+  同じ経路を`buildPreview.evaluateBuild`に通すと`reason:'no-effect'`・
+  `slopeIssue:'tunnel-exit-mismatch'`を返すことを確認した(GameUI.tsxの
+  `SLOPE_ISSUE_MESSAGES`経由で「トンネル出口の標高が合いません」に対応する)。
