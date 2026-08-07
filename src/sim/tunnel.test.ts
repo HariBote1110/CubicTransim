@@ -40,9 +40,9 @@ describe('tunnelPortals', () => {
     // (0,0)-(0,1)-(0,2) の南北直線。中間(0,1)は両隣ともtunnelなので坑口なし。
     // 両端の外側((0,-1)/(0,3))は未登録(=非mountain、標高0)なので坑口が立つ。
     const railMap = new Map<string, CellData>([
-      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: true }],
-      [toKey(0, 1), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
-      [toKey(0, 2), { type: 'rail', connections: DIR.N, tunnel: true }],
+      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: { height: 0 } }],
+      [toKey(0, 1), { type: 'rail', connections: DIR.N | DIR.S, tunnel: { height: 0 } }],
+      [toKey(0, 2), { type: 'rail', connections: DIR.N, tunnel: { height: 0 } }],
     ]);
     const field = fieldFromElevation(new Map());
 
@@ -59,7 +59,7 @@ describe('tunnelPortals', () => {
 
   it('単セルトンネルは坑口が2つになる', () => {
     const railMap = new Map<string, CellData>([
-      [toKey(5, 5), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
+      [toKey(5, 5), { type: 'rail', connections: DIR.N | DIR.S, tunnel: { height: 0 } }],
     ]);
     const field = fieldFromElevation(new Map());
 
@@ -77,9 +77,9 @@ describe('tunnelPortals', () => {
   it('L字トンネルでも境界面(=非tunnel隣接方向)だけが坑口になる', () => {
     // (0,0)-(1,0)-(1,1) のL字。曲がり角(1,0)は両隣ともtunnelなので坑口なし。
     const railMap = new Map<string, CellData>([
-      [toKey(0, 0), { type: 'rail', connections: DIR.E, tunnel: true }],
-      [toKey(1, 0), { type: 'rail', connections: DIR.W | DIR.S, tunnel: true }],
-      [toKey(1, 1), { type: 'rail', connections: DIR.N, tunnel: true }],
+      [toKey(0, 0), { type: 'rail', connections: DIR.E, tunnel: { height: 0 } }],
+      [toKey(1, 0), { type: 'rail', connections: DIR.W | DIR.S, tunnel: { height: 0 } }],
+      [toKey(1, 1), { type: 'rail', connections: DIR.N, tunnel: { height: 0 } }],
     ]);
     const field = fieldFromElevation(new Map());
 
@@ -107,8 +107,8 @@ describe('tunnelPortals', () => {
     // (0,0)は南へ1方向だけ接続。行き止まり方向(北)の隣接セル(0,-1)がmountain(標高2)
     // ならまだ山の中なので、そこに坑口を立てるべきではない。
     const railMap = new Map<string, CellData>([
-      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: true }],
-      [toKey(0, 1), { type: 'rail', connections: DIR.N, tunnel: true }],
+      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: { height: 0 } }],
+      [toKey(0, 1), { type: 'rail', connections: DIR.N, tunnel: { height: 0 } }],
     ]);
     const field = fieldFromElevation(new Map([[toKey(0, -1), 2]]));
 
@@ -120,8 +120,8 @@ describe('tunnelPortals', () => {
 
   it('山肌(行き止まり方向の隣接セルが非mountain)で終端する場合は坑口を作る', () => {
     const railMap = new Map<string, CellData>([
-      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: true }],
-      [toKey(0, 1), { type: 'rail', connections: DIR.N, tunnel: true }],
+      [toKey(0, 0), { type: 'rail', connections: DIR.S, tunnel: { height: 0 } }],
+      [toKey(0, 1), { type: 'rail', connections: DIR.N, tunnel: { height: 0 } }],
     ]);
     // (0,-1)は未登録=非mountain(標高0)なので山肌。
     const field = fieldFromElevation(new Map());
@@ -141,7 +141,7 @@ describe('tunnelPortals', () => {
 describe('isInTunnelInterior', () => {
   it('tunnelセルの座標(四捨五入)ならtrueを返す', () => {
     const railMap = new Map<string, CellData>([
-      [toKey(3, 4), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
+      [toKey(3, 4), { type: 'rail', connections: DIR.N | DIR.S, tunnel: { height: 0 } }],
     ]);
 
     expect(isInTunnelInterior(railMap, 3.2, 3.9)).toBe(true);
@@ -354,7 +354,7 @@ describe('elevatedTunnelPortals (実際の5x5山の標高から導出、坑口�
 describe('isTrainHiddenInTunnel', () => {
   it('y=0.5(地平)は地平のtunnelフラグで判定する', () => {
     const railMap = new Map<string, CellData>([
-      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, tunnel: true }],
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, tunnel: { height: 0 } }],
     ]);
     const index = buildElevatedTunnelIndex(railMap, fieldFromElevation(new Map()));
 

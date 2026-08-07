@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DIR, toKey } from '../utils';
 import type { CellData, StationData, TownData, TrainData } from '../types';
 import { fieldFromMaps } from './terrainField';
+import type { TerrainField } from './terrainField';
 import type { SimWorld } from './simulation';
 import {
   costOfPath,
@@ -141,13 +142,17 @@ describe('economy: costOfPath', () => {
       { x: 0, z: 0 }, // 平地
       { x: 1, z: 0 }, // 平地
       { x: 2, z: 0 }, // 水
-      { x: 3, z: 0 }, // 山
+      { x: 3, z: 0 }, // otherスロープ(P7b: 勾配追従できないためtunnelになる)
     ];
-    const terrain = new Map<string, 'water' | 'mountain'>([
-      ['2,0', 'water'],
-      ['3,0', 'mountain'],
-    ]);
-    const field = fieldFromMaps(new Map(), terrain, 45);
+    // P7bより、単にterrainTypeAt='mountain'なだけの完全に平坦なセルはもうトンネルに
+    // ならない(mountain概念の廃止)。実際にトンネルが必要な地形(otherスロープ)を
+    // TerrainFieldを直接実装するテストダブルで作る(x=3のみ4隅不揃い)。
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: (x) => (Math.round(x) === 3 ? [1, 1, 1, 0] : [0, 0, 0, 0]),
+      cellHeightAt: () => 0,
+      terrainTypeAt: (x) => (Math.round(x) === 2 ? 'water' : Math.round(x) === 3 ? 'mountain' : 'grass'),
+    };
 
     const cost = costOfPath('rail', path.length, path, field);
     expect(cost).toBe(RAIL_COST * 2 + RAIL_COST * BRIDGE_COST_MULTIPLIER + RAIL_COST * TUNNEL_COST_MULTIPLIER);

@@ -3,7 +3,8 @@
 import { toKey } from '../utils';
 import type { CellData, PlatformDoorType, TownData } from '../types';
 import type { TerrainField } from './terrainField';
-import { applyRailPathDetailed, MAX_BRIDGE_LENGTH } from './construction';
+import { applyRailPathDetailed, resolveGroundRailPlan, MAX_BRIDGE_LENGTH, type GroundRailCellRole } from './construction';
+import { SLOPE_RAIL_COST_MULTIPLIER } from './slopes';
 import type { SimWorld } from './simulation';
 
 export const STARTING_MONEY = 50_000;
@@ -184,6 +185,25 @@ export function costOfGroundPathWithRamps(
   }, 0);
 }
 
+// P7b: resolveGroundRailPlan(construction.ts)が確定させたセルごとの建設方法(勾配追従の
+// flat/incline、またはtunnel)から建設コストを計算する。tunnelはTUNNEL_COST_MULTIPLIER、
+// inclineはSLOPE_RAIL_COST_MULTIPLIER、水域(flatのまま橋になる場合)はBRIDGE_COST_MULTIPLIER。
+// 内訳の判定ロジック自体はconstruction.ts側(resolveGroundRailPlan)に一本化し、ここでは
+// その結果に価格を付けるだけに留める(UI・呼び出し側にルールを書き写さないため)。
+export function costOfGroundRailPlan(
+  path: { x: number; z: number }[],
+  field: TerrainField,
+  plan: GroundRailCellRole[]
+): number {
+  return path.reduce((sum, cell, i) => {
+    const role = plan[i];
+    if (role.kind === 'tunnel') return sum + RAIL_COST * TUNNEL_COST_MULTIPLIER;
+    if (role.slope === 'incline') return sum + RAIL_COST * SLOPE_RAIL_COST_MULTIPLIER;
+    const t = field.terrainTypeAt(cell.x, cell.z);
+    return sum + RAIL_COST * (t === 'water' ? BRIDGE_COST_MULTIPLIER : 1);
+  }, 0);
+}
+
 // 事故発生確率 = 基本確率 × ドア種別による係数 × 混雑係数(待ち0で0.5倍、満杯で1.5倍)
 export function calculateAccidentChance(doorType: PlatformDoorType, waiting: number): number {
   const congestionFactor = 0.5 + waiting / STATION_WAITING_CAP;
@@ -209,12 +229,26 @@ export function costOfPath(
         const overpassCells = railMap
           ? applyRailPathDetailed({ railMap, stations: new Map() }, path, field).overpassCells
           : new Set<string>();
+        // P7b: 勾配追従(flat/incline)/tunnelの内訳はresolveGroundRailPlanに問い合わせる。
+        // 建設不可(null)の場合は実際には課金されない(evaluateBuild側がno-effectにする)ため、
+        // 見積り表示用に旧来のterrainTypeAt単純合計へフォールバックする。
+        const plan = resolveGroundRailPlan(field, path);
+        if (plan) {
+          return path.reduce((sum, cell, i) => {
+            const role = plan[i];
+            const overpassMultiplier = overpassCells.has(toKey(cell.x, cell.z)) ? OVERPASS_COST_MULTIPLIER : 1;
+            if (role.kind === 'tunnel') return sum + RAIL_COST * TUNNEL_COST_MULTIPLIER * overpassMultiplier;
+            const t = field.terrainTypeAt(cell.x, cell.z);
+            const terrainMultiplier =
+              t === 'water' ? BRIDGE_COST_MULTIPLIER : role.slope === 'incline' ? SLOPE_RAIL_COST_MULTIPLIER : 1;
+            return sum + RAIL_COST * terrainMultiplier * overpassMultiplier;
+          }, 0);
+        }
         return path.reduce((sum, cell) => {
           const t = field.terrainTypeAt(cell.x, cell.z);
           const terrainMultiplier =
             t === 'water' ? BRIDGE_COST_MULTIPLIER : t === 'mountain' ? TUNNEL_COST_MULTIPLIER : 1;
-          const overpassMultiplier = overpassCells.has(toKey(cell.x, cell.z)) ? OVERPASS_COST_MULTIPLIER : 1;
-          return sum + RAIL_COST * terrainMultiplier * overpassMultiplier;
+          return sum + RAIL_COST * terrainMultiplier;
         }, 0);
       }
       return cellCount * RAIL_COST;

@@ -3,7 +3,7 @@
 // 起動ダイアログの「デバッグモード」から選ぶ、目視確認用の小さな自己完結の世界の
 // カタログ。各シナリオは construction.ts の apply系関数で世界を組み立てる
 // (createDebugScenario と同じ流儀)。セーブデータは使わず、その場で生成する。
-import type { CellData, StationData, TerrainType, TownData, TrainData, TrainGroupData } from '../types';
+import type { CellData, StationData, TownData, TrainData, TrainGroupData } from '../types';
 import { DIR, toKey } from '../utils';
 import {
   applyElevatedPath,
@@ -14,7 +14,6 @@ import {
 } from './construction';
 import { createDebugScenario } from './debugScenario';
 import type { TerrainField } from './terrainField';
-import { fieldFromMaps } from './terrainField';
 import { GROUP_COLOURS } from './groups';
 
 /**
@@ -105,22 +104,23 @@ function buildMultiLevelScenario(): DebugScenarioWorld {
 
 // --- 3. 山岳トンネル -------------------------------------------------------
 
-// 南北に走る尾根(最高3段)を東西線がトンネルで貫く。両側の坑口が山肌に見える。
+// 南北に走る尾根を東西線がトンネルで貫く。両側の坑口が山肌に見える。
+//
+// P7b以降、なだらかな(1セル1段の)起伏は勾配追従(incline)でそのまま登れてしまうため、
+// 「本当にトンネルが必要な地形」を作るにはmin則コーナー導出では表現しづらい急峻な段差
+// (otherスロープ)がまとまった幅で必要になる。fieldFromMaps(セル標高からコーナーをmin則で
+// 導出)ではこの形が作りにくいため、ここではTerrainFieldを直接実装するテスト専用の
+// フィールド(construction.test.tsのotherSlopeFieldと同じ考え方)を使い、x=-2..2の帯を
+// 「otherスロープ(4隅不揃い、最大標高1)」に固定して急峻な尾根を表現する。
 function buildTunnelScenario(): DebugScenarioWorld {
-  const terrain = new Map<string, TerrainType>();
-  const heights = new Map<string, number>();
-  // ピラミッド状の尾根: h = max(0, min(3-|x|, 7-|z|))。各項が1-Lipschitzなので
-  // normaliseHeights相当の隣接段差1以下が保証される。
-  for (let x = -3; x <= 3; x++) {
-    for (let z = -7; z <= 7; z++) {
-      const h = Math.max(0, Math.min(3 - Math.abs(x), 7 - Math.abs(z)));
-      if (h >= 1) {
-        heights.set(toKey(x, z), h);
-        terrain.set(toKey(x, z), 'mountain');
-      }
-    }
-  }
-  const field = fieldFromMaps(heights, terrain, 45);
+  const RIDGE_HALF_WIDTH = 2;
+  const isRidge = (x: number): boolean => Math.abs(x) <= RIDGE_HALF_WIDTH;
+  const field: TerrainField = {
+    cornerHeightAt: () => 0,
+    cellCornerHeights: (x) => (isRidge(Math.round(x)) ? [1, 1, 1, 0] : [0, 0, 0, 0]),
+    cellHeightAt: () => 0,
+    terrainTypeAt: (x) => (isRidge(Math.round(x)) ? 'mountain' : 'grass'),
+  };
 
   let state = emptyState();
   state = applyRailPath(state, line({ x: -8, z: 0 }, { x: 8, z: 0 }), field);

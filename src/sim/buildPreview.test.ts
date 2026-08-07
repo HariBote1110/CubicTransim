@@ -60,10 +60,17 @@ describe('evaluateBuild', () => {
     expect(p.tunnelCells).toBe(0);
   });
 
-  it('水域は橋、山岳はトンネルとして割増コストと内訳を返す', () => {
-    const { railMap, stations, terrain, field } = emptyMaps();
-    terrain.set(toKey(1, 0), 'water');
-    terrain.set(toKey(2, 0), 'mountain');
+  it('水域は橋、otherスロープはトンネルとして割増コストと内訳を返す', () => {
+    const { railMap, stations } = emptyMaps();
+    // P7bより、terrainTypeAt='mountain'なだけの平坦なセルはもうトンネルにならない
+    // (mountain概念の廃止)。実際にトンネルが必要な地形(otherスロープ)を
+    // TerrainFieldを直接実装するテストダブルで作る(x=2のみ4隅不揃い)。
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: (x) => (Math.round(x) === 2 ? [1, 1, 1, 0] : [0, 0, 0, 0]),
+      cellHeightAt: () => 0,
+      terrainTypeAt: (x) => (Math.round(x) === 1 ? 'water' : Math.round(x) === 2 ? 'mountain' : 'grass'),
+    };
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
     const p = evaluateBuild('rail', path, railMap, stations, field, 100_000);
     expect(p.bridgeCells).toBe(1);
@@ -71,14 +78,16 @@ describe('evaluateBuild', () => {
     expect(p.cost).toBe(RAIL_COST * (1 + BRIDGE_COST_MULTIPLIER + TUNNEL_COST_MULTIPLIER));
   });
 
-  it('斜面フリンジ(天井が覆われていない山岳セル)を経路が横切る場合はno-effect', () => {
+  it('表示上mountain分類なだけで実際は平坦な尾根は、mountain概念の廃止によりno-effectにならず建設できる', () => {
     const { railMap, stations, terrain, field } = emptyMaps();
-    // 幅1セルの尾根(x軸方向、z=0)。南北が非mountainなので、尾根に沿って横切る
-    // 経路の中間セルは坑口にも内部セルにもなれない。
+    // 幅1セルの尾根(x軸方向、z=0)。heightsを与えていないためコーナーは4隅とも
+    // 標高0に潰れ、実際には完全に平坦(P7bではterrainTypeAtの分類自体は建設可否に
+    // 影響しない)。
     for (let x = -2; x <= 2; x++) terrain.set(toKey(x, 0), 'mountain');
     const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
     const p = evaluateBuild('rail', path, railMap, stations, field, 100_000);
-    expect(p.reason).toBe('no-effect');
+    expect(p.reason).toBe('ok');
+    expect(p.tunnelCells).toBe(0);
   });
 
   it('資金が足りなければ insufficient-funds', () => {

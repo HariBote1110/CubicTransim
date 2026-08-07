@@ -22,8 +22,9 @@ import {
   pickElevatedConnection,
   planElevatedPath,
   isElevatedConnectPlanBuildable,
+  resolveGroundRailPlan,
 } from './construction';
-import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfTerrainEdit, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
 import type { TerrainField } from './terrainField';
 import type { EditedTerrainField } from './terrainOverlay';
 import { applyCornerEdit, type EditBlockers } from './terrainOverlay';
@@ -101,13 +102,21 @@ export function evaluateBuild(
   const elevated = level !== 0 && (mode === 'rail' || mode === 'station');
   const elevatedLevel = level as ElevatedLevel;
 
+  // P7b: bridgeCells/tunnelCellsはresolveGroundRailPlan(construction.ts、実際の建設
+  // ロジックそのもの)に問い合わせる。tunnelはplanのtunnel役割セル数、bridgeは
+  // (トンネルにならない)ground役割セルのうち水域のもの。planがnull(建設不可)なら
+  // どちらも0のままにする(実際には建設されない=課金・表示上の内訳も意味が無いため)。
   let bridgeCells = 0;
   let tunnelCells = 0;
+  let groundPlan: ReturnType<typeof resolveGroundRailPlan> = null;
   if (mode === 'rail' && !elevated) {
-    for (const cell of path) {
-      const t = field.terrainTypeAt(cell.x, cell.z);
-      if (t === 'water') bridgeCells++;
-      else if (t === 'mountain') tunnelCells++;
+    groundPlan = resolveGroundRailPlan(field, path);
+    if (groundPlan) {
+      for (let i = 0; i < path.length; i++) {
+        const role = groundPlan[i];
+        if (role.kind === 'tunnel') tunnelCells++;
+        else if (field.terrainTypeAt(path[i].x, path[i].z) === 'water') bridgeCells++;
+      }
     }
   }
 
@@ -151,6 +160,8 @@ export function evaluateBuild(
     ? costOfElevatedPath(elevatedRampCount, elevatedOverpassCount)
     : mode === 'rail' && groundRampFlags
     ? costOfGroundPathWithRamps(path, field, groundRampFlags)
+    : mode === 'rail' && !elevated && groundPlan
+    ? costOfGroundRailPlan(path, field, groundPlan)
     : mode === 'station' && elevated
     ? ELEVATED_STATION_COST
     : costOfPath(

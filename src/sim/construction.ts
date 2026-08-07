@@ -5,6 +5,14 @@ import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
 import type { TownTileIndex } from './townTiles';
 import { isTownBlocked, townTileAt } from './townTiles';
+import {
+  allowedRailConnections,
+  canPlaceFlatStructure,
+  pathCellConnectionDirs,
+  railEdgeContinuous,
+  railHeightAt,
+  slopeOf,
+} from './slopes';
 
 // 旧・固定長の橋(applyBridge)が使っていた上限値。自由な高架線(applyElevatedPath)には
 // 上下限を設けないため実質未使用だが、economy.ts側の後方互換のため定数だけ残す。
@@ -54,9 +62,14 @@ const EMPTY_TOWN_TILES: TownTileIndex = new Map();
 const pathCrossesHouseTile = (townTiles: TownTileIndex, path: Pos[]): boolean =>
   path.some(p => isTownBlocked(townTiles, p.x, p.z));
 
-// セルが水域・山岳かどうか(駅・車庫・信号は平地にしか置けない)。
-const isBuildableGround = (field: TerrainField, x: number, z: number): boolean =>
-  field.terrainTypeAt(x, z) === 'grass';
+// セルが水域・非flatかどうか(駅・車庫・信号はflatにしか置けない)。P7bより、
+// 「terrainTypeAt==='grass'」ではなく「コーナー標高がflat(4隅同値)かつ水域でない」で判定する。
+// mountain(標高1以上)というだけでは拒否しなくなった: 平坦な高原(4隅同値の高標高セル)には
+// 駅・車庫・信号を置ける(design doc 4.「mountain概念の廃止」)。水域は従来どおり常に不可。
+const isBuildableGround = (field: TerrainField, x: number, z: number): boolean => {
+  if (field.terrainTypeAt(x, z) === 'water') return false;
+  return canPlaceFlatStructure(slopeOf(field.cellCornerHeights(x, z)));
+};
 
 // --- ヘルパー ---
 const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
@@ -119,12 +132,16 @@ const stationNameFor = (
   return stationNameForTown(town, pos, usedNames);
 };
 
-// terrainに応じたbridge/tunnelフラグ(描画用)。平地ならどちらも付かない。
-const terrainFlags = (field: TerrainField, x: number, z: number): Pick<CellData, 'bridge' | 'tunnel'> => {
+// terrainに応じたbridgeフラグ(描画用)。水域なら付く。
+// 呼び出し元(applyGroundPathWithElevatedConnect/applyElevatedPathの坂セル)は
+// isBuildableGroundで既にflat(かつ非水域)を要求済みのため、ここが水域を返すことは
+// 実質無い(型・将来拡張のため関数自体は残す)。tunnelは地上のresolveGroundRailPlanが
+// 別途決めるため、ここでは扱わない(P7bより前は「mountain=tunnel:true」を機械的に
+// 付けていたが、標高を持つtunnelは経路全体の文脈が要るためこの関数の責務から外した)。
+const terrainFlags = (field: TerrainField, x: number, z: number): Pick<CellData, 'bridge'> => {
   const t = field.terrainTypeAt(x, z);
   if (t === 'water') return { bridge: true };
-  if (t === 'mountain') return { tunnel: true };
-  return { bridge: undefined, tunnel: undefined };
+  return { bridge: undefined };
 };
 
 // baseレベルの線路へbitsをORする。base===0は地平connections、base>0はuppers[base]。
@@ -175,69 +192,121 @@ const pathConflictsWithExistingRamp = (railMap: Map<string, CellData>, path: Pos
   return false;
 };
 
-// path上のセルiが、そのセル自身の接続として持つことになる方向を返す。
-// 経路の端(接続が1方向だけ)は、tunnelPortals(sim/tunnel.ts)の行き止まりルールと
-// 同じく、まだ経路が伸びていない反対方向も坑口の候補として扱う。孤立した1セルの
-// 経路(path.length===1)は東西南北すべてを候補にする。
-const mountainCellCandidateDirs = (path: Pos[], i: number): number[] => {
-  const { x, z } = path[i];
-  const dirs: number[] = [];
-  if (i > 0) dirs.push(getDirFromVector(path[i - 1].x - x, path[i - 1].z - z));
-  if (i < path.length - 1) dirs.push(getDirFromVector(path[i + 1].x - x, path[i + 1].z - z));
-  if (dirs.length === 1) dirs.push(getOppositeDir(dirs[0]));
-  if (dirs.length === 0) dirs.push(DIR.N, DIR.E, DIR.S, DIR.W);
-  return dirs;
-};
+/**
+ * P7b: 地上の経路1セルぶんの建設方法。
+ * - 'ground': 勾配追従で建設する通常の地平セル(flat/incline)。コスト倍率の判定用に
+ *   slopeを持たせる(incline は economy.ts で SLOPE_RAIL_COST_MULTIPLIER を掛ける)。
+ * - 'tunnel': 勾配追従できない区間を、進入時の線路標高(height)を保った定高さで貫く。
+ */
+export type GroundRailCellRole =
+  | { kind: 'ground'; slope: 'flat' | 'incline' }
+  | { kind: 'tunnel'; height: number };
 
 /**
- * 山岳セルへ線路を敷けるのは次のどちらかのときだけ、という制約をpath全体について確認する。
- * どちらも満たさないセルが1つでもあればtrue(=建設不可)を返す。
+ * 建設パス(隣接するセル列)を、slope-construction-design.mdの優先順位に従ってセルごとの
+ * 建設方法へ解決する。建設不可(no-op)ならnullを返す。
  *
- * - 坑口セルになる: 経路上でこのセルが繋がる方向(行き止まりならその反対方向も含む)に
- *   非mountainセルが隣接する。この方向はsim/tunnel.tsのtunnelPortalsが実際に坑口を
- *   立てる方向と同じ考え方(接続方向 or 行き止まりの反対方向)。
- * - 天井が完全に覆われた内部セル: 自然コーナー標高(min則)が4隅すべて
- *   1以上。斜面フリンジ(4隅のどれかが0)のセルは、レールが山肌の外へ突き出して
- *   見えるため対象外。
+ * 1. 経路全体がslopes.pathSlopeViolations的に問題ない(全セルflat/incline+方向OK、
+ *    かつ連続する辺すべて標高連続)なら、全セルgroundとして返す。
+ * 2. そうでなければ、slope追従が破綻する連続区間(run)を洗い出し、runの手前にある
+ *    最後のgroundセルのrailHeightAt(=entryHeight、runが経路の先頭ならそのセルの
+ *    最低コーナーで代用)より、run内の各セルの地形(cellHeightAt)が高ければtunnel扱いにする。
+ *    runの直後にセルがあれば、そのセルのrailHeightAtがentryHeightと一致すること
+ *    (坑口で標高が繋がること)も要求する。
+ * 3. run内のどれか1セルでも「entryHeightより高くない」、またはrun直後の標高が
+ *    一致しない場合は、経路全体を建設不可(null)にする。
  *
- * 平地・水域セルは対象外(常にtrueにはならない=常に許可)。
+ * このrunの切り出しは「連続する2セルが個別にはOKでも、共有辺の標高が繋がらない」ケース
+ * (edge-discontinuous)も、下流側のセルをrunに含めることで扱う。ただし実際のTerrainField
+ * (コーナーが隣接セル間で物理共有される)ではこのケースは構造的にほぼ起こらない
+ * (slopes.tsのP7a実装メモ参照)。
  */
-export function pathHasUnsupportedMountainCell(
-  field: TerrainField,
-  path: Pos[]
-): boolean {
-  for (let i = 0; i < path.length; i++) {
-    const { x, z } = path[i];
-    if (field.terrainTypeAt(x, z) !== 'mountain') continue;
+export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundRailCellRole[] | null {
+  const n = path.length;
+  if (n === 0) return [];
 
-    const isPortal = mountainCellCandidateDirs(path, i).some(dir => {
-      const { x: dx, z: dz } = getVectorFromDir(dir);
-      return field.terrainTypeAt(x + dx, z + dz) !== 'mountain';
-    });
-    if (isPortal) continue;
+  const corners = path.map(p => field.cellCornerHeights(p.x, p.z));
+  const slopes = corners.map(c => slopeOf(c));
 
-    if (field.cellCornerHeights(x, z).every(c => c >= 1)) continue;
+  const cellOk = path.map((_, i) => {
+    const slope = slopes[i];
+    if (slope.kind === 'other') return false;
+    const allowed = allowedRailConnections(slope);
+    const dirs = pathCellConnectionDirs(path, i);
+    return dirs.every(d => (allowed & d) !== 0);
+  });
 
-    return true;
+  const badIndex = cellOk.map(ok => !ok);
+  for (let i = 0; i < n - 1; i++) {
+    if (!cellOk[i] || !cellOk[i + 1]) continue;
+    const dir = getDirFromVector(path[i + 1].x - path[i].x, path[i + 1].z - path[i].z);
+    if (!railEdgeContinuous(corners[i], corners[i + 1], dir)) badIndex[i + 1] = true;
   }
-  return false;
+
+  const roles: GroundRailCellRole[] = slopes.map(s => ({
+    kind: 'ground' as const,
+    slope: s.kind === 'incline' ? ('incline' as const) : ('flat' as const),
+  }));
+
+  if (!badIndex.some(Boolean)) return roles;
+
+  let i = 0;
+  while (i < n) {
+    if (!badIndex[i]) {
+      i++;
+      continue;
+    }
+    const lo = i;
+    let hi = i;
+    while (hi + 1 < n && badIndex[hi + 1]) hi++;
+
+    const entryHeight = lo > 0
+      ? railHeightAt(field, undefined, path[lo - 1].x, path[lo - 1].z)
+      : Math.min(...corners[lo]);
+
+    // 「地形がentryHeightより高い」の判定はコーナーの最大値で行う(field.cellHeightAtの
+    // 4隅min則ではない)。崖の縁のセル(例: 標高3の台地の境界セルは[0,0,3,3]のような
+    // otherスロープになる)はmin則だと0になり、実際には大きくかぶさっている地形の
+    // 存在を見逃してしまう。「そのセルの足元のどこかがentryHeightを超えて盛り上がって
+    // いるか」を問うにはmax則のほうが適切(トンネルを掘るべき土被りの有無を表す)。
+    for (let k = lo; k <= hi; k++) {
+      if (Math.max(...corners[k]) <= entryHeight) return null;
+    }
+
+    if (hi + 1 < n) {
+      const exitHeight = railHeightAt(field, undefined, path[hi + 1].x, path[hi + 1].z);
+      if (exitHeight !== entryHeight) return null;
+    }
+
+    for (let k = lo; k <= hi; k++) {
+      roles[k] = { kind: 'tunnel', height: entryHeight };
+    }
+
+    i = hi + 1;
+  }
+
+  return roles;
 }
+
+// resolveGroundRailPlanの結果から、そのセルに付けるCellDataの地形フラグ(bridge/tunnel)を返す。
+const cellFlagsForRole = (field: TerrainField, role: GroundRailCellRole, x: number, z: number): Pick<CellData, 'bridge' | 'tunnel'> => {
+  if (role.kind === 'tunnel') return { bridge: undefined, tunnel: { height: role.height } };
+  return { ...terrainFlags(field, x, z), tunnel: undefined };
+};
 
 const addConnectionToCell = (
   railMap: Map<string, CellData>,
   key: string,
-  x: number,
-  z: number,
   dir: number,
-  field: TerrainField
+  flags: Pick<CellData, 'bridge' | 'tunnel'>
 ): void => {
   const existing = railMap.get(key);
   if (!existing) {
-    railMap.set(key, { type: 'rail', connections: dir, ...terrainFlags(field, x, z) });
+    railMap.set(key, { type: 'rail', connections: dir, ...flags });
   } else if (existing.type !== 'rail') {
     railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir });
   } else {
-    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...terrainFlags(field, x, z) });
+    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...flags });
   }
 };
 
@@ -288,10 +357,11 @@ export function applyRailPathDetailed(
   // (坂セルを壊さないため。詳細はconflictsWithExistingRampのdocコメント参照)。
   if (pathConflictsWithExistingRamp(state.railMap, path)) return { ...state, overpassCells: new Set() };
 
-  // 斜面フリンジ(天井が覆われていない山岳セル)へ線路が突き出さないよう、
-  // 坑口にも内部セルにもなれない山岳セルを含む経路はno-opにする。
-  // 詳細はpathHasUnsupportedMountainCellのdocコメント参照。
-  if (pathHasUnsupportedMountainCell(field, path)) {
+  // P7b: 勾配追従(flat/incline)で建設できないセルを、必要なら定高さのtunnelとして
+  // 建設する計画を立てる。runの高さがterrain以下だったり坑口の標高が繋がらない場合は
+  // nullになり、経路全体をno-opにする(部分建設で破綻した見た目を残さないため)。
+  const plan = resolveGroundRailPlan(field, path);
+  if (!plan) {
     return { ...state, overpassCells: new Set() };
   }
 
@@ -308,10 +378,10 @@ export function applyRailPathDetailed(
     const dir = getDirFromVector(dx, dz);
     const oppDir = getOppositeDir(dir);
 
-    addConnectionToCell(railMap, currKey, curr.x, curr.z, dir, field);
+    addConnectionToCell(railMap, currKey, dir, cellFlagsForRole(field, plan[i], curr.x, curr.z));
     if (railMap.get(currKey)?.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
 
-    addConnectionToCell(railMap, nextKey, next.x, next.z, oppDir, field);
+    addConnectionToCell(railMap, nextKey, oppDir, cellFlagsForRole(field, plan[i + 1], next.x, next.z));
     if (railMap.get(nextKey)?.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
 
     const checkDepotNeighbours = (px: number, pz: number) => {
@@ -427,7 +497,7 @@ function applyGroundPathWithElevatedConnect(
     const axisBits = prevDir | nextDir;
 
     if (role.kind === 'span') {
-      addConnectionToCell(railMap, key, path[i].x, path[i].z, axisBits, field);
+      addConnectionToCell(railMap, key, axisBits, terrainFlags(field, path[i].x, path[i].z));
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
       continue;
     }

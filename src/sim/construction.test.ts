@@ -20,6 +20,7 @@ import {
   type ElevatedEndPlan,
 } from './construction';
 import { fieldFromMaps } from './terrainField';
+import type { TerrainField } from './terrainField';
 import { computeElevation } from './testSupport/elevationFixture';
 
 const emptyState = (): ConstructionState => ({
@@ -302,9 +303,24 @@ describe('applySignal（特性テスト）', () => {
   });
 });
 
-describe('地形による建設制約（水域・山岳）', () => {
+describe('地形による建設制約（水域・傾斜） P7bで更新', () => {
   const waterTerrain = fieldFromMaps(new Map(), new Map<string, 'water' | 'mountain'>([['0,0', 'water']]), 45);
-  const mountainTerrain = fieldFromMaps(new Map(), new Map<string, 'water' | 'mountain'>([['0,0', 'mountain']]), 45);
+  // terrainTypeAtが'mountain'を返すだけの旧mountainTerrain(heights未設定=4隅とも標高0の
+  // 完全な平坦)は、P7bでは「mountainは表示上の分類にすぎず、実際の建設可否はコーナー標高
+  // (slopeOf)で決まる」という設計変更により、駅・車庫・線路すべて建設できるようになった
+  // (mountainCosmeticTerrainのテストで検証)。建設拒否の実例には、実際に傾斜している
+  // (flatでない)inclineTerrainを使う。
+  //
+  // inclineTerrain: z=0,1の帯を標高1にし、z=-1側との境界(0,0)をinclineセル(南北方向のみ
+  // 接続可)にする。3行必要な理由はmakeBlockTerrain同様、min則コーナー導出では1セル幅の
+  // 孤立した高さでは4隅とも標高0に潰れてしまうため。
+  const inclineHeights = new Map<string, number>();
+  for (let x = -3; x <= 3; x++) {
+    inclineHeights.set(toKey(x, 0), 1);
+    inclineHeights.set(toKey(x, 1), 1);
+  }
+  const inclineTerrain = fieldFromMaps(inclineHeights, new Map(), 45);
+  const mountainCosmeticTerrain = fieldFromMaps(new Map(), new Map<string, 'water' | 'mountain'>([['0,0', 'mountain']]), 45);
 
   it('水域セルへの駅設置は no-op（stateの参照が変わらない）', () => {
     const state = emptyState();
@@ -313,10 +329,16 @@ describe('地形による建設制約（水域・山岳）', () => {
     expect(result.railMap.has(toKey(0, 0))).toBe(false);
   });
 
-  it('山岳セルへの駅設置は no-op', () => {
+  it('傾斜(incline)セルへの駅設置は no-op(平坦セルにしか置けない)', () => {
     const state = emptyState();
-    const result = applyStation(state, { x: 0, z: 0 }, mountainTerrain);
+    const result = applyStation(state, { x: 0, z: 0 }, inclineTerrain);
     expect(result).toBe(state);
+  });
+
+  it('表示上mountain分類なだけで実際は平坦(4隅とも標高0)なセルには駅を設置できる(mountain概念の廃止)', () => {
+    const state = emptyState();
+    const result = applyStation(state, { x: 0, z: 0 }, mountainCosmeticTerrain);
+    expect(result.railMap.get(toKey(0, 0))!.type).toBe('station');
   });
 
   it('水域セルへの車庫設置は no-op', () => {
@@ -326,9 +348,9 @@ describe('地形による建設制約（水域・山岳）', () => {
     expect(result.railMap.has(toKey(0, 0))).toBe(false);
   });
 
-  it('山岳セルへの車庫設置は no-op', () => {
+  it('傾斜(incline)セルへの車庫設置は no-op', () => {
     const state = emptyState();
-    const result = applyDepot(state, { x: 0, z: 0 }, mountainTerrain);
+    const result = applyDepot(state, { x: 0, z: 0 }, inclineTerrain);
     expect(result).toBe(state);
   });
 
@@ -354,20 +376,20 @@ describe('地形による建設制約（水域・山岳）', () => {
     expect(result.railMap.get(toKey(1, 0))!.bridge).toBeFalsy();
   });
 
-  it('山岳には線路(トンネル)を敷設でき、tunnelフラグが立つ', () => {
+  it('表示上mountain分類なだけで実際は平坦(4隅とも標高0)なセルには、tunnelを付けず普通の線路として敷設できる(mountain概念の廃止)', () => {
     const state = emptyState();
-    const result = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], mountainTerrain);
+    const result = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], mountainCosmeticTerrain);
     const cell = result.railMap.get(toKey(0, 0))!;
     expect(cell.type).toBe('rail');
-    expect(cell.tunnel).toBe(true);
+    expect(cell.tunnel).toBeUndefined();
   });
 });
 
-describe('斜面フリンジへの線路建設を防ぐ制約', () => {
-  // 3x3の山塊(x:0..2, z:0..2、それ以外は既定でgrass)。
-  // 境界セルは標高1、中心(1,1)はマンハッタン距離2で標高2になる
-  // (computeElevationのテストと同じ形)。中心セルの4隅コーナー標高は
-  // すべて1以上になり、天井が完全に覆われた内部セルとして扱える。
+describe('P7b: 標高に応じた地上線路建設(勾配追従/トンネル/不可)', () => {
+  // 3x3の山塊(x:0..2, z:0..2、それ以外は既定でgrass)。境界セルは標高1、中心(1,1)は
+  // マンハッタン距離2で標高2になる(computeElevationのテストと同じ形)。min則コーナー
+  // 導出では、この形は「東西の縁がinclineで登り、中心が標高1のflat」という滑らかな
+  // 丘になる(実際に4隅を計算し確認済み。旧・fringe/内部判定の概念はP7bで廃止)。
   const makeBlockTerrain = () => {
     const terrain = new Map<string, TerrainType>();
     for (let x = 0; x <= 2; x++) {
@@ -379,8 +401,8 @@ describe('斜面フリンジへの線路建設を防ぐ制約', () => {
   };
 
   // 幅1セルの尾根(x軸方向、z=0の1行だけ)。南北(z=-1/z=1)は非mountainのため、
-  // computeElevationでは全セルが境界(標高1)になり、コーナー標高は4隅とも0になる
-  // (南北どちらの隣接セルもmin則で0を持ち込むため)。
+  // min則コーナー導出では隣接セルに引っ張られて4隅とも標高0に潰れる(=実体の無い、
+  // 完全に平坦な「見た目だけmountain」のセルになる)。
   const makeRidgeTerrain = () => {
     const terrain = new Map<string, TerrainType>();
     for (let x = -2; x <= 2; x++) {
@@ -389,48 +411,92 @@ describe('斜面フリンジへの線路建設を防ぐ制約', () => {
     return fieldFromMaps(computeElevation(terrain), terrain, 45);
   };
 
-  it('3x3山塊を貫く直線(中心セルは内部フラット)は建設できる', () => {
+  it('3x3山塊を貫く直線は、なだらかな丘として勾配追従で建設できる(tunnelにならない)', () => {
     const terrain = makeBlockTerrain();
     const state = emptyState();
     const result = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }, { x: 2, z: 1 }], terrain);
 
+    // 1セル1段の傾斜(incline)で登って降りられる形状なので、トンネルは不要。
+    expect(result.railMap.get(toKey(0, 1))?.type).toBe('rail');
     expect(result.railMap.get(toKey(1, 1))?.type).toBe('rail');
-    expect(result.railMap.get(toKey(1, 1))?.tunnel).toBe(true);
+    expect(result.railMap.get(toKey(1, 1))?.tunnel).toBeUndefined();
+    expect(result.railMap.get(toKey(2, 1))?.tunnel).toBeUndefined();
   });
 
-  it('幅1の斜面だけの尾根を(尾根に沿って)横切る線は建設できない(no-op)', () => {
+  it('幅1の尾根(実際には完全に平坦)は、mountain分類に関わらず普通に建設できる(mountain概念の廃止)', () => {
     const terrain = makeRidgeTerrain();
     const state = emptyState();
     const result = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }], terrain);
 
-    // 中間セル(0,0)は坑口にもならず内部フラットでもないため、経路全体がno-opになる
-    // (部分的に敷設して破綻した見た目を残さないため)。railMapの参照は変わらない。
+    expect(result.railMap.get(toKey(0, 0))?.type).toBe('rail');
+    expect(result.railMap.get(toKey(0, 0))?.tunnel).toBeUndefined();
+  });
+
+  // 実際の地形(隣接セル間でコーナー標高が共有される)では、勾配追従が破綻するのは
+  // 「1段より急な段差」や「1段登った先がすぐ2段目になる」ような形状に限られる。
+  // TerrainFieldを直接実装するテストダブルで、そのような形状(otherスロープ)を作る。
+  const otherSlopeField = (
+    cornersByCell: Record<string, [number, number, number, number]>
+  ): TerrainField => {
+    const key = (x: number, z: number) => `${x},${z}`;
+    const cellCornerHeights = (x: number, z: number) => cornersByCell[key(x, z)] ?? [0, 0, 0, 0];
+    return {
+      cornerHeightAt: () => 0,
+      cellCornerHeights,
+      cellHeightAt: (x, z) => Math.min(...cellCornerHeights(x, z)),
+      terrainTypeAt: (x, z) => (Math.min(...cellCornerHeights(x, z)) >= 1 ? 'mountain' : 'grass'),
+    };
+  };
+
+  it('勾配追従できない区間は、進入標高を保った定高さのtunnelとして建設できる', () => {
+    // x=-1: 平地(標高0)。x=0,1: otherスロープ(標高1だが4隅が不揃いでinclineにならない)。
+    // x=2: 平地(標高0、tunnelの出口として標高が一致)。
+    const field = otherSlopeField({
+      '0,0': [2, 2, 2, 1],
+      '1,0': [2, 1, 1, 2],
+    });
+    const state = emptyState();
+    const result = applyRailPath(
+      state,
+      [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }],
+      field
+    );
+
+    expect(result.railMap.get(toKey(-1, 0))?.tunnel).toBeUndefined();
+    expect(result.railMap.get(toKey(0, 0))?.tunnel).toEqual({ height: 0 });
+    expect(result.railMap.get(toKey(1, 0))?.tunnel).toEqual({ height: 0 });
+    expect(result.railMap.get(toKey(2, 0))?.tunnel).toBeUndefined();
+  });
+
+  it('トンネル区間の出口の標高が進入標高と一致しない場合は経路全体が建設不可(no-op)', () => {
+    // 出口セル(2,0)を標高1のflatにする(進入標高0と食い違う)。
+    const field = otherSlopeField({
+      '0,0': [2, 2, 2, 1],
+      '1,0': [2, 1, 1, 2],
+      '2,0': [1, 1, 1, 1],
+    });
+    const state = emptyState();
+    const result = applyRailPath(
+      state,
+      [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }],
+      field
+    );
+
     expect(result.railMap).toBe(state.railMap);
   });
 
-  it('尾根を横切る(尾根と直交する)単セルの線は坑口として建設できる', () => {
-    const terrain = makeRidgeTerrain();
+  it('otherスロープの地形が進入標高より高くない場合は建設不可(トンネルにできない)', () => {
+    // 進入セル(-1,0)は標高2のflat。(0,0)はotherスロープだが最大コーナーが2(=進入標高と
+    // 同じ)なので「地形が高い」とは言えず、トンネル候補にならない。
+    const field = otherSlopeField({
+      '-1,0': [2, 2, 2, 2],
+      '0,0': [2, 2, 1, 2],
+      '1,0': [2, 2, 2, 2],
+    });
     const state = emptyState();
-    // (0,-1)→(0,0)→(0,1): 南北どちらも非mountainに接するので両方坑口になる
-    const result = applyRailPath(state, [{ x: 0, z: -1 }, { x: 0, z: 0 }, { x: 0, z: 1 }], terrain);
+    const result = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }], field);
 
-    expect(result.railMap.get(toKey(0, 0))?.type).toBe('rail');
-    expect(result.railMap.get(toKey(0, 0))?.tunnel).toBe(true);
-  });
-
-  it('山内部で行き止まる線は、最後のセルが内部フラット(4隅とも標高1以上)でなければ建設できない', () => {
-    const terrain = makeBlockTerrain();
-    const state = emptyState();
-    // (0,1)→(1,1)で行き止まる場合、(1,1)は経路の端だが東西南北いずれの隣接セルも
-    // mountain(3x3の内部)なので坑口にならない。中心セルなので内部フラット条件は満たし
-    // 建設できる。
-    const okResult = applyRailPath(state, [{ x: 0, z: 1 }, { x: 1, z: 1 }], terrain);
-    expect(okResult.railMap.get(toKey(1, 1))?.type).toBe('rail');
-
-    // 尾根terrainで行き止まる場合、末端セルは内部フラット条件を満たさないため不可。
-    const ridgeTerrain = makeRidgeTerrain();
-    const blockedResult = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }], ridgeTerrain);
-    expect(blockedResult.railMap).toBe(state.railMap);
+    expect(result.railMap).toBe(state.railMap);
   });
 });
 

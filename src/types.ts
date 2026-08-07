@@ -16,7 +16,14 @@ export interface CellData {
   // 注意: この`bridge`は「水上を渡る線路の見た目・コスト倍率」を表すフラグであり、
   // 立体交差(橋桁)を表す`upper`とは別物(紛らわしいが命名の経緯上そのまま)。
   bridge?: boolean;
-  tunnel?: boolean;
+  /**
+   * トンネル(P7b: 標高を持つように一般化)。地上の線路が、勾配追従では建設できない
+   * 高い地形の区間を、進入時の線路標高(height)を保った定高さの区間として貫くときに付く。
+   * 坑口・内部判定(sim/tunnel.ts)は「コーナー標高 vs この height」で行う(旧・
+   * mountain-vs-0の一般化)。旧セーブ(v15未満)のtunnel:trueはpersistence.tsの移行処理で
+   * height:0(=地表)へ読み替える。
+   */
+  tunnel?: { height: number };
   /**
    * 立体交差(高架)の線路。地平側(connections)とは接続しない別の線路。
    * キーは高架のレベル(1〜3、高さは L*OVERPASS_HEIGHT)。construction.ts の
