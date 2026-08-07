@@ -25,8 +25,8 @@ const MIN_CARS = 1;
 const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
-import { mulberry32, generateTowns } from '../sim/towns';
-import { buildTownIndexes } from '../sim/townTiles';
+import { generateRegionTowns } from '../sim/towns';
+import { TownTileCache } from '../sim/townTiles';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
 import { relocateTrain } from '../sim/relocate';
@@ -54,9 +54,9 @@ export const useGameLogic = () => {
   // ★追加(P3): 地形の乱数シード。terrainField.tsのcreateTerrainFieldへそのまま渡す
   // 決定的な純関数のパラメータで、全セルを実体化しない(progress/16k-map-architecture.md)。
   const [worldSeed, setWorldSeed] = useState<number>(() => Date.now() % 2 ** 31);
-  // マップの生成半径。マップサイズ選択UIは別途対応するため、当面は旧TERRAIN_COORD_RANGE
-  // (45)を固定で使う。
-  const [halfExtent] = useState<number>(TERRAIN_COORD_RANGE);
+  // マップの生成半径(-halfExtent..halfExtentのセルを生成する)。既定は旧TERRAIN_COORD_RANGE
+  // (45、小91×91)。新規ゲーム時(newGame)にマップサイズ選択UIから差し替えられる。
+  const [halfExtent, setHalfExtent] = useState<number>(TERRAIN_COORD_RANGE);
   // 盛土/切土の疎な編集差分(コーナー格子)。terrainOverlay.tsのCornerDiffs。
   const [cornerDiffs, setCornerDiffs] = useState<CornerDiffs>(new Map());
   // デバッグシナリオが手組みの地形(尾根など、乱数シードでは表現できない形)を使うときの
@@ -70,11 +70,11 @@ export const useGameLogic = () => {
   // 実際にゲーム全体が参照するfield。デバッグシナリオの上書きがあればそちらを優先する。
   const field: TerrainField = debugFieldOverride ?? editedField;
 
-  // ★追加: 街(town)。初回起動(セーブなしの新規状態)ではシード付き乱数で自動生成する。
-  // ロード時はセーブデータ(v4以降)のtownsで置き換わる(v3以前は towns=[] になる)。
+  // ★追加: 街(town)。初回起動(セーブなしの新規状態)では領域ベースの決定的配置
+  // (generateRegionTowns、P5)で自動生成する。ロード時はセーブデータのtownsで置き換わる。
   // 街は必ず平地に生成されるよう、baseFieldを渡して水域・山岳付近を除外する。
   const [towns, setTowns] = useState<TownData[]>(() =>
-    generateTowns(mulberry32(worldSeed + 1), 8, baseField)
+    generateRegionTowns(worldSeed + 1, halfExtent, baseField)
   );
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
@@ -167,16 +167,14 @@ export const useGameLogic = () => {
     return () => clearInterval(id);
   }, []);
 
-  // ★追加: 町タイル索引(セルキー→ 町id/'house'|'road')。町・地形・線路網から決定的に
-  // 再生成されるためセーブ不要。railMapを渡すことで、家が既存の地平線路と重ならない。
-  // マップは約91x91・町は十数個なので、建設のたびの再計算で十分軽い。
-  // タイル索引(建設ガード用)とサブタイル索引(描画用)を同じuseMemoで導出する。
-  const townIndexes = useMemo(
-    () => buildTownIndexes(towns, field, railMap),
+  // ★追加(P5): 町タイル索引(セルキー→ 町id/'house'|'road')。TownTileCacheは町ごとに
+  // 遅延生成・キャッシュする(sim/townTiles.ts参照)。生成コストはクエリされた町の分だけで、
+  // マップが16K級で町が数千個になっても「railMapが変わるたびに全町再生成」にはならない。
+  // インスタンス自体の構築(空間バケットの割り当て)はO(towns)だが軽い(生成は含まない)。
+  const townTileIndex = useMemo(
+    () => new TownTileCache(towns, field, railMap),
     [towns, field, railMap]
   );
-  const townTileIndex = townIndexes.tiles;
-  const townSubTileIndex = townIndexes.subTiles;
 
   // --- Commit Path ---
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
@@ -655,13 +653,44 @@ export const useGameLogic = () => {
     worldRef.current.serviceSignature = undefined;
   };
 
+  /**
+   * ★追加(P5): 新規ゲーム開始(マップサイズ選択UIから呼ぶ)。所持金・列車・線路など
+   * 全状態を初期化し、新しいworldSeed・指定halfExtentで地形・町を作り直す。
+   * halfExtentが変わるとbaseFieldのuseMemoも再計算されるため、生成した町は
+   * generateRegionTownsに渡すfieldをここで直接作る(baseFieldのuseMemo更新を待たない)。
+   */
+  const newGame = (selectedHalfExtent: number) => {
+    const seed = Date.now() % 2 ** 31;
+    const newField = createTerrainField(seed, selectedHalfExtent);
+    setHalfExtent(selectedHalfExtent);
+    setWorldSeed(seed);
+    setCornerDiffs(new Map());
+    setDebugFieldOverride(null);
+    setRailMap(new Map());
+    setStations(new Map());
+    setTrains([]);
+    setTowns(generateRegionTowns(seed + 1, selectedHalfExtent, newField));
+    setGroups([]);
+    setMoney(STARTING_MONEY);
+    setLoan(0);
+    setCurrentLedger(emptyLedger());
+    setLedgerHistory([]);
+    setSelectedTrainId(null);
+    setSelectedStationId(null);
+    worldRef.current.runtimes.clear();
+    worldRef.current.waiting.clear();
+    worldRef.current.demand = new Map();
+    worldRef.current.clock = { elapsed: 0 };
+    worldRef.current.serviceSignature = undefined;
+  };
+
   return {
     railMap, setRailMap,
     stations, setStations,
     trains, setTrains,
     towns,
     townTileIndex,
-    townSubTileIndex,
+    newGame,
     field,
     baseField,
     editedField,

@@ -26,7 +26,8 @@ import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
 import type { TerrainField } from '../sim/terrainField';
 import { rectCells, type CornerDiffs } from '../sim/terrainOverlay';
-import type { TownTileIndex, TownSubTileIndex } from '../sim/townTiles';
+import type { TownTileCache } from '../sim/townTiles';
+import { townIntersectsCellRange } from '../sim/townTiles';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
 import {
@@ -180,10 +181,11 @@ interface GameSceneProps {
   stations: Map<string, StationData>;
   trains: TrainData[];
   towns: TownData[];
-  /** 町タイル索引(useGameLogicのtownTileIndex)。樹木の間引きに使う。 */
-  townTiles: TownTileIndex;
-  /** 町サブタイル索引(useGameLogicのtownSubTileIndex)。家・道路の描画に使う。 */
-  townSubTiles: TownSubTileIndex;
+  /**
+   * 町タイルの遅延キャッシュ(useGameLogicのtownTileIndex)。樹木の間引き・建設ガードに
+   * 使うほか、subTilesForTownsで可視町だけの描画用サブタイルを取り出す(P5、下記参照)。
+   */
+  townTiles: TownTileCache;
   field: TerrainField;
   /** マップの生成半径(-halfExtent..halfExtent)。Scenery/TerrainBlocksの走査範囲に使う。 */
   halfExtent: number;
@@ -223,7 +225,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, townTiles, townSubTiles, field, halfExtent, cornerDiffs, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, townTiles, field, halfExtent, cornerDiffs, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -526,6 +528,22 @@ export const GameScene: React.FC<GameSceneProps> = ({
       z: Math.round(chunkView.targetCell.z / 32) * 32,
     };
 
+  // ★追加(P5): 可視チャンク範囲(+1チャンク先読み)に交差する町だけを描画対象にする
+  // (TerrainBlocks/Sceneryと同じchunkViewを再利用)。TownTileCache.subTilesForTownsは
+  // クエリした町だけを遅延生成するため、マップ全体の町数に関わらず可視町ぶんのコストで済む。
+  const TOWN_VISIBLE_MARGIN_CELLS = 32; // 1チャンク(TERRAIN_CHUNK_SIZE)ぶんの先読み
+  const visibleTowns = useMemo(() => {
+    const x0 = chunkView.targetCell.x - chunkView.viewRadiusCells - TOWN_VISIBLE_MARGIN_CELLS;
+    const x1 = chunkView.targetCell.x + chunkView.viewRadiusCells + TOWN_VISIBLE_MARGIN_CELLS;
+    const z0 = chunkView.targetCell.z - chunkView.viewRadiusCells - TOWN_VISIBLE_MARGIN_CELLS;
+    const z1 = chunkView.targetCell.z + chunkView.viewRadiusCells + TOWN_VISIBLE_MARGIN_CELLS;
+    return towns.filter(t => townIntersectsCellRange(t, x0, x1, z0, z1));
+  }, [towns, chunkView]);
+  const visibleTownSubTiles = useMemo(
+    () => townTiles.subTilesForTowns(visibleTowns.map(t => t.id)),
+    [townTiles, visibleTowns]
+  );
+
   // 駅セルがホームの端かどうか(=同一stationIdの隣接セルが1つ以下)を判定する。
   // 端のセルだけ上屋の妻側にも柱を立てて、ホームが尻切れに見えないようにする。
   // 地平・高架は別の層として独立に集計する(render/stationLayers.ts参照)。
@@ -743,7 +761,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TownBlocks towns={towns} townSubTiles={townSubTiles} />
+      <TownBlocks towns={visibleTowns} townSubTiles={visibleTownSubTiles} />
 
       {Array.from(stations.values()).map(station => {
         const orderIndices: number[] = [];

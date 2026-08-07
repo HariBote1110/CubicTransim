@@ -8,6 +8,16 @@ import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import { T, button as themeButton } from './ui/theme';
 
+// ★追加(P5): 新規ゲーム開始時のマップサイズ選択肢。halfExtentはsim/persistence.tsの
+// v15セーブに含まれる値で、マップは-halfExtent..halfExtentのセル(一辺 2*halfExtent+1)。
+const MAP_SIZE_OPTIONS: { label: string; halfExtent: number; side: number }[] = [
+  { label: '小', halfExtent: 45, side: 91 },
+  { label: '中', halfExtent: 128, side: 257 },
+  { label: '大', halfExtent: 512, side: 1025 },
+  { label: '特大', halfExtent: 2048, side: 4097 },
+  { label: '極大', halfExtent: 8192, side: 16385 },
+];
+
 export default function App() {
   const [showStartupOptions, setShowStartupOptions] = useState(true);
   // 起動ダイアログで「デバッグモード」を押すと、シナリオ一覧(sim/debugScenarios.ts)を表示する。
@@ -32,7 +42,7 @@ export default function App() {
   }, []);
 
   const {
-    railMap, stations, trains, towns, townTileIndex, townSubTileIndex, field, halfExtent, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
+    railMap, stations, trains, towns, townTileIndex, newGame, field, halfExtent, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
@@ -60,7 +70,6 @@ export default function App() {
           trains={trains}
           towns={towns}
           townTiles={townTileIndex}
-          townSubTiles={townSubTileIndex}
           field={field}
           halfExtent={halfExtent}
           cornerDiffs={cornerDiffs}
@@ -145,13 +154,24 @@ export default function App() {
             <div style={{ fontSize: 20, fontWeight: 800 }}>CubicTransim</div>
             {!showDebugScenarios ? (
               <>
-                <p style={{ color: '#b9c3cc', lineHeight: 1.55 }}>開始方法を選択してください。</p>
-                <button
-                  style={{ ...themeButton({ active: true }), width: '100%', marginBottom: T.gap }}
-                  onClick={() => setShowStartupOptions(false)}
-                >
-                  通常のゲームを開始
-                </button>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55 }}>マップサイズを選んで開始してください。</p>
+                <div style={{ display: 'grid', gap: T.gap, marginBottom: T.gap }}>
+                  {MAP_SIZE_OPTIONS.map(opt => (
+                    <button
+                      key={opt.label}
+                      style={{ ...themeButton({ active: true }), width: '100%', textAlign: 'left' }}
+                      onClick={() => {
+                        newGame(opt.halfExtent);
+                        setShowStartupOptions(false);
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{opt.label}</div>
+                      <div style={{ fontSize: 11, fontWeight: 400, color: T.textMuted, marginTop: 2 }}>
+                        {opt.side}×{opt.side}
+                      </div>
+                    </button>
+                  ))}
+                </div>
                 <button
                   style={{ ...themeButton(), width: '100%' }}
                   onClick={() => setShowDebugScenarios(true)}

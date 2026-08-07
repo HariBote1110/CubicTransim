@@ -296,9 +296,12 @@ export function generateTownTiles(
   return deriveTileKinds(generateTownSubTiles(town, field, options));
 }
 
+/** buildTownIndexes/buildTownTileIndexが返す、全町eagerな具象Map(走査可能)。 */
+export type EagerTownTileIndex = Map<string, TownTileEntry>;
+
 export interface TownIndexes {
   /** タイル粒度の索引(建設ガード・地形編集・樹木の間引きに使う)。 */
-  tiles: TownTileIndex;
+  tiles: EagerTownTileIndex;
   /** サブタイル粒度の索引(描画に使う)。 */
   subTiles: TownSubTileIndex;
 }
@@ -308,13 +311,17 @@ export interface TownIndexes {
  * 確保した親タイルは後の町から見て occupied になる(先勝ち)。
  * railMapを渡すと、家は地面を占有する線路セルを避ける(描画と建設ガードで同じ
  * railMapを渡せば、家と地平線路が重なることはない)。
+ *
+ * 全町を毎回eagerに再計算するため、町が数千規模になるマップでは呼び出しコストが
+ * 大きい。マップ全域を対象にする用途にはTownTileCache(下記)を使うこと。
+ * buildTownIndexes/buildTownTileIndexは小規模な町集合(可視町だけ、テスト等)向けに残す。
  */
 export function buildTownIndexes(
   towns: TownData[],
   field: TerrainField,
   railMap?: Map<string, CellData>
 ): TownIndexes {
-  const tiles: TownTileIndex = new Map();
+  const tiles: EagerTownTileIndex = new Map();
   const subTiles: TownSubTileIndex = new Map();
   const occupied = new Set<string>();
   for (const town of towns) {
@@ -335,7 +342,7 @@ export function buildTownTileIndex(
   towns: TownData[],
   field: TerrainField,
   railMap?: Map<string, CellData>
-): TownTileIndex {
+): EagerTownTileIndex {
   return buildTownIndexes(towns, field, railMap).tiles;
 }
 
@@ -384,7 +391,6 @@ interface TownTileCacheEntry {
  * 「全町を毎回舐める」という当初の問題は解消される。
  */
 export class TownTileCache implements TownTileIndex {
-  private readonly towns: TownData[];
   private readonly townById: Map<string, TownData>;
   private readonly field: TerrainField;
   private readonly railMap: Map<string, CellData> | undefined;
@@ -392,7 +398,6 @@ export class TownTileCache implements TownTileIndex {
   private readonly cache: Map<string, TownTileCacheEntry> = new Map();
 
   constructor(towns: TownData[], field: TerrainField, railMap?: Map<string, CellData>) {
-    this.towns = towns;
     this.field = field;
     this.railMap = railMap;
     this.townById = new Map(towns.map(t => [t.id, t]));
