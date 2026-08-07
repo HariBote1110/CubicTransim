@@ -3,6 +3,7 @@ import type { CellData, StationData, TownData } from '../types';
 import { toKey } from '../utils';
 import type { TerrainField } from './terrainField';
 import { cellOccupiesGround } from './townTiles';
+import { slopeOf } from './slopes';
 
 type Pos = { x: number; z: number };
 
@@ -14,11 +15,29 @@ export const TOWN_POPULATION_CAP = 50_000;
 export const TOWN_GROWTH_RATE_MAX = 0.03;
 /** 街の中心からこの距離(タイル)までの駅を「その町の駅」とみなす。 */
 export const TOWN_STATION_RADIUS = 10;
-export const TOWN_TERRAIN_AVOID_RADIUS = 3; // 水域・山岳セルからこの半径以内には街を生成しない
+export const TOWN_TERRAIN_AVOID_RADIUS = 3; // 水域からこの半径以内には街を生成しない
+/**
+ * 「平坦」とみなす最低割合(P7d)。以前は候補周辺に水域・山岳(=標高1以上)が
+ * 1セルでもあれば棄却していたが、標高上の建設(slopes.ts)導入後は「山岳=建設不可」
+ * ではなくなったため、町も平坦な高原(標高任意)に置けるようにする。ただし
+ * 傾斜だらけの地形(incline/other)に町を置くと道路・家が生成できないセルだらけに
+ * なるため、周辺セルのうち十分な割合がflat(slopeOf)であることは引き続き要求する。
+ */
+const TOWN_FLAT_MAJORITY_RATIO = 0.85;
 
-// 候補座標が水域・山岳セルの半径TOWN_TERRAIN_AVOID_RADIUS以内にあるかどうかを判定する。
-// 標高地形の導入で水域・山岳セルは数千個規模になったため、terrain全走査ではなく
-// 候補の周囲O(radius^2)セルの直接参照で判定する(rejection samplingの試行×500に耐える)。
+// 候補座標が町の立地として不適か: (a)水域が半径radius以内にある、または
+// (b)周辺セルのうちflat(slopeOf)である割合がTOWN_FLAT_MAJORITY_RATIO未満。
+// 旧isNearTerrain(terrainTypeAt!=='grass'で1セルでも棄却)の置き換え。標高そのものは
+// 問わない(標高1以上の平坦な台地も適地になる)。
+//
+// 水域判定は半径内の全セルをterrainTypeAtで走査する(従来通り、1セルでも水域なら
+// 即棄却)。flat判定はcellCornerHeights呼び出し(=createTerrainFieldの実装では
+// compositeNoiseを追加で4回叩く、terrainTypeAtとは別建てのコスト)を伴うため、
+// 同じ密度で回すとrejection samplingの試行×16K領域規模で無視できないコストになる
+// (実測: towns.test.tsの16Kマップ生成500msガードに抵触した)。flatの割合を知るのに
+// 全セルを見る必要はないため、間引いた格子(2セルおき)でサンプリングして
+// コストを抑える(半径3なら約13点で足り、統計的な「優勢かどうか」の判定には十分)。
+const TOWN_FLAT_SAMPLE_STRIDE = 2;
 const isNearTerrain = (
   x: number,
   z: number,
@@ -29,10 +48,20 @@ const isNearTerrain = (
   for (let dx = -r; dx <= r; dx++) {
     for (let dz = -r; dz <= r; dz++) {
       if (Math.hypot(dx, dz) > radius) continue;
-      if (field.terrainTypeAt(x + dx, z + dz) !== 'grass') return true;
+      if (field.terrainTypeAt(x + dx, z + dz) === 'water') return true;
     }
   }
-  return false;
+
+  let total = 0;
+  let flat = 0;
+  for (let dx = -r; dx <= r; dx += TOWN_FLAT_SAMPLE_STRIDE) {
+    for (let dz = -r; dz <= r; dz += TOWN_FLAT_SAMPLE_STRIDE) {
+      if (Math.hypot(dx, dz) > radius) continue;
+      total++;
+      if (slopeOf(field.cellCornerHeights(x + dx, z + dz)).kind === 'flat') flat++;
+    }
+  }
+  return total > 0 && flat / total < TOWN_FLAT_MAJORITY_RATIO;
 };
 
 // シード付き決定的疑似乱数生成器(mulberry32)。テストの再現性のために使用する。

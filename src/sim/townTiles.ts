@@ -30,6 +30,7 @@
 import type { CellData, TownData } from '../types';
 import { toKey, fromKey } from '../utils';
 import type { TerrainField } from './terrainField';
+import { slopeOf } from './slopes';
 
 export type TownTileKind = 'house' | 'road';
 
@@ -163,15 +164,21 @@ export function generateTownSubTiles(
   const scx = town.centre.x * SUB_TILES_PER_TILE;
   const scz = town.centre.z * SUB_TILES_PER_TILE;
 
-  // 親タイルが平地(標高0の草地)かどうか。
-  const isFlatGrass = (x: number, z: number): boolean => field.terrainTypeAt(x, z) === 'grass';
+  // 親タイルが平地(flat、標高は任意)かつ水域でないかどうか(P7d)。
+  // 旧isFlatGrass(terrainTypeAt==='grass')は標高1以上を機械的にmountain扱いして
+  // 拒否していたが、slopes.slopeOfで実際のコーナー形状を見れば「平坦な高原」も
+  // 判別できるため、任意標高のflatセルを許可するようにした。
+  const isFlatBuildable = (x: number, z: number): boolean => {
+    if (field.terrainTypeAt(x, z) === 'water') return false;
+    return slopeOf(field.cellCornerHeights(x, z)).kind === 'flat';
+  };
 
   // 親タイル単位の適地判定(道路用/家用)。線路衝突がタイルベースなので粒度もタイル。
   const parentAllowsRoad = (sx: number, sz: number): boolean => {
     const px = parentTileOfSub(sx);
     const pz = parentTileOfSub(sz);
     return (
-      isFlatGrass(px, pz) &&
+      isFlatBuildable(px, pz) &&
       !occupied.has(toKey(px, pz)) &&
       cellAllowsRoadCrossing(railMap?.get(toKey(px, pz)))
     );
@@ -180,7 +187,7 @@ export function generateTownSubTiles(
     const px = parentTileOfSub(sx);
     const pz = parentTileOfSub(sz);
     return (
-      isFlatGrass(px, pz) &&
+      isFlatBuildable(px, pz) &&
       !occupied.has(toKey(px, pz)) &&
       !cellOccupiesGround(railMap?.get(toKey(px, pz)))
     );

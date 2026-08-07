@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CellData, TerrainType, TownData } from '../types';
 import { fieldFromMaps } from './terrainField';
+import type { TerrainField } from './terrainField';
 import { toKey, fromKey } from '../utils';
 import {
   generateTownSubTiles,
@@ -108,22 +109,32 @@ describe('townTiles: サブタイル生成', () => {
     }
   });
 
-  it('水域・山岳・標高1以上の親タイルにはサブタイルを置かない', () => {
-    const terrain = new Map<string, TerrainType>();
-    const heights = new Map<string, number>();
-    // 中心の東側を水域、西側を山岳(標高1)にする(親タイル単位)
-    for (let z = -16; z <= 16; z++) {
-      terrain.set(toKey(2, z), 'water');
-      terrain.set(toKey(-2, z), 'mountain');
-      heights.set(toKey(-2, z), 1);
-    }
+  it('水域・傾斜(other)の親タイルにはサブタイルを置かないが、標高1以上でも平坦なら置く(P7d)', () => {
+    // 手組みのTerrainFieldスタブ: x=2列は水域、x=-2列は傾斜(otherスロープ、線路も
+    // 家も建てられない形)、それ以外は標高1のflat(=平坦な高原)にする。
+    // 旧仕様(terrainTypeAt==='grass'限定)ではmountain(標高1以上)の親タイルは
+    // 一律で禁止だったが、P7dでは「平坦かどうか」だけを見るため、標高1のflat地は
+    // 通常の平地と同じく町タイルを置ける。
+    const field: TerrainField = {
+      cornerHeightAt: () => 1,
+      cellCornerHeights: (x) => {
+        if (x === -2) return [0, 1, 1, 0]; // 対角=other(線路・建物とも不可)
+        return [1, 1, 1, 1]; // それ以外は標高1のflat
+      },
+      cellHeightAt: (x) => (x === -2 ? 0 : 1),
+      terrainTypeAt: (x) => (x === 2 ? 'water' : x === -2 ? 'mountain' : 'mountain'),
+    };
     const t = town('town-3', 0, 0, 8000);
-    const subs = generateTownSubTiles(t, fieldFromMaps(heights, terrain, 45));
+    const subs = generateTownSubTiles(t, field);
+    expect(subs.size).toBeGreaterThan(0);
+    let sawElevatedFlat = false;
     for (const key of subs.keys()) {
       const px = parentTileOfSub(fromKey(key).x);
       expect(px).not.toBe(2);
       expect(px).not.toBe(-2);
+      if (px !== 0) sawElevatedFlat = true; // 中心以外(=標高1のflat)にも置かれている
     }
+    expect(sawElevatedFlat).toBe(true);
   });
 
   it('人口が多いほど半径・家の数が増える(視覚的に成長する)', () => {

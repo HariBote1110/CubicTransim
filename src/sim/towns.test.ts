@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CellData, StationData, TerrainType, TownData } from '../types';
 import { fieldFromMaps } from './terrainField';
 import { createTerrainField } from './terrainField';
+import type { TerrainField } from './terrainField';
 import {
   mulberry32, growTown, townServiceLevel,
   TOWN_POPULATION_MIN, TOWN_POPULATION_MAX, TOWN_POPULATION_CAP,
@@ -372,12 +373,47 @@ describe('regionTownCandidate / generateRegionTowns', () => {
     }
   });
 
-  it('生成された町の中心座標はhalfExtent以内かつ平地(水域・山岳を回避)', () => {
+  it('生成された町の中心座標はhalfExtent以内かつ水域を回避する(標高・傾斜そのものは問わない)', () => {
+    // P7d: mountain(標高1以上)は建設不可の障害物ではなくなったため、町の中心も
+    // 「周辺が平坦優勢な高原」なら許可される(中心セル自体がflatである保証はない。
+    // isNearTerrainは「近傍の優勢さ」で判定するため)。ここでは水域回避のみ確認する。
     const towns = generateRegionTowns(7, 2000, flatField);
     for (const town of towns) {
       expect(Math.abs(town.centre.x)).toBeLessThanOrEqual(2000);
       expect(Math.abs(town.centre.z)).toBeLessThanOrEqual(2000);
-      expect(flatField.terrainTypeAt(town.centre.x, town.centre.z)).toBe('grass');
+      expect(flatField.terrainTypeAt(town.centre.x, town.centre.z)).not.toBe('water');
+    }
+  });
+
+  it('標高1のflatな高原にも町が生成できる(P7d: mountain概念の廃止)', () => {
+    // 全域が標高1のflatなスタブfield(旧仕様ならterrainTypeAt==='mountain'で
+    // 一律棄却されていた)。regionTownCandidateが少なくとも1つは候補を返すことを確認する。
+    const plateauField: TerrainField = {
+      cornerHeightAt: () => 1,
+      cellCornerHeights: () => [1, 1, 1, 1],
+      cellHeightAt: () => 1,
+      terrainTypeAt: () => 'mountain',
+    };
+    let found = false;
+    for (let rx = -10; rx <= 10 && !found; rx++) {
+      for (let rz = -10; rz <= 10 && !found; rz++) {
+        if (regionTownCandidate(42, rx, rz, 4096, plateauField)) found = true;
+      }
+    }
+    expect(found).toBe(true);
+  });
+
+  it('水域に近い候補は標高1のflatでも棄却される', () => {
+    const waterField: TerrainField = {
+      cornerHeightAt: () => 1,
+      cellCornerHeights: () => [1, 1, 1, 1],
+      cellHeightAt: () => 1,
+      terrainTypeAt: () => 'water',
+    };
+    for (let rx = -5; rx <= 5; rx++) {
+      for (let rz = -5; rz <= 5; rz++) {
+        expect(regionTownCandidate(42, rx, rz, 4096, waterField)).toBeNull();
+      }
     }
   });
 
