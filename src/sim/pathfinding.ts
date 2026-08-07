@@ -42,7 +42,8 @@ const resolveEntryLayer = (
 
   const candidates: Layer[] = [];
   if (cellData?.connections && (cellData.connections & enterBit)) candidates.push(0);
-  for (const lvl of [1, 2, 3] as const) {
+  // P8a: 高架(1..3)だけでなく地下(-1..-3)も入場候補に含める。
+  for (const lvl of [1, 2, 3, -1, -2, -3] as const) {
     const u = cellData?.uppers?.[lvl];
     if (u?.connections && (u.connections & enterBit)) candidates.push(lvl);
   }
@@ -212,7 +213,10 @@ const extendThroughPlatform = (
   // 経路は headPos を含む最小のセル(=切り上げ)まで延ばし、端数は stopProgress で表す。
   const headCell = Math.ceil(headPos - STOP_POS_EPSILON);
   for (let i = 1; i <= headCell; i++) {
-    extended.push(layer === 1 ? { ...platformCells[i], layer: 1 } : platformCells[i]);
+    // P8a: 旧実装はlayer===1のときだけlayerタグを付けており、高架レベル2/3や地下では
+    // タグが落ちてlayer0(地平)扱いに誤読されるバグがあった(地下駅ホームの延長で顕在化)。
+    // layerが0でなければ常にタグを付ける。
+    extended.push(layer !== 0 ? { ...platformCells[i], layer } : platformCells[i]);
   }
 
   const remainder = headCell - headPos;

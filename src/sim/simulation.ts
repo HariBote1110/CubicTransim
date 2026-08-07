@@ -89,7 +89,25 @@ const cellRampHeight = (
 ): number => {
   if (layer && layer > 0) return layer * OVERPASS_HEIGHT;
   const cell = railMap.get(toKey(x, z));
-  if (cell?.ramp) return rampHeightAtPos(rampPos(cell.ramp.level), cell.ramp.base ?? 0);
+  // P8a: 地下(layer<0)は地表からの相対深さ(design doc「相対深さ方式」)。
+  // 地表の高さ(groundRailCentreHeight)にlayer*OVERPASS_HEIGHT(負)を上乗せする。
+  // ramp(掘割)セルはbase(常に負)が付いているため、この分岐より先にramp判定を
+  // 通さない(rampはbase自体が地表からの相対段数として一貫している)。
+  if (layer && layer < 0 && !cell?.ramp) {
+    const surface = terrainField ? groundRailCentreHeight(terrainField, cell, x, z) : 0;
+    return surface + layer * OVERPASS_HEIGHT;
+  }
+  if (cell?.ramp) {
+    const rampOffset = rampHeightAtPos(rampPos(cell.ramp.level), cell.ramp.base ?? 0);
+    // P8a: 掘割ランプ(base<0)は地表からの相対深さで解釈する。rampOffsetは既に
+    // (base+pos)*OVERPASS_HEIGHTであり、地平(0)側の端でちょうど0になる設計なので、
+    // ここへ地表標高を足すだけで「その掘割が乗る地表」からの相対高さになる。
+    if ((cell.ramp.base ?? 0) < 0) {
+      const surface = terrainField ? groundRailCentreHeight(terrainField, cell, x, z) : 0;
+      return surface + rampOffset;
+    }
+    return rampOffset;
+  }
   if (!terrainField) return 0;
   return groundRailCentreHeight(terrainField, cell, x, z);
 };

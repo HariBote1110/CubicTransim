@@ -87,11 +87,11 @@ export function isSafeWaitingPoint(
   const cellData = railMap.get(toKey(cell.x, cell.z));
   const nextData = next ? railMap.get(toKey(next.x, next.z)) : undefined;
 
-  if (layer > 0) {
-    // 高架側: uppers[layer].stationId(高架駅ホーム)がある場合だけ待機できる。
-    // 通過用の高架(uppers[layer].connectionsのみでstationIdが無い橋桁)では待機不可
-    // (橋の上に列車を止めない)。
-    if (!cellData?.uppers?.[layer as 1 | 2 | 3]?.stationId) return false;
+  if (layer !== 0) {
+    // 高架・地下側(P8a: 符号に関わらず同じ扱い): uppers[layer].stationId
+    // (高架/地下駅ホーム)がある場合だけ待機できる。通過用の桁・地下線
+    // (uppers[layer].connectionsのみでstationIdが無い)では待機不可。
+    if (!cellData?.uppers?.[layer as Level]?.stationId) return false;
     if (nextData?.signalDir) return true;
     if (isJunction(cellData, layer)) return false;
     return true;
