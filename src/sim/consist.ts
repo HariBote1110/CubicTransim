@@ -1,5 +1,5 @@
 import type { TrainRuntime } from './simulation';
-import type { CellData } from '../types';
+import type { CellData, Level } from '../types';
 import type { TerrainField } from './terrainField';
 import { toKey } from '../utils';
 import {
@@ -26,7 +26,7 @@ const normalize3d = (x: number, y: number, z: number) => {
 
 const trackCentreHeight = (
   railMap: Map<string, CellData>,
-  point: { x: number; z: number; layer?: 0 | 1 | 2 | 3 },
+  point: { x: number; z: number; layer?: 0 | Level },
   terrainField?: TerrainField
 ): number => {
   if (point.layer && point.layer > 0) return 0.5 + point.layer * OVERPASS_HEIGHT;

@@ -1,8 +1,8 @@
 import { toKey, DIR, getVectorFromDir, getDirFromVector, getOppositeDir } from '../utils';
-import type { CellData, StationData } from '../types';
+import type { CellData, StationData, Level } from '../types';
 import { reservationKey } from './reservation';
 
-export type Layer = 0 | 1 | 2 | 3;
+export type Layer = 0 | Level;
 
 // あるセルの、指定した層で出られる方向のconnectionsビット集合。
 // layer0は地平connections、layer≥1はuppers[layer].connections。

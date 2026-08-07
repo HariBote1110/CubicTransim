@@ -2,6 +2,14 @@ import type { LineMode } from './sim/groups';
 export type TrainType = 'commuter' | 'express';
 export type CellType = 'rail' | 'station' | 'depot';
 
+/**
+ * 立体交差の層。正=高架(uppers[1..3]、高さL*OVERPASS_HEIGHT)、負=地下(P8a、
+ * 地表から相対深さ|L|*OVERPASS_HEIGHT)。0は地平そのもの(CellData本体)であり
+ * このunionには含めない。uppers/StationData.cells[].layer/ramp.baseはすべて
+ * このLevelを符号対称に受け付ける(progress/underground-design.md)。
+ */
+export type Level = -3 | -2 | -1 | 1 | 2 | 3;
+
 // 地形。平地は既定値のため Map には載せず、terrainField.tsのterrainTypeAt()が'grass'を返す。
 export type TerrainType = 'water' | 'mountain';
 
@@ -41,7 +49,7 @@ export interface CellData {
    *
    * 旧セーブ(v12以前)の`upper`はuppers[1]へ移行する(persistence.ts参照)。
    */
-  uppers?: Partial<Record<1 | 2 | 3, { connections: number; stationId?: string }>>;
+  uppers?: Partial<Record<Level, { connections: number; stationId?: string }>>;
   /**
    * 坂セル(applyElevatedPathが高架線の地平/下位レベルに繋がる/行き止まりの端に付ける)
    * であることを示す。dirは登り方向(上位側へ向かう8方向ビット)。
@@ -70,7 +78,7 @@ export interface StationData {
    * (layer未設定/0)と各レベルの高架ホーム群が複数ぶら下がることがある
    * (立体交差の十字乗り換え駅)。
    */
-  cells: { x: number, z: number, layer?: 0 | 1 | 2 | 3 }[];
+  cells: { x: number, z: number, layer?: 0 | Level }[];
   center: { x: number, z: number };
   platformDoors: PlatformDoorType;
 }

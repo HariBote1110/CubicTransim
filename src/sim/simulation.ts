@@ -1,5 +1,5 @@
 import { toKey } from '../utils';
-import type { CellData, StationData, TrainData, TrainGroupData, TownData } from '../types';
+import type { CellData, StationData, TrainData, TrainGroupData, TownData, Level } from '../types';
 import type { TerrainField } from './terrainField';
 import {
   buildServiceGraph,
@@ -65,7 +65,7 @@ export const RESERVE_EXTEND_SLACK_M = 1.0;
 
 // layer省略(または0)は地平、1〜3は立体交差の高架側(レベル)。列車自体には層を
 // 持たせず、pathfindingが解決した層をルート/現在地セルにそのまま載せて運ぶ。
-type Grid = { x: number; z: number; layer?: 0 | 1 | 2 | 3 };
+type Grid = { x: number; z: number; layer?: 0 | Level };
 
 // 坂(ramp)のlevelを、base〜base+1を1本のsmoothstep曲線として結ぶための
 // 正規化位置(RAMP_POS_*)に写像する。level1がbase寄りの下段、level2がbase+1寄りの
@@ -84,7 +84,7 @@ const cellRampHeight = (
   railMap: Map<string, CellData>,
   x: number,
   z: number,
-  layer?: 0 | 1 | 2 | 3,
+  layer?: 0 | Level,
   terrainField?: TerrainField
 ): number => {
   if (layer && layer > 0) return layer * OVERPASS_HEIGHT;
@@ -102,7 +102,7 @@ const cellCentreHeight = (
   railMap: Map<string, CellData>,
   x: number,
   z: number,
-  layer?: 0 | 1 | 2 | 3,
+  layer?: 0 | Level,
   terrainField?: TerrainField
 ): number =>
   0.5 + cellRampHeight(railMap, x, z, layer, terrainField);

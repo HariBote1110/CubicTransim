@@ -1,5 +1,5 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TownData } from '../types';
+import type { CellData, StationData, TownData, Level } from '../types';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
@@ -1179,7 +1179,7 @@ export function applyElevatedStation(
     involvedIds.sort((a, b) => order.indexOf(a) - order.indexOf(b));
     targetId = involvedIds[0];
     const keepSt = stations.get(targetId)!;
-    const cellMap = new Map<string, { x: number; z: number; layer?: 0 | 1 | 2 | 3 }>();
+    const cellMap = new Map<string, { x: number; z: number; layer?: 0 | Level }>();
     keepSt.cells.forEach(c => cellMap.set(`${toKey(c.x, c.z)}|${c.layer ?? 0}`, c));
     for (let i = 1; i < involvedIds.length; i++) {
       const removeId = involvedIds[i];

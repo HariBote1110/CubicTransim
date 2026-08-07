@@ -1,9 +1,9 @@
 import { toKey } from '../utils';
-import type { CellData } from '../types';
+import type { CellData, Level } from '../types';
 
 // layer省略(または0)は地平、1〜3は立体交差の高架側(レベル)。列車自体には層を
 // 持たせず、「そのセルにどちら向きで入ったか」から導出した値をここに載せて使う。
-export type Grid = { x: number; z: number; layer?: 0 | 1 | 2 | 3 };
+export type Grid = { x: number; z: number; layer?: 0 | Level };
 
 // PBS(経路予約ベース運行)風の予約テーブル。1セル1列車の排他をセル単位で管理する
 // (トラック方向単位までは踏み込まず簡略化。既存の閉塞判定もセル単位のため整合する)。
@@ -60,7 +60,7 @@ const popcount = (n: number) => {
 // セルが分岐点(接続方向3以上)かどうか。分岐点そのものはsafe waiting pointにしない
 // (分岐点上に停止して塞いだまま待つことはない)。layerに応じて地平のconnections/
 // 高架のuppers[layer].connectionsのどちらを見るかを切り替える。
-const isJunction = (cell: CellData | undefined, layer: 0 | 1 | 2 | 3): boolean =>
+const isJunction = (cell: CellData | undefined, layer: 0 | Level): boolean =>
   popcount(layer === 0 ? (cell?.connections ?? 0) : (cell?.uppers?.[layer]?.connections ?? 0)) >= 3;
 
 // セルcellがsafe waiting point(そこで安全に停止して次の予約取得を待てる地点)かどうかを
@@ -83,7 +83,7 @@ export function isSafeWaitingPoint(
   cell: Grid,
   next: Grid | null
 ): boolean {
-  const layer: 0 | 1 | 2 | 3 = cell.layer ?? 0;
+  const layer: 0 | Level = cell.layer ?? 0;
   const cellData = railMap.get(toKey(cell.x, cell.z));
   const nextData = next ? railMap.get(toKey(next.x, next.z)) : undefined;
 
