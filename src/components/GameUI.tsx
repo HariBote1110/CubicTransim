@@ -214,7 +214,9 @@ export const GameUI: React.FC<GameUIProps> = ({
       if ((buildMode === 'rail' || buildMode === 'station')
         && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         e.preventDefault();
-        setBuildLevel(stepElevatedLevel(buildLevel, e.key === 'ArrowUp' ? 1 : -1));
+        // P8a時点ではbuildLevelの型はUndergroundLevelまで含むBuildLevelへ拡張済みだが、
+        // 地下方向のUIステップはP8cで対応する(現状はstepElevatedLevelの0..3レンジのみ)。
+        setBuildLevel(stepElevatedLevel(buildLevel as 0 | 1 | 2 | 3, e.key === 'ArrowUp' ? 1 : -1));
       }
     };
     window.addEventListener('keydown', onKey);
