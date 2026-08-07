@@ -23,6 +23,8 @@ import {
   planElevatedPath,
   isElevatedConnectPlanBuildable,
   resolveGroundRailPlan,
+  resolveGroundRailPlanDetailed,
+  type GroundRailPlanFailureReason,
 } from './construction';
 import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
 import type { TerrainField } from './terrainField';
@@ -55,6 +57,13 @@ export interface BuildPreview {
   rampCells: number;
   /** 建設対象レベル(0=地平)。UI側が「高架(rail/station)かどうか」を判定するために保持する。 */
   level: BuildLevel;
+  /**
+   * P7d: 地上レール(mode:'rail', level 0)がno-effectになった具体的な理由
+   * (resolveGroundRailPlanDetailedの結果)。それ以外の建設不可(水域駅・既存セル上書きなど)
+   * や建設可能な場合はundefined。GameUI.tsxがreason==='no-effect'時の表示文言を
+   * より具体的にするために使う。
+   */
+  slopeIssue?: GroundRailPlanFailureReason;
 }
 
 export function evaluateBuild(
@@ -109,8 +118,11 @@ export function evaluateBuild(
   let bridgeCells = 0;
   let tunnelCells = 0;
   let groundPlan: ReturnType<typeof resolveGroundRailPlan> = null;
+  let groundSlopeIssue: GroundRailPlanFailureReason | undefined;
   if (mode === 'rail' && !elevated) {
-    groundPlan = resolveGroundRailPlan(field, path);
+    const detailed = resolveGroundRailPlanDetailed(field, path);
+    groundPlan = detailed.plan;
+    groundSlopeIssue = detailed.reason;
     if (groundPlan) {
       for (let i = 0; i < path.length; i++) {
         const role = groundPlan[i];
@@ -213,5 +225,11 @@ export function evaluateBuild(
   if (!effective) reason = 'no-effect';
   else if (cost > money) reason = 'insufficient-funds';
 
-  return { mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells, rampCells: elevatedRampCount || groundRampCount, level };
+  const slopeIssue =
+    mode === 'rail' && !elevated && !effective ? groundSlopeIssue : undefined;
+
+  return {
+    mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells,
+    rampCells: elevatedRampCount || groundRampCount, level, slopeIssue,
+  };
 }

@@ -90,6 +90,55 @@ describe('evaluateBuild', () => {
     expect(p.tunnelCells).toBe(0);
   });
 
+  it('P7d: 建設不可の地上レール経路は、UI向けにslopeIssueで具体的な理由を返す(other-slope)', () => {
+    const { railMap, stations } = emptyMaps();
+    // otherスロープ(0,0)の最大コーナー(1)が進入標高(2)より高くないため
+    // トンネル化もできず建設不可(construction.test.tsの同種シナリオと同じ形)。
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: (x) => {
+        const ix = Math.round(x);
+        if (ix === -1) return [2, 2, 2, 2];
+        if (ix === 0) return [2, 2, 1, 2];
+        return [2, 2, 2, 2];
+      },
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000);
+    expect(p.reason).toBe('no-effect');
+    expect(p.slopeIssue).toBe('other-slope');
+  });
+
+  it('P7d: トンネル出口の標高が食い違う経路はslopeIssue:tunnel-exit-mismatch', () => {
+    const { railMap, stations } = emptyMaps();
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: (x) => {
+        const ix = Math.round(x);
+        if (ix === 0) return [2, 2, 2, 1];
+        if (ix === 1) return [2, 1, 1, 2];
+        if (ix === 2) return [1, 1, 1, 1];
+        return [0, 0, 0, 0];
+      },
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000);
+    expect(p.reason).toBe('no-effect');
+    expect(p.slopeIssue).toBe('tunnel-exit-mismatch');
+  });
+
+  it('P7d: 建設できる通常の経路にはslopeIssueが付かない', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000);
+    expect(p.reason).toBe('ok');
+    expect(p.slopeIssue).toBeUndefined();
+  });
+
   it('資金が足りなければ insufficient-funds', () => {
     const { railMap, stations, field } = emptyMaps();
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }];
