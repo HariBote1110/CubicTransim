@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
+import { fieldFromMaps } from './terrainField';
 import type { CellData, StationData, TrainData, TownData } from '../types';
 import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
@@ -892,7 +893,7 @@ describe('stepWorld: 輸送力に応じた町の湧き(即時湧きの廃止)', 
     const { railMap, stations } = buildTwoStationLine(30, 'stA', 'stB');
     const world: SimWorld = {
       railMap, stations, trains: [], runtimes: new Map(), waiting: new Map(),
-      rng: () => 0, towns: [], terrain: new Map(),
+      rng: () => 0, towns: [], terrainField: fieldFromMaps(new Map(), new Map(), 45),
     };
 
     stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH * 6);
@@ -906,7 +907,7 @@ describe('stepWorld: 輸送力に応じた町の湧き(即時湧きの廃止)', 
     const train = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'], cars: 1 });
     const world: SimWorld = {
       railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
-      rng: () => 0, towns: [], terrain: new Map(),
+      rng: () => 0, towns: [], terrainField: fieldFromMaps(new Map(), new Map(), 45),
     };
 
     stepWorld(world, SECONDS_PER_DAY * DAYS_PER_MONTH * 6);
@@ -920,7 +921,7 @@ describe('stepWorld: 輸送力に応じた町の湧き(即時湧きの廃止)', 
     const train = makeTrain({ x: 15, z: 0, schedule: ['stA', 'stB'], cars: 2 });
     const world: SimWorld = {
       railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
-      rng: () => 0, towns: [], terrain: new Map(),
+      rng: () => 0, towns: [], terrainField: fieldFromMaps(new Map(), new Map(), 45),
     };
 
     // rng固定(常に0)で決定的に、6ヶ月ぶん進めれば必ず湧く。

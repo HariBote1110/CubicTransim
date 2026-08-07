@@ -5,6 +5,7 @@ import { effectiveSchedule } from './groups';
 import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 import { buildTownTileIndex } from './townTiles';
+import { createTerrainField, fieldFromMaps } from './terrainField';
 
 const scenario = (id: string) => {
   const def = DEBUG_SCENARIOS.find(s => s.id === id);
@@ -53,8 +54,7 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
           waiting: new Map(),
           rng: () => 0.5,
           towns: world.towns ?? [],
-          terrain: world.terrain,
-          heights: world.heights,
+          terrainField: world.field,
           groups: world.groups,
         };
         expect(() => {
@@ -74,10 +74,10 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
     expect(world.trains.length).toBe(4); // 地平1 + 高架3レベル
   });
 
-  it('山岳トンネル: トンネル内部セルと坑口の両側があり、地形・標高を上書きする', () => {
+  it('山岳トンネル: トンネル内部セルと坑口の両側があり、地形fieldを上書きする', () => {
     const world = scenario('mountain-tunnel').build();
-    expect(world.terrain && world.terrain.size).toBeGreaterThan(0);
-    expect(world.heights && world.heights.size).toBeGreaterThan(0);
+    expect(world.field).toBeDefined();
+    expect(world.field!.terrainTypeAt(0, 0)).toBe('mountain');
     const tunnelCells = Array.from(world.railMap.entries()).filter(([, c]) => c.tunnel);
     expect(tunnelCells.length).toBeGreaterThanOrEqual(3);
   });
@@ -102,7 +102,7 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
     expect(world.towns?.length).toBe(1);
     expect(world.towns![0].population).toBe(50_000);
 
-    const tiles = buildTownTileIndex(world.towns!, new Map(), new Map(), world.railMap);
+    const tiles = buildTownTileIndex(world.towns!, fieldFromMaps(new Map(), new Map(), 45), world.railMap);
     let crossings = 0;
     for (const [key, cell] of world.railMap) {
       if (cell.type !== 'rail') continue;
@@ -111,12 +111,20 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
     expect(crossings).toBeGreaterThanOrEqual(3);
   });
 
-  it('地形編集の遊び場: 線路・町なし、起伏のある標高と最大の所持金を持つ', () => {
+  it('地形編集の遊び場: 線路・町なし、起伏のある地形(通常の乱数field)と最大の所持金を持つ', () => {
     const world = scenario('terrain-playground').build();
     expect(world.railMap.size).toBe(0);
     expect(world.trains.length).toBe(0);
     expect(world.towns).toEqual([]);
-    expect(world.heights && world.heights.size).toBeGreaterThan(0);
+    expect(world.worldSeedOverride).toBeDefined();
+    const field = createTerrainField(world.worldSeedOverride!, 45);
+    let hasRelief = false;
+    for (let x = -10; x <= 10 && !hasRelief; x++) {
+      for (let z = -10; z <= 10 && !hasRelief; z++) {
+        if (field.cellHeightAt(x, z) > 0) hasRelief = true;
+      }
+    }
+    expect(hasRelief).toBe(true);
     expect(world.money).toBeGreaterThan(0);
   });
 });

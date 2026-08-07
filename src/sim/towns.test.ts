@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CellData, StationData, TerrainType, TownData } from '../types';
 import { generateMap } from './terrain';
+import { fieldFromMaps } from './terrainField';
 import {
   mulberry32, generateTowns, growTown, townServiceLevel,
   TOWN_MIN_DISTANCE, TOWN_COORD_RANGE, TOWN_POPULATION_MIN, TOWN_POPULATION_MAX, TOWN_POPULATION_CAP,
@@ -90,7 +91,7 @@ describe('generateTowns', () => {
     // rejection samplingが平地を見つけて8つの街を置けることを確認する。
     for (const seed of [1, 42, 2026]) {
       const { terrain, heights } = generateMap(mulberry32(seed));
-      const towns = generateTowns(mulberry32(seed + 1), 8, terrain);
+      const towns = generateTowns(mulberry32(seed + 1), 8, fieldFromMaps(heights, terrain, 45));
       expect(towns.length).toBe(8);
       for (const town of towns) {
         const key = `${town.centre.x},${town.centre.z}`;
@@ -109,7 +110,7 @@ describe('generateTowns', () => {
       }
     }
 
-    const towns = generateTowns(mulberry32(7), 8, terrain);
+    const towns = generateTowns(mulberry32(7), 8, fieldFromMaps(new Map(), terrain, 45));
     for (const town of towns) {
       for (const key of terrain.keys()) {
         const [tx, tz] = key.split(',').map(Number);
@@ -268,12 +269,12 @@ describe('townSpawnChance', () => {
 });
 
 describe('resolveTownSpawnTick', () => {
-  const emptyTerrain: Map<string, TerrainType> = new Map();
+  const emptyField = fieldFromMaps(new Map(), new Map(), 200);
 
   it('駅があっても列車が停まらない(capacity=0)なら何度チェックしても湧かない', () => {
     const infos: StationTransportInfo[] = [{ stationId: 's1', pos: { x: 100, z: 100 }, capacity: 0 }];
     const alwaysZero = () => 0;
-    const result = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero);
+    const result = resolveTownSpawnTick(infos, [], emptyField, alwaysZero);
     expect(result.spawnedTowns).toEqual([]);
     expect(result.towns).toEqual([]);
   });
@@ -283,7 +284,7 @@ describe('resolveTownSpawnTick', () => {
       { stationId: 's1', pos: { x: 100, z: 100 }, capacity: TOWN_SPAWN_CAPACITY_THRESHOLD - 1 },
     ];
     const alwaysZero = () => 0;
-    const result = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero);
+    const result = resolveTownSpawnTick(infos, [], emptyField, alwaysZero);
     expect(result.spawnedTowns).toEqual([]);
   });
 
@@ -292,7 +293,7 @@ describe('resolveTownSpawnTick', () => {
       { stationId: 's1', pos: { x: 100, z: 100 }, capacity: TOWN_SPAWN_CAPACITY_THRESHOLD },
     ];
     const alwaysZero = () => 0;
-    const result = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero);
+    const result = resolveTownSpawnTick(infos, [], emptyField, alwaysZero);
     expect(result.spawnedTowns.length).toBe(1);
     expect(result.towns).toEqual(result.spawnedTowns);
   });
@@ -303,7 +304,7 @@ describe('resolveTownSpawnTick', () => {
     ];
     const alwaysHigh = () => 0.999;
     const towns: TownData[] = [];
-    const result = resolveTownSpawnTick(infos, towns, emptyTerrain, alwaysHigh);
+    const result = resolveTownSpawnTick(infos, towns, emptyField, alwaysHigh);
     expect(result.spawnedTowns).toEqual([]);
     expect(result.towns).toBe(towns);
   });
@@ -314,7 +315,7 @@ describe('resolveTownSpawnTick', () => {
       { stationId: 's1', pos: { x: 100, z: 100 }, capacity: TOWN_SPAWN_CAPACITY_THRESHOLD * 5 },
     ];
     const alwaysZero = () => 0;
-    const result = resolveTownSpawnTick(infos, existing, emptyTerrain, alwaysZero);
+    const result = resolveTownSpawnTick(infos, existing, emptyField, alwaysZero);
     expect(result.spawnedTowns).toEqual([]);
     expect(result.towns).toBe(existing);
   });
@@ -327,7 +328,7 @@ describe('resolveTownSpawnTick', () => {
     let towns: TownData[] = [];
     let spawned = false;
     for (let day = 0; day < 500 && !spawned; day++) {
-      const result = resolveTownSpawnTick(infos, towns, emptyTerrain, rng);
+      const result = resolveTownSpawnTick(infos, towns, emptyField, rng);
       towns = result.towns;
       if (result.spawnedTowns.length > 0) spawned = true;
     }
@@ -339,7 +340,7 @@ describe('resolveTownSpawnTick', () => {
       { stationId: 's1', pos: { x: 100, z: 100 }, capacity: TOWN_SPAWN_CAPACITY_THRESHOLD },
     ];
     const alwaysZero = () => 0;
-    const result = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero);
+    const result = resolveTownSpawnTick(infos, [], emptyField, alwaysZero);
     const spawned = result.spawnedTowns[0];
     expect(spawned.population).toBeGreaterThanOrEqual(NEW_TOWN_POPULATION_MIN);
     expect(spawned.population).toBeLessThanOrEqual(NEW_TOWN_POPULATION_MAX);
@@ -356,7 +357,7 @@ describe('resolveTownSpawnTick', () => {
       { stationId: 's1', pos: { x: 100, z: 100 }, capacity: TOWN_SPAWN_CAPACITY_THRESHOLD },
     ];
     const alwaysZero = () => 0;
-    const result = resolveTownSpawnTick(infos, [], terrain, alwaysZero);
+    const result = resolveTownSpawnTick(infos, [], fieldFromMaps(new Map(), terrain, 200), alwaysZero);
     expect(result.spawnedTowns).toEqual([]);
   });
 
@@ -372,7 +373,7 @@ describe('resolveTownSpawnTick', () => {
       { stationId: 's1', pos: { x: 100, z: 100 }, capacity: TOWN_SPAWN_CAPACITY_THRESHOLD },
     ];
     const alwaysZero = () => 0;
-    const blocked = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero, railMap);
+    const blocked = resolveTownSpawnTick(infos, [], emptyField, alwaysZero, railMap);
     expect(blocked.spawnedTowns).toEqual([]);
 
     // 純粋な高架専用セル(地平接続なし)は地面を塞がないので湧ける
@@ -384,7 +385,7 @@ describe('resolveTownSpawnTick', () => {
         });
       }
     }
-    const allowed = resolveTownSpawnTick(infos, [], emptyTerrain, alwaysZero, elevatedOnly);
+    const allowed = resolveTownSpawnTick(infos, [], emptyField, alwaysZero, elevatedOnly);
     expect(allowed.spawnedTowns.length).toBe(1);
   });
 });

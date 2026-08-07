@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DIR, toKey } from '../utils';
 import type { CellData, StationData, TownData, TrainData } from '../types';
+import { fieldFromMaps } from './terrainField';
 import type { SimWorld } from './simulation';
 import {
   costOfPath,
@@ -146,8 +147,9 @@ describe('economy: costOfPath', () => {
       ['2,0', 'water'],
       ['3,0', 'mountain'],
     ]);
+    const field = fieldFromMaps(new Map(), terrain, 45);
 
-    const cost = costOfPath('rail', path.length, path, terrain);
+    const cost = costOfPath('rail', path.length, path, field);
     expect(cost).toBe(RAIL_COST * 2 + RAIL_COST * BRIDGE_COST_MULTIPLIER + RAIL_COST * TUNNEL_COST_MULTIPLIER);
     expect(cost).toBe(100 * 2 + 500 + 800);
   });
@@ -166,9 +168,9 @@ describe('economy: costOfPath', () => {
     railMap.set(toKey(1, 1), { type: 'rail', connections: DIR.E | DIR.W });
     // 南北に交差させる新規path: (1,0)-(1,1)-(1,2)。平面交差になり倍率は掛からない。
     const path = [{ x: 1, z: 0 }, { x: 1, z: 1 }, { x: 1, z: 2 }];
-    const terrain = new Map<string, 'water' | 'mountain'>();
+    const field = fieldFromMaps(new Map(), new Map(), 45);
 
-    const cost = costOfPath('rail', path.length, path, terrain, railMap);
+    const cost = costOfPath('rail', path.length, path, field, railMap);
     expect(cost).toBe(RAIL_COST * 3);
   });
 });

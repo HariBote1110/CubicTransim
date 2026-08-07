@@ -19,6 +19,8 @@ import {
   type ConstructionState,
   type ElevatedEndPlan,
 } from './construction';
+import { fieldFromMaps } from './terrainField';
+import { computeElevation } from './terrain';
 
 const emptyState = (): ConstructionState => ({
   railMap: new Map<string, CellData>(),
@@ -301,8 +303,8 @@ describe('applySignal（特性テスト）', () => {
 });
 
 describe('地形による建設制約（水域・山岳）', () => {
-  const waterTerrain = new Map<string, 'water' | 'mountain'>([['0,0', 'water']]);
-  const mountainTerrain = new Map<string, 'water' | 'mountain'>([['0,0', 'mountain']]);
+  const waterTerrain = fieldFromMaps(new Map(), new Map<string, 'water' | 'mountain'>([['0,0', 'water']]), 45);
+  const mountainTerrain = fieldFromMaps(new Map(), new Map<string, 'water' | 'mountain'>([['0,0', 'mountain']]), 45);
 
   it('水域セルへの駅設置は no-op（stateの参照が変わらない）', () => {
     const state = emptyState();
@@ -366,25 +368,25 @@ describe('斜面フリンジへの線路建設を防ぐ制約', () => {
   // 境界セルは標高1、中心(1,1)はマンハッタン距離2で標高2になる
   // (computeElevationのテストと同じ形)。中心セルの4隅コーナー標高は
   // すべて1以上になり、天井が完全に覆われた内部セルとして扱える。
-  const makeBlockTerrain = (): Map<string, TerrainType> => {
+  const makeBlockTerrain = () => {
     const terrain = new Map<string, TerrainType>();
     for (let x = 0; x <= 2; x++) {
       for (let z = 0; z <= 2; z++) {
         terrain.set(toKey(x, z), 'mountain');
       }
     }
-    return terrain;
+    return fieldFromMaps(computeElevation(terrain), terrain, 45);
   };
 
   // 幅1セルの尾根(x軸方向、z=0の1行だけ)。南北(z=-1/z=1)は非mountainのため、
   // computeElevationでは全セルが境界(標高1)になり、コーナー標高は4隅とも0になる
   // (南北どちらの隣接セルもmin則で0を持ち込むため)。
-  const makeRidgeTerrain = (): Map<string, TerrainType> => {
+  const makeRidgeTerrain = () => {
     const terrain = new Map<string, TerrainType>();
     for (let x = -2; x <= 2; x++) {
       terrain.set(toKey(x, 0), 'mountain');
     }
-    return terrain;
+    return fieldFromMaps(computeElevation(terrain), terrain, 45);
   };
 
   it('3x3山塊を貫く直線(中心セルは内部フラット)は建設できる', () => {
@@ -706,7 +708,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
   it('坂になるセルが水域・山岳の場合はno-op', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
-    const terrain = new Map<string, TerrainType>([[toKey(0, 0), 'water']]);
+    const terrain = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(0, 0), 'water']]), 45);
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const result = applyElevatedPath(state, path, terrain, 1);
     expect(result).toBe(state);
@@ -738,7 +740,7 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
   it('水域の上にも高架線を敷ける(橋の役割を兼ねる)', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
-    const terrain = new Map<string, TerrainType>([[toKey(2, 0), 'water']]);
+    const terrain = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(2, 0), 'water']]), 45);
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const result = applyElevatedPath(state, path, terrain, 1);
     expect(result.railMap.get(toKey(2, 0))!.uppers?.[1]?.connections).toBe(DIR.E | DIR.W);
@@ -1090,7 +1092,7 @@ describe('地平の線路(applyRailPath)が浮いた高架の端に自動で坂�
   it('坂になるセルが水域・山岳の場合は、接続を諦めて平坦な地平線路にフォールバックする', () => {
     let state = emptyState();
     state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
-    const terrain = new Map<string, TerrainType>([[toKey(3, 0), 'water']]);
+    const terrain = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(3, 0), 'water']]), 45);
     const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     const result = applyRailPath(state, path, terrain);
     // 坂は作られず(水域のため)、代わりに平坦な地平線路として敷かれる
