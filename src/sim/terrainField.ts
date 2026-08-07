@@ -17,8 +17,25 @@ export const MOUNTAIN_HEIGHT_THRESHOLD = 1;
 
 export type TerrainKind = 'grass' | 'mountain' | 'water';
 
+// セル(x,z)の4隅コーナーの並び順。x増加=東、z増加=南とする(terrain.tsのworld座標と同じ向き)。
+// nw=(x,z), ne=(x+1,z), sw=(x,z+1), se=(x+1,z+1)。
+export type CellCorners = [nw: number, ne: number, sw: number, se: number];
+
 export interface TerrainField {
-  heightAt(x: number, z: number): number;
+  /**
+   * 頂点格子(コーナー)の標高。これが一次データ: OpenTTD同様、セルの形状は
+   * 4隅のコーナー標高から導出する(将来の勾配建設の前提)。1-Lipschitz(隣接コーナー
+   * 標高差1以下)はこの格子に対して構成保証される。
+   */
+  cornerHeightAt(x: number, z: number): number;
+  /** セル(x,z)の4隅コーナー標高を [nw, ne, sw, se] で返す。 */
+  cellCornerHeights(x: number, z: number): CellCorners;
+  /**
+   * セル(x,z)の代表標高(4隅のmin)。現行ゲーム(terrain.tsのmin則コーナー導出)との
+   * 互換ヘルパ。段丘上の建設に対応するまでの移行期の消費側向け。
+   */
+  cellHeightAt(x: number, z: number): number;
+  /** セル(x,z)の地形種別。water/mountain/grassの判定はcellCornerHeightsから導出する。 */
   terrainTypeAt(x: number, z: number): TerrainKind;
 }
 
@@ -109,8 +126,8 @@ const WATER_THRESHOLD = 0.15;
 //   HEIGHT_GAIN=11 なら 11*0.08=0.88 < 1 となり、正規化パスなしで安全マージンを確保できる。
 const HEIGHT_GAIN = 11;
 
-// 指定座標の合成ノイズ値(0..1相当。理論上はこの範囲に収まる)を返す。
-// heightAt/terrainTypeAt の両方がこの同一の連続場を参照することで、水域(低い側の閾値)と
+// 指定された頂点座標(x,z)の合成ノイズ値(0..1相当。理論上はこの範囲に収まる)を返す。
+// cornerHeightAt/terrainTypeAt の両方がこの同一の連続場を参照することで、水域(低い側の閾値)と
 // 陸地の標高(高い側の閾値からの持ち上げ)が同じ場に基づく一貫した挙動になる。
 const compositeNoise = (seed: number, x: number, z: number): number => {
   let noise = 0;
@@ -123,20 +140,21 @@ const compositeNoise = (seed: number, x: number, z: number): number => {
 };
 
 /**
- * seedとhalfExtentから、チャンク非依存(O(1)/セル)の地形fieldを作る。
+ * seedとhalfExtentから、チャンク非依存(O(1)/頂点)の地形fieldを作る。
  *
- * - heightAt: 標高(0..TERRAIN_HEIGHT_MAX の整数)。範囲外は0(下記コメント参照)。
- * - terrainTypeAt: 'grass' | 'mountain' | 'water'。
+ * 一次データはコーナー(頂点)格子: `cornerHeightAt` が1-Lipschitzを構成保証する対象。
+ * セル単位の値(`cellCornerHeights`/`cellHeightAt`/`terrainTypeAt`)はすべてこの頂点格子
+ * から導出する薄いヘルパ。
  *
- * 範囲外(|x|または|z| > halfExtent)は 'grass'/標高0を返す設計判断:
- * 16Kマップでも建設可能領域はhalfExtent内に限られるため、境界の外側は
+ * 範囲外(|x|または|z| > halfExtent)は頂点標高0(=グリッド越しには 'grass'/標高0)を
+ * 返す設計判断: 16Kマップでも建設可能領域はhalfExtent内に限られるため、境界の外側は
  * 「常に安全な平地」として扱えば十分であり、範囲外との連続性(1-Lipschitz)を
  * 保証するための追加コストを払う必要がない。
  */
 export function createTerrainField(seed: number, halfExtent: number): TerrainField {
   const inRange = (v: number): boolean => v >= -halfExtent && v <= halfExtent;
 
-  const heightAt = (x: number, z: number): number => {
+  const cornerHeightAt = (x: number, z: number): number => {
     const ix = Math.round(x);
     const iz = Math.round(z);
     if (!inRange(ix) || !inRange(iz)) return 0;
@@ -146,16 +164,34 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
     return Math.min(TERRAIN_HEIGHT_MAX, Math.round(lifted * HEIGHT_GAIN));
   };
 
-  const terrainTypeAt = (x: number, z: number): TerrainKind => {
+  // 頂点(x,z)がwater側の閾値未満か(=標高0が「地形として低い」ためではなく、湖の水面だから)。
+  // cornerHeightAtの値だけでは平地(高さ0)と水面(高さ0)を区別できないため、セルのwater判定に使う。
+  const isWaterVertex = (x: number, z: number): boolean => {
     const ix = Math.round(x);
     const iz = Math.round(z);
-    if (!inRange(ix) || !inRange(iz)) return 'grass';
-    const noise = compositeNoise(seed, ix, iz);
-    if (noise < WATER_THRESHOLD) return 'water';
-    const lifted = Math.max(0, noise - FLATLAND_THRESHOLD);
-    const h = Math.min(TERRAIN_HEIGHT_MAX, Math.round(lifted * HEIGHT_GAIN));
-    return h >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
+    if (!inRange(ix) || !inRange(iz)) return false;
+    return compositeNoise(seed, ix, iz) < WATER_THRESHOLD;
   };
 
-  return { heightAt, terrainTypeAt };
+  const cellCornerHeights = (x: number, z: number): CellCorners => [
+    cornerHeightAt(x, z),
+    cornerHeightAt(x + 1, z),
+    cornerHeightAt(x, z + 1),
+    cornerHeightAt(x + 1, z + 1),
+  ];
+
+  const cellHeightAt = (x: number, z: number): number => {
+    const [nw, ne, sw, se] = cellCornerHeights(x, z);
+    return Math.min(nw, ne, sw, se);
+  };
+
+  const terrainTypeAt = (x: number, z: number): TerrainKind => {
+    // water: セルの4隅すべてがwater側の頂点(=完全に平坦な標高0の水面)であること。
+    if (isWaterVertex(x, z) && isWaterVertex(x + 1, z) && isWaterVertex(x, z + 1) && isWaterVertex(x + 1, z + 1)) {
+      return 'water';
+    }
+    return cellHeightAt(x, z) >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
+  };
+
+  return { cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt };
 }
