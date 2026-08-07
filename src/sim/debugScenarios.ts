@@ -13,8 +13,8 @@ import {
   type ElevatedLevel,
 } from './construction';
 import { createDebugScenario } from './debugScenario';
-import { generateMap } from './terrain';
-import { mulberry32 } from './towns';
+import type { TerrainField } from './terrainField';
+import { fieldFromMaps } from './terrainField';
 import { GROUP_COLOURS } from './groups';
 
 /**
@@ -26,8 +26,10 @@ export interface DebugScenarioWorld {
   railMap: Map<string, CellData>;
   stations: Map<string, StationData>;
   trains: TrainData[];
-  terrain?: Map<string, TerrainType>;
-  heights?: Map<string, number>;
+  /** 手組みの地形field(terrainField.tsのfieldFromMapsでMapから橋渡し)。省略時は全域平地。 */
+  field?: TerrainField;
+  /** 通常の乱数地形を使いたい場合、worldSeedをこの値に差し替える(cornerDiffsはクリアされる)。 */
+  worldSeedOverride?: number;
   towns?: TownData[];
   groups?: TrainGroupData[];
   /** 指定した場合のみ所持金を上書きする(未指定なら現在の所持金のまま)。 */
@@ -118,17 +120,17 @@ function buildTunnelScenario(): DebugScenarioWorld {
       }
     }
   }
+  const field = fieldFromMaps(heights, terrain, 45);
 
   let state = emptyState();
-  state = applyRailPath(state, line({ x: -8, z: 0 }, { x: 8, z: 0 }), terrain, heights);
-  state = applyStation(state, { x: -8, z: 0 }, terrain, [], 'ew');
-  state = applyStation(state, { x: 8, z: 0 }, terrain, [], 'ew');
+  state = applyRailPath(state, line({ x: -8, z: 0 }, { x: 8, z: 0 }), field);
+  state = applyStation(state, { x: -8, z: 0 }, field, [], 'ew');
+  state = applyStation(state, { x: 8, z: 0 }, field, [], 'ew');
 
   return {
     railMap: state.railMap,
     stations: state.stations,
-    terrain,
-    heights,
+    field,
     trains: [
       {
         id: 'debug-tunnel',
@@ -261,13 +263,11 @@ function buildMetropolisScenario(): DebugScenarioWorld {
 // 通常マップと同じ生成器(固定シード)で起伏のある地形だけを用意する。線路・町は
 // 無し、所持金は最大にして、盛土/切土ツールを気兼ねなく試せるようにする。
 function buildTerrainPlaygroundScenario(): DebugScenarioWorld {
-  const map = generateMap(mulberry32(20260802));
   return {
     railMap: new Map(),
     stations: new Map(),
     trains: [],
-    terrain: map.terrain,
-    heights: map.heights,
+    worldSeedOverride: 20260802,
     towns: [],
     money: 999_999_999,
   };

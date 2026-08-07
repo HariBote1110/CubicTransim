@@ -1,6 +1,7 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TerrainType, TownData } from '../types';
-import { terrainAt, computeElevation, cellCornerElevations } from './terrain';
+import type { CellData, StationData, TownData } from '../types';
+import type { TerrainField } from './terrainField';
+import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
 import type { TownTileIndex } from './townTiles';
 import { isTownBlocked, townTileAt } from './townTiles';
@@ -42,8 +43,8 @@ const inferStationAxis = (railMap: Map<string, CellData>, x: number, z: number):
   return 'ew';
 };
 
-// terrain省略時は空Map(=すべて平地)扱いにする。既存呼び出し・既存テストとの互換のため。
-const EMPTY_TERRAIN: Map<string, TerrainType> = new Map();
+// field省略時は空field(=すべて平地)扱いにする。既存呼び出し・既存テストとの互換のため。
+const EMPTY_FIELD: TerrainField = fieldFromMaps(new Map(), new Map(), Infinity);
 
 // townTiles省略時は空索引(=町タイル無し)扱いにする。既存呼び出し・既存テストとの互換のため。
 const EMPTY_TOWN_TILES: TownTileIndex = new Map();
@@ -54,8 +55,8 @@ const pathCrossesHouseTile = (townTiles: TownTileIndex, path: Pos[]): boolean =>
   path.some(p => isTownBlocked(townTiles, p.x, p.z));
 
 // セルが水域・山岳かどうか(駅・車庫・信号は平地にしか置けない)。
-const isBuildableGround = (terrain: Map<string, TerrainType>, x: number, z: number): boolean =>
-  terrainAt(terrain, x, z) === 'grass';
+const isBuildableGround = (field: TerrainField, x: number, z: number): boolean =>
+  field.terrainTypeAt(x, z) === 'grass';
 
 // --- ヘルパー ---
 const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
@@ -119,8 +120,8 @@ const stationNameFor = (
 };
 
 // terrainに応じたbridge/tunnelフラグ(描画用)。平地ならどちらも付かない。
-const terrainFlags = (terrain: Map<string, TerrainType>, x: number, z: number): Pick<CellData, 'bridge' | 'tunnel'> => {
-  const t = terrainAt(terrain, x, z);
+const terrainFlags = (field: TerrainField, x: number, z: number): Pick<CellData, 'bridge' | 'tunnel'> => {
+  const t = field.terrainTypeAt(x, z);
   if (t === 'water') return { bridge: true };
   if (t === 'mountain') return { tunnel: true };
   return { bridge: undefined, tunnel: undefined };
@@ -202,21 +203,20 @@ const mountainCellCandidateDirs = (path: Pos[], i: number): number[] => {
  * 平地・水域セルは対象外(常にtrueにはならない=常に許可)。
  */
 export function pathHasUnsupportedMountainCell(
-  terrain: Map<string, TerrainType>,
-  elev: Map<string, number>,
+  field: TerrainField,
   path: Pos[]
 ): boolean {
   for (let i = 0; i < path.length; i++) {
     const { x, z } = path[i];
-    if (terrainAt(terrain, x, z) !== 'mountain') continue;
+    if (field.terrainTypeAt(x, z) !== 'mountain') continue;
 
     const isPortal = mountainCellCandidateDirs(path, i).some(dir => {
       const { x: dx, z: dz } = getVectorFromDir(dir);
-      return terrainAt(terrain, x + dx, z + dz) !== 'mountain';
+      return field.terrainTypeAt(x + dx, z + dz) !== 'mountain';
     });
     if (isPortal) continue;
 
-    if (cellCornerElevations(elev, x, z).every(c => c >= 1)) continue;
+    if (field.cellCornerHeights(x, z).every(c => c >= 1)) continue;
 
     return true;
   }
@@ -229,15 +229,15 @@ const addConnectionToCell = (
   x: number,
   z: number,
   dir: number,
-  terrain: Map<string, TerrainType>
+  field: TerrainField
 ): void => {
   const existing = railMap.get(key);
   if (!existing) {
-    railMap.set(key, { type: 'rail', connections: dir, ...terrainFlags(terrain, x, z) });
+    railMap.set(key, { type: 'rail', connections: dir, ...terrainFlags(field, x, z) });
   } else if (existing.type !== 'rail') {
     railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir });
   } else {
-    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...terrainFlags(terrain, x, z) });
+    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...terrainFlags(field, x, z) });
   }
 };
 
@@ -261,11 +261,7 @@ export interface RailPathApplyResult extends ConstructionState {
 export function applyRailPathDetailed(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
-  // セルごとの標高(sim/terrain.tsのgenerateMapが返すheights)。省略時は旧来どおり
-  // computeElevation(terrain)から導出する。mountain⟺標高1以上(MOUNTAIN_HEIGHT_THRESHOLD=1)
-  // なので、トンネル内部判定(コーナー標高>=1)はどちらを渡しても同じ結果になる。
-  heights?: Map<string, number>,
+  field: TerrainField = EMPTY_FIELD,
   // 町タイル索引(sim/townTiles.tsのbuildTownTileIndex)。省略時は町タイル無し扱い。
   // 家タイルを通る経路はno-op(道路タイルは踏切として通過できる)。
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
@@ -280,7 +276,7 @@ export function applyRailPathDetailed(
     if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
       const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
       if (plan) {
-        const result = applyGroundPathWithElevatedConnect(state, path, terrain, plan);
+        const result = applyGroundPathWithElevatedConnect(state, path, field, plan);
         if (result) return result;
       }
       // planがnull、または坂条件(車庫・地形)を満たせない場合は、接続を諦めて
@@ -295,7 +291,7 @@ export function applyRailPathDetailed(
   // 斜面フリンジ(天井が覆われていない山岳セル)へ線路が突き出さないよう、
   // 坑口にも内部セルにもなれない山岳セルを含む経路はno-opにする。
   // 詳細はpathHasUnsupportedMountainCellのdocコメント参照。
-  if (pathHasUnsupportedMountainCell(terrain, heights ?? computeElevation(terrain), path)) {
+  if (pathHasUnsupportedMountainCell(field, path)) {
     return { ...state, overpassCells: new Set() };
   }
 
@@ -312,10 +308,10 @@ export function applyRailPathDetailed(
     const dir = getDirFromVector(dx, dz);
     const oppDir = getOppositeDir(dir);
 
-    addConnectionToCell(railMap, currKey, curr.x, curr.z, dir, terrain);
+    addConnectionToCell(railMap, currKey, curr.x, curr.z, dir, field);
     if (railMap.get(currKey)?.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
 
-    addConnectionToCell(railMap, nextKey, next.x, next.z, oppDir, terrain);
+    addConnectionToCell(railMap, nextKey, next.x, next.z, oppDir, field);
     if (railMap.get(nextKey)?.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
 
     const checkDepotNeighbours = (px: number, pz: number) => {
@@ -332,11 +328,10 @@ export function applyRailPathDetailed(
 export function applyRailPath(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
-  heights?: Map<string, number>,
+  field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
 ): ConstructionState {
-  return applyRailPathDetailed(state, path, terrain, heights, townTiles);
+  return applyRailPathDetailed(state, path, field, townTiles);
 }
 
 /**
@@ -364,13 +359,13 @@ export function applyRailPath(
 export function isElevatedConnectPlanBuildable(
   railMap: Map<string, CellData>,
   path: Pos[],
-  terrain: Map<string, TerrainType>,
+  field: TerrainField,
   plan: ElevatedPathPlan
 ): boolean {
   for (let i = 0; i < path.length; i++) {
     if (plan.roles[i].kind !== 'ramp') continue;
     if (railMap.get(toKey(path[i].x, path[i].z))?.type === 'depot') return false;
-    if (!isBuildableGround(terrain, path[i].x, path[i].z)) return false;
+    if (!isBuildableGround(field, path[i].x, path[i].z)) return false;
   }
   if (pathConflictsWithExistingRamp(railMap, path)) return false;
   return planHasStraightRamps(path, plan);
@@ -414,10 +409,10 @@ function rampDirResolver(
 function applyGroundPathWithElevatedConnect(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType>,
+  field: TerrainField,
   plan: ElevatedPathPlan
 ): RailPathApplyResult | null {
-  if (!isElevatedConnectPlanBuildable(state.railMap, path, terrain, plan)) return null;
+  if (!isElevatedConnectPlanBuildable(state.railMap, path, field, plan)) return null;
 
   const railMap = new Map(state.railMap);
   const dirBetween = (a: number, b: number): number =>
@@ -432,7 +427,7 @@ function applyGroundPathWithElevatedConnect(
     const axisBits = prevDir | nextDir;
 
     if (role.kind === 'span') {
-      addConnectionToCell(railMap, key, path[i].x, path[i].z, axisBits, terrain);
+      addConnectionToCell(railMap, key, path[i].x, path[i].z, axisBits, field);
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
       continue;
     }
@@ -460,7 +455,7 @@ function applyGroundPathWithElevatedConnect(
     railMap.set(key, {
       ...merged,
       type: merged.type ?? 'rail',
-      ...terrainFlags(terrain, path[i].x, path[i].z),
+      ...terrainFlags(field, path[i].x, path[i].z),
       ramp: { dir: rampDir, level: role.level, base: role.base },
     });
     if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
@@ -472,7 +467,7 @@ function applyGroundPathWithElevatedConnect(
 export function applyStation(
   state: ConstructionState,
   pos: Pos,
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
+  field: TerrainField = EMPTY_FIELD,
   towns: TownData[] = [],
   axis?: StationAxis,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
@@ -481,7 +476,7 @@ export function applyStation(
   const existingBeforeUpdate = state.railMap.get(key);
 
   // 駅は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
-  if (!isBuildableGround(terrain, pos.x, pos.z)) {
+  if (!isBuildableGround(field, pos.x, pos.z)) {
     return state;
   }
 
@@ -611,14 +606,14 @@ export function applyStation(
 export function applyDepot(
   state: ConstructionState,
   pos: Pos,
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
+  field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
 ): ConstructionState {
   const key = toKey(pos.x, pos.z);
   const existing = state.railMap.get(key);
 
   // 車庫は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
-  if (!isBuildableGround(terrain, pos.x, pos.z)) {
+  if (!isBuildableGround(field, pos.x, pos.z)) {
     return state;
   }
 
@@ -642,7 +637,7 @@ export function applyDepot(
 export function applySignal(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
+  field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
 ): ConstructionState {
   const pos = path[0];
@@ -650,7 +645,7 @@ export function applySignal(
   const cell = state.railMap.get(key);
   if (!cell || (cell.type !== 'rail' && cell.type !== 'station')) return state;
   // 信号は平地にしか置けない: 橋・トンネル区間(水域・山岳)への設置は no-op
-  if (!isBuildableGround(terrain, pos.x, pos.z)) return state;
+  if (!isBuildableGround(field, pos.x, pos.z)) return state;
   // 町タイル(家・道路=踏切)への設置も no-op(踏切セルには信号機を建てない)。
   if (townTileAt(townTiles, pos.x, pos.z)) return state;
 
@@ -887,7 +882,7 @@ export function planElevatedPath(
 export function applyElevatedPath(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN,
+  field: TerrainField = EMPTY_FIELD,
   level: ElevatedLevel = 1,
   // 旧・applyBridge専用: 端の接続判定を実際の周辺セルから求めず強制する(後方互換用)。
   forcedEnds?: { start?: ElevatedEndPlan; end?: ElevatedEndPlan },
@@ -922,7 +917,7 @@ export function applyElevatedPath(
   // 桁(span)は家の上空を通過できるが、坂は地面に接するため)。
   for (let i = 0; i < path.length; i++) {
     if (plan.roles[i].kind !== 'ramp') continue;
-    if (!isBuildableGround(terrain, path[i].x, path[i].z)) return state;
+    if (!isBuildableGround(field, path[i].x, path[i].z)) return state;
     if (isTownBlocked(townTiles, path[i].x, path[i].z)) return state;
   }
 
@@ -986,7 +981,7 @@ export function applyElevatedPath(
       railMap.set(key, {
         ...merged,
         type: merged.type ?? 'rail',
-        ...terrainFlags(terrain, path[i].x, path[i].z),
+        ...terrainFlags(field, path[i].x, path[i].z),
         ramp: { dir: rampDir, level: role.level, base: role.base },
       });
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
@@ -1004,9 +999,9 @@ export function applyElevatedPath(
 export function applyBridge(
   state: ConstructionState,
   path: Pos[],
-  terrain: Map<string, TerrainType> = EMPTY_TERRAIN
+  field: TerrainField = EMPTY_FIELD
 ): ConstructionState {
-  return applyElevatedPath(state, path, terrain, 1, {
+  return applyElevatedPath(state, path, field, 1, {
     start: { kind: 'connect', level: 0 },
     end: { kind: 'connect', level: 0 },
   });

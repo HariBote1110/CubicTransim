@@ -1,8 +1,8 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
 import { toKey } from '../utils';
-import type { CellData, PlatformDoorType, TerrainType, TownData } from '../types';
-import { terrainAt } from './terrain';
+import type { CellData, PlatformDoorType, TownData } from '../types';
+import type { TerrainField } from './terrainField';
 import { applyRailPathDetailed, MAX_BRIDGE_LENGTH } from './construction';
 import type { SimWorld } from './simulation';
 
@@ -173,12 +173,12 @@ export const ELEVATED_STATION_COST = STATION_COST * OVERPASS_COST_MULTIPLIER;
 // 二重実装を避けるため)。
 export function costOfGroundPathWithRamps(
   path: { x: number; z: number }[],
-  terrain: Map<string, TerrainType>,
+  field: TerrainField,
   rampFlags: boolean[]
 ): number {
   return path.reduce((sum, cell, i) => {
     if (rampFlags[i]) return sum + RAIL_COST;
-    const t = terrainAt(terrain, cell.x, cell.z);
+    const t = field.terrainTypeAt(cell.x, cell.z);
     const terrainMultiplier = t === 'water' ? BRIDGE_COST_MULTIPLIER : t === 'mountain' ? TUNNEL_COST_MULTIPLIER : 1;
     return sum + RAIL_COST * terrainMultiplier;
   }, 0);
@@ -200,17 +200,17 @@ export function costOfPath(
   mode: ConstructionMode,
   cellCount: number,
   path?: { x: number; z: number }[],
-  terrain?: Map<string, TerrainType>,
+  field?: TerrainField,
   railMap?: Map<string, CellData>
 ): number {
   switch (mode) {
     case 'rail': {
-      if (path && terrain) {
+      if (path && field) {
         const overpassCells = railMap
-          ? applyRailPathDetailed({ railMap, stations: new Map() }, path, terrain).overpassCells
+          ? applyRailPathDetailed({ railMap, stations: new Map() }, path, field).overpassCells
           : new Set<string>();
         return path.reduce((sum, cell) => {
-          const t = terrainAt(terrain, cell.x, cell.z);
+          const t = field.terrainTypeAt(cell.x, cell.z);
           const terrainMultiplier =
             t === 'water' ? BRIDGE_COST_MULTIPLIER : t === 'mountain' ? TUNNEL_COST_MULTIPLIER : 1;
           const overpassMultiplier = overpassCells.has(toKey(cell.x, cell.z)) ? OVERPASS_COST_MULTIPLIER : 1;

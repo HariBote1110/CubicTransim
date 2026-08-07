@@ -1,5 +1,6 @@
 import { toKey } from '../utils';
-import type { CellData, StationData, TrainData, TrainGroupData, TownData, TerrainType } from '../types';
+import type { CellData, StationData, TrainData, TrainGroupData, TownData } from '../types';
+import type { TerrainField } from './terrainField';
 import {
   buildServiceGraph,
   createRouteCache,
@@ -153,11 +154,9 @@ export interface SimWorld {
   economyMirror?: { money: number };
   // 立地需要のもとになる街一覧。旧セーブ(v3以前)には存在しないため任意とする。
   towns?: TownData[];
-  // 地形(水域・山岳)。デバッグ表示・描画同期用。旧セーブ(v4以前)には存在しないため任意とする。
-  terrain?: Map<string, TerrainType>;
-  // セルごとの標高(整数段数、未登録=0)。地形の一次データ(sim/terrain.tsのgenerateMap)。
-  // 旧セーブ(v13以前)には存在しないため任意とする(移行時はcomputeElevationから導出)。
-  heights?: Map<string, number>;
+  // 地形field(sim/terrainField.tsのcreateTerrainField + sim/terrainOverlay.tsの
+  // createEditedTerrainFieldで合成した純関数field)。デバッグ表示・描画同期用。
+  terrainField?: TerrainField;
   // ゲーム内暦(シミュレーション累積秒)。旧セーブ(v5以前)には存在しないため任意とする。
   clock?: { elapsed: number };
   // PBS風のセル予約テーブル(セルキー→列車ID)。セーブデータには含めない。
@@ -1002,12 +1001,12 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
   // 町の湧き判定は日次(dtが大きく複数日跨いだ場合は日数分)。駅を置いただけでは湧かず、
   // 実際に列車が停まり輸送力が閾値を超えて初めて町の芽(小さな新しい町)が生える
   // (resolveTownSpawnTick、sim/towns.ts)。
-  if (newDayIndex > prevDayIndex && world.terrain) {
+  if (newDayIndex > prevDayIndex && world.terrainField) {
     const stationInfos = computeStationTransportInfos(world);
     for (let d = prevDayIndex; d < newDayIndex; d++) {
       if (stationInfos.length === 0) break;
       // railMapを渡し、線路・駅・車庫が地面を占有するセルの上に町の中心が湧かないようにする。
-      const result = resolveTownSpawnTick(stationInfos, world.towns ?? [], world.terrain, world.rng, world.railMap);
+      const result = resolveTownSpawnTick(stationInfos, world.towns ?? [], world.terrainField, world.rng, world.railMap);
       if (result.spawnedTowns.length > 0) {
         world.towns = result.towns;
         events.push({ type: 'townGrowth', towns: world.towns });

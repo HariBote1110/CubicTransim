@@ -27,9 +27,9 @@
 //   のみなら 'road'(踏切として通過可)。
 // - 複数の町が近接する場合は、buildTownTileIndexが towns 配列の順(先勝ち)で
 //   タイル(親タイル単位)の所有を決める。
-import type { CellData, TerrainType, TownData } from '../types';
+import type { CellData, TownData } from '../types';
 import { toKey, fromKey } from '../utils';
-import { terrainAt } from './terrain';
+import type { TerrainField } from './terrainField';
 
 export type TownTileKind = 'house' | 'road';
 
@@ -142,8 +142,7 @@ const NEIGHBOURS_4: ReadonlyArray<[number, number]> = [
  */
 export function generateTownSubTiles(
   town: TownData,
-  terrain: Map<string, TerrainType>,
-  heights: Map<string, number> = new Map(),
+  field: TerrainField,
   options: TownTileOptions = {}
 ): Map<string, TownTileKind> {
   const occupied = options.occupied ?? new Set<string>();
@@ -154,10 +153,8 @@ export function generateTownSubTiles(
   const scx = town.centre.x * SUB_TILES_PER_TILE;
   const scz = town.centre.z * SUB_TILES_PER_TILE;
 
-  // 親タイルが平地(標高0の草地)かどうか。mountainは標高1以上なので実質terrain判定で
-  // 足りるが、heightsが一次データである以上、両方を明示的に確認しておく。
-  const isFlatGrass = (x: number, z: number): boolean =>
-    terrainAt(terrain, x, z) === 'grass' && (heights.get(toKey(x, z)) ?? 0) === 0;
+  // 親タイルが平地(標高0の草地)かどうか。
+  const isFlatGrass = (x: number, z: number): boolean => field.terrainTypeAt(x, z) === 'grass';
 
   // 親タイル単位の適地判定(道路用/家用)。線路衝突がタイルベースなので粒度もタイル。
   const parentAllowsRoad = (sx: number, sz: number): boolean => {
@@ -283,11 +280,10 @@ export function deriveTileKinds(subTiles: Map<string, TownTileKind>): Map<string
  */
 export function generateTownTiles(
   town: TownData,
-  terrain: Map<string, TerrainType>,
-  heights: Map<string, number> = new Map(),
+  field: TerrainField,
   options: TownTileOptions = {}
 ): Map<string, TownTileKind> {
-  return deriveTileKinds(generateTownSubTiles(town, terrain, heights, options));
+  return deriveTileKinds(generateTownSubTiles(town, field, options));
 }
 
 export interface TownIndexes {
@@ -305,15 +301,14 @@ export interface TownIndexes {
  */
 export function buildTownIndexes(
   towns: TownData[],
-  terrain: Map<string, TerrainType>,
-  heights: Map<string, number> = new Map(),
+  field: TerrainField,
   railMap?: Map<string, CellData>
 ): TownIndexes {
   const tiles: TownTileIndex = new Map();
   const subTiles: TownSubTileIndex = new Map();
   const occupied = new Set<string>();
   for (const town of towns) {
-    const subs = generateTownSubTiles(town, terrain, heights, { occupied, railMap });
+    const subs = generateTownSubTiles(town, field, { occupied, railMap });
     for (const [key, kind] of subs) {
       subTiles.set(key, { townId: town.id, kind });
     }
@@ -328,11 +323,10 @@ export function buildTownIndexes(
 /** 全町を合成したタイル粒度の索引を作る(buildTownIndexesのタイル側のみ)。 */
 export function buildTownTileIndex(
   towns: TownData[],
-  terrain: Map<string, TerrainType>,
-  heights: Map<string, number> = new Map(),
+  field: TerrainField,
   railMap?: Map<string, CellData>
 ): TownTileIndex {
-  return buildTownIndexes(towns, terrain, heights, railMap).tiles;
+  return buildTownIndexes(towns, field, railMap).tiles;
 }
 
 /** セル(x,z)の町タイル(あれば)。 */

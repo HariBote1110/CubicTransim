@@ -1,7 +1,7 @@
 // 街(town)の生成ロジック。純粋関数のみ。React/THREE には依存しない。
-import type { CellData, StationData, TerrainType, TownData } from '../types';
+import type { CellData, StationData, TownData } from '../types';
 import { toKey } from '../utils';
-import { terrainAt } from './terrain';
+import type { TerrainField } from './terrainField';
 import { cellOccupiesGround } from './townTiles';
 
 type Pos = { x: number; z: number };
@@ -28,14 +28,14 @@ const MAX_ATTEMPTS_PER_TOWN = 500; // rejection samplingの試行回数上限
 const isNearTerrain = (
   x: number,
   z: number,
-  terrain: Map<string, TerrainType>,
+  field: TerrainField,
   radius: number
 ): boolean => {
   const r = Math.ceil(radius);
   for (let dx = -r; dx <= r; dx++) {
     for (let dz = -r; dz <= r; dz++) {
       if (Math.hypot(dx, dz) > radius) continue;
-      if (terrain.has(toKey(x + dx, z + dz))) return true;
+      if (field.terrainTypeAt(x + dx, z + dz) !== 'grass') return true;
     }
   }
   return false;
@@ -119,7 +119,7 @@ export function growTown(town: TownData, serviceLevel: number): TownData {
 export function generateTowns(
   rng: () => number,
   count = 8,
-  terrain: Map<string, TerrainType> = new Map()
+  field?: TerrainField
 ): TownData[] {
   const towns: TownData[] = [];
   const usedNames = new Set<string>();
@@ -133,7 +133,7 @@ export function generateTowns(
         t => Math.hypot(t.centre.x - x, t.centre.z - z) >= TOWN_MIN_DISTANCE
       );
       // 街は必ず平地に生成される: 水域・山岳セルの半径TOWN_TERRAIN_AVOID_RADIUS以内は避ける
-      const avoidsTerrain = !isNearTerrain(x, z, terrain, TOWN_TERRAIN_AVOID_RADIUS);
+      const avoidsTerrain = !field || !isNearTerrain(x, z, field, TOWN_TERRAIN_AVOID_RADIUS);
 
       if (farEnough && avoidsTerrain) {
         const population = Math.round(
@@ -232,7 +232,7 @@ export const NEW_TOWN_POPULATION_MAX = 400;
 const spawnTownNear = (
   pos: Pos,
   towns: TownData[],
-  terrain: Map<string, TerrainType>,
+  field: TerrainField,
   rng: () => number,
   railMap?: Map<string, CellData>
 ): TownData | null => {
@@ -243,7 +243,7 @@ const spawnTownNear = (
       if (dist < NEW_TOWN_SPAWN_RADIUS_MIN || dist > NEW_TOWN_SPAWN_RADIUS_MAX) continue;
       const x = pos.x + dx;
       const z = pos.z + dz;
-      if (terrainAt(terrain, x, z) !== 'grass') continue;
+      if (field.terrainTypeAt(x, z) !== 'grass') continue;
       if (railMap && cellOccupiesGround(railMap.get(toKey(x, z)))) continue;
       candidates.push({ x, z });
     }
@@ -300,7 +300,7 @@ export interface TownSpawnTickResult {
 export function resolveTownSpawnTick(
   stationInfos: StationTransportInfo[],
   towns: TownData[],
-  terrain: Map<string, TerrainType>,
+  field: TerrainField,
   rng: () => number,
   // 既存の線路網(省略可)。町の中心を線路・駅・車庫の上に置かないために使う。
   railMap?: Map<string, CellData>
@@ -313,7 +313,7 @@ export function resolveTownSpawnTick(
     if (nearestTownWithinRadius(info.pos, currentTowns, TOWN_STATION_RADIUS)) continue;
     if (rng() >= townSpawnChance(info.capacity)) continue;
 
-    const spawned = spawnTownNear(info.pos, currentTowns, terrain, rng, railMap);
+    const spawned = spawnTownNear(info.pos, currentTowns, field, rng, railMap);
     if (!spawned) continue;
     currentTowns = [...currentTowns, spawned];
     spawnedTowns.push(spawned);

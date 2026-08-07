@@ -1,9 +1,10 @@
 import type { CellData, StationData, TrainData, TrainGroupData, TownData, TerrainType } from '../types';
 import type { TrainRuntime } from './simulation';
-import { STARTING_MONEY, type MonthlyLedger } from './economy';
+import { type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
 import { fallbackTownName } from './towns';
-import { computeElevation } from './terrain';
+import type { SerialisedCornerDiffs, CornerDiffs } from './terrainOverlay';
+import { serialiseCornerDiffs, deserialiseCornerDiffs } from './terrainOverlay';
 
 export interface SaveDataV1 {
   version: 1;
@@ -176,16 +177,28 @@ export interface SaveDataV14 extends Omit<SaveDataV13, 'version'> {
   heights: [string, number][];
 }
 
+// v15: 地形の持ち方を「全セル実体化(terrain/heights Map)」から「決定的な純関数
+// (worldSeed)+疎な編集差分(cornerDiffs)」へ転換した(progress/16k-map-architecture.md
+// のP3)。旧v14以前のterrain/heights配列は廃止し、worldSeed・halfExtent・cornerDiffsの
+// 3つだけを保存する。リリース前でセーブ互換は破壊してよい(ユーザー明言)ため、
+// v14以前からの移行処理は書かず、ロード時は問答無用でreject(null)する。
+export interface SaveDataV15 extends Omit<SaveDataV14, 'version' | 'terrain' | 'heights'> {
+  version: 15;
+  /** 地形の乱数シード(sim/terrainField.tsのcreateTerrainFieldへそのまま渡す)。 */
+  seed: number;
+  /** マップの生成半径(-halfExtent..halfExtentのセルを生成する)。 */
+  halfExtent: number;
+  /** 盛土/切土の疎な編集差分(sim/terrainOverlay.tsのserialiseCornerDiffs形式)。 */
+  cornerDiffs: SerialisedCornerDiffs;
+}
+
 export type SaveData =
   | SaveDataV1 | SaveDataV2 | SaveDataV3 | SaveDataV4 | SaveDataV5
   | SaveDataV6 | SaveDataV7 | SaveDataV8 | SaveDataV9 | SaveDataV10 | SaveDataV11
-  | SaveDataV12 | SaveDataV13 | SaveDataV14;
+  | SaveDataV12 | SaveDataV13 | SaveDataV14 | SaveDataV15;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
-
-// v9以前の台帳には利息(interest)が存在しないため、0で補う。
-const migrateLedger = (ledger: LegacyLedger): MonthlyLedger => ({ ...ledger, interest: ledger.interest ?? 0 });
 
 export function serialiseWorld(
   railMap: Map<string, CellData>,
@@ -195,7 +208,7 @@ export function serialiseWorld(
   waiting: Map<string, number>,
   money: number,
   towns: TownData[],
-  terrain: Map<string, TerrainType>,
+  seed: number,
   clock: { elapsed: number },
   currentLedger: MonthlyLedger,
   ledgerHistory: MonthlyLedger[],
@@ -204,11 +217,14 @@ export function serialiseWorld(
   groupDepartures: Map<string, number> = new Map(),
   loan = 0,
   demand: Map<string, PassengerCohort[]> = new Map(),
-  heights: Map<string, number> = new Map()
-): SaveDataV14 {
+  halfExtent: number,
+  cornerDiffs: CornerDiffs = new Map()
+): SaveDataV15 {
   return {
-    version: 14,
-    heights: Array.from(heights.entries()),
+    version: 15,
+    seed,
+    halfExtent,
+    cornerDiffs: serialiseCornerDiffs(cornerDiffs),
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -216,7 +232,6 @@ export function serialiseWorld(
     waiting: Array.from(waiting.entries()),
     money,
     towns,
-    terrain: Array.from(terrain.entries()),
     clock,
     currentLedger,
     ledgerHistory,
@@ -236,9 +251,12 @@ export interface RestoredWorld {
   waiting: Map<string, number>;
   money: number;
   towns: TownData[];
-  terrain: Map<string, TerrainType>;
-  /** セルごとの標高(整数段数、未登録=0)。v13以前はcomputeElevationで導出する。 */
-  heights: Map<string, number>;
+  /** 地形の乱数シード。sim/terrainField.tsのcreateTerrainFieldへそのまま渡す。 */
+  seed: number;
+  /** マップの生成半径。 */
+  halfExtent: number;
+  /** 盛土/切土の疎な編集差分。 */
+  cornerDiffs: CornerDiffs;
   clock: { elapsed: number };
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
@@ -249,20 +267,19 @@ export interface RestoredWorld {
   demand: Map<string, PassengerCohort[]>;
 }
 
-export function deserialiseWorld(data: SaveData): RestoredWorld {
-  if (data.version === 14) {
-    // v14はv13にheightsを加えただけなので、本体はv13と同じ移行経路を通す。
-    const base = deserialiseWorldWithoutHeights({ ...data, version: 13 });
-    return { ...base, heights: new Map(data.heights) };
-  }
-  const base = deserialiseWorldWithoutHeights(data);
-  // v13以前にはheightsが無い。旧来どおりmountainセルの縁からの距離(最大3段)で導出する。
-  return { ...base, heights: computeElevation(base.terrain) };
-}
+/**
+ * セーブデータの復元。v15のみ受け付ける。v14以前はterrain/heights Mapを全セル
+ * 実体化していた旧形式であり、v15(worldSeed+halfExtent+cornerDiffs)とは
+ * 互換性が無い。リリース前でセーブ互換は破壊してよい(ユーザー明言)ため、
+ * 移行処理は書かずnullを返す(呼び出し側は壊れたセーブと同様に扱う)。
+ */
+export function deserialiseWorld(data: SaveData): RestoredWorld | null {
+  if (data.version !== 15) return null;
 
-function deserialiseWorldWithoutHeights(data: Exclude<SaveData, SaveDataV14>): Omit<RestoredWorld, 'heights'> {
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
+  // v15にこれらの旧バージョンは存在しないが、TrainRuntimeの型はセーブ間で共有しているため
+  // 同じ既定値補完をそのまま適用しておく(将来型が拡張されたときの安全弁)。
   const runtimes = new Map(
     data.runtimes.map(([id, rt]) => [
       id,
@@ -272,7 +289,6 @@ function deserialiseWorldWithoutHeights(data: Exclude<SaveData, SaveDataV14>): O
         lastStopStationId: rt.lastStopStationId ?? null,
         haltRemaining: rt.haltRemaining ?? 0,
         pathHistory: (rt as TrainRuntime).pathHistory ?? [...rt.trail],
-        // v10以前のセーブには車内の行き先つき旅客が無いため、空で補う。
         load: (rt as TrainRuntime).load ?? [],
         // 予約(PBS)状態はセーブに含めない。ロード後の最初のstepWorldで
         // ensureRuntime/ensureReservationが再構築する(-1=未取得の状態から再開)。
@@ -281,252 +297,35 @@ function deserialiseWorldWithoutHeights(data: Exclude<SaveData, SaveDataV14>): O
     ])
   );
 
-  // v1/v2データにはplatformDoorsが存在しないため、既定値'none'で補う。
-  // v11以前のデータにはcells[].layerが存在しないため、既定値0(地平)で補う
-  // (立体交差の高架駅が無かった時代のセーブは、全セルが地平ホームとして読み込める)。
-  const migrateStations = (stations: [string, StationData][]) =>
-    new Map(
-      stations.map(([id, st]) => [id, {
-        ...st,
-        platformDoors: st.platformDoors ?? 'none',
-        cells: st.cells.map(c => ({ ...c, layer: c.layer ?? 0 })),
-      }])
-    );
+  const stations = new Map(
+    data.stations.map(([id, st]) => [id, {
+      ...st,
+      platformDoors: st.platformDoors ?? 'none',
+      cells: st.cells.map(c => ({ ...c, layer: c.layer ?? 0 })),
+    }])
+  );
 
-  // v11以前のデータには町名が存在しないため、決定的な名前(街の位置から導く)で補う。
-  const migrateTowns = (towns: TownData[]) =>
-    towns.map((town, i) => (town.name ? town : { ...town, name: fallbackTownName(i) }));
+  const towns = data.towns.map((town, i) => (town.name ? town : { ...town, name: fallbackTownName(i) }));
+  const trains = data.trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
-  // v6以前のデータにはtrains[].carsが存在しないため、既定値2(新造時の編成両数)で補う。
-  const migrateTrains = (trains: TrainData[]) =>
-    trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
-
-  // v12以前のCellDataは`upper`(1レベル固定)を持つ。v13で`uppers`(レベル1〜3の
-  // Partial<Record>)へ一般化したため、`upper`があればuppers[1]へ移行する。
-  // ramp.baseも同時に導入したが、v12以前の坂は常にbase=0(地平からの坂)なので
-  // 補うだけで良い(levelは既存値をそのまま引き継ぐ)。
-  const migrateRailMap = (railMap: [string, LegacyCellData][]): [string, CellData][] =>
-    railMap.map(([key, cell]): [string, CellData] => {
-      const { upper, ramp, ...rest } = cell;
-      const migrated: CellData = { ...rest };
-      if (upper) migrated.uppers = { 1: { connections: upper.connections, stationId: upper.stationId } };
-      if (ramp) migrated.ramp = { ...ramp, base: 0 };
-      return [key, migrated];
-    });
-
-  if (data.version === 13) {
-    return {
-      railMap: new Map(data.railMap),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: migrateTowns(data.towns),
-      terrain: new Map(data.terrain),
-      clock: data.clock,
-      currentLedger: migrateLedger(data.currentLedger),
-      ledgerHistory: data.ledgerHistory.map(migrateLedger),
-      stopLocation: data.stopLocation,
-      groups: data.groups ?? [],
-      groupDepartures: new Map(data.groupDepartures ?? []),
-      loan: data.loan,
-      demand: new Map(data.demand),
-    };
-  }
-
-  if (data.version === 12 || data.version === 11 || data.version === 10 || data.version === 9) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: migrateTowns(data.towns),
-      terrain: new Map(data.terrain),
-      clock: data.clock,
-      currentLedger: migrateLedger(data.currentLedger),
-      ledgerHistory: data.ledgerHistory.map(migrateLedger),
-      stopLocation: data.stopLocation,
-      groups: data.groups ?? [],
-      groupDepartures: new Map(data.groupDepartures ?? []),
-      // v9以前には借入が存在しないため、無借金として移行する。
-      loan: data.version === 9 ? 0 : data.loan,
-      // v10以前の待ち客は行き先を持たない。行き先の分からない客は運びようがないので
-      // 引き継がず(待ち客は改めて湧く)、空の需要から再開する。
-      demand: new Map(data.version === 11 || data.version === 12 ? data.demand : []),
-    };
-  }
-
-  if (data.version === 8) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: migrateTowns(data.towns),
-      terrain: new Map(data.terrain),
-      clock: data.clock,
-      currentLedger: migrateLedger(data.currentLedger),
-      ledgerHistory: data.ledgerHistory.map(migrateLedger),
-      stopLocation: data.stopLocation,
-      groups: [],
-      groupDepartures: new Map(),
-      loan: 0,
-      demand: new Map(),
-    };
-  }
-
-  if (data.version === 7) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: migrateTowns(data.towns),
-      terrain: new Map(data.terrain),
-      clock: data.clock,
-      currentLedger: migrateLedger(data.currentLedger),
-      ledgerHistory: data.ledgerHistory.map(migrateLedger),
-      // v7以前にはstopLocationが存在しないため、既定値'middle'(既存の編成中央基準)で移行する。
-      stopLocation: 'middle',
-      groups: [],
-      groupDepartures: new Map(),
-      loan: 0,
-      demand: new Map(),
-    };
-  }
-
-  if (data.version === 6) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: migrateTowns(data.towns),
-      terrain: new Map(data.terrain),
-      clock: data.clock,
-      currentLedger: migrateLedger(data.currentLedger),
-      ledgerHistory: data.ledgerHistory.map(migrateLedger),
-      stopLocation: 'middle',
-      groups: [],
-      groupDepartures: new Map(),
-      loan: 0,
-      demand: new Map(),
-    };
-  }
-
-  if (data.version === 5) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: migrateTowns(data.towns),
-      terrain: new Map(data.terrain),
-      // v5以前には暦・台帳が存在しないため、暦0(1年1月1日)・台帳空で移行する。
-      clock: { elapsed: 0 },
-      currentLedger: emptyLedger(),
-      ledgerHistory: [],
-      stopLocation: 'middle',
-      groups: [],
-      groupDepartures: new Map(),
-      loan: 0,
-      demand: new Map(),
-    };
-  }
-
-  if (data.version === 4) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: migrateTowns(data.towns),
-      // v4以前にはterrainが存在しないため、地形なし(全て平地)として移行する。
-      terrain: new Map(),
-      clock: { elapsed: 0 },
-      currentLedger: emptyLedger(),
-      ledgerHistory: [],
-      stopLocation: 'middle',
-      groups: [],
-      groupDepartures: new Map(),
-      loan: 0,
-      demand: new Map(),
-    };
-  }
-
-  if (data.version === 3) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      // v3以前にはtownsが存在しないため、街なし(旅客需要0)で開始する。
-      towns: [],
-      terrain: new Map(),
-      clock: { elapsed: 0 },
-      currentLedger: emptyLedger(),
-      ledgerHistory: [],
-      stopLocation: 'middle',
-      groups: [],
-      groupDepartures: new Map(),
-      loan: 0,
-      demand: new Map(),
-    };
-  }
-
-  if (data.version === 2) {
-    return {
-      railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-      stations: migrateStations(data.stations),
-      trains: migrateTrains(data.trains),
-      runtimes,
-      waiting: new Map(data.waiting),
-      money: data.money,
-      towns: [],
-      terrain: new Map(),
-      clock: { elapsed: 0 },
-      currentLedger: emptyLedger(),
-      ledgerHistory: [],
-      stopLocation: 'middle',
-      groups: [],
-      groupDepartures: new Map(),
-      loan: 0,
-      demand: new Map(),
-    };
-  }
-
-  // v1→v6移行: waitingは空、moneyはSTARTING_MONEYから開始し、towns/terrain/暦/台帳も既定値にする。
   return {
-    railMap: new Map(migrateRailMap(data.railMap as unknown as [string, LegacyCellData][])),
-    stations: migrateStations(data.stations),
-    trains: migrateTrains(data.trains),
+    railMap: new Map(data.railMap),
+    stations,
+    trains,
     runtimes,
-    waiting: new Map(),
-    money: STARTING_MONEY,
-    clock: { elapsed: 0 },
-    currentLedger: emptyLedger(),
-    ledgerHistory: [],
-    towns: [],
-    terrain: new Map(),
-    stopLocation: 'middle',
-    groups: [],
-    groupDepartures: new Map(),
-    loan: 0,
-    demand: new Map(),
+    waiting: new Map(data.waiting),
+    money: data.money,
+    towns,
+    seed: data.seed,
+    halfExtent: data.halfExtent,
+    cornerDiffs: deserialiseCornerDiffs(data.cornerDiffs),
+    clock: data.clock,
+    currentLedger: data.currentLedger,
+    ledgerHistory: data.ledgerHistory,
+    stopLocation: data.stopLocation,
+    groups: data.groups ?? [],
+    groupDepartures: new Map(data.groupDepartures ?? []),
+    loan: data.loan,
+    demand: new Map(data.demand),
   };
 }

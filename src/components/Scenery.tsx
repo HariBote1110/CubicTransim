@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import type { CellData, TerrainType } from '../types';
+import type { CellData } from '../types';
 import type { TownTileIndex } from '../sim/townTiles';
 import { toKey } from '../utils';
 import { MATERIALS, hash01 } from '../render/palette';
+import type { TerrainField } from '../sim/terrainField';
 import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
-  terrain: Map<string, TerrainType>;
+  field: TerrainField;
   railMap: Map<string, CellData>;
   /** 町タイル索引(sim/townTiles.tsのbuildTownTileIndex)。市街地には樹木を置かない。 */
   townTiles: TownTileIndex;
@@ -29,14 +30,14 @@ const TOWN_TILE_MARGIN = 1;
  * 同じ座標には必ず同じ木が生えるので見た目は安定する)。
  * 数百本規模になるのでマテリアルごとにジオメトリをマージして3ドローコールに収める。
  */
-export const Scenery: React.FC<Props> = ({ terrain, railMap, townTiles, range = 45 }) => {
+export const Scenery: React.FC<Props> = ({ field, railMap, townTiles, range = 45 }) => {
   // 地形と街だけに依存する候補リスト(建設のたびに全セル走査しないよう分離する)。
   const candidates = useMemo(() => {
     const list: { x: number; z: number }[] = [];
     for (let x = -range; x <= range; x++) {
       for (let z = -range; z <= range; z++) {
         if (hash01(x, z, 11) >= TREE_DENSITY) continue;
-        if (terrain.has(toKey(x, z))) continue; // 水域・山岳は除外
+        if (field.terrainTypeAt(x, z) !== 'grass') continue; // 水域・山岳は除外
         // 町タイル(家・道路)とその周囲1タイルは市街地として空けておく
         let nearTown = false;
         for (let dx = -TOWN_TILE_MARGIN; dx <= TOWN_TILE_MARGIN && !nearTown; dx++) {
@@ -49,7 +50,7 @@ export const Scenery: React.FC<Props> = ({ terrain, railMap, townTiles, range = 
       }
     }
     return list;
-  }, [terrain, townTiles, range]);
+  }, [field, townTiles, range]);
 
   const merged = useMemo(() => {
     const trunks: THREE.BufferGeometry[] = [];

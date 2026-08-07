@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TerrainType } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND,
@@ -21,6 +21,9 @@ import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
 import type { BuildLevel } from '../sim/construction';
+import type { TerrainField } from '../sim/terrainField';
+import type { EditedTerrainField, EditBlockers } from '../sim/terrainOverlay';
+import { toKey } from '../utils';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -39,9 +42,13 @@ interface GameUIProps {
   trains: TrainData[];
   stations: Map<string, StationData>;
   railMap: Map<string, CellData>;
-  terrain: Map<string, TerrainType>;
-  /** セルごとの標高(整数段数、未登録=0)。地形編集(盛土/切土)プレビューの可否判定に使う。 */
-  heights: Map<string, number>;
+  field: TerrainField;
+  /** 編集差分を含まない基底field。地形編集(盛土/切土)プレビューのブロック判定に使う。 */
+  baseField: TerrainField;
+  /** 編集差分を合成したfield(=field自身と同じ実体)。applyCornerEditの入力に使う。 */
+  editedField: EditedTerrainField;
+  /** マップの生成半径。地形編集の範囲外判定に使う。 */
+  halfExtent: number;
   /** 町タイル索引(useGameLogicのtownTileIndex)。建設プレビューの可否判定に使う。 */
   townTiles: TownTileIndex;
   isEditingSchedule: boolean;
@@ -118,7 +125,7 @@ const STOP_LOCATION_LABEL = {
 export const GameUI: React.FC<GameUIProps> = ({
   buildMode, setBuildMode,
   buildLevel, setBuildLevel,
-  selectedTrainId, trains, stations, railMap, terrain, heights, townTiles,
+  selectedTrainId, trains, stations, railMap, field, baseField, editedField, halfExtent, townTiles,
   isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar,
   scheduleClipboard, onCopySchedule, onPasteSchedule,
@@ -221,8 +228,17 @@ export const GameUI: React.FC<GameUIProps> = ({
   // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
   const preview = useMemo(() => {
     if (buildMode === 'none' || previewPath.length === 0) return null;
-    return evaluateBuild(buildMode, previewPath, railMap, stations, terrain, money, buildLevel, townTiles, heights);
-  }, [buildMode, previewPath, railMap, stations, terrain, money, buildLevel, townTiles, heights]);
+    const blockers: EditBlockers = {
+      isCellBlocked: (x, z) =>
+        x < -halfExtent || x > halfExtent || z < -halfExtent || z > halfExtent ||
+        railMap.has(toKey(x, z)) ||
+        townTiles.has(toKey(x, z)) ||
+        baseField.terrainTypeAt(x, z) === 'water',
+    };
+    return evaluateBuild(buildMode, previewPath, railMap, stations, field, money, buildLevel, townTiles, {
+      base: baseField, editedField, blockers,
+    });
+  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(

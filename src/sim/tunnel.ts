@@ -6,7 +6,7 @@
 // railMap から純粋に導出する。描画(坑口ファサードの形状)はrender層の責務。
 import { toKey, fromKey, getVectorFromDir, getOppositeDir, DIR } from '../utils';
 import type { CellData } from '../types';
-import { elevationAt, cellCornersFromMap } from './terrain';
+import type { TerrainField } from './terrainField';
 import { OVERPASS_HEIGHT } from './trackPath';
 
 const ALL_DIRS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
@@ -39,10 +39,9 @@ const pushPortal = (portals: TunnelPortal[], x: number, z: number, dir: number):
  * 両ケースが同じ方向を指すことはない(接続方向とその反対方向は常に異なるため)ので
  * 重複は起きない。
  *
- * @param elevation sim/terrain.ts の computeElevation の結果。行き止まり坑口が
- *   山の内部を突き破らないようにするための判定にのみ使う。
+ * @param field 地形field。行き止まり坑口が山の内部を突き破らないようにするための判定にのみ使う。
  */
-export function tunnelPortals(railMap: Map<string, CellData>, elevation: Map<string, number>): TunnelPortal[] {
+export function tunnelPortals(railMap: Map<string, CellData>, field: TerrainField): TunnelPortal[] {
   const portals: TunnelPortal[] = [];
 
   for (const [key, cell] of railMap) {
@@ -60,7 +59,7 @@ export function tunnelPortals(railMap: Map<string, CellData>, elevation: Map<str
     if (connectedDirs.length === 1) {
       const oppositeDir = getOppositeDir(connectedDirs[0]);
       const { x: dx, z: dz } = getVectorFromDir(oppositeDir);
-      if (elevationAt(elevation, x + dx, z + dz) <= 0) {
+      if (field.cellHeightAt(x + dx, z + dz) <= 0) {
         pushPortal(portals, x, z, oppositeDir);
       }
     }
@@ -95,9 +94,9 @@ export function isInTunnelInterior(railMap: Map<string, CellData>, x: number, z:
  * ことが保証される。
  */
 export function isMountainInteriorAtLevel(
-  cornerElevation: Map<string, number>, x: number, z: number, level: number,
+  field: TerrainField, x: number, z: number, level: number,
 ): boolean {
-  const corners = cellCornersFromMap(cornerElevation, x, z);
+  const corners = field.cellCornerHeights(x, z);
   return corners.every(h => h >= level);
 }
 
@@ -159,16 +158,15 @@ interface ElevatedTunnelLevelData {
  */
 function computeElevatedTunnelLevelData(
   railMap: Map<string, CellData>,
-  cornerElevation: Map<string, number>,
-  elevation: Map<string, number>,
+  field: TerrainField,
   level: 1 | 2 | 3,
 ): ElevatedTunnelLevelData {
   const interior = new Set<string>();
   const portals: ElevatedTunnelPortal[] = [];
 
   for (const component of elevatedComponents(railMap, level)) {
-    const cornerTest = (x: number, z: number): boolean => isMountainInteriorAtLevel(cornerElevation, x, z, level);
-    const scalarTest = (x: number, z: number): boolean => elevationAt(elevation, x, z) >= level;
+    const cornerTest = (x: number, z: number): boolean => isMountainInteriorAtLevel(field, x, z, level);
+    const scalarTest = (x: number, z: number): boolean => field.cellHeightAt(x, z) >= level;
     const hasCornerInterior = component.some(k => {
       const { x, z } = fromKey(k);
       return cornerTest(x, z);
@@ -209,19 +207,17 @@ export type ElevatedTunnelIndex = Map<1 | 2 | 3, ElevatedTunnelLevelData>;
 
 /**
  * 高架レベル1〜3すべてについて、山岳内部に埋もれているセルと坑口を一括計算する。
- * @param cornerElevation buildCornerElevationMapの結果(坑口位置が地形の斜面へ
- *   ちょうど乗る/めり込む位置に来るよう、4隅すべての標高で内外判定するために使う)。
- * @param elevation computeElevationの結果(コーナー基準では山が薄すぎて内部セルが
- *   1つも見つからない場合のフォールバック判定にのみ使う)。
+ * @param field 地形field。坑口位置が地形の斜面へちょうど乗る/めり込む位置に来るよう、
+ *   4隅すべての標高で内外判定する(コーナー基準では山が薄すぎて内部セルが1つも
+ *   見つからない場合はセル代表標高へフォールバックする)。
  */
 export function buildElevatedTunnelIndex(
   railMap: Map<string, CellData>,
-  cornerElevation: Map<string, number>,
-  elevation: Map<string, number>,
+  field: TerrainField,
 ): ElevatedTunnelIndex {
   const index = new Map<1 | 2 | 3, ElevatedTunnelLevelData>();
   for (const level of [1, 2, 3] as const) {
-    index.set(level, computeElevatedTunnelLevelData(railMap, cornerElevation, elevation, level));
+    index.set(level, computeElevatedTunnelLevelData(railMap, field, level));
   }
   return index;
 }

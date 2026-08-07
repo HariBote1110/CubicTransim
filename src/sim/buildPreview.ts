@@ -8,7 +8,7 @@
 // 高架ツール(旧'elevated'/'elevated-station')は廃止し、通常の'rail'/'station'が
 // levelパラメータ(0=地平〜3)に従う形に統合した。level===0のときは従来の
 // applyRailPath/applyStationと完全に同一の判定になる(回帰させないための最重要制約)。
-import type { CellData, StationData, TerrainType } from '../types';
+import type { CellData, StationData } from '../types';
 import type { ConstructionState, BuildLevel, ElevatedLevel } from './construction';
 import {
   applyRailPathDetailed,
@@ -24,8 +24,9 @@ import {
   isElevatedConnectPlanBuildable,
 } from './construction';
 import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfTerrainEdit, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
-import { terrainAt } from './terrain';
-import { applyTerrainEdit } from './terrainEdit';
+import type { TerrainField } from './terrainField';
+import type { EditedTerrainField } from './terrainOverlay';
+import { applyCornerEdit, type EditBlockers } from './terrainOverlay';
 import type { TownTileIndex } from './townTiles';
 
 export type BuildMode = ConstructionMode | 'remove' | 'raise' | 'lower';
@@ -60,31 +61,38 @@ export function evaluateBuild(
   path: { x: number; z: number }[],
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>,
-  terrain: Map<string, TerrainType>,
+  field: TerrainField,
   money: number,
   // 建設対象レベル。0=地平(従来のrail/station建設と完全に同一)、1〜3=高架。
   level: BuildLevel = 0,
   // 町タイル索引(sim/townTiles.tsのbuildTownTileIndex)。省略時は町タイル無し扱い。
   // apply系へそのまま渡し、家タイルを通る地平線路などが'no-effect'になるようにする。
   townTiles: TownTileIndex = new Map(),
-  // 標高(地形の一次データ)。地形編集('raise'/'lower')の判定にのみ使う。
-  heights: Map<string, number> = new Map()
+  // 地形編集('raise'/'lower')の判定にのみ使う編集用引数。省略時は編集不可(no-effect)。
+  terrainEdit?: {
+    base: TerrainField;
+    editedField: EditedTerrainField;
+    blockers: EditBlockers;
+  }
 ): BuildPreview {
   const empty: BuildPreview = {
     mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0, level,
   };
   if (path.length === 0) return empty;
 
-  // 地形編集(盛土/切土)。実際の編集ロジック(terrainEdit.ts)へそのまま問い合わせ、
-  // 「変化が無ければ同一参照」の規約で可否を判定する。cellCountとコストは、伝播で
-  // 動くセルを含む変化セル数(=課金対象)を使う。
+  // 地形編集(盛土/切土)。実際の編集ロジック(terrainOverlay.tsのapplyCornerEdit)へ
+  // そのまま問い合わせ、「変化が無ければ同一参照」の規約で可否を判定する。
+  // cellCountとコストは、伝播で動くコーナー数を含む変化コーナー数(=課金対象)を使う。
   if (mode === 'raise' || mode === 'lower') {
-    const result = applyTerrainEdit(heights, terrain, railMap, townTiles, path, mode);
-    const effective = result.heights !== heights;
-    const cost = costOfTerrainEdit(result.changedCells.length);
+    if (!terrainEdit) return { ...empty, cellCount: path.length };
+    const a = path[0];
+    const b = path[path.length - 1];
+    const result = applyCornerEdit(terrainEdit.base, terrainEdit.editedField, { a, b }, mode, terrainEdit.blockers);
+    const effective = result.field !== terrainEdit.editedField;
+    const cost = costOfTerrainEdit(result.changedCorners);
     return {
       ...empty,
-      cellCount: effective ? result.changedCells.length : path.length,
+      cellCount: effective ? result.changedCorners : path.length,
       cost,
       reason: !effective ? 'no-effect' : cost > money ? 'insufficient-funds' : 'ok',
     };
@@ -97,7 +105,7 @@ export function evaluateBuild(
   let tunnelCells = 0;
   if (mode === 'rail' && !elevated) {
     for (const cell of path) {
-      const t = terrainAt(terrain, cell.x, cell.z);
+      const t = field.terrainTypeAt(cell.x, cell.z);
       if (t === 'water') bridgeCells++;
       else if (t === 'mountain') tunnelCells++;
     }
@@ -130,7 +138,7 @@ export function evaluateBuild(
       // 坂になるセルが車庫・水域・山岳で建設できない場合は、実際の建設(applyRailPath)側でも
       // 接続を諦めて平坦な地平線路にフォールバックするため、プレビューのコストも
       // 通常のcostOfPathへフォールバックする(groundRampFlagsをnullのままにする)。
-      if (plan && isElevatedConnectPlanBuildable(railMap, path, terrain, plan)) {
+      if (plan && isElevatedConnectPlanBuildable(railMap, path, field, plan)) {
         groundRampFlags = plan.roles.map(r => r.kind === 'ramp');
       }
     }
@@ -142,14 +150,14 @@ export function evaluateBuild(
     : mode === 'rail' && elevated
     ? costOfElevatedPath(elevatedRampCount, elevatedOverpassCount)
     : mode === 'rail' && groundRampFlags
-    ? costOfGroundPathWithRamps(path, terrain, groundRampFlags)
+    ? costOfGroundPathWithRamps(path, field, groundRampFlags)
     : mode === 'station' && elevated
     ? ELEVATED_STATION_COST
     : costOfPath(
         mode === 'bridge' ? 'bridge' : mode,
         path.length,
         mode === 'rail' || mode === 'bridge' ? path : undefined,
-        mode === 'rail' ? terrain : undefined,
+        mode === 'rail' ? field : undefined,
         mode === 'rail' ? railMap : undefined
       );
 
@@ -159,26 +167,26 @@ export function evaluateBuild(
   let overpassCells = 0;
   switch (mode) {
     case 'remove': result = removePath(state, path); break;
-    case 'signal': result = applySignal(state, path, terrain, townTiles); break;
+    case 'signal': result = applySignal(state, path, field, townTiles); break;
     case 'station':
       result = elevated
         ? applyElevatedStation(state, path[path.length - 1], [], elevatedLevel)
-        : applyStation(state, path[path.length - 1], terrain, [], undefined, townTiles);
+        : applyStation(state, path[path.length - 1], field, [], undefined, townTiles);
       break;
-    case 'depot': result = applyDepot(state, path[path.length - 1], terrain, townTiles); break;
+    case 'depot': result = applyDepot(state, path[path.length - 1], field, townTiles); break;
     case 'rail': {
       if (elevated) {
-        result = applyElevatedPath(state, path, terrain, elevatedLevel, undefined, townTiles);
+        result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTiles);
         if (result.railMap !== state.railMap) overpassCells = elevatedOverpassCount;
       } else {
-        const detailed = applyRailPathDetailed(state, path, terrain, undefined, townTiles);
+        const detailed = applyRailPathDetailed(state, path, field, townTiles);
         result = detailed;
         overpassCells = detailed.overpassCells.size;
       }
       break;
     }
     case 'bridge': {
-      result = applyElevatedPath(state, path, terrain, 1, undefined, townTiles);
+      result = applyElevatedPath(state, path, field, 1, undefined, townTiles);
       break;
     }
   }

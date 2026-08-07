@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TerrainType } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
@@ -14,8 +14,11 @@ import {
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit,
 } from '../sim/economy';
-import { applyTerrainEdit } from '../sim/terrainEdit';
-import type { TerrainEditMode } from '../sim/terrainEdit';
+import type { TerrainField } from '../sim/terrainField';
+import { createTerrainField, fieldFromMaps } from '../sim/terrainField';
+import type { CornerDiffs, EditBlockers, TerrainEditMode } from '../sim/terrainOverlay';
+import { createEditedTerrainField, applyCornerEdit } from '../sim/terrainOverlay';
+import { TERRAIN_COORD_RANGE } from '../sim/terrain';
 
 // 編成の最小・最大両数
 const MIN_CARS = 1;
@@ -26,7 +29,6 @@ import { mulberry32, generateTowns } from '../sim/towns';
 import { buildTownIndexes } from '../sim/townTiles';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
-import { generateMap } from '../sim/terrain';
 import { relocateTrain } from '../sim/relocate';
 import { createDebugScenario } from '../sim/debugScenario';
 import type { DebugScenarioWorld } from '../sim/debugScenarios';
@@ -49,22 +51,30 @@ export const useGameLogic = () => {
   const [stations, setStations] = useState<Map<string, StationData>>(new Map());
   const [trains, setTrains] = useState<TrainData[]>([]);
 
-  // ★追加: 新規ゲームの決定的生成に使う共通シード。terrain→townsの順で同じ乱数の系譜から生成する
-  // (townsの生成は水域・山岳セルを避けるためterrainが先に必要)。
-  const [worldSeed] = useState<number>(() => Date.now() % 2 ** 31);
+  // ★追加(P3): 地形の乱数シード。terrainField.tsのcreateTerrainFieldへそのまま渡す
+  // 決定的な純関数のパラメータで、全セルを実体化しない(progress/16k-map-architecture.md)。
+  const [worldSeed, setWorldSeed] = useState<number>(() => Date.now() % 2 ** 31);
+  // マップの生成半径。マップサイズ選択UIは別途対応するため、当面は旧TERRAIN_COORD_RANGE
+  // (45)を固定で使う。
+  const [halfExtent] = useState<number>(TERRAIN_COORD_RANGE);
+  // 盛土/切土の疎な編集差分(コーナー格子)。terrainOverlay.tsのCornerDiffs。
+  const [cornerDiffs, setCornerDiffs] = useState<CornerDiffs>(new Map());
+  // デバッグシナリオが手組みの地形(尾根など、乱数シードでは表現できない形)を使うときの
+  // 上書きfield。通常プレイ中はnull(=worldSeed+halfExtent+cornerDiffsから合成したfieldを使う)。
+  const [debugFieldOverride, setDebugFieldOverride] = useState<TerrainField | null>(null);
 
-  // ★追加: 地形(水域・山岳)と標高(一次データ)。初回起動(セーブなしの新規状態)では
-  // シード付き乱数で自動生成する(generateMapがheights→terrainの順で導出する)。
-  // ロード時はセーブデータのterrain/heightsで置き換わる(v13以前のheightsは移行時に導出)。
-  const [initialMap] = useState(() => generateMap(mulberry32(worldSeed)));
-  const [terrain, setTerrain] = useState<Map<string, TerrainType>>(initialMap.terrain);
-  const [heights, setHeights] = useState<Map<string, number>>(initialMap.heights);
+  // worldSeed・halfExtentから決定的に導出する基底field。編集差分を含まない。
+  const baseField = useMemo(() => createTerrainField(worldSeed, halfExtent), [worldSeed, halfExtent]);
+  // 基底fieldへcornerDiffsを合成したfield。盛土/切土の結果を反映する。
+  const editedField = useMemo(() => createEditedTerrainField(baseField, cornerDiffs), [baseField, cornerDiffs]);
+  // 実際にゲーム全体が参照するfield。デバッグシナリオの上書きがあればそちらを優先する。
+  const field: TerrainField = debugFieldOverride ?? editedField;
 
   // ★追加: 街(town)。初回起動(セーブなしの新規状態)ではシード付き乱数で自動生成する。
   // ロード時はセーブデータ(v4以降)のtownsで置き換わる(v3以前は towns=[] になる)。
-  // 街は必ず平地に生成されるよう、terrainを渡して水域・山岳付近を除外する。
+  // 街は必ず平地に生成されるよう、baseFieldを渡して水域・山岳付近を除外する。
   const [towns, setTowns] = useState<TownData[]>(() =>
-    generateTowns(mulberry32(worldSeed + 1), 8, terrain)
+    generateTowns(mulberry32(worldSeed + 1), 8, baseField)
   );
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
@@ -104,8 +114,7 @@ export const useGameLogic = () => {
     rng: Math.random,
     economyMirror: { money: STARTING_MONEY },
     towns,
-    terrain,
-    heights,
+    terrainField: field,
     clock: { elapsed: 0 },
     stopLocation: 'middle',
     groups: [],
@@ -129,12 +138,8 @@ export const useGameLogic = () => {
   }, [towns]);
 
   useEffect(() => {
-    worldRef.current.terrain = terrain;
-  }, [terrain]);
-
-  useEffect(() => {
-    worldRef.current.heights = heights;
-  }, [heights]);
+    worldRef.current.terrainField = field;
+  }, [field]);
 
   // economyMirrorはデバッグ/表示用のReact state鏡写しで、simロジックからは参照されない。
   useEffect(() => {
@@ -167,8 +172,8 @@ export const useGameLogic = () => {
   // マップは約91x91・町は十数個なので、建設のたびの再計算で十分軽い。
   // タイル索引(建設ガード用)とサブタイル索引(描画用)を同じuseMemoで導出する。
   const townIndexes = useMemo(
-    () => buildTownIndexes(towns, terrain, heights, railMap),
-    [towns, terrain, heights, railMap]
+    () => buildTownIndexes(towns, field, railMap),
+    [towns, field, railMap]
   );
   const townTileIndex = townIndexes.tiles;
   const townSubTileIndex = townIndexes.subTiles;
@@ -188,16 +193,27 @@ export const useGameLogic = () => {
   ) => {
     if (path.length === 0) return;
 
-    // 地形編集(盛土/切土)。railMap/stationsではなくheights/terrainを更新する別系統なので
-    // ここで完結させる。可否・伝播はsim/terrainEdit.tsのapplyTerrainEditが判定し、
-    // 変化が無ければ同一参照が返る(=課金しない)。コストは伝播分を含む変化セル数に比例。
+    // 地形編集(盛土/切土)。railMap/stationsではなくcornerDiffsを更新する別系統なので
+    // ここで完結させる。可否・伝播はsim/terrainOverlay.tsのapplyCornerEditが判定し、
+    // 変化が無ければ同一参照が返る(=課金しない)。コストは伝播分を含む変化コーナー数に比例。
+    // デバッグシナリオの手組みfield(debugFieldOverride)を使っている間は編集経路が
+    // 無いため何もしない(デバッグ専用の割り切り)。
     if (buildMode === 'raise' || buildMode === 'lower') {
-      const result = applyTerrainEdit(heights, terrain, railMap, townTileIndex, path, buildMode);
-      if (result.heights === heights) return;
-      const cost = costOfTerrainEdit(result.changedCells.length);
+      if (debugFieldOverride) return;
+      const blockers: EditBlockers = {
+        isCellBlocked: (x, z) =>
+          x < -halfExtent || x > halfExtent || z < -halfExtent || z > halfExtent ||
+          railMap.has(toKey(x, z)) ||
+          townTileIndex.has(toKey(x, z)) ||
+          baseField.terrainTypeAt(x, z) === 'water',
+      };
+      const a = path[0];
+      const b = path[path.length - 1];
+      const result = applyCornerEdit(baseField, editedField, { a, b }, buildMode, blockers);
+      if (result.field === editedField) return;
+      const cost = costOfTerrainEdit(result.changedCorners);
       if (money < cost) return;
-      setHeights(result.heights);
-      setTerrain(result.terrain);
+      setCornerDiffs(result.field.diffs);
       setMoney(m => m - cost);
       setCurrentLedger(l => ({ ...l, construction: l.construction + cost }));
       return;
@@ -215,7 +231,7 @@ export const useGameLogic = () => {
       case 'signal':
         cost = costOfPath('signal', path.length);
         if (money < cost) return;
-        result = applySignal(state, path, terrain, townTileIndex);
+        result = applySignal(state, path, field, townTileIndex);
         break;
       case 'station': {
         if (level === 0) {
@@ -225,7 +241,7 @@ export const useGameLogic = () => {
           // 駅設置時点では町を湧かせない(近くに町が無くてもそのまま建てられる)。
           // 命名は既存の町名由来/A駅フォールバックのまま(applyStationのstationNameFor)。
           // 町は輸送力が育ってから日次チェック(resolveTownSpawnTick)で湧く。
-          result = applyStation(state, stationPos, terrain, towns, stationAxisHint, townTileIndex);
+          result = applyStation(state, stationPos, field, towns, stationAxisHint, townTileIndex);
         } else {
           // 高架駅タイル1枚(旧'elevated-station')。
           cost = ELEVATED_STATION_COST;
@@ -238,7 +254,7 @@ export const useGameLogic = () => {
       case 'depot':
         cost = costOfPath('depot', path.length);
         if (money < cost) return;
-        result = applyDepot(state, path[path.length - 1], terrain, townTileIndex);
+        result = applyDepot(state, path[path.length - 1], field, townTileIndex);
         break;
       case 'rail': {
         if (level === 0) {
@@ -253,17 +269,17 @@ export const useGameLogic = () => {
             const endEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[path.length - 1]), 0);
             if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
               const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
-              if (plan && isElevatedConnectPlanBuildable(railMap, path, terrain, plan)) {
+              if (plan && isElevatedConnectPlanBuildable(railMap, path, field, plan)) {
                 groundRampFlags = plan.roles.map(r => r.kind === 'ramp');
               }
             }
           }
           // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
           cost = groundRampFlags
-            ? costOfGroundPathWithRamps(path, terrain, groundRampFlags)
-            : costOfPath('rail', path.length, path, terrain);
+            ? costOfGroundPathWithRamps(path, field, groundRampFlags)
+            : costOfPath('rail', path.length, path, field);
           if (money < cost) return;
-          result = applyRailPath(state, path, terrain, heights, townTileIndex);
+          result = applyRailPath(state, path, field, townTileIndex);
         } else {
           // 自由な高架線(旧'elevated')。坂・橋桁の内訳はconstruction.ts側の判定
           // (resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath)にそのまま
@@ -276,7 +292,7 @@ export const useGameLogic = () => {
           const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
           cost = costOfElevatedPath(rampCount, overpassCount);
           if (money < cost) return;
-          result = applyElevatedPath(state, path, terrain, elevatedLevel, undefined, townTileIndex);
+          result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTileIndex);
         }
         break;
       }
@@ -562,10 +578,10 @@ export const useGameLogic = () => {
   // ★追加: セーブ／ロード
   const saveGame = () => {
     const saveData = serialiseWorld(
-      railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, terrain,
+      railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, worldSeed,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
       groups, worldRef.current.groupDepartures ?? new Map(), loan,
-      worldRef.current.demand ?? new Map(), heights
+      worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
@@ -578,6 +594,10 @@ export const useGameLogic = () => {
     }
     const saveData = JSON.parse(raw) as SaveData;
     const restored = deserialiseWorld(saveData);
+    if (!restored) {
+      console.warn('Save data is incompatible with the current version and was discarded.');
+      return;
+    }
 
     setRailMap(restored.railMap);
     setStations(restored.stations);
@@ -585,8 +605,9 @@ export const useGameLogic = () => {
     setMoney(restored.money);
     setLoan(restored.loan);
     setTowns(restored.towns);
-    setTerrain(restored.terrain);
-    setHeights(restored.heights);
+    setWorldSeed(restored.seed);
+    setCornerDiffs(restored.cornerDiffs);
+    setDebugFieldOverride(null);
     setCurrentLedger(restored.currentLedger);
     setLedgerHistory(restored.ledgerHistory);
     setStopLocation(restored.stopLocation);
@@ -615,8 +636,13 @@ export const useGameLogic = () => {
     setRailMap(scenario.railMap);
     setStations(scenario.stations);
     setTrains(scenario.trains);
-    setTerrain(scenario.terrain ?? new Map());
-    setHeights(scenario.heights ?? new Map());
+    if (scenario.worldSeedOverride !== undefined) {
+      setWorldSeed(scenario.worldSeedOverride);
+      setCornerDiffs(new Map());
+      setDebugFieldOverride(null);
+    } else {
+      setDebugFieldOverride(scenario.field ?? fieldFromMaps(new Map(), new Map(), halfExtent));
+    }
     setTowns(scenario.towns ?? []);
     setGroups(scenario.groups ?? []);
     if (scenario.money !== undefined) setMoney(scenario.money);
@@ -636,8 +662,10 @@ export const useGameLogic = () => {
     towns,
     townTileIndex,
     townSubTileIndex,
-    terrain,
-    heights,
+    field,
+    baseField,
+    editedField,
+    halfExtent,
     selectedTrainId, setSelectedTrainId: selectTrain,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal,

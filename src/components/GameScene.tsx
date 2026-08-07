@@ -14,7 +14,7 @@ import { StationBlock, StationHouse, trackAngleFromConnections } from './Station
 import { TownBlocks } from './TownBlocks';
 import { Scenery } from './Scenery';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData, TerrainType } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData } from '../types';
 import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
@@ -22,8 +22,8 @@ import type { StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
-import { buildCornerElevationMap, cellCornersFromMap } from '../sim/terrain';
-import { rectCells } from '../sim/terrainEdit';
+import type { TerrainField } from '../sim/terrainField';
+import { rectCells } from '../sim/terrainOverlay';
 import type { TownTileIndex, TownSubTileIndex } from '../sim/townTiles';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
@@ -100,9 +100,9 @@ interface GameSceneProps {
   townTiles: TownTileIndex;
   /** 町サブタイル索引(useGameLogicのtownSubTileIndex)。家・道路の描画に使う。 */
   townSubTiles: TownSubTileIndex;
-  terrain: Map<string, TerrainType>;
-  /** セルごとの標高(整数段数、未登録=0)。地形の一次データ(sim/terrain.tsのgenerateMap)。 */
-  heights: Map<string, number>;
+  field: TerrainField;
+  /** マップの生成半径(-halfExtent..halfExtent)。Scenery/TerrainBlocksの走査範囲に使う。 */
+  halfExtent: number;
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
   // ★変更: 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜MAX_ELEVATED_LEVEL)。
@@ -137,7 +137,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, townTiles, townSubTiles, terrain, heights, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, townTiles, townSubTiles, field, halfExtent, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -333,26 +333,23 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   // トンネルの坑口(山肌に面した出入口)。OpenTTD風にトンネル内部は地形メッシュへ
   // 埋め込む(TerrainBlocks側)ため、坑口だけをこちらで別途描く。行き止まり坑口が
-  // 山の内部を突き破らないよう、標高(TerrainBlocksと同じheights一次データ)を渡す。
-  const terrainElevation = heights;
-  // 坑口の開口を斜面へ沿わせる傾き計算に使うコーナー標高の共有マップ(TerrainBlocksと同じ導出)。
-  const terrainCornerMap = useMemo(() => buildCornerElevationMap(terrainElevation), [terrainElevation]);
+  // 山の内部を突き破らないよう、地形field(コーナー標高)を直接クエリする。
   // 高架レール(uppers[L])が山岳内部を通る区間の坑口・内部判定(sim/tunnel.tsの
   // buildElevatedTunnelIndex)。4隅すべての標高がそのレベル以上のセルだけを内部と
   // みなすことで、坑口の箱が斜面から浮く/背後・左右に隙間ができる不具合を防ぐ。
   const elevatedTunnelIndex = useMemo(
-    () => buildElevatedTunnelIndex(railMap, terrainCornerMap, terrainElevation),
-    [railMap, terrainCornerMap, terrainElevation],
+    () => buildElevatedTunnelIndex(railMap, field),
+    [railMap, field],
   );
   // 地平の坑口(level:0)+高架の坑口(level:1〜3)を合成する。
   const tunnelPortalList = useMemo(() => {
-    const ground = tunnelPortals(railMap, terrainElevation).map(p => ({ ...p, level: 0 as const }));
+    const ground = tunnelPortals(railMap, field).map(p => ({ ...p, level: 0 as const }));
     const elevatedLevels: (1 | 2 | 3)[] = Array.from(
       { length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3,
     );
     const elevated = elevatedLevels.flatMap(level => elevatedTunnelPortals(elevatedTunnelIndex, level));
     return [...ground, ...elevated];
-  }, [railMap, terrainElevation, elevatedTunnelIndex]);
+  }, [railMap, field, elevatedTunnelIndex]);
 
   // ヘッドウォール(壁)・開口の寸法定数。壁の幅はセル幅いっぱい(1.0)、高さはポータルごとに
   // computePortalHeadwallで決まる。開口はarchRadius===openingHalfWidthとして直線部と半円が
@@ -379,7 +376,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const portalGeometryData = useMemo(() => {
     const cache = new Map<number, THREE.ExtrudeGeometry>();
     return tunnelPortalList.map(portal => {
-      const cellCorners = cellCornersFromMap(terrainCornerMap, portal.x, portal.z);
+      const cellCorners = field.cellCornerHeights(portal.x, portal.z);
       const { height: wallHeight, embedDepth } = computePortalHeadwall(
         cellCorners, portal.dx, portal.dz, OVERPASS_HEIGHT,
       );
@@ -399,7 +396,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       return { portal, wallHeight, embedDepth, headwallGeometry };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tunnelPortalList, terrainCornerMap]);
+  }, [tunnelPortalList, field]);
 
   // トンネル内部の暗がりのジオメトリ(開口断面と同形の薄い平板。壁の背面に面一で
   // 貼り付ける終端キャップ。寸法は固定なので1度だけ生成する)。
@@ -455,7 +452,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
           ? 0.2 + buildLevel * OVERPASS_HEIGHT
           // 地形編集はセルの現在の標高の上にゴーストを重ねる(丘の上でも埋もれない)。
           : terrainEditActive
-          ? 0.2 + (heights.get(toKey(pos.x, pos.z)) ?? 0) * OVERPASS_HEIGHT
+          ? 0.2 + field.cellHeightAt(pos.x, pos.z) * OVERPASS_HEIGHT
           : 0.2;
         return (
           <mesh key={`preview-${i}`} position={[pos.x, previewY, pos.z]} raycast={() => null}>
@@ -471,14 +468,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
           しまうため。ハンドラ内でstopPropagationし、背後の地面プレーンのハンドラが
           プレーン上の(ずれた)e.pointで二重に発火しないようにする。 */}
       <TerrainBlocks
-        terrain={terrain}
-        heights={heights}
+        field={field}
+        halfExtent={halfExtent}
         pickable={terrainEditActive}
         onPointerMove={(e) => { e.stopPropagation(); handlePointerMove(e); }}
         onPointerDown={handlePointerDown}
         onPointerUp={(e) => { e.stopPropagation(); handlePointerUp(e); }}
       />
-      <Scenery terrain={terrain} railMap={railMap} townTiles={townTiles} />
+      <Scenery field={field} railMap={railMap} townTiles={townTiles} range={halfExtent} />
       <TrackNetwork railMap={railMap} />
 
       {Array.from(railMap.entries()).map(([key, data]) => {

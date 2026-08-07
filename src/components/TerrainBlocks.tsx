@@ -1,22 +1,16 @@
 import React, { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import type { ThreeEvent } from '@react-three/fiber';
-import type { TerrainType } from '../types';
-import { fromKey } from '../utils';
-import {
-  elevationAt,
-  buildCornerElevationMap,
-  cellCornersFromMap,
-  TERRAIN_HEIGHT_MAX,
-} from '../sim/terrain';
+import type { TerrainField } from '../sim/terrainField';
+import { TERRAIN_HEIGHT_MAX } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import { MATERIALS } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
 
 interface Props {
-  terrain: Map<string, TerrainType>;
-  /** セルごとの標高(整数段数、未登録=0)。地形の一次データ(sim/terrain.tsのgenerateMap)。 */
-  heights: Map<string, number>;
+  field: TerrainField;
+  /** マップの生成半径(-halfExtent..halfExtentのセルを走査する)。 */
+  halfExtent: number;
   /**
    * trueのとき、地形の上面メッシュ(草地・雪)をポインタで拾えるようにし、
    * 渡されたハンドラを発火させる(地形編集モード用。e.pointが実際の地表に当たるので、
@@ -69,14 +63,8 @@ const pushTri = (
  * 地形データ(sim/terrain.ts)そのものは変更していない。
  */
 export const TerrainBlocks: React.FC<Props> = ({
-  terrain, heights, pickable = false, onPointerMove, onPointerDown, onPointerUp,
+  field, halfExtent, pickable = false, onPointerMove, onPointerDown, onPointerUp,
 }) => {
-  const elevation = heights;
-  // コーナー標高は「コーナー座標→標高」の共有マップとして1度だけ構築する
-  // (buildCornerElevationMap)。セルごとに個別計算すると、同じコーナーを共有する
-  // 隣接セル間で計算結果がずれ、上面メッシュに裂け目ができる恐れがある。
-  const cornerMap = useMemo(() => buildCornerElevationMap(elevation), [elevation]);
-
   const merged = useMemo(() => {
     const water: THREE.BufferGeometry[] = [];
     const shore: THREE.BufferGeometry[] = [];
@@ -85,8 +73,9 @@ export const TerrainBlocks: React.FC<Props> = ({
     const grassTop: THREE.BufferGeometry[] = [];
     const snowTop: THREE.BufferGeometry[] = [];
 
-    for (const [key, type] of terrain) {
-      const { x, z } = fromKey(key);
+    for (let x = -halfExtent; x <= halfExtent; x++) {
+      for (let z = -halfExtent; z <= halfExtent; z++) {
+      const type = field.terrainTypeAt(x, z);
 
       if (type === 'water') {
         // 岸: セル全体を砂色で塗り、その内側に水面を張る。
@@ -103,10 +92,10 @@ export const TerrainBlocks: React.FC<Props> = ({
 
       // mountain(トンネル敷設済みセルもOpenTTD風に地形メッシュへ埋め込んで描く。
       // 坑口はGameScene側でtunnelPortalsを使い山肌の位置に別途表示する)
-      const e = elevationAt(elevation, x, z);
+      const e = field.cellHeightAt(x, z);
       if (e <= 0) continue;
 
-      const corners = cellCornersFromMap(cornerMap, x, z);
+      const corners = field.cellCornerHeights(x, z);
       const worldCorners = corners.map((h, i) => {
         const [ox, oz] = CORNER_OFFSETS[i];
         return new THREE.Vector3(x + ox, h * OVERPASS_HEIGHT, z + oz);
@@ -130,6 +119,7 @@ export const TerrainBlocks: React.FC<Props> = ({
         pushTri(topTarget, tl, br, tr);
         pushTri(topTarget, tl, bl, br);
       }
+      }
     }
 
     const mergeAll = (list: THREE.BufferGeometry[]): THREE.BufferGeometry | null => {
@@ -146,7 +136,7 @@ export const TerrainBlocks: React.FC<Props> = ({
       grassTop: mergeAll(grassTop),
       snowTop: mergeAll(snowTop),
     };
-  }, [terrain, elevation, cornerMap]);
+  }, [field, halfExtent]);
 
   useEffect(() => () => {
     Object.values(merged).forEach(g => g?.dispose());
