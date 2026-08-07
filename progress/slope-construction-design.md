@@ -152,3 +152,53 @@ OpenTTD の傾斜モデル(progress/openttd-slope-notes.md)を簡約して導入
     `costOfGroundRailPlan`が700(平地7セル)ではなく2100(5×100 + 2×100×8)を返す
     ことを確認(トンネル分の割増コストが正しく効いている)。
   - 実際に山から離れた平地(z=30)への線路・駅2件の建設は従来通り正常に動作することを確認。
+
+## P7c実装メモ
+
+- 高さの一本化: `sim/slopes.ts`に`groundRailCentreHeight(field, cell, x, z)`(=`railHeightAt`の
+  整数段数をOVERPASS_HEIGHT単位のワールドYへ換算するだけの薄い関数)と、render側の部品分けに
+  必要な`railRenderHeight`(flat/tunnelは単一のy、inclineは低い側/高い側の2値+dir)を追加した。
+  sim(renderPos/carPositions)とrender(TrackNetwork)は両方ともこの2関数だけを経由し、地形段数→
+  ワールドYの換算式を重複させていない(CLAUDE.mdのtrackPath原則どおり)。
+- 列車の高さ: `sim/simulation.ts`の`cellCentreHeight`/`cellRampHeight`と`sim/consist.ts`の
+  `trackCentreHeight`に`terrainField`を追加引数として通し、layer(高架)でもramp(坂)でもない
+  地上セルは`groundRailCentreHeight`を上乗せするようにした。`terrainField`省略時(既存の
+  ユニットテストのフィクスチャなど)は従来どおり0のままなので後方互換。trackPath.tsの
+  `cellCurveHeight`/`pathHeightAt`(既に坂の縦曲線描画のために存在していた「隣接セル中心高さを
+  2次ベジェで補間する」機構)をそのまま再利用でき、新しいイージングを発明する必要はなかった。
+- 地上レールの描画: `render/trackGeometry.ts`に`buildGroundInclineTrackParts`を追加。incline
+  セルは地形コーナーが作る面が文字通り線形(1段/セル)なので、坂(ramp)のsmoothstepとは別に、
+  低い側境界→高い側境界を直線で結ぶだけの2点ポリラインにした(既存の`layTrackAlong`をそのまま
+  再利用。バラスト・枕木・レールの生成方法はramp/flatと共通)。`TrackNetwork.tsx`は`field`を
+  新たにpropで受け取り、セルごとに`railRenderHeight`で分岐: incline→`buildGroundInclineTrackParts`、
+  flat/tunnel→`buildCellTrackParts`にoriginYを渡すだけ。ramp/高架(uppers)の既存ロジックは
+  無改修(どちらも「標高0の地平」前提のまま、P7bのisFlatGroundLevelZeroガードで担保されている)。
+- 駅・車庫・信号・駅舎・建設プレビュー: `GameScene.tsx`で`field.cellHeightAt(x,z)*OVERPASS_HEIGHT`
+  を各要素のy座標に加えた。駅・車庫・信号はP7aの規則で常にflatセル限定のため、単一の代表標高で
+  十分(inclineの低い側/高い側の使い分けは不要)。
+- トンネル坑口: `sim/tunnel.ts`の`TunnelPortal`に`height`フィールドを追加した。地平の坑口は
+  `cell.tunnel.height`、高架の坑口(`ElevatedTunnelPortal`)は従来どおり`level`をそのまま詰める。
+  `GameScene.tsx`の坑口`faceY`は`portal.height * OVERPASS_HEIGHT`の1本の式で地平・高架どちらも
+  扱えるようになった(旧`portal.level * OVERPASS_HEIGHT`は地平が常に0固定だったため、地平トンネルが
+  標高を持つP7bの変更後は誤った高さになるところだった)。ヘッドウォールの高さ自体
+  (`computePortalHeadwall`の`MIN_HEADWALL_HEIGHT`)はP7b以前から既に「基準面からの相対値・固定」
+  という設計だったため無改修で済んだ。
+- 列車のトンネル内非表示判定(`isTrainHiddenInTunnel`)は地平側(`isInTunnelInterior`)がx,zだけを
+  見る実装だったため、tunnel.heightが可変になっても無改修で動作する。
+- ブラウザ検証: `terrain-playground`シナリオ上で盛土ツールを使い、原点付近に1クリックで
+  小さな丘(flat0→incline→flat1(頂上)→incline→flat0)を作った上で、直線の線路を丘越しに敷設・
+  頂上に駅・麓に車庫を設置して確認した。
+  - (a) 敷設した線路は丘の断面(隣接セル境界)でギャップなく連続してレールが登り降りするのを
+    スクリーンショットで確認(`buildGroundInclineTrackParts`のレールが地形メッシュの傾斜面に
+    正しく追従)。
+  - (b) `__dbgStep`で列車を丘越しに走らせ、`__debugWorld.runtimes`の`renderPos.y`が地平基準0.5から
+    傾斜区間で0.5〜1.3(=0.5+OVERPASS_HEIGHT×1)へ連続的に増加することを確認。スクリーンショットでも
+    車体が斜面に沿って傾いて描画されているのを確認。
+  - (c) `mountain-tunnel`デバッグシナリオで坑口が斜面に正しく接し(浮き・めり込みなし)、列車が
+    トンネル内部で非表示になる従来の挙動が保たれていることを確認(地平トンネルなのでheight=0の
+    ケースだが、坑口高さの式自体は共通化済み)。
+  - (d) 丘の頂上(flat1)に置いた駅が地形標高ぶん正しく持ち上げられ、列車がホーム位置で
+    浮き/めり込みなく停車できることを確認。
+  - (e) `multi-level-crossing`(高架Lv1〜3の立体交差)デバッグシナリオを`__dbgStep`で走らせ、
+    高架・坂(ramp)の見た目・列車の走行が従来どおりであることを確認(地上標高絡みのP7cの変更が
+    高架系統に影響していない)。
