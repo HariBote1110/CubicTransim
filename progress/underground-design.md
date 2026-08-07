@@ -131,3 +131,90 @@
 - **やらなかったこと(P8b/c送り)**: 描画(地下ビュー切替・掘割の開口部表現)・
   UIのレベル選択(ArrowUp/Downの負方向拡張、現状は`stepElevatedLevel`が0..3
   固定のままGameUI.tsxでキャストして型だけ通した)。
+
+## P8b-c実装メモ(0.3.0-Alpha-39b→40aベース)
+
+- **UI(レベル選択、GameUI.tsx/trackPath.ts)**: `stepElevatedLevel`を
+  `0|1|2|3`から`-3..3`(新設の`Level3`型)へ拡張した。0をまたぐ特別扱いは無く、
+  単純な加算+クランプのまま(対称性のおかげで場合分けが要らない)。ツールバーの
+  建設レベル選択は`-MAX_ELEVATED_LEVEL..MAX_ELEVATED_LEVEL`の7ボタンになり、
+  負レベルは「地下1」〜「地下3」表記(高架の「Lv1」〜と対比、色もT.accent系に
+  差別化)。ボタンのtitleと線路/駅ツールのhintに、地下のコスト
+  (`UNDERGROUND_RAIL_COST_MULTIPLIER`倍・`UNDERGROUND_STATION_COST`)を明示した。
+- **建設コミット配線(useGameLogic.ts)**: `commitPath`のrail/stationケースを
+  `level===0 / level>0 / level<0`の3分岐にし、`level<0`側を
+  `applyUndergroundPath`/`applyUndergroundStation`+
+  `costOfUndergroundPath`/`UNDERGROUND_STATION_COST`へ配線した(elevated側の
+  配線と対称。プレビュー(buildPreview.ts)は既にP8aで配線済みだったので変更不要)。
+- **プレビュー(GameScene.tsx)**: `elevatedPreviewPlan`の`level`引数の型を
+  `ElevatedLevel`から`BuildLevel`へ広げただけで、地下のプレビュー計画
+  (坂/spanの色分け・高さ)もそのまま動く(`pickElevatedConnection`/
+  `planElevatedPath`がP8aで既に符号対称に作られていたため)。
+- **地下ビューの表示メカニズム(方針)**: 「カットアウェイ無し」の設計方針どおり、
+  地下モードでは地表・高架・(選択中以外の)地下をまとめて暗く半透明にし、
+  選択中の地下レベルだけ通常輝度で描く。実装は**マテリアルの共有インスタンスを
+  2セット(`render/palette.ts`の`MATERIALS`/`DIMMED_MATERIALS`)用意し、
+  メッシュ単位でどちらを参照するか選ぶだけ**にした(メッシュごとのクローン生成は
+  しない、というタスクの制約どおり)。`DIMMED_MATERIALS`は`MATERIALS`と同じキー
+  構成を持つ「transparent+opacity低めの色」の別インスタンド集合。
+  `materialsFor(dimmed)`ヘルパーがその選択を1箇所に集約する。可視性・明暗の
+  判定ロジック自体は`render/viewMode.ts`の3つの純関数(`isUndergroundView`/
+  `shouldRenderLevel`/`isLevelDimmed`)に切り出し、TDDでテストしてから各描画
+  コンポーネントへ配線した(判定を各コンポーネントに書き写さない)。
+  - `TerrainBlocks`/`Scenery`/`TownBlocks`/`StationBlock`/`TrainCar`は
+    `dimmed?: boolean`propを追加しただけ(地表・高架・地平駅・地上/高架列車は
+    地下ビュー全体でひとまとめに暗くなる/明るいままかの二値)。
+  - `TrackNetwork`は地下(uppers[-1..-3]・ramp.base<0)の描画を新規に追加した。
+    地平・高架は従来通り1つの「surface」バケットにまとめ、地下ビュー時は
+    `materialsFor(undergroundView)`で丸ごと暗くする。地下は「選択中のレベルと
+    一致する分(bright)」「それ以外の地下(dim)」の2バケットに分け、通常表示
+    (`!undergroundView`)では両方とも描かない(掘割の開口だけ出す、後述)。
+    地下の坂・span(桁)は土中なので支柱・桁・バラスト(ramp本体を除く)を
+    描かない(高架のような橋脚は要らない)。
+  - `DynamicTrain`/`TrainCar`は列車ごとに`dimmed`を1つ算出し(選択中レベルと
+    その列車の層が一致するか)、`TrainCar`へpropとして渡す。共有材質
+    `bodyMaterialDimmed`(車体色ごとにキャッシュ、`bodyMaterial`の暗い版)を
+    新設した。
+- **掘割ランプの地表開口(TrackNetwork.tsx/render/trackGeometry.ts)**: 通常表示
+  (地下ビューでない)では地下線そのものは完全に隠すが、ランプの浅い側
+  (`ramp.base===-1`、地表に接する側)のセルだけ`buildUndergroundOpeningPart`
+  (暗いpitの床+左右の擁壁、いずれもBoxGeometry)を出す。地下ビュー中はこの
+  セルも他の地下と同様bright/dimどちらかの通常線路として描く(開口とは排他)。
+- **列車の層判定はrenderPos.yからの逆算をやめた(重要なバグ修正)**: 当初
+  `DynamicTrain`で`Math.round(head.y / OVERPASS_HEIGHT)`から層を復元しようと
+  したが、これは誤り。地下は「地表からの相対深さ」なので、丘の上(標高h>0)の
+  地下1段はrenderPos.yが`0.5 + h*OVERPASS_HEIGHT - 1*OVERPASS_HEIGHT`になり、
+  平地の地下1段(`0.5 - 1*OVERPASS_HEIGHT`)と式が一致しない(hに依存して
+  ずれる)。丘の上では「地下にいるのに地平/高架と誤判定される」バグになる。
+  正しい修正は、sim側が最初から持っている真の層(`TrainRuntime.grid.layer`、
+  sim/pathfinding.tsの`Layer`)をそのまま読むこと。DynamicTrainはこれに
+  差し替えた。
+- **もう1つのバグ: consist.tsのtrackCentreHeightが地下の非rampセルを常に
+  平地(0.5)扱いしていた**: 2両目以降の描画高さを求める`carPositions`
+  (sim/consist.ts)の内部関数`trackCentreHeight`は、高架(`layer>0`)は
+  早期returnで扱う一方、地下(`layer<0`)の分岐が無く、ramp以外の地下spanセルは
+  「地形追従の地平セル」と同じ扱いにフォールバックしていた。地表の標高が0の
+  平地ではたまたま偶然近い値になるが、丘の上では大きくずれ、2両目が先頭と
+  違う高さに描かれる(編成がガクガクになる)不具合があった。
+  `simulation.ts`の`cellRampHeight`と同じ式(`0.5 + 地表高さ + layer*OVERPASS_HEIGHT`、
+  layerは負なので実質減算)を移植して修正した。TDD: 丘(標高2)と平地それぞれで
+  2両編成を組み、2両目の高さが期待値と一致することをテストした
+  (`src/sim/consist.test.ts`)。
+- **テスト一覧(新規)**: `src/render/viewMode.test.ts`(可視性・明暗の純関数)・
+  `src/render/trackGeometry.test.ts`に`buildUndergroundOpeningPart`のケースを
+  追加・`src/sim/trackPath.test.ts`の`stepElevatedLevel`を負レベルまで拡張・
+  `src/sim/consist.test.ts`に地下(layer<0)の描画高さのケースを追加。
+- **ブラウザ検証(port 5175)の要点と制約**: デバッグシナリオ「坂・高架・往復
+  列車」を読み込み、線路ツール→↓キー(または「地下1」ボタン)で地下ビューに
+  入ると、地表・既存の高架・線路がまとめて暗く半透明になることを確認した。
+  レベル選択の日本語ラベル(地下1〜3、地平、Lv1〜3)・ツールのhint文言も
+  想定通り表示された。ブラウザの`left_click_drag`ツールは本アプリの
+  pointerdown/pointermove/pointerupシーケンスを安定して再現できず(1マスの
+  no-effect判定になることが多かった)、`javascript_tool`でcanvasへ
+  `PointerEvent`を直接複数回dispatchするドラッグシミュレーションに切り替えた
+  ところ、地下線(`uppers[-1]`)の実際の建設(コストは`RAIL_COST×6`どおり)を
+  確認できた。カメラの右ボタンパン操作も自動化ツールから安定して再現できず、
+  掘割の開口部の見た目・地下駅→列車走行までの一気通貫の目視確認は今回は
+  行えていない(単体テスト・型検査・状態確認(`window.__debugWorld`)で
+  代替した)。次回ブラウザ検証時は、OrbitControlsのref経由でカメラ位置を
+  直接動かすデバッグフック(`window.__dbgSetCamera`等)を用意すると安定する。
