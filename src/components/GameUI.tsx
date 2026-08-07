@@ -486,17 +486,26 @@ export const GameUI: React.FC<GameUIProps> = ({
   );
 };
 
+// P7d: 地上レール建設不可の具体理由(buildPreview.tsのslopeIssue、
+// construction.tsのGroundRailPlanFailureReason)ごとの表示文言。
+const SLOPE_ISSUE_MESSAGES: Record<NonNullable<BuildPreview['slopeIssue']>, string> = {
+  'other-slope': '地形が線路に適していません(整地が必要)',
+  'direction-blocked': 'この向きには勾配レールを敷けません',
+  'edge-discontinuous': '地形の標高がつながっていません',
+  'tunnel-exit-mismatch': 'トンネル出口の標高が合いません',
+};
+
 // --- 建設フィードバック(コストと可否) ---
 const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string }> = ({
   preview, toolLabel,
 }) => {
   if (!preview || preview.cellCount === 0) return null;
 
-  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level } = preview;
+  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, slopeIssue } = preview;
   const tone = reason === 'ok' ? T.positive : reason === 'insufficient-funds' ? T.danger : T.warning;
   const message =
     reason === 'insufficient-funds' ? '資金が足りません'
-    : reason === 'no-effect' ? 'ここには建設できません'
+    : reason === 'no-effect' ? (slopeIssue ? SLOPE_ISSUE_MESSAGES[slopeIssue] : 'ここには建設できません')
     : null;
   const isElevatedRail = mode === 'rail' && level > 0;
 
