@@ -11,6 +11,7 @@
 import type { CellCorners, TerrainField } from './terrainField';
 import type { CellData } from '../types';
 import { DIR, getDirFromVector, getOppositeDir } from '../utils';
+import { OVERPASS_HEIGHT } from './trackPath';
 
 export type SlopeInfo =
   | { kind: 'flat'; height: number }
@@ -189,6 +190,48 @@ export function railHeightAt(
   if (slope.kind === 'flat') return slope.height;
   if (slope.kind === 'incline') return slope.low;
   return Math.min(...corners);
+}
+
+/**
+ * P7c: railHeightAt(段数の整数)をワールドY単位(OVERPASS_HEIGHT基準)へ換算した高さ。
+ * sim(renderPos/carPositions)・render(TrackNetwork/GameSceneの坑口・駅)の両方が
+ * この1関数を経由することで、地形段数からワールド高さへの換算式を一箇所にまとめる
+ * (CLAUDE.mdのtrackPath原則: レールと列車が同じ高さ式を共有しないとずれる)。
+ */
+export function groundRailCentreHeight(
+  field: TerrainField,
+  cell: CellData | undefined,
+  x: number,
+  z: number
+): number {
+  return railHeightAt(field, cell, x, z) * OVERPASS_HEIGHT;
+}
+
+/**
+ * render/trackGeometry.tsのセル1つぶんの線路パーツ生成に渡す高さ情報。
+ * flat/tunnelは単一の高さ(originY相当)、inclineはセルの低い側→高い側の2値
+ * (buildGroundInclineTrackPartsへそのまま渡せる)を返す。
+ * 「other」スロープ(線路が敷けない形状のはずだが、防御的にflat同然のフォールバックを返す)は
+ * railHeightAtの最も低いコーナーへのフォールバックと同じ規約に合わせる。
+ */
+export type RailRenderHeight =
+  | { kind: 'flat'; y: number }
+  | { kind: 'incline'; dir: number; lowY: number; highY: number };
+
+export function railRenderHeight(
+  field: TerrainField,
+  cell: CellData | undefined,
+  x: number,
+  z: number
+): RailRenderHeight {
+  if (cell?.tunnel) return { kind: 'flat', y: cell.tunnel.height * OVERPASS_HEIGHT };
+  const corners = field.cellCornerHeights(x, z);
+  const slope = slopeOf(corners);
+  if (slope.kind === 'incline') {
+    return { kind: 'incline', dir: slope.dir, lowY: slope.low * OVERPASS_HEIGHT, highY: slope.high * OVERPASS_HEIGHT };
+  }
+  if (slope.kind === 'flat') return { kind: 'flat', y: slope.height * OVERPASS_HEIGHT };
+  return { kind: 'flat', y: Math.min(...corners) * OVERPASS_HEIGHT };
 }
 
 export function pathSlopeViolations(field: TerrainField, path: Pos[]): SlopeViolation[] {

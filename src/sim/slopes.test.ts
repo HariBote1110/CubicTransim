@@ -3,12 +3,15 @@ import {
   allowedRailConnections,
   canPlaceFlatStructure,
   edgeHeights,
+  groundRailCentreHeight,
   pathSlopeViolations,
   railEdgeContinuous,
   railHeightAt,
+  railRenderHeight,
   slopeOf,
   SLOPE_RAIL_COST_MULTIPLIER,
 } from './slopes';
+import { OVERPASS_HEIGHT } from './trackPath';
 import { DIR } from '../utils';
 import type { CellCorners, TerrainField } from './terrainField';
 
@@ -258,5 +261,44 @@ describe('railHeightAt (P7b)', () => {
   it('tunnelセルはCellDataに保存された高さをそのまま返す(地形コーナーは見ない)', () => {
     const field = stubField({ '0,0': 5, '1,0': 5, '0,1': 3, '1,1': 3 });
     expect(railHeightAt(field, { type: 'rail', tunnel: { height: 1 } }, 0, 0)).toBe(1);
+  });
+});
+
+describe('groundRailCentreHeight (P7c)', () => {
+  it('railHeightAtの段数をOVERPASS_HEIGHT単位のワールドYへ換算する', () => {
+    const field = stubField({ '0,0': 2, '1,0': 2, '0,1': 2, '1,1': 2 });
+    expect(groundRailCentreHeight(field, undefined, 0, 0)).toBeCloseTo(2 * OVERPASS_HEIGHT);
+  });
+
+  it('tunnelセルは保存された高さを換算する', () => {
+    const field = stubField({ '0,0': 5, '1,0': 5, '0,1': 3, '1,1': 3 });
+    expect(groundRailCentreHeight(field, { type: 'rail', tunnel: { height: 1 } }, 0, 0))
+      .toBeCloseTo(1 * OVERPASS_HEIGHT);
+  });
+});
+
+describe('railRenderHeight (P7c)', () => {
+  it('flatセルは単一の高さ(y)を返す', () => {
+    const field = stubField({ '0,0': 3, '1,0': 3, '0,1': 3, '1,1': 3 });
+    expect(railRenderHeight(field, undefined, 0, 0)).toEqual({ kind: 'flat', y: 3 * OVERPASS_HEIGHT });
+  });
+
+  it('inclineセルは低い側・高い側それぞれのYとdirを返す', () => {
+    // N辺(nw,ne)=1, S辺(sw,se)=0 → 北へ登るincline。
+    const field = stubField({ '0,0': 1, '1,0': 1, '0,1': 0, '1,1': 0 });
+    expect(railRenderHeight(field, undefined, 0, 0)).toEqual({
+      kind: 'incline', dir: DIR.N, lowY: 0, highY: OVERPASS_HEIGHT,
+    });
+  });
+
+  it('tunnelセルは地形コーナーを無視し保存された高さのflatを返す', () => {
+    const field = stubField({ '0,0': 5, '1,0': 5, '0,1': 3, '1,1': 3 });
+    expect(railRenderHeight(field, { type: 'rail', tunnel: { height: 1 } }, 0, 0))
+      .toEqual({ kind: 'flat', y: 1 * OVERPASS_HEIGHT });
+  });
+
+  it('otherスロープは最も低いコーナーへフォールバックする(railHeightAtと同じ規約)', () => {
+    const field = stubField({ '0,0': 0, '1,0': 1, '0,1': 1, '1,1': 1 });
+    expect(railRenderHeight(field, undefined, 0, 0)).toEqual({ kind: 'flat', y: 0 });
   });
 });
