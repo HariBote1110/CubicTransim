@@ -1,4 +1,5 @@
 # progress インデックス
+- [canonical-terrain-noise-integer.md](canonical-terrain-noise-integer.md) — 地形ノイズの正準整数定義(WASMレンダラー側で確定・5シード5000万点一致)。本体TSはこの定義へ移行必須、1000件のテストベクタ付き
 - [quarterview-renderer-spec.md](quarterview-renderer-spec.md) — WASM+WebGPU クォータービュー特化レンダラーの要件定義とプロトタイプ(GPUノイズ+クリップマップ)仕様
 - [underground-design.md](underground-design.md) — P8地下線・地下駅の設計。uppersを両符号レベルへ対称拡張、掘割ランプ、相対深さ方式、地下ビュー切替
 - [slope-construction-design.md](slope-construction-design.md) — P7勾配レールの設計。foundation無しのOpenTTD簡約(flat任意標高+incline直進のみ)、1セル1段、建設時に標高連続性を保証
