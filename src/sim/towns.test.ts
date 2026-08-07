@@ -13,7 +13,7 @@ import {
   TOWN_REGION_SIZE, TOWN_REGION_DENSITY, MIN_STARTING_TOWNS,
   regionsInRange, regionTownCandidate, generateRegionTowns,
   METROPOLIS_POPULATION_MIN, METROPOLIS_POPULATION_MAX, METROPOLIS_FRACTION,
-  townDensityParams, type TownDensity,
+  townDensityParams,
   type StationTransportInfo,
 } from './towns';
 

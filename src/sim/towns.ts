@@ -158,6 +158,30 @@ export const TOWN_REGION_SIZE = 128;
  */
 export const TOWN_REGION_DENSITY = 0.4;
 
+/**
+ * 新規ゲーム開始時に選べる町の密度(App.tsxの起動ダイアログから指定)。
+ * mapping(townDensityParams参照): sparse/normal/denseは領域サイズ(TOWN_REGION_SIZE)
+ * のまま存在ゲート確率だけを変え、packedはさらに領域を細かく(64)することで
+ * 地形棄却後もnormalの約2.5〜3倍の密度になる。
+ */
+export type TownDensity = 'sparse' | 'normal' | 'dense' | 'packed';
+
+export interface TownDensityParams {
+  regionSize: number;
+  gate: number;
+}
+
+const TOWN_DENSITY_PARAMS: Record<TownDensity, TownDensityParams> = {
+  sparse: { regionSize: TOWN_REGION_SIZE, gate: 0.2 },
+  normal: { regionSize: TOWN_REGION_SIZE, gate: TOWN_REGION_DENSITY },
+  dense: { regionSize: TOWN_REGION_SIZE, gate: 0.8 },
+  packed: { regionSize: 64, gate: 0.5 },
+};
+
+export function townDensityParams(density: TownDensity): TownDensityParams {
+  return TOWN_DENSITY_PARAMS[density];
+}
+
 export interface RegionCoord {
   rx: number;
   rz: number;
@@ -185,11 +209,14 @@ const regionRng = (seed: number, rx: number, rz: number): (() => number) => {
 /** 領域ベースの町のid("town-r{rx},{rz}")。ランタイム湧き(town-spawn-...)と衝突しない。 */
 export const regionTownId = (rx: number, rz: number): string => `town-r${rx},${rz}`;
 
-/** halfExtent(-halfExtent..halfExtent)と交差する領域座標を、rx昇順→rz昇順で列挙する。 */
-export function regionsInRange(halfExtent: number): RegionCoord[] {
+/**
+ * halfExtent(-halfExtent..halfExtent)と交差する領域座標を、rx昇順→rz昇順で列挙する。
+ * regionSizeは既定TOWN_REGION_SIZE(townDensityParamsのpackedはこれを64に細分する)。
+ */
+export function regionsInRange(halfExtent: number, regionSize: number = TOWN_REGION_SIZE): RegionCoord[] {
   const extent = Math.max(0, halfExtent);
-  const rMin = Math.floor(-extent / TOWN_REGION_SIZE);
-  const rMax = Math.floor(extent / TOWN_REGION_SIZE);
+  const rMin = Math.floor(-extent / regionSize);
+  const rMax = Math.floor(extent / regionSize);
   const regions: RegionCoord[] = [];
   for (let rx = rMin; rx <= rMax; rx++) {
     for (let rz = rMin; rz <= rMax; rz++) {
@@ -198,6 +225,13 @@ export function regionsInRange(halfExtent: number): RegionCoord[] {
   }
   return regions;
 }
+
+/** 大都市判定のハッシュゲート確率。region内で名前・人口を決めるrngとは別立て(決定性のため)。 */
+export const METROPOLIS_FRACTION = 0.04;
+/** 大都市の初期人口レンジ。TOWN_POPULATION_MIN..MAXとは別に、10000人以上のTownBlocks
+ * 高層コア(CITY_CORE_POPULATION)を確実に発生させる。 */
+export const METROPOLIS_POPULATION_MIN = 8000;
+export const METROPOLIS_POPULATION_MAX = 25000;
 
 /**
  * 1つの領域が持つ町候補を決定的に導出する。存在ゲート(TOWN_REGION_DENSITY)→
@@ -216,15 +250,17 @@ export function regionTownCandidate(
   rx: number,
   rz: number,
   halfExtent: number,
-  field: TerrainField
+  field: TerrainField,
+  regionSize: number = TOWN_REGION_SIZE,
+  gate: number = TOWN_REGION_DENSITY
 ): TownData | null {
-  if (regionHash(worldSeed, rx, rz, 1) >= TOWN_REGION_DENSITY) return null;
+  if (regionHash(worldSeed, rx, rz, 1) >= gate) return null;
 
   const extent = Math.max(0, halfExtent);
-  const regionX0 = rx * TOWN_REGION_SIZE;
-  const regionX1 = regionX0 + TOWN_REGION_SIZE - 1;
-  const regionZ0 = rz * TOWN_REGION_SIZE;
-  const regionZ1 = regionZ0 + TOWN_REGION_SIZE - 1;
+  const regionX0 = rx * regionSize;
+  const regionX1 = regionX0 + regionSize - 1;
+  const regionZ0 = rz * regionSize;
+  const regionZ1 = regionZ0 + regionSize - 1;
   const x0 = Math.max(regionX0, -extent);
   const x1 = Math.min(regionX1, extent);
   const z0 = Math.max(regionZ0, -extent);
@@ -240,13 +276,18 @@ export function regionTownCandidate(
 
   if (isNearTerrain(x, z, field, TOWN_TERRAIN_AVOID_RADIUS)) return null;
 
+  // 大都市判定は名前・人口を消費するrng列とは別のハッシュソルト(4)で行う。
+  // rngの逐次消費に混ぜると、将来rng()の呼び出し回数を変えたときに大都市判定まで
+  // ズレてしまうため、独立させておく(決定性そのものは変わらない)。
+  const isMetropolis = regionHash(worldSeed, rx, rz, 4) < METROPOLIS_FRACTION;
+
   const rng = regionRng(worldSeed, rx, rz);
   // 名前の一意性はここでは保証しない(巨大マップでの衝突は許容。設計判断: 領域は
   // 互いに独立でなければならず、既出名の集合という「他領域への参照」を持たせられない)。
   const name = nextTownName(rng, new Set<string>());
-  const population = Math.round(
-    TOWN_POPULATION_MIN + rng() * (TOWN_POPULATION_MAX - TOWN_POPULATION_MIN)
-  );
+  const population = isMetropolis
+    ? Math.round(METROPOLIS_POPULATION_MIN + rng() * (METROPOLIS_POPULATION_MAX - METROPOLIS_POPULATION_MIN))
+    : Math.round(TOWN_POPULATION_MIN + rng() * (TOWN_POPULATION_MAX - TOWN_POPULATION_MIN));
 
   return { id: regionTownId(rx, rz), name, centre: { x, z }, population };
 }
@@ -330,11 +371,13 @@ function fillMinimumTowns(
 export function generateRegionTowns(
   worldSeed: number,
   halfExtent: number,
-  field: TerrainField
+  field: TerrainField,
+  density: TownDensity = 'normal'
 ): TownData[] {
+  const { regionSize, gate } = townDensityParams(density);
   const towns: TownData[] = [];
-  for (const { rx, rz } of regionsInRange(halfExtent)) {
-    const candidate = regionTownCandidate(worldSeed, rx, rz, halfExtent, field);
+  for (const { rx, rz } of regionsInRange(halfExtent, regionSize)) {
+    const candidate = regionTownCandidate(worldSeed, rx, rz, halfExtent, field, regionSize, gate);
     if (candidate) towns.push(candidate);
   }
   return fillMinimumTowns(worldSeed, halfExtent, field, towns);
