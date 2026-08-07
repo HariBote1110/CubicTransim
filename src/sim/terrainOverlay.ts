@@ -263,6 +263,41 @@ export function applyCornerEdit(
   return { field: createEditedTerrainField(base, nextDiffs), changedCorners };
 }
 
+// --- 描画チャンクキャッシュ向けのリビジョン参照(P4) ---
+
+/**
+ * セル範囲([x0,x1]×[z0,z1])が持つ4隅コーナー(境界を含めるため x1+1/z1+1 まで)に
+ * 重なりうるオーバーレイチャンク(OVERLAY_CHUNK_SIZE=64単位)のサブMapを、
+ * 存在するものだけ集めて返す。
+ *
+ * 用途: render/terrainChunks.tsのチャンク描画キャッシュ(TerrainBlocks)が
+ * 「このチャンクの地形編集差分は変わったか」を判定するためのキー。P2実装メモに
+ * ある通り、applyCornerEditは編集で触れたオーバーレイチャンクだけ新しいMapへ
+ * 差し替える(immutable replace)ので、このサブMapの参照が前回と同一かどうかを
+ * 比較するだけで「このチャンクに影響する編集があったか」をO(重なるオーバーレイ
+ * チャンク数)で判定できる(diffs全体の走査やdeep equalは不要)。
+ * 戻り値の配列そのものの参照は呼び出しのたびに新しく作られるため、比較は
+ * 呼び出し側が要素ごと(浅い比較)で行うこと。
+ */
+export function overlayChunkRefs(
+  diffs: CornerDiffs,
+  cellBounds: { x0: number; x1: number; z0: number; z1: number },
+): ReadonlyArray<Map<number, number>> {
+  const cx0 = chunkCoordOf(cellBounds.x0);
+  const cx1 = chunkCoordOf(cellBounds.x1 + 1);
+  const cz0 = chunkCoordOf(cellBounds.z0);
+  const cz1 = chunkCoordOf(cellBounds.z1 + 1);
+
+  const refs: Map<number, number>[] = [];
+  for (let cx = cx0; cx <= cx1; cx++) {
+    for (let cz = cz0; cz <= cz1; cz++) {
+      const chunk = diffs.get(chunkKeyOf(cx, cz));
+      if (chunk) refs.push(chunk);
+    }
+  }
+  return refs;
+}
+
 // --- シリアライズ(将来の SaveData v15 向け) ---
 
 export type SerialisedCornerDiffs = Array<[string, Array<[number, number]>]>;

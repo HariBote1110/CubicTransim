@@ -5,6 +5,7 @@ import {
   applyCornerEdit,
   createEditedTerrainField,
   deserialiseCornerDiffs,
+  overlayChunkRefs,
   OVERLAY_CHUNK_SIZE,
   rectCells,
   serialiseCornerDiffs,
@@ -279,3 +280,46 @@ type Pos_ = { x: number; z: number };
 // OVERLAY_CHUNK_SIZE を参照して疎性テストの意図を明示(チャンクサイズが変わっても
 // 「遠方の編集が原点チャンクに触れない」ことをこの定数経由で確認できるようにする)。
 void OVERLAY_CHUNK_SIZE;
+
+describe('overlayChunkRefs', () => {
+  const noBlockers: EditBlockers = { isCellBlocked: () => false };
+
+  it('編集されていないチャンクは空配列を返す', () => {
+    const diffs: CornerDiffs = new Map();
+    const refs = overlayChunkRefs(diffs, { x0: 0, x1: 31, z0: 0, z1: 31 });
+    expect(refs).toEqual([]);
+  });
+
+  it('重なる範囲を編集した後は参照を1件返す', () => {
+    const base = createEditedTerrainField(flatField);
+    const result = applyCornerEdit(flatField, base, { a: { x: 1, z: 1 }, b: { x: 2, z: 2 } }, 'raise', noBlockers);
+    const refs = overlayChunkRefs(result.field.diffs, { x0: 0, x1: 31, z0: 0, z1: 31 });
+    expect(refs.length).toBe(1);
+  });
+
+  it('無関係な遠方チャンクを編集しても参照は変わらない(疎性・チャンク独立性)', () => {
+    let field = createEditedTerrainField(flatField);
+    const before = overlayChunkRefs(field.diffs, { x0: 0, x1: 31, z0: 0, z1: 31 });
+    expect(before).toEqual([]);
+
+    const result = applyCornerEdit(
+      flatField, field, { a: { x: 500, z: 500 }, b: { x: 501, z: 501 } }, 'raise', noBlockers,
+    );
+    field = result.field;
+    const after = overlayChunkRefs(field.diffs, { x0: 0, x1: 31, z0: 0, z1: 31 });
+    expect(after).toEqual([]);
+  });
+
+  it('同じ編集内容でも再編集すると参照(オブジェクト同一性)が変わる(immutable replace)', () => {
+    const base = createEditedTerrainField(flatField);
+    const first = applyCornerEdit(flatField, base, { a: { x: 1, z: 1 }, b: { x: 2, z: 2 } }, 'raise', noBlockers);
+    const refsAfterFirst = overlayChunkRefs(first.field.diffs, { x0: 0, x1: 31, z0: 0, z1: 31 });
+
+    const second = applyCornerEdit(
+      flatField, first.field, { a: { x: 3, z: 3 }, b: { x: 4, z: 4 } }, 'raise', noBlockers,
+    );
+    const refsAfterSecond = overlayChunkRefs(second.field.diffs, { x0: 0, x1: 31, z0: 0, z1: 31 });
+
+    expect(refsAfterSecond[0]).not.toBe(refsAfterFirst[0]);
+  });
+});
