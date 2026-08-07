@@ -169,7 +169,7 @@ export const TOWN_REGION_SIZE = 128;
  * 大きいマップでの体感密度を優先し、既定マップは町が少なめになる代わりに
  * resolveTownSpawnTick(輸送力に応じた町の湧き)が実プレイで補う設計とした。
  */
-export const TOWN_REGION_DENSITY = 0.3;
+export const TOWN_REGION_DENSITY = 0.4;
 
 export interface RegionCoord {
   rx: number;
