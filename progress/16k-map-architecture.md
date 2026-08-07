@@ -129,3 +129,68 @@
   ノイズ地形で汎用のランダム編集プロパティテストをやると、基底そのものの起伏が
   BFS伝播の停止条件に混ざり判定が複雑になるため、ロジック検証は平坦fieldで、
   water境界の実地形固有の検証だけ本物のfieldで行う、と役割を分けた
+
+## P3実装メモ(消費側のfield移行・SaveData v15)
+
+- **状態形状(useGameLogic.ts)**: `heights`/`terrain` Mapを廃止し、`worldSeed`
+  (setter付き)・`halfExtent`(当面`TERRAIN_COORD_RANGE=45`固定・setterなし)・
+  `cornerDiffs`(CornerDiffs、setter付き)の3つをReact stateにした。
+  `baseField = useMemo(createTerrainField(worldSeed, halfExtent))` →
+  `editedField = useMemo(createEditedTerrainField(baseField, cornerDiffs))` の2段
+  useMemoで合成し、`field = debugFieldOverride ?? editedField` を実際にゲーム全体が
+  参照するfieldとして公開する(`field`/`baseField`/`editedField`/`halfExtent`を
+  フックの戻り値に追加)。`SimWorld.terrain`/`heights`は`terrainField?: TerrainField`
+  1本に置き換えた。
+- **デバッグシナリオの上書き(debugFieldOverride)**: 手組みの尾根地形(山岳トンネル
+  シナリオ)のような「seedでは表現できない形」のために、`debugFieldOverride:
+  TerrainField | null` という専用stateを追加した(設計で明示されていなかった追加
+  判断)。`DebugScenarioWorld`は`field?: TerrainField`(fieldFromMapsで橋渡し)か
+  `worldSeedOverride?: number`(通常の乱数地形に差し替えたい場合。地形編集の遊び場
+  シナリオがこちら)のどちらかを持つ。`debugFieldOverride`が立っている間は
+  地形編集(盛土/切土)を無効化した(no-op)。デバッグ専用の割り切りとして許容。
+- **地形編集(terrainEdit→terrainOverlay)**: `useGameLogic.commitPath`の
+  raise/lower分岐を`terrainEdit.applyTerrainEdit`から`terrainOverlay.applyCornerEdit`
+  へ置き換えた。blockers述語(`isCellBlocked`)はrailMap.has/townTileIndex.has/
+  `baseField.terrainTypeAt===='water'`/範囲外の4条件を1箇所に集約し、
+  `buildPreview.evaluateBuild`のプレビュー側にも同じ組み立て方をコピーしている
+  (UI側のGameUI.tsxとuseGameLogic.tsxの両方に同じblockers構築コードが存在する。
+  P6以降で共通ヘルパーへ切り出す余地あり)。旧terrainEdit.tsはツリーに残るが
+  どこからも呼ばれない。
+- **消費側の移行**: construction/buildPreview/towns/townTiles/tunnel/economy/
+  simulation(resolveTownSpawnTick)を`terrain: Map`+`heights: Map`の2引数から
+  `field: TerrainField`の1引数へ統一した。construction.tsの
+  `pathHasUnsupportedMountainCell`は`cellCornerElevations`(内部でセルごとに
+  `buildCornerElevationMap`を全域構築するO(N)関数)を`field.cellCornerHeights(x,z)`
+  (O(1))に置き換え、path長に対する隠れO(N²)を解消した。
+- **tunnel.tsの簡略化(設計外の追加判断)**: `TerrainField.cellHeightAt`は常に
+  4隅コーナーのmin(terrainField.ts/terrainOverlay.tsの一次データ設計そのもの)
+  として定義されるため、旧`tunnel.ts`の「コーナー判定が薄すぎて失敗したら
+  セル自身の生標高でフォールバックする」ロジックは、field化後は
+  `field.cellHeightAt(x,z)>=level` ⟺ `cellCornerHeights(x,z).every(h=>h>=level)`
+  という数学的な恒等式になり、独立したフォールバックとして機能しなくなった
+  (旧terrain.tsはelevation Mapとcorner Mapが別々の実体だったため食い違い得たが、
+  fieldに一本化した時点でその食い違いの余地自体が消えた)。フォールバック分岐を
+  削除し、孤立/線状(幅1セル)の薄い山は「まだ実体の無い山」として通常の露出した
+  高架(坑口も内部非表示も無し)のまま扱うよう統一した。これは1-Lipschitzな
+  地形では本来ありえない入力(孤立した高低差1の1セルは、周囲が標高0なら
+  Lipschitz制約に違反する)に対する挙動なので、実際の生成地形には影響しない。
+  `tunnelPortals`の行き止まり坑口判定も`elevationAt<=0`から
+  `field.terrainTypeAt(...)!=='mountain'`に変更した(コーナー崩れの影響を受けない
+  型ベースの判定にした)。
+- **SaveData v15**: `{ version: 15, seed, halfExtent, cornerDiffs: SerialisedCornerDiffs,
+  ...v14の非地形フィールド全部 }`。`terrain`/`heights`配列は廃止。
+  `deserialiseWorld`は`data.version !== 15`なら即座に`null`を返す(v1〜v14の移行
+  チェーンは全削除)。呼び出し側(`useGameLogic.loadGame`)は`null`ならセーブ無視
+  (console.warnのみ)にした。`RestoredWorld`も`terrain`/`heights`を`seed`/
+  `halfExtent`/`cornerDiffs`に置き換えた。
+- **描画(interim)**: `TerrainBlocks`/`Scenery`は`Map`走査から`-halfExtent..halfExtent`
+  の二重ループ+`field`クエリへ変更(P4のチャンク化まではこのまま)。
+  `GameScene`のトンネル坑口計算は`buildCornerElevationMap`の代わりに`field`を
+  直接`buildElevatedTunnelIndex`/`tunnelPortals`へ渡すだけになった。
+- **意外だった点**: `TerrainField.cellHeightAt`をコーナーmin-ruleで一本化した
+  結果、tunnel.tsの「フォールバック」が数学的に無意味化するという副作用が
+  P3着手時点では読めていなかった(P1/P2の設計時にはtunnel.ts側の消費コードまで
+  検証していなかったため)。fieldインターフェースを1つに統一する設計の代償として、
+  「コーナー由来の値」と「セル固有の生の値」という2つの独立したデータ源に依存する
+  旧ロジックは、そのままでは移植できず簡略化(または削除)が必要になる、という
+  一般的な教訓が得られた。
