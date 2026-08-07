@@ -6,6 +6,7 @@ import { GameUI } from './components/GameUI';
 import type { BuildMode } from './components/GameUI';
 import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
+import type { TownDensity } from './sim/towns';
 import { T, button as themeButton } from './ui/theme';
 
 // ★追加(P5): 新規ゲーム開始時のマップサイズ選択肢。halfExtentはsim/persistence.tsの
@@ -18,10 +19,21 @@ const MAP_SIZE_OPTIONS: { label: string; halfExtent: number; side: number }[] = 
   { label: '極大', halfExtent: 8192, side: 16385 },
 ];
 
+// ★追加: 新規ゲーム開始時の町密度選択肢(huge マップで町が少なすぎるという要望への対応、
+// progress/16k-map-architecture.md P5追記参照)。sim/towns.tsのTownDensityと1対1。
+const TOWN_DENSITY_OPTIONS: { label: string; value: TownDensity }[] = [
+  { label: 'まばら', value: 'sparse' },
+  { label: '標準', value: 'normal' },
+  { label: '多い', value: 'dense' },
+  { label: '過密', value: 'packed' },
+];
+
 export default function App() {
   const [showStartupOptions, setShowStartupOptions] = useState(true);
   // 起動ダイアログで「デバッグモード」を押すと、シナリオ一覧(sim/debugScenarios.ts)を表示する。
   const [showDebugScenarios, setShowDebugScenarios] = useState(false);
+  // 起動ダイアログの町密度選択(既定は標準=normal)。マップサイズのボタンを押した時点の値を使う。
+  const [selectedTownDensity, setSelectedTownDensity] = useState<TownDensity>('normal');
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
@@ -161,7 +173,7 @@ export default function App() {
                       key={opt.label}
                       style={{ ...themeButton({ active: true }), width: '100%', textAlign: 'left' }}
                       onClick={() => {
-                        newGame(opt.halfExtent);
+                        newGame(opt.halfExtent, selectedTownDensity);
                         setShowStartupOptions(false);
                       }}
                     >
@@ -169,6 +181,21 @@ export default function App() {
                       <div style={{ fontSize: 11, fontWeight: 400, color: T.textMuted, marginTop: 2 }}>
                         {opt.side}×{opt.side}
                       </div>
+                    </button>
+                  ))}
+                </div>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55, marginTop: 0 }}>町の密度</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: T.gap, marginBottom: T.gap }}>
+                  {TOWN_DENSITY_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      style={{
+                        ...themeButton({ active: selectedTownDensity === opt.value, compact: true }),
+                        width: '100%',
+                      }}
+                      onClick={() => setSelectedTownDensity(opt.value)}
+                    >
+                      {opt.label}
                     </button>
                   ))}
                 </div>

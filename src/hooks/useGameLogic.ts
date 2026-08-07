@@ -27,6 +27,7 @@ const MAX_CARS = 8;
 import type { MonthlyLedger } from '../sim/economy';
 import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
 import { generateRegionTowns } from '../sim/towns';
+import type { TownDensity } from '../sim/towns';
 import { TownTileCache } from '../sim/townTiles';
 import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
 import type { LineMode } from '../sim/groups';
@@ -74,8 +75,12 @@ export const useGameLogic = () => {
   // ★追加: 街(town)。初回起動(セーブなしの新規状態)では領域ベースの決定的配置
   // (generateRegionTowns、P5)で自動生成する。ロード時はセーブデータのtownsで置き換わる。
   // 街は必ず平地に生成されるよう、baseFieldを渡して水域・山岳付近を除外する。
+  // 新規ゲーム開始時に選んだ町密度(App.tsxの起動ダイアログから指定、既定normal)。
+  // セーブへも保持するが(persistence.tsのtownDensity)、ロード時にtownsを
+  // 再生成する用途には使わない(towns自体がセーブに実体を持つため)。
+  const [townDensity, setTownDensity] = useState<TownDensity>('normal');
   const [towns, setTowns] = useState<TownData[]>(() =>
-    generateRegionTowns(worldSeed + 1, halfExtent, baseField)
+    generateRegionTowns(worldSeed + 1, halfExtent, baseField, townDensity)
   );
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
@@ -589,7 +594,7 @@ export const useGameLogic = () => {
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, worldSeed,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
       groups, worldRef.current.groupDepartures ?? new Map(), loan,
-      worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs
+      worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
@@ -613,6 +618,7 @@ export const useGameLogic = () => {
     setMoney(restored.money);
     setLoan(restored.loan);
     setTowns(restored.towns);
+    setTownDensity(restored.townDensity);
     setWorldSeed(restored.seed);
     setCornerDiffs(restored.cornerDiffs);
     setDebugFieldOverride(null);
@@ -669,7 +675,7 @@ export const useGameLogic = () => {
    * halfExtentが変わるとbaseFieldのuseMemoも再計算されるため、生成した町は
    * generateRegionTownsに渡すfieldをここで直接作る(baseFieldのuseMemo更新を待たない)。
    */
-  const newGame = (selectedHalfExtent: number) => {
+  const newGame = (selectedHalfExtent: number, selectedDensity: TownDensity = 'normal') => {
     const seed = Date.now() % 2 ** 31;
     const newField = createTerrainField(seed, selectedHalfExtent);
     setHalfExtent(selectedHalfExtent);
@@ -679,7 +685,8 @@ export const useGameLogic = () => {
     setRailMap(new Map());
     setStations(new Map());
     setTrains([]);
-    setTowns(generateRegionTowns(seed + 1, selectedHalfExtent, newField));
+    setTownDensity(selectedDensity);
+    setTowns(generateRegionTowns(seed + 1, selectedHalfExtent, newField, selectedDensity));
     setGroups([]);
     setMoney(STARTING_MONEY);
     setLoan(0);
@@ -699,6 +706,7 @@ export const useGameLogic = () => {
     stations, setStations,
     trains, setTrains,
     towns,
+    townDensity,
     townTileIndex,
     newGame,
     field,
