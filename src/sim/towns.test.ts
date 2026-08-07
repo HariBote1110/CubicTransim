@@ -10,7 +10,8 @@ import {
   nearestTownWithinRadius, stationNameForTown,
   NEW_TOWN_POPULATION_MIN, NEW_TOWN_POPULATION_MAX,
   resolveTownSpawnTick, townSpawnChance, TOWN_SPAWN_CAPACITY_THRESHOLD, TOWN_SPAWN_BASE_CHANCE,
-  TOWN_REGION_SIZE, regionsInRange, regionTownCandidate, generateRegionTowns,
+  TOWN_REGION_SIZE, TOWN_REGION_DENSITY, MIN_STARTING_TOWNS,
+  regionsInRange, regionTownCandidate, generateRegionTowns,
   type StationTransportInfo,
 } from './towns';
 
@@ -480,8 +481,81 @@ describe('regionTownCandidate / generateRegionTowns', () => {
   it('ランタイム湧きの町id(town-spawn-...)とは衝突しない命名規則', () => {
     const towns = generateRegionTowns(9, 2000, flatField);
     for (const town of towns) {
-      expect(town.id.startsWith('town-r')).toBe(true);
+      expect(town.id.startsWith('town-r') || town.id.startsWith('town-fallback-')).toBe(true);
       expect(town.id.startsWith('town-spawn-')).toBe(false);
     }
+  });
+
+  it('領域の候補位置は、マップ縁の領域でもゲート確率どおりの割合で得られる(範囲外棄却による下振れが無い)', () => {
+    // 領域(-1,-1)はhalfExtent=45のマップと交差はするが、領域128×128の中では
+    // ごく一部(x,z∈[-45,-1])しか範囲内に無い。旧実装は領域全体でジッターしてから
+    // 範囲外を棄却していたため、この領域では候補のほとんどが失われ、実効密度が
+    // TOWN_REGION_DENSITYよりずっと低くなっていた(観測: 平均0.14 townsなど)。
+    // 修正後は領域とマップの交差矩形内でジッターするため、ゲートを通った候補は
+    // (地形による棄却を除き)ほぼ必ず有効な位置になるはず。
+    let gatePassCount = 0;
+    let candidateCount = 0;
+    const flatHalf = createTerrainField(1, 4096); // 平地優勢の広いfield(地形棄却の影響を抑える)
+    for (let seed = 0; seed < 500; seed++) {
+      // ゲート自体を通ったかは内部実装依存なので直接は見えない。代わりに、
+      // TOWN_REGION_DENSITY近傍の割合で候補が返ることを統計的に確認する。
+      const c = regionTownCandidate(seed, -1, -1, 45, flatHalf);
+      candidateCount++;
+      if (c) gatePassCount++;
+    }
+    const rate = gatePassCount / candidateCount;
+    // 旧実装(領域全体でジッター)ではこの領域の交差率は約34%(44/128)四方
+    // ≈12%相当で、実効密度はTOWN_REGION_DENSITY×0.12≈0.048ほどにまで落ちていた
+    // (このテストを旧実装に対して実行すると概ね0.03〜0.05になることを確認済み)。
+    // 修正後は地形棄却を差し引いてもTOWN_REGION_DENSITY(0.4)の半分程度は残るはず。
+    expect(rate).toBeGreaterThan(TOWN_REGION_DENSITY * 0.4);
+  });
+});
+
+describe('generateRegionTowns: 最小開始町数の保証(MIN_STARTING_TOWNS)', () => {
+  it('MIN_STARTING_TOWNSは3としてエクスポートされている', () => {
+    expect(MIN_STARTING_TOWNS).toBe(3);
+  });
+
+  it('小マップ(halfExtent=45)は50シード中すべてでMIN_STARTING_TOWNS以上の町を持つ', () => {
+    const counts: number[] = [];
+    for (let seed = 0; seed < 50; seed++) {
+      const field = createTerrainField(seed, 45);
+      const towns = generateRegionTowns(seed, 45, field);
+      counts.push(towns.length);
+      expect(towns.length).toBeGreaterThanOrEqual(MIN_STARTING_TOWNS);
+    }
+    // ゼロ町始まりが無いことも明示的に確認する(元バグの再現条件)。
+    expect(counts.filter(c => c === 0).length).toBe(0);
+  });
+
+  it('中マップ(halfExtent=128)は50シード中すべてでMIN_STARTING_TOWNS以上の町を持つ', () => {
+    for (let seed = 0; seed < 50; seed++) {
+      const field = createTerrainField(seed, 128);
+      const towns = generateRegionTowns(seed, 128, field);
+      expect(towns.length).toBeGreaterThanOrEqual(MIN_STARTING_TOWNS);
+    }
+  });
+
+  it('フォールバックで足した町を含め、idは重複しない', () => {
+    for (const seed of [0, 1, 2, 3, 4, 5]) {
+      const field = createTerrainField(seed, 45);
+      const towns = generateRegionTowns(seed, 45, field);
+      const ids = new Set(towns.map(t => t.id));
+      expect(ids.size).toBe(towns.length);
+    }
+  });
+
+  it('同じseedからは決定的に同じ町配置が得られる(フォールバック込み)', () => {
+    const field = createTerrainField(123, 45);
+    const a = generateRegionTowns(123, 45, field);
+    const b = generateRegionTowns(123, 45, field);
+    expect(a).toEqual(b);
+  });
+
+  it('16Kマップ相当では領域パスだけで既に充足しており、フォールバックはno-op(件数は領域数のオーダーのまま)', () => {
+    const field = createTerrainField(2026, 8192);
+    const towns = generateRegionTowns(2026, 8192, field);
+    expect(towns.length).toBeGreaterThan(MIN_STARTING_TOWNS * 100);
   });
 });

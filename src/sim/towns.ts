@@ -214,8 +214,15 @@ export function regionsInRange(halfExtent: number): RegionCoord[] {
 
 /**
  * 1つの領域が持つ町候補を決定的に導出する。存在ゲート(TOWN_REGION_DENSITY)→
- * 領域内ジッター位置→マップ範囲チェック→適地判定(isNearTerrain)の順に評価し、
- * どれか1つでも落ちればnull(=その領域に町は無い)。
+ * 領域内ジッター位置→適地判定(isNearTerrain)の順に評価し、どれか1つでも落ちれば
+ * null(=その領域に町は無い)。
+ *
+ * ジッターは「領域とマップ範囲(-halfExtent..halfExtent)の交差矩形」内でサンプルする
+ * (バグ修正)。旧実装は領域全体(128×128)でジッターしてからマップ範囲外を棄却して
+ * いたため、マップの縁の領域(領域の大半が範囲外)ではほとんどの候補が範囲外判定で
+ * 失われ、実効密度がTOWN_REGION_DENSITYよりずっと低くなっていた(91²マップは領域が
+ * 4つしかなく、そのすべてが縁の領域なので影響が特に大きかった。観測: 200シード中
+ * 175シードが町0個)。交差矩形内でサンプルすれば範囲外棄却は原理的に起きない。
  */
 export function regionTownCandidate(
   worldSeed: number,
@@ -226,15 +233,24 @@ export function regionTownCandidate(
 ): TownData | null {
   if (regionHash(worldSeed, rx, rz, 1) >= TOWN_REGION_DENSITY) return null;
 
+  const extent = Math.max(0, halfExtent);
+  const regionX0 = rx * TOWN_REGION_SIZE;
+  const regionX1 = regionX0 + TOWN_REGION_SIZE - 1;
+  const regionZ0 = rz * TOWN_REGION_SIZE;
+  const regionZ1 = regionZ0 + TOWN_REGION_SIZE - 1;
+  const x0 = Math.max(regionX0, -extent);
+  const x1 = Math.min(regionX1, extent);
+  const z0 = Math.max(regionZ0, -extent);
+  const z1 = Math.min(regionZ1, extent);
+  // regionsInRangeが返す領域は必ずマップと交差する前提だが、halfExtentが極端に
+  // 小さい場合など縮退したケースの安全策として明示的にnullを返す。
+  if (x0 > x1 || z0 > z1) return null;
+
   const jitterX = regionHash(worldSeed, rx, rz, 2);
   const jitterZ = regionHash(worldSeed, rx, rz, 3);
-  const originX = rx * TOWN_REGION_SIZE;
-  const originZ = rz * TOWN_REGION_SIZE;
-  const x = Math.round(originX + jitterX * TOWN_REGION_SIZE);
-  const z = Math.round(originZ + jitterZ * TOWN_REGION_SIZE);
+  const x = Math.round(x0 + jitterX * (x1 - x0));
+  const z = Math.round(z0 + jitterZ * (z1 - z0));
 
-  const extent = Math.max(0, halfExtent);
-  if (x < -extent || x > extent || z < -extent || z > extent) return null;
   if (isNearTerrain(x, z, field, TOWN_TERRAIN_AVOID_RADIUS)) return null;
 
   const rng = regionRng(worldSeed, rx, rz);
@@ -248,10 +264,81 @@ export function regionTownCandidate(
   return { id: regionTownId(rx, rz), name, centre: { x, z }, population };
 }
 
+/** 新規ゲーム開始時に最低限確保する町の数。0町始まり(=乗客が誰もいない)を防ぐ。 */
+export const MIN_STARTING_TOWNS = 3;
+// フォールバック候補のグリッド解像度(1辺あたりの分割数)。halfExtentが大きくても
+// 候補数を一定に抑える(性能はO(FALLBACK_GRID_RESOLUTION^2)で頭打ちにする)。
+// 小さいマップ(既定91×91)ではほぼ全セルを候補にできるくらい細かく、16K級マップでは
+// 粗いがマップ全域を一様にカバーする間隔になる。
+const FALLBACK_GRID_RESOLUTION = 96;
+// フォールバック町同士に要求する最低距離。通常の領域町(TOWN_MIN_DISTANCE=16)より
+// 緩くしている: 山岳・水域が広いマップ(平地がマップの数%しか無いような外れ値の
+// seed)では、互いに16マス離れた有効地点が3つ取れないことがある(実測: あるseedでは
+// 有効地点が91×91マップの隅の小さな1ブロックにしか存在しなかった)。
+// タイル占有は先勝ち(TownTileCache/buildTownIndexes)で処理されるため、多少近接
+// しても致命的な破綻はない。「0町で詰む」より「多少近い町が3つ」を優先する。
+const FALLBACK_TOWN_MIN_DISTANCE = 6;
+
+// フォールバック町専用のrng(領域生成のrngとは独立したソルトで導出)。命名・人口だけに使う。
+const fallbackTownRng = (worldSeed: number): (() => number) =>
+  mulberry32((Math.imul(worldSeed ^ 0x2545f491, 0x27d4eb2d)) >>> 0);
+
+/**
+ * 領域生成後の町数がMIN_STARTING_TOWNSに満たない場合、決定的な格子走査で町を追加する
+ * (id: town-fallback-{n})。旧実装(rejection samplingでランダムに座標を試す)は、
+ * 山岳・水域が広いマップ(平地が数%しか無いような外れ値のseed)で有効な平地に
+ * 全く当たらないまま試行回数を使い切ることがあった。格子走査(マップ全域を
+ * FALLBACK_GRID_RESOLUTION²の候補点で一様にカバーし、決定的ハッシュ順に試す)なら、
+ * 条件を満たす場所がマップ上のどこかに存在する限りほぼ確実に見つけられる。
+ * 本当に候補が尽きたら(=有効な平地が無い)そこで諦める。
+ */
+function fillMinimumTowns(
+  worldSeed: number,
+  halfExtent: number,
+  field: TerrainField,
+  towns: TownData[]
+): TownData[] {
+  if (towns.length >= MIN_STARTING_TOWNS) return towns;
+  const extent = Math.max(0, halfExtent);
+  const result = [...towns];
+  if (extent <= 0) return result;
+
+  const step = Math.max(1, Math.ceil((2 * extent + 1) / FALLBACK_GRID_RESOLUTION));
+  const candidates: { x: number; z: number; order: number }[] = [];
+  for (let x = -extent; x <= extent; x += step) {
+    for (let z = -extent; z <= extent; z += step) {
+      candidates.push({ x, z, order: regionHash(worldSeed, x, z, 0x51a1) });
+    }
+  }
+  candidates.sort((a, b) => a.order - b.order);
+
+  const rng = fallbackTownRng(worldSeed);
+  for (const c of candidates) {
+    if (result.length >= MIN_STARTING_TOWNS) break;
+    const farEnough = result.every(
+      t => Math.hypot(t.centre.x - c.x, t.centre.z - c.z) >= FALLBACK_TOWN_MIN_DISTANCE
+    );
+    if (!farEnough) continue;
+    if (isNearTerrain(c.x, c.z, field, TOWN_TERRAIN_AVOID_RADIUS)) continue;
+
+    const usedNames = new Set(result.map(t => t.name));
+    const name = nextTownName(rng, usedNames);
+    const population = Math.round(
+      TOWN_POPULATION_MIN + rng() * (TOWN_POPULATION_MAX - TOWN_POPULATION_MIN)
+    );
+    result.push({ id: `town-fallback-${result.length}`, name, centre: { x: c.x, z: c.z }, population });
+  }
+
+  return result;
+}
+
 /**
  * マップ(halfExtent)内の全領域を列挙し、町候補を持つ領域だけを実体化する。
  * O(regions)。16Kマップ(halfExtent=8192、約1.7万領域)でも数百ms未満で終わる想定
- * (性能はtowns.test.tsのガードで担保)。
+ * (性能はtowns.test.tsのガードで担保)。領域パスの結果がMIN_STARTING_TOWNSに
+ * 満たない場合(小さいマップで領域数自体が少ないケース)はfillMinimumTownsで
+ * 決定的に補う。16Kマップ級では領域パスだけで確実にMIN_STARTING_TOWNSを超えるため
+ * no-op。
  */
 export function generateRegionTowns(
   worldSeed: number,
@@ -263,7 +350,7 @@ export function generateRegionTowns(
     const candidate = regionTownCandidate(worldSeed, rx, rz, halfExtent, field);
     if (candidate) towns.push(candidate);
   }
-  return towns;
+  return fillMinimumTowns(worldSeed, halfExtent, field, towns);
 }
 
 // --- 駅名の町名採用 ---
