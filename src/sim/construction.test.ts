@@ -16,6 +16,7 @@ import {
   planElevatedPath,
   pickElevatedConnection,
   planHasStraightRamps,
+  resolveGroundRailPlanDetailed,
   type ConstructionState,
   type ElevatedEndPlan,
 } from './construction';
@@ -497,6 +498,65 @@ describe('P7b: 標高に応じた地上線路建設(勾配追従/トンネル/�
     const result = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }], field);
 
     expect(result.railMap).toBe(state.railMap);
+  });
+});
+
+describe('P7d: resolveGroundRailPlanDetailed（建設不可の理由、UIフィードバック向け）', () => {
+  const otherSlopeField = (
+    cornersByCell: Record<string, [number, number, number, number]>
+  ): TerrainField => {
+    const key = (x: number, z: number) => `${x},${z}`;
+    const cellCornerHeights = (x: number, z: number) => cornersByCell[key(x, z)] ?? [0, 0, 0, 0];
+    return {
+      cornerHeightAt: () => 0,
+      cellCornerHeights,
+      cellHeightAt: (x, z) => Math.min(...cellCornerHeights(x, z)),
+      terrainTypeAt: (x, z) => (Math.min(...cellCornerHeights(x, z)) >= 1 ? 'mountain' : 'grass'),
+    };
+  };
+
+  it('建設できる経路はreasonを持たずplanを返す', () => {
+    const field = fieldFromMaps(new Map(), new Map(), 45);
+    const result = resolveGroundRailPlanDetailed(field, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    expect(result.reason).toBeUndefined();
+    expect(result.plan).not.toBeNull();
+  });
+
+  it('otherスロープの地形が進入標高より高くない場合はreason:other-slope', () => {
+    const field = otherSlopeField({
+      '-1,0': [2, 2, 2, 2],
+      '0,0': [2, 2, 1, 2],
+      '1,0': [2, 2, 2, 2],
+    });
+    const result = resolveGroundRailPlanDetailed(field, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }]);
+    expect(result.plan).toBeNull();
+    expect(result.reason).toBe('other-slope');
+  });
+
+  it('トンネル区間の出口標高が進入標高と食い違う場合はreason:tunnel-exit-mismatch', () => {
+    const field = otherSlopeField({
+      '0,0': [2, 2, 2, 1],
+      '1,0': [2, 1, 1, 2],
+      '2,0': [1, 1, 1, 1],
+    });
+    const result = resolveGroundRailPlanDetailed(
+      field,
+      [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]
+    );
+    expect(result.plan).toBeNull();
+    expect(result.reason).toBe('tunnel-exit-mismatch');
+  });
+
+  it('inclineの許可方向以外へ接続しようとするとreason:direction-blocked', () => {
+    // (0,0)はN-Sのincline(nw=ne=1, sw=se=0)。東西(E-W)方向の経路は許可されない。
+    // 隣接セルは同じ標高スケール(flat 1)にして、edge-discontinuousが同時に出ないようにする。
+    const field = otherSlopeField({
+      '-1,0': [1, 1, 1, 1],
+      '0,0': [1, 1, 0, 0],
+    });
+    const result = resolveGroundRailPlanDetailed(field, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
+    expect(result.plan).toBeNull();
+    expect(result.reason).toBe('direction-blocked');
   });
 });
 

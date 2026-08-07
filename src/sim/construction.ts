@@ -229,26 +229,62 @@ export type GroundRailCellRole =
  * (コーナーが隣接セル間で物理共有される)ではこのケースは構造的にほぼ起こらない
  * (slopes.tsのP7a実装メモ参照)。
  */
-export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundRailCellRole[] | null {
+/**
+ * P7d: resolveGroundRailPlanが建設不可(null)と判定した理由(UIフィードバック向け)。
+ * - 'other-slope': 経路上のセルがother斜面(線路自体が敷けない形)で、かつその区間を
+ *   トンネルで貫くにも地形がentryHeightより高くない
+ * - 'direction-blocked': incline斜面が、経路が必要とする接続方向を許可しない
+ * - 'edge-discontinuous': 隣接セル間で共有辺の標高が繋がらない(実際のTerrainFieldでは
+ *   構造的にほぼ発生しない。slopes.tsのP7a実装メモ参照)
+ * - 'tunnel-exit-mismatch': トンネル区間直後のセルの標高が、進入標高と一致しない
+ */
+export type GroundRailPlanFailureReason =
+  | 'other-slope'
+  | 'direction-blocked'
+  | 'edge-discontinuous'
+  | 'tunnel-exit-mismatch';
+
+export interface GroundRailPlanResult {
+  plan: GroundRailCellRole[] | null;
+  /** planがnullのときだけ設定される、no-opになった理由。 */
+  reason?: GroundRailPlanFailureReason;
+}
+
+/**
+ * resolveGroundRailPlanの本体。UI向けに「なぜ建設できないか」も一緒に返す
+ * (P7d)。resolveGroundRailPlan(既存のプレーンなAPI)はこの関数のplanだけを返す
+ * 薄いラッパーにした(挙動は無改修)。
+ */
+export function resolveGroundRailPlanDetailed(field: TerrainField, path: Pos[]): GroundRailPlanResult {
   const n = path.length;
-  if (n === 0) return [];
+  if (n === 0) return { plan: [] };
 
   const corners = path.map(p => field.cellCornerHeights(p.x, p.z));
   const slopes = corners.map(c => slopeOf(c));
 
+  // セルごとの「なぜダメか」(cellOk===trueなら未使用)。other-slopeを優先し、
+  // それ以外で方向が塞がれていればdirection-blockedにする。
+  const cellReason: (GroundRailPlanFailureReason | undefined)[] = slopes.map(s =>
+    s.kind === 'other' ? 'other-slope' : undefined
+  );
   const cellOk = path.map((_, i) => {
     const slope = slopes[i];
     if (slope.kind === 'other') return false;
     const allowed = allowedRailConnections(slope);
     const dirs = pathCellConnectionDirs(path, i);
-    return dirs.every(d => (allowed & d) !== 0);
+    const ok = dirs.every(d => (allowed & d) !== 0);
+    if (!ok) cellReason[i] = 'direction-blocked';
+    return ok;
   });
 
   const badIndex = cellOk.map(ok => !ok);
   for (let i = 0; i < n - 1; i++) {
     if (!cellOk[i] || !cellOk[i + 1]) continue;
     const dir = getDirFromVector(path[i + 1].x - path[i].x, path[i + 1].z - path[i].z);
-    if (!railEdgeContinuous(corners[i], corners[i + 1], dir)) badIndex[i + 1] = true;
+    if (!railEdgeContinuous(corners[i], corners[i + 1], dir)) {
+      badIndex[i + 1] = true;
+      cellReason[i + 1] = 'edge-discontinuous';
+    }
   }
 
   const roles: GroundRailCellRole[] = slopes.map(s => ({
@@ -256,7 +292,7 @@ export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundR
     slope: s.kind === 'incline' ? ('incline' as const) : ('flat' as const),
   }));
 
-  if (!badIndex.some(Boolean)) return roles;
+  if (!badIndex.some(Boolean)) return { plan: roles };
 
   let i = 0;
   while (i < n) {
@@ -278,12 +314,14 @@ export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundR
     // 存在を見逃してしまう。「そのセルの足元のどこかがentryHeightを超えて盛り上がって
     // いるか」を問うにはmax則のほうが適切(トンネルを掘るべき土被りの有無を表す)。
     for (let k = lo; k <= hi; k++) {
-      if (Math.max(...corners[k]) <= entryHeight) return null;
+      if (Math.max(...corners[k]) <= entryHeight) {
+        return { plan: null, reason: cellReason[k] ?? 'other-slope' };
+      }
     }
 
     if (hi + 1 < n) {
       const exitHeight = railHeightAt(field, undefined, path[hi + 1].x, path[hi + 1].z);
-      if (exitHeight !== entryHeight) return null;
+      if (exitHeight !== entryHeight) return { plan: null, reason: 'tunnel-exit-mismatch' };
     }
 
     for (let k = lo; k <= hi; k++) {
@@ -293,7 +331,11 @@ export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundR
     i = hi + 1;
   }
 
-  return roles;
+  return { plan: roles };
+}
+
+export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundRailCellRole[] | null {
+  return resolveGroundRailPlanDetailed(field, path).plan;
 }
 
 // resolveGroundRailPlanの結果から、そのセルに付けるCellDataの地形フラグ(bridge/tunnel)を返す。
