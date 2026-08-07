@@ -665,6 +665,7 @@ export const useGameLogic = () => {
     field,
     baseField,
     editedField,
+    cornerDiffs,
     halfExtent,
     selectedTrainId, setSelectedTrainId: selectTrain,
     isEditingSchedule, setIsEditingSchedule,

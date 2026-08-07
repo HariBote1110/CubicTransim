@@ -1,7 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import type { ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, OrthographicCamera } from '@react-three/drei';
+import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 
 import { DynamicTrain } from './DynamicTrain';
 import { SimulationDriver } from './SimulationDriver';
@@ -23,7 +25,7 @@ import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
 import type { TerrainField } from '../sim/terrainField';
-import { rectCells } from '../sim/terrainOverlay';
+import { rectCells, type CornerDiffs } from '../sim/terrainOverlay';
 import type { TownTileIndex, TownSubTileIndex } from '../sim/townTiles';
 import { TerrainBlocks } from './TerrainBlocks';
 import { createGroundTexture } from '../render/groundTexture';
@@ -91,6 +93,88 @@ const SunLight: React.FC = () => {
   );
 };
 
+/**
+ * カメラの可視範囲(注視点セル座標＋可視半径セル数)をTerrainBlocks/Sceneryの
+ * チャンク描画へ渡すための追跡コンポーネント。
+ *
+ * 直交カメラの4隅(NDCの±1)をy=0平面へ逆投影し、その外接矩形の中心・半径を
+ * 可視範囲として使う(design memo P4 pt.3)。毎フレーム計算せず、OrbitControlsの
+ * 'change'イベント(パン・ズーム操作)だけを起点にし、さらに間引く(最短でも
+ * UPDATE_INTERVAL_MSごと)ことで、チャンク集合の更新頻度を「操作のたびに数回」に
+ * 抑える。
+ */
+const UPDATE_INTERVAL_MS = 150;
+
+interface ChunkView {
+  targetCell: { x: number; z: number };
+  viewRadiusCells: number;
+}
+
+const CameraChunkTracker: React.FC<{
+  controlsRef: React.RefObject<OrbitControlsImpl | null>;
+  onChange: (view: ChunkView) => void;
+}> = ({ controlsRef, onChange }) => {
+  const { camera } = useThree();
+  const lastRunRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const computeAndEmit = useCallback(() => {
+    const near = new THREE.Vector3();
+    const far = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    const ground = new THREE.Vector3();
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+
+    for (const ndcX of [-1, 1]) {
+      for (const ndcY of [-1, 1]) {
+        near.set(ndcX, ndcY, -1).unproject(camera);
+        far.set(ndcX, ndcY, 1).unproject(camera);
+        dir.subVectors(far, near);
+        if (Math.abs(dir.y) < 1e-6) continue;
+        const t = -near.y / dir.y;
+        ground.copy(near).addScaledVector(dir, t);
+        minX = Math.min(minX, ground.x);
+        maxX = Math.max(maxX, ground.x);
+        minZ = Math.min(minZ, ground.z);
+        maxZ = Math.max(maxZ, ground.z);
+      }
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return;
+
+    onChange({
+      targetCell: { x: Math.round((minX + maxX) / 2), z: Math.round((minZ + maxZ) / 2) },
+      viewRadiusCells: Math.ceil(Math.max(maxX - minX, maxZ - minZ) / 2),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera, onChange]);
+
+  useEffect(() => {
+    // 初期表示ぶんは即座に計算する。
+    computeAndEmit();
+
+    const scheduleUpdate = () => {
+      const now = performance.now();
+      const elapsed = now - lastRunRef.current;
+      if (timerRef.current) return; // 既に予約済みならまとめる(スロットル)。
+      const delay = Math.max(0, UPDATE_INTERVAL_MS - elapsed);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        lastRunRef.current = performance.now();
+        computeAndEmit();
+      }, delay);
+    };
+
+    const controls = controlsRef.current;
+    controls?.addEventListener('change', scheduleUpdate);
+    return () => {
+      controls?.removeEventListener('change', scheduleUpdate);
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [controlsRef, computeAndEmit]);
+
+  return null;
+};
+
 interface GameSceneProps {
   railMap: Map<string, CellData>;
   stations: Map<string, StationData>;
@@ -103,6 +187,8 @@ interface GameSceneProps {
   field: TerrainField;
   /** マップの生成半径(-halfExtent..halfExtent)。Scenery/TerrainBlocksの走査範囲に使う。 */
   halfExtent: number;
+  /** 地形編集の疎な差分(useGameLogicのcornerDiffs)。TerrainBlocksのチャンクキャッシュ無効化に使う。 */
+  cornerDiffs?: CornerDiffs;
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
   // ★変更: 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜MAX_ELEVATED_LEVEL)。
@@ -137,10 +223,14 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, townTiles, townSubTiles, field, halfExtent, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, townTiles, townSubTiles, field, halfExtent, cornerDiffs, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
+  // カメラの可視範囲(チャンク描画の中心・半径)。既定値は原点周辺(初期カメラの見え方に
+  // 近い半径)にしておき、CameraChunkTrackerが初回描画後すぐに実測値へ更新する。
+  const [chunkView, setChunkView] = useState<ChunkView>({ targetCell: { x: 0, z: 0 }, viewRadiusCells: 24 });
+  const orbitControlsRef = useRef<OrbitControlsImpl | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
   // dragStartPos の実体はこの ref に持つ。handlePointerUp が読むのは常にこちら。
@@ -419,6 +509,23 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const groundTexture = useMemo(() => createGroundTexture(), []);
   React.useEffect(() => () => groundTexture.dispose(), [groundTexture]);
 
+  // 地面プレーン(ポインタ判定・装飾テクスチャ)の一辺長と中心。
+  // halfExtentが小さい通常マップ(既定45)ではプレーンが原点固定のままマップ全域を
+  // 覆えるため従来通り。halfExtentが大きい(16K級)マップでは、マップ全域を1枚の
+  // プレーンで覆うと巨大な平面ジオメトリ・巨大なポインタ判定範囲になってしまうため、
+  // カメラの注視チャンク(32セル単位にスナップ)へ追従させ、可視範囲を十分覆う
+  // 一定サイズ(GROUND_PLANE_SPAN)だけを描く。スナップにより、CameraChunkTrackerの
+  // スロットル更新のたびに再配置が起きるのを防ぐ(32セル動くまでは再配置しない)。
+  const GROUND_PLANE_SPAN = 320;
+  const groundFitsWholeMap = 2 * halfExtent + 40 <= GROUND_PLANE_SPAN;
+  const groundSpan = groundFitsWholeMap ? Math.max(140, 2 * halfExtent + 40) : GROUND_PLANE_SPAN;
+  const groundCentre = groundFitsWholeMap
+    ? { x: 0, z: 0 }
+    : {
+      x: Math.round(chunkView.targetCell.x / 32) * 32,
+      z: Math.round(chunkView.targetCell.z / 32) * 32,
+    };
+
   // 駅セルがホームの端かどうか(=同一stationIdの隣接セルが1つ以下)を判定する。
   // 端のセルだけ上屋の妻側にも柱を立てて、ホームが尻切れに見えないようにする。
   // 地平・高架は別の層として独立に集計する(render/stationLayers.ts参照)。
@@ -433,7 +540,16 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <ambientLight intensity={0.2} />
       <SunLight />
       <OrthographicCamera makeDefault position={[20, 20, 20]} zoom={40} near={-50} far={200} />
-      <OrbitControls makeDefault enableRotate={false} enableZoom={true} minZoom={20} maxZoom={100} mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }} />
+      <OrbitControls
+        ref={orbitControlsRef}
+        makeDefault
+        enableRotate={false}
+        enableZoom={true}
+        minZoom={20}
+        maxZoom={100}
+        mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }}
+      />
+      <CameraChunkTracker controlsRef={orbitControlsRef} onChange={setChunkView} />
 
       {/* 建設プレビュー。高架のrail(buildLevel>=1)は坂になるセルと高架のままのセルを色分けする。 */}
       {previewPath.map((pos, i) => {
@@ -470,12 +586,22 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <TerrainBlocks
         field={field}
         halfExtent={halfExtent}
+        diffs={cornerDiffs}
+        cameraTargetCell={chunkView.targetCell}
+        viewRadiusCells={chunkView.viewRadiusCells}
         pickable={terrainEditActive}
         onPointerMove={(e) => { e.stopPropagation(); handlePointerMove(e); }}
         onPointerDown={handlePointerDown}
         onPointerUp={(e) => { e.stopPropagation(); handlePointerUp(e); }}
       />
-      <Scenery field={field} railMap={railMap} townTiles={townTiles} range={halfExtent} />
+      <Scenery
+        field={field}
+        railMap={railMap}
+        townTiles={townTiles}
+        range={halfExtent}
+        cameraTargetCell={chunkView.targetCell}
+        viewRadiusCells={chunkView.viewRadiusCells}
+      />
       <TrackNetwork railMap={railMap} />
 
       {Array.from(railMap.entries()).map(([key, data]) => {
@@ -657,7 +783,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, -0.02, 0]}
+        position={[groundCentre.x, -0.02, groundCentre.z]}
         receiveShadow
         onPointerMove={handlePointerMove}
         onPointerDown={handlePointerDown}
@@ -665,13 +791,16 @@ export const GameScene: React.FC<GameSceneProps> = ({
         onPointerLeave={handlePointerUp}
         onClick={handleClick}
       >
-        <planeGeometry args={[140, 140]} />
+        <planeGeometry args={[groundSpan, groundSpan]} />
         <meshStandardMaterial map={groundTexture} color="#ffffff" roughness={1} />
       </mesh>
 
       {/* 建設モードのときだけグリッドを出す(通常時はジオラマの見た目を邪魔しない) */}
       {buildMode !== 'none' && (
-        <gridHelper args={[120, 120, 0x7f9c68, 0x9fbb84]} position={[0, 0.004, 0]} />
+        <gridHelper
+          args={[groundSpan, groundSpan, 0x7f9c68, 0x9fbb84]}
+          position={[groundCentre.x, 0.004, groundCentre.z]}
+        />
       )}
 
       <SimulationDriver world={world} onSimEvent={onSimEvent} speed={simSpeed} />

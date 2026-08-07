@@ -32,7 +32,7 @@ export default function App() {
   }, []);
 
   const {
-    railMap, stations, trains, towns, townTileIndex, townSubTileIndex, field, halfExtent, editedField, baseField, selectedTrainId, setSelectedTrainId,
+    railMap, stations, trains, towns, townTileIndex, townSubTileIndex, field, halfExtent, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
@@ -63,6 +63,7 @@ export default function App() {
           townSubTiles={townSubTileIndex}
           field={field}
           halfExtent={halfExtent}
+          cornerDiffs={cornerDiffs}
           world={worldRef}
           buildMode={buildMode}
           buildLevel={buildLevel}

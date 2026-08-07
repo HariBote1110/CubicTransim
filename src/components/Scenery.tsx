@@ -6,6 +6,7 @@ import { toKey } from '../utils';
 import { MATERIALS, hash01 } from '../render/palette';
 import type { TerrainField } from '../sim/terrainField';
 import { mergeAndDispose } from '../render/mergeGeometry';
+import { visibleChunkRange, chunkCells, chunkKey } from '../render/terrainChunks';
 
 interface Props {
   field: TerrainField;
@@ -14,6 +15,10 @@ interface Props {
   townTiles: TownTileIndex;
   /** 装飾を置く範囲(-RANGE..RANGE)。sim/terrain.ts の生成範囲に合わせる。 */
   range?: number;
+  /** カメラが注視しているセル座標(TerrainBlocksと同じ可視チャンク集合を使う)。 */
+  cameraTargetCell: { x: number; z: number };
+  /** カメラの可視半径(セル数)。 */
+  viewRadiusCells: number;
 }
 
 // 草地セルに樹木を置く確率。上げすぎると森で埋まって線路が見づらくなる。
@@ -30,12 +35,26 @@ const TOWN_TILE_MARGIN = 1;
  * 同じ座標には必ず同じ木が生えるので見た目は安定する)。
  * 数百本規模になるのでマテリアルごとにジオメトリをマージして3ドローコールに収める。
  */
-export const Scenery: React.FC<Props> = ({ field, railMap, townTiles, range = 45 }) => {
-  // 地形と街だけに依存する候補リスト(建設のたびに全セル走査しないよう分離する)。
+export const Scenery: React.FC<Props> = ({
+  field, railMap, townTiles, range = 45, cameraTargetCell, viewRadiusCells,
+}) => {
+  // P4: 全セル(-range..range)を毎回走査するのではなく、TerrainBlocksと同じ
+  // 可視チャンク集合(render/terrainChunks.ts)だけを候補にする。木の配置自体は
+  // セル座標のハッシュ(hash01)だけで決まる純粋な関数なので、可視チャンクの
+  // 組み合わせが変わっても同じセルには常に同じ木が生える(チャンク非依存の決定性)。
+  const visibleChunks = useMemo(
+    () => visibleChunkRange(cameraTargetCell, viewRadiusCells, range, 1),
+    [cameraTargetCell.x, cameraTargetCell.z, viewRadiusCells, range],
+  );
+
   const candidates = useMemo(() => {
     const list: { x: number; z: number }[] = [];
-    for (let x = -range; x <= range; x++) {
-      for (let z = -range; z <= range; z++) {
+    const seen = new Set<string>();
+    for (const chunk of visibleChunks) {
+      for (const { x, z } of chunkCells(chunk, range)) {
+        const key = chunkKey(x, z);
+        if (seen.has(key)) continue; // チャンクのマージン境界での重複を防ぐ。
+        seen.add(key);
         if (hash01(x, z, 11) >= TREE_DENSITY) continue;
         if (field.terrainTypeAt(x, z) !== 'grass') continue; // 水域・山岳は除外
         // 町タイル(家・道路)とその周囲1タイルは市街地として空けておく
@@ -50,7 +69,7 @@ export const Scenery: React.FC<Props> = ({ field, railMap, townTiles, range = 45
       }
     }
     return list;
-  }, [field, townTiles, range]);
+  }, [field, townTiles, range, visibleChunks]);
 
   const merged = useMemo(() => {
     const trunks: THREE.BufferGeometry[] = [];
