@@ -33,8 +33,8 @@ const pushPortal = (portals: TunnelPortal[], x: number, z: number, dir: number):
  * - そのセルの接続が1方向しかない(=トンネル区間内での行き止まり)場合、まだ線路が
  *   延びていない反対方向が坑口になる(例: 直線トンネルの両端セル。連結先セルは
  *   トンネル内部なので上のケースには該当しないが、未接続側は山肌の入口とみなす)。
- *   ただし反対方向の隣接セルがまだmountain(標高>0)なら、そこは山の内部でしかなく
- *   山肌ではないため坑口を作らない(elevationで判定する。地表で終端している場合
+ *   ただし反対方向の隣接セルがまだmountainなら、そこは山の内部でしかなく山肌では
+ *   ないため坑口を作らない(field.terrainTypeAtで判定する。地表で終端している場合
  *   だけ坑口になる)。
  * 両ケースが同じ方向を指すことはない(接続方向とその反対方向は常に異なるため)ので
  * 重複は起きない。
@@ -59,7 +59,7 @@ export function tunnelPortals(railMap: Map<string, CellData>, field: TerrainFiel
     if (connectedDirs.length === 1) {
       const oppositeDir = getOppositeDir(connectedDirs[0]);
       const { x: dx, z: dz } = getVectorFromDir(oppositeDir);
-      if (field.cellHeightAt(x + dx, z + dz) <= 0) {
+      if (field.terrainTypeAt(x + dx, z + dz) !== 'mountain') {
         pushPortal(portals, x, z, oppositeDir);
       }
     }
@@ -147,14 +147,17 @@ interface ElevatedTunnelLevelData {
  * 1つの連結成分(直線・曲線でつながった同一レベルの高架レール群)について、
  * 「山に埋もれているセル」と「坑口」を求める。
  *
- * 各セルの内外判定にはisMountainInteriorAtLevel(4隅すべてlevel以上)を使うのが
- * 基本だが、山が薄すぎる(例: 進行方向に対して1セル幅しかない土手状の地形)場合、
- * どのセルも4隅すべては条件を満たせず(必ずどこかの隅が非mountain隣接セルに
- * 引っ張られて0になる)、成分内の全セルが「常に露出」判定になってしまう。
- * これは「坑口が浮く」不具合よりも悪い後退(トンネル効果が完全に消える)なので、
- * 成分内に1つもisMountainInteriorAtLevelを満たすセルが無い場合だけ、
- * 従来の判定(そのセル自身の標高がlevel以上か、cellCornerElevationsより粗いが
- * 単純なelevationAt)にフォールバックする。
+ * 各セルの内外判定はisMountainInteriorAtLevel(4隅すべてlevel以上)で行う。
+ * TerrainField.cellHeightAtは常に4隅コーナーのminとして定義される(terrainField.ts/
+ * terrainOverlay.tsのコーナー一次データという設計そのもの)ため、「セル自身の標高が
+ * level以上か」という単純な代替判定はcellCornerHeights().every(h=>h>=level)と
+ * 数学的に完全に一致し、独立したフォールバックにはなり得ない(旧terrain.tsの
+ * elevationAt/cellCornerElevationsは別々のMapから引いていたため、コーナー由来と
+ * 生標高が食い違い得た。field化でこの食い違いの余地自体が無くなった)。
+ * 進行方向に対して1セル幅しかない土手状の地形や孤立した1セルの「山」は、
+ * コーナーが必ずどこかで非mountain隣接に引っ張られて0になるため内部判定を満たさず、
+ * 通常の露出した高架として扱われる(=1-Lipschitzな地形では実体の無い山にトンネルの
+ * 見た目を付けない、が正しい挙動)。
  */
 function computeElevatedTunnelLevelData(
   railMap: Map<string, CellData>,
@@ -165,13 +168,7 @@ function computeElevatedTunnelLevelData(
   const portals: ElevatedTunnelPortal[] = [];
 
   for (const component of elevatedComponents(railMap, level)) {
-    const cornerTest = (x: number, z: number): boolean => isMountainInteriorAtLevel(field, x, z, level);
-    const scalarTest = (x: number, z: number): boolean => field.cellHeightAt(x, z) >= level;
-    const hasCornerInterior = component.some(k => {
-      const { x, z } = fromKey(k);
-      return cornerTest(x, z);
-    });
-    const isInterior = hasCornerInterior ? cornerTest : scalarTest;
+    const isInterior = (x: number, z: number): boolean => isMountainInteriorAtLevel(field, x, z, level);
 
     for (const key of component) {
       const { x, z } = fromKey(key);
