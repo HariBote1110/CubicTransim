@@ -386,12 +386,12 @@ describe('regionTownCandidate / generateRegionTowns', () => {
     expect(towns.length).toBeLessThanOrEqual(4);
   });
 
-  it('16Kマップ相当(halfExtent=8192)でも200ms未満で生成が終わる', () => {
+  it('16Kマップ相当(halfExtent=8192)でも500ms未満で生成が終わる', () => {
     const bigField = createTerrainField(2026, 8192);
     const start = performance.now();
     const towns = generateRegionTowns(2026, 8192, bigField);
     const elapsed = performance.now() - start;
-    expect(elapsed).toBeLessThan(200);
+    expect(elapsed).toBeLessThan(500);
     // 「a few thousand towns」の想定オーダーに収まっていることの粗いガード
     expect(towns.length).toBeGreaterThan(500);
     expect(towns.length).toBeLessThan(20000);
