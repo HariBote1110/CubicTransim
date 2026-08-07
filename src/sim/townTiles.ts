@@ -38,8 +38,18 @@ export interface TownTileEntry {
   kind: TownTileKind;
 }
 
-/** 全町を合成した「セルキー→(町id, タイル種別)」のタイル粒度の索引。 */
-export type TownTileIndex = Map<string, TownTileEntry>;
+/**
+ * タイル粒度の索引が満たすべき最小のインターフェース(P5)。既存の消費側
+ * (construction.ts/buildPreview.ts/GameUI.tsx/Scenery.tsx)はすべて`.has(key)`/
+ * `.get(key)`(toKeyで作った文字列キー)だけを使い、走査(for..of/values())はしない。
+ * `Map<string, TownTileEntry>`は構造的にこのインターフェースを満たすため、
+ * buildTownIndexesの戻り値(旧来の全町eagerな索引)とTownTileCache(下記、
+ * 町ごとの遅延キャッシュ)のどちらを渡しても既存コードは無変更で動く。
+ */
+export interface TownTileIndex {
+  has(key: string): boolean;
+  get(key: string): TownTileEntry | undefined;
+}
 
 /** 全町を合成した「サブタイルキー→(町id, 種別)」のサブタイル粒度の索引(描画用)。 */
 export type TownSubTileIndex = Map<string, TownTileEntry>;
@@ -336,3 +346,140 @@ export const townTileAt = (index: TownTileIndex, x: number, z: number): TownTile
 /** 地平の建設(線路など)を遮る町タイルか。家のみtrue(道路は踏切として通過可)。 */
 export const isTownBlocked = (index: TownTileIndex, x: number, z: number): boolean =>
   index.get(toKey(x, z))?.kind === 'house';
+
+// --- 町ごとの遅延タイルキャッシュ(P5, progress/16k-map-architecture.md参照) ---
+//
+// buildTownIndexesは全町を毎回eagerに再生成する(町ごとにO(radius^2)のBFS)ため、
+// 16Kマップで町が数千個になると「railMapが1回変わるたびに全町再生成」というコストが
+// 生まれる(たとえカメラがマップの隅にいて1つも見えていなくても)。TownTileCacheは
+// これを「クエリされた町だけ、その町のrailMap参照が変わったときだけ」再生成する
+// 遅延キャッシュに置き換える。
+//
+// 空間索引: 町の中心をCANDIDATE_BUCKET_SIZE四方のバケットへ割り当てる。町タイル半径の
+// 最大値(TOWN_TILE_RADIUS_MAX=16)はバケット半分(32)より小さいので、セル(x,z)を含みうる
+// 町は「(x,z)のバケット」を中心とした3x3バケットの範囲にしか存在し得ない。
+const CANDIDATE_BUCKET_SIZE = 64;
+const bucketCoordOf = (v: number): number => Math.floor(v / CANDIDATE_BUCKET_SIZE);
+const bucketKeyOf = (bx: number, bz: number): string => `${bx},${bz}`;
+
+interface TownTileCacheEntry {
+  subTiles: Map<string, TownTileKind>;
+  tiles: Map<string, TownTileKind>;
+  /** このエントリを生成したときのrailMap参照。参照が変われば無効(再生成対象)。 */
+  railMapRef: Map<string, CellData> | undefined;
+}
+
+/**
+ * 町ごとに遅延生成・キャッシュするタイル索引。TownTileIndexインターフェース
+ * (has/get)を実装するのでconstruction.ts/buildPreview.ts/GameUI.tsx/Scenery.tsxの
+ * 既存コードにそのまま渡せる。加えて、可視町だけの描画用サブタイル索引を作る
+ * subTilesForTownsを提供する(TownBlocks.tsxのチャンク化された描画から使う)。
+ *
+ * 無効化キー: 町ごとに「最後に使ったrailMap参照」を覚えておき、参照が変わって
+ * いたら(=railMapへの何らかの編集が起きていたら)その町だけ再生成する。厳密には
+ * 「その町のbboxに触れる編集だけ」に絞り込むのが理想だが、railMapの差分セル一覧を
+ * 呼び出し側が持っていないため、この簡略版では「参照が変わっていれば再生成」に
+ * している。ただし再生成は実際にクエリされた町についてだけ起きる(=遠くの町は
+ * 何回railMapが変わっても、クエリされない限り再計算されない)ため、
+ * 「全町を毎回舐める」という当初の問題は解消される。
+ */
+export class TownTileCache implements TownTileIndex {
+  private readonly towns: TownData[];
+  private readonly townById: Map<string, TownData>;
+  private readonly field: TerrainField;
+  private readonly railMap: Map<string, CellData> | undefined;
+  private readonly buckets: Map<string, TownData[]> = new Map();
+  private readonly cache: Map<string, TownTileCacheEntry> = new Map();
+
+  constructor(towns: TownData[], field: TerrainField, railMap?: Map<string, CellData>) {
+    this.towns = towns;
+    this.field = field;
+    this.railMap = railMap;
+    this.townById = new Map(towns.map(t => [t.id, t]));
+    for (const town of towns) {
+      const bx = bucketCoordOf(town.centre.x);
+      const bz = bucketCoordOf(town.centre.z);
+      const key = bucketKeyOf(bx, bz);
+      const list = this.buckets.get(key);
+      if (list) list.push(town);
+      else this.buckets.set(key, [town]);
+    }
+  }
+
+  private candidatesFor(x: number, z: number): TownData[] {
+    const bx = bucketCoordOf(x);
+    const bz = bucketCoordOf(z);
+    const out: TownData[] = [];
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const list = this.buckets.get(bucketKeyOf(bx + dx, bz + dz));
+        if (!list) continue;
+        for (const town of list) {
+          const r = townTileRadius(town.population);
+          if (Math.abs(town.centre.x - x) <= r && Math.abs(town.centre.z - z) <= r) out.push(town);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** 町ごとのタイル/サブタイルを取得(キャッシュヒットならそのまま、なければ生成)。 */
+  private entryFor(town: TownData): TownTileCacheEntry {
+    const cached = this.cache.get(town.id);
+    if (cached && cached.railMapRef === this.railMap) return cached;
+    const subTiles = generateTownSubTiles(town, this.field, { railMap: this.railMap });
+    const entry: TownTileCacheEntry = {
+      subTiles,
+      tiles: deriveTileKinds(subTiles),
+      railMapRef: this.railMap,
+    };
+    this.cache.set(town.id, entry);
+    return entry;
+  }
+
+  /** セルキー(toKey形式)からタイル情報を取得。マップ全域のどのセルに対しても呼べる。 */
+  get(key: string): TownTileEntry | undefined {
+    const { x, z } = fromKey(key);
+    // towns配列の順(先勝ち)で、実際にそのセルにタイルを持つ最初の町を採用する。
+    for (const town of this.candidatesFor(x, z)) {
+      const kind = this.entryFor(town).tiles.get(key);
+      if (kind) return { townId: town.id, kind };
+    }
+    return undefined;
+  }
+
+  has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+
+  /** 指定した町id群(可視町のみ等)のサブタイル索引を合成して返す(描画用)。 */
+  subTilesForTowns(townIds: Iterable<string>): TownSubTileIndex {
+    const merged: TownSubTileIndex = new Map();
+    for (const id of townIds) {
+      const town = this.townById.get(id);
+      if (!town) continue;
+      const entry = this.entryFor(town);
+      for (const [key, kind] of entry.subTiles) {
+        if (!merged.has(key)) merged.set(key, { townId: town.id, kind });
+      }
+    }
+    return merged;
+  }
+}
+
+/** 町のタイル粒度のbbox(セル座標)が、指定範囲(両端含む)と交差するか。描画の可視判定に使う。 */
+export function townIntersectsCellRange(
+  town: TownData,
+  x0: number,
+  x1: number,
+  z0: number,
+  z1: number
+): boolean {
+  const r = townTileRadius(town.population);
+  return (
+    town.centre.x + r >= x0 &&
+    town.centre.x - r <= x1 &&
+    town.centre.z + r >= z0 &&
+    town.centre.z - r <= z1
+  );
+}

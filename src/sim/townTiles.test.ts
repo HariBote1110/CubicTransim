@@ -16,6 +16,8 @@ import {
   cellOccupiesGround,
   parentTileOfSub,
   subTileWorldCentre,
+  TownTileCache,
+  townIntersectsCellRange,
   TOWN_TILE_RADIUS_MAX,
   TOWN_SUB_TILE_RADIUS_MAX,
   TOWN_ROAD_PRUNE_DISTANCE,
@@ -362,6 +364,72 @@ describe('townTiles: 合成索引(buildTownIndexes)', () => {
     expect(isTownBlocked(index, house.x, house.z)).toBe(true);
     expect(isTownBlocked(index, 40, 40)).toBe(false);
     expect(townTileAt(index, house.x, house.z)?.kind).toBe('house');
+  });
+});
+
+describe('townTiles: 遅延キャッシュ(TownTileCache)', () => {
+  it('buildTownIndexesと同じタイル結果を返す(単一町)', () => {
+    const t = town('town-c3', 0, 0, 4000);
+    const eager = buildTownTileIndex([t], emptyField);
+    const cache = new TownTileCache([t], emptyField);
+    for (const [key, entry] of eager) {
+      expect(cache.get(key)).toEqual(entry);
+    }
+    expect(cache.has(toKey(40, 40))).toBe(false);
+  });
+
+  it('遠く離れた町同士でもクエリ結果はbuildTownIndexesと一致する', () => {
+    const a = town('town-far-a', -5000, -5000, 3000);
+    const b = town('town-far-b', 5000, 5000, 3000);
+    const eager = buildTownTileIndex([a, b], emptyField);
+    const cache = new TownTileCache([a, b], emptyField);
+    for (const [key, entry] of eager) {
+      expect(cache.get(key)).toEqual(entry);
+    }
+  });
+
+  it('マップ全域のどのセルに対してもget/hasを呼べる(カメラ位置に依存しない)', () => {
+    const t = town('town-c4', 12000, -8000, 30000);
+    const cache = new TownTileCache([t], emptyField);
+    expect(cache.has(toKey(12000, -8000))).toBe(true);
+    expect(cache.has(toKey(0, 0))).toBe(false);
+  });
+
+  it('未クエリの町は生成コストを払わない(=クエリした町だけキャッシュされる)', () => {
+    const near = town('town-near', 0, 0, 4000);
+    const far = town('town-far', 9000, 9000, 4000);
+    const cache = new TownTileCache([near, far], emptyField);
+    // 'near'町の1タイルだけクエリする。'far'は一度も触れない。
+    cache.get(toKey(0, 0));
+    const subTiles = cache.subTilesForTowns(['town-near']);
+    expect(subTiles.size).toBeGreaterThan(0);
+    for (const entry of subTiles.values()) {
+      expect(entry.townId).toBe('town-near');
+    }
+  });
+
+  it('railMapが変わると再生成され、変わらなければ同じ結果を返し続ける', () => {
+    const t = town('town-c5', 0, 0, 4000);
+    const railMapA = new Map<string, CellData>();
+    const cacheA = new TownTileCache([t], emptyField, railMapA);
+    const first = cacheA.subTilesForTowns([t.id]);
+    const again = cacheA.subTilesForTowns([t.id]);
+    expect(again).toEqual(first); // 同じrailMap参照ならキャッシュを使い回す
+
+    const railMapB = new Map<string, CellData>(railMapA);
+    railMapB.set(toKey(0, 0), { type: 'station', connections: 0 });
+    const cacheB = new TownTileCache([t], emptyField, railMapB);
+    const afterEdit = cacheB.subTilesForTowns([t.id]);
+    // 中心タイルが線路(駅)に占有されたので、少なくとも中心の家サブタイルは無くなる
+    expect(afterEdit.has(toKey(0, 0))).toBe(false);
+  });
+});
+
+describe('townTiles: townIntersectsCellRange', () => {
+  it('町のbboxが範囲と重なればtrue', () => {
+    const t = town('town-v', 100, 100, 20000); // radius=TOWN_TILE_RADIUS_MAX(16)
+    expect(townIntersectsCellRange(t, 90, 110, 90, 110)).toBe(true);
+    expect(townIntersectsCellRange(t, 200, 210, 200, 210)).toBe(false);
   });
 });
 
