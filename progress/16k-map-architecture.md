@@ -359,3 +359,45 @@
 - **結果**: 200シード(halfExtent=45)で0町なし・平均3.01町(min 3, max 4)。
   50シード(halfExtent=128)で0町なし・平均3.22町(min 3, max 5)。
   16Kマップの町数(実測4576前後)には変化なし。
+
+## P6実装メモ(旧経路の削除、0.3.0-Alpha-38a)
+
+- **削除したファイル**: `src/sim/terrainEdit.ts`(+`terrainEdit.test.ts`)。P3で
+  `terrainOverlay.applyCornerEdit`に置き換わって以降、どこからもimportされていな
+  かった(コメントでの言及のみ)。
+- **削除したファイル**: `src/sim/terrain.ts`(+`terrain.test.ts`)。`generateMap`/
+  `generateHeights`/`normaliseHeights`/`carveLake`はterrainField.tsの構成的
+  1-Lipschitz地形に置き換わり未使用。`TERRAIN_HEIGHT_MAX`/`MOUNTAIN_HEIGHT_THRESHOLD`
+  はP1時点で既にterrainField.tsに複製済みで完全に重複していた。`terrainAt`/
+  `cornerElevation`/`buildCornerElevationMap`/`cellCornersFromMap`/
+  `cellCornerElevations`も本番コードからの参照はゼロだった(コメントでの言及のみ)。
+  - 唯一の例外は`computeElevation`/`elevationAt`: tunnel.test.ts/construction.test.ts
+    が「境界からのマンハッタン距離で段丘状に標高が上がる山塊」のテストフィクスチャ
+    作成に使っていたため、本番非依存のテスト専用ヘルパーとして
+    `src/sim/testSupport/elevationFixture.ts`へそのまま移設した。
+  - `TERRAIN_COORD_RANGE`(=45、既定マップの生成半径)は`terrainField.ts`の
+    `DEFAULT_HALF_EXTENT`へ改名して移動し、useGameLogic.tsの初期halfExtentが
+    これを参照するよう変更した。
+- **towns.ts**: 実プレイでは`generateRegionTowns`に完全に置き換わって以降未使用
+  だった`generateTowns`(count個ループのグローバルrejection sampling)と、それ
+  専用の定数(`TOWN_COORD_RANGE`/`TOWN_MIN_DISTANCE`/`MAX_ATTEMPTS_PER_TOWN`)を
+  削除した。towns.test.tsの該当カバレッジ(決定性・個数・命名重複なし等)は
+  `generateRegionTowns`ベースのテストへ書き換えた。
+- **重複していたblockers述語の統合**: P3実装メモに残っていた既知の課題
+  (`useGameLogic.ts`のcommitPathと`GameUI.tsx`の建設プレビューが同じ4条件
+  ―範囲外/rail・station・depot・signal/町タイル/水域―のisCellBlockedを別々に
+  組み立てていた)を、`terrainOverlay.ts`の`buildEditBlockers({ halfExtent, railMap,
+  townTileIndex, baseField })`という1つの関数へ集約し、両方から呼ぶように変更した。
+- **persistence.tsのセーブ型チェーン簡略化**: v15のみを受け付ける
+  `deserialiseWorld`は`data.version !== 15`のガード以外、v1〜v14の各フィールドを
+  一切参照していなかった。`SaveDataV1`〜`SaveDataV14`(`LegacyCellData`/
+  `LegacyLedger`含む、計13個の型定義)を削除し、バージョン判定専用の最小型
+  `LegacySaveData`({version: number})1つに置き換えた。
+  - ハマりどころ: TypeScriptの判別共用体は、判別子が`number`型(リテラルでない)の
+    メンバーを持つと、他メンバーに対する`!== 15`のnarrowingでは除外されない
+    (`LegacySaveData.version: number`は「15を含む可能性がある」と判定されるため)。
+    `if (input.version !== 15) return null;`の直後で`const data = input as
+    SaveDataV15;`と明示キャストすることで対処した。
+- **確認**: `npm run test`(667件)・`npm run build`はいずれのコミットでも green。
+  ブラウザ(port 5175)で既定マップの起動・地形描画・線路建設が変更前と同じ見た目で
+  動作することを確認した。
