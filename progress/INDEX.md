@@ -1,4 +1,5 @@
 # progress インデックス
+- [underground-design.md](underground-design.md) — P8地下線・地下駅の設計。uppersを両符号レベルへ対称拡張、掘割ランプ、相対深さ方式、地下ビュー切替
 - [slope-construction-design.md](slope-construction-design.md) — P7勾配レールの設計。foundation無しのOpenTTD簡約(flat任意標高+incline直進のみ)、1セル1段、建設時に標高連続性を保証
 - [openttd-slope-notes.md](openttd-slope-notes.md) — OpenTTD実ソース(master, 2026-08-07取得)精読ノート。斜面(Slope、4隅コーナー標高からのmin/max導出・急斜面・19種の内訳)、地形編集(TerraformTileHeightの四方向再帰による段差1復元)、基礎(Foundation、Leveled/InclinedX/Y/SteepLower等)、線路と斜面の対応表(GetRailFoundation、傾斜地は斜めTrackのみ無基礎)、駅・車庫の斜面建設ルール(CheckBuildableTile/CanBuildDepotByTileh)、トンネル/橋の坂条件を再実装可能な粒度で抽出。P7(標高上の建設)向けに「急斜面は当面スコープ外にできる」「傾斜地=隣接2コーナー隆起は斜めTrackのみ無基礎、それ以外はLeveled一本化で単純化できる」という示唆と、対角尾根谷セルの扱い等の未決定事項を整理
 - [16k-map-architecture.md](16k-map-architecture.md) — 16Kマップ対応の基盤構成。基底地形を純関数化(保存しない)+編集は疎差分+チャンク描画。P1〜P6のフェーズ計画
