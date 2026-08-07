@@ -86,3 +86,39 @@
   水域/山岳の整合・範囲外・頂点格子上の1-Lipschitz(遠方x≈8000やチャンク境界64の倍数を
   含む散らばった64×64窓)・平地優勢の分布・性能ガード(50ms)をカバー
 - terrain.ts/hooks/componentsへの配線はまだ行っていない(このフェーズはadditiveのみ)
+
+## P2実装メモ(sim/terrainOverlay.ts)
+
+- `CornerDiffs = Map<chunkKey, Map<localIndex, height>>`。チャンクは頂点座標を
+  `OVERLAY_CHUNK_SIZE`(=64)で床除算した `cx,cz` 単位。Int8Arrayではなくper-chunk Mapを
+  選んだ理由: 1回の編集で触れるコーナーは数十〜数百件程度の真の疎データであり、
+  Int8Arrayだとチャンクの隅を1つ編集しただけでも4096要素ぶんの配列確保とシリアライズ時の
+  全要素走査(非ゼロ探索)が必要になる。per-chunk Mapなら編集件数だけを保持・列挙でき、
+  読み書き双方でO(編集件数)を維持できる
+- `createEditedTerrainField(base, diffs?)` はbaseとdiffsを合成したTerrainFieldを返す。
+  `cornerHeightAt`はオーバーライド→基底の順。`cellCornerHeights`/`cellHeightAt`/
+  `terrainTypeAt`はすべて合成後のコーナーから導出するため、盛土でmountain化・切土で
+  grass復帰の両方が自然に成立する。ただしwaterだけは例外で、`terrainTypeAt`は常に
+  `base.terrainTypeAt`がwaterかどうかを先に見る(waterはベースノイズ由来のプロパティで
+  編集では作らない、という設計)。applyCornerEdit側のブロック規則が水セルに触れる編集を
+  必ずno-opにするため、この「waterは基底に委ねる」判断とセルの整合は常に保たれる
+- `applyCornerEdit(base, editedField, rect, mode, blockers)` はterrainEdit.tsのセル版
+  ±1・BFS伝播アルゴリズムをコーナー格子へ移植したもの。rectで指定するのは従来通り
+  CELLだが、実際に±1するのはその矩形が持つ全コーナー(セル数+1四方ぶん)。伝播も
+  コーナー格子上の4近傍BFSで行う
+  - `blockers: { isCellBlocked(x,z): boolean }` という1つの述語にrail/station/depot/
+    signal・町タイル・水域・範囲外の4条件をすべて集約させた。これによりterrainOverlay.ts
+    自体はrailMap/townTiles/CellDataの型を一切知らずに済み、P3で消費側に配線するときは
+    呼び出し側がゲーム状態から述語を組み立てるだけでよい
+  - 変化したコーナーを4隅のどれかに持つセル(TOUCHING_CELL_OFFSETSの4通り)のいずれかが
+    isCellBlockedを満たしたら、その時点で編集全体を同一参照no-opにして打ち切る
+  - 確定時、コーナーの新しい値が`base.cornerHeightAt`と一致する場合はdiffsのエントリを
+    削除する(基底へ戻ったコーナーのオーバーライドを残さない=疎性維持)。このため
+    `base`(元のTerrainField)を`editedField`とは別引数で渡す設計にしてある
+- シリアライズは`[chunkKey, [ [localIndex, height], ... ]][]`という素朴なタプル配列。
+  SaveData v15への組み込みはP3以降
+- ハマりどころ: プロパティテスト用に平坦(標高0一定)のダミーTerrainFieldを用意し、
+  実ノイズ地形(createTerrainField)は「湖の隣で盛土→水域が崩れない」テストにのみ使った。
+  ノイズ地形で汎用のランダム編集プロパティテストをやると、基底そのものの起伏が
+  BFS伝播の停止条件に混ざり判定が複雑になるため、ロジック検証は平坦fieldで、
+  water境界の実地形固有の検証だけ本物のfieldで行う、と役割を分けた

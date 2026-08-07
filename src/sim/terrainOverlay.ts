@@ -1,0 +1,286 @@
+// terrainField(コーナー格子の純関数地形)に対する疎な編集オーバーレイと、
+// OpenTTD風のコーナー地形編集(盛土/切土)。React/THREE には依存しない。
+// 詳細な設計判断は progress/16k-map-architecture.md の「P2実装メモ」参照。
+//
+// terrainEdit.ts(セル単位の±1・全域Mapクローン)を置き換える新経路。P3で消費側を
+// 載せ替えるまでは additive(既存経路には未配線)。
+
+import type { CellCorners, TerrainField, TerrainKind } from './terrainField';
+import { MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_HEIGHT_MAX } from './terrainField';
+
+export type TerrainEditMode = 'raise' | 'lower';
+
+export interface Pos {
+  x: number;
+  z: number;
+}
+
+// --- 疎な編集差分ストア(コーナー格子・チャンク分割) ---
+//
+// チャンクサイズ。コーナー座標を OVERLAY_CHUNK_SIZE 単位のグリッドに割り当てる。
+export const OVERLAY_CHUNK_SIZE = 64;
+
+/**
+ * コーナー標高の上書き差分。`chunkKey -> (localIndex -> height)` の2段構成。
+ *
+ * 実装選択(Map<number, number> per chunk、Int8Array ではない): 編集は「触れたコーナーだけ」
+ * を持つ真の疎データであってほしい(1回の盛土/切土は数十〜数百コーナー程度)。
+ * Int8Array を使うと1チャンクにつき OVERLAY_CHUNK_SIZE^2 = 4096 要素を確保する必要があり、
+ * 「チャンクの隅を1つだけ編集した」場合でもチャンク全体を初期化するコストと、
+ * シリアライズ時に「非ゼロ要素を探すために全4096要素を走査する」コストを払うことになる。
+ * per-chunk Map ならチャンク内でも編集されたコーナーの件数だけを保持・列挙でき、
+ * どちらの向きでも O(編集件数) を維持できる。標高は 0..TERRAIN_HEIGHT_MAX(=10)の
+ * 小さな整数なので Map のオーバーヘッドは許容範囲。
+ */
+export type CornerDiffs = Map<string, Map<number, number>>;
+
+/** createEditedTerrainField が返す、diffs へのアクセスを備えた TerrainField。 */
+export interface EditedTerrainField extends TerrainField {
+  readonly diffs: CornerDiffs;
+}
+
+const chunkCoordOf = (v: number): number => Math.floor(v / OVERLAY_CHUNK_SIZE);
+const chunkKeyOf = (cx: number, cz: number): string => `${cx},${cz}`;
+const localIndexOf = (x: number, z: number, cx: number, cz: number): number => {
+  const lx = x - cx * OVERLAY_CHUNK_SIZE;
+  const lz = z - cz * OVERLAY_CHUNK_SIZE;
+  return lx * OVERLAY_CHUNK_SIZE + lz;
+};
+
+const getOverride = (diffs: CornerDiffs, x: number, z: number): number | undefined => {
+  const cx = chunkCoordOf(x);
+  const cz = chunkCoordOf(z);
+  const chunk = diffs.get(chunkKeyOf(cx, cz));
+  if (!chunk) return undefined;
+  return chunk.get(localIndexOf(x, z, cx, cz));
+};
+
+/**
+ * base(基底の純関数field)と diffs(疎な上書き差分)を合成した TerrainField を作る。
+ * cornerHeightAt はオーバーライド→基底の順に引く。cellCornerHeights/cellHeightAt/
+ * terrainTypeAt はすべてこの合成済みコーナーから導出する(オーバーレイ適用後の値で
+ * mountain/grass が決まる = 盛土でmountain化・切土でgrass復帰の両方が成立する)。
+ *
+ * water だけは例外: water はベースノイズ由来のプロパティであり、編集では作られない
+ * (applyCornerEdit のブロック規則が水域に触れる編集を常にno-opにするため、水セルの
+ * 判定は常に基底の terrainTypeAt に委ねてよい)。
+ */
+export function createEditedTerrainField(base: TerrainField, diffs: CornerDiffs = new Map()): EditedTerrainField {
+  const cornerHeightAt = (x: number, z: number): number => {
+    const ix = Math.round(x);
+    const iz = Math.round(z);
+    const override = getOverride(diffs, ix, iz);
+    return override ?? base.cornerHeightAt(ix, iz);
+  };
+
+  const cellCornerHeights = (x: number, z: number): CellCorners => [
+    cornerHeightAt(x, z),
+    cornerHeightAt(x + 1, z),
+    cornerHeightAt(x, z + 1),
+    cornerHeightAt(x + 1, z + 1),
+  ];
+
+  const cellHeightAt = (x: number, z: number): number => {
+    const [nw, ne, sw, se] = cellCornerHeights(x, z);
+    return Math.min(nw, ne, sw, se);
+  };
+
+  const terrainTypeAt = (x: number, z: number): TerrainKind => {
+    if (base.terrainTypeAt(x, z) === 'water') return 'water';
+    return cellHeightAt(x, z) >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
+  };
+
+  return { cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt, diffs };
+}
+
+// --- コーナー地形編集(盛土/切土) ---
+
+/** 変化したコーナー1件あたりのコスト単位(経済への配線はP2ではまだ行わない)。 */
+export const TERRAIN_EDIT_COST_PER_CORNER = 1;
+
+/**
+ * 編集を拒否するかどうかの判定。rail/station/depot/signal・町タイル(家・道路)・水域・
+ * 範囲外のすべてを1つの述語に集約する(terrainEdit.ts のブロック規則と同じ4条件だが、
+ * 「セルが編集を受け入れられないか」という1つの問いに統一することで、この関数側は
+ * railMap/townTiles/halfExtent の型を一切知らずに済む)。呼び出し側(消費層)が
+ * 実際のゲーム状態からこの述語を組み立てる。
+ */
+export interface EditBlockers {
+  isCellBlocked(x: number, z: number): boolean;
+}
+
+export interface CornerEditResult {
+  field: EditedTerrainField;
+  changedCorners: number;
+}
+
+const NEIGHBOUR_OFFSETS: ReadonlyArray<[number, number]> = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+
+// あるコーナー(cx,cz)を4隅のどれかに持つセル4つのオフセット。
+const TOUCHING_CELL_OFFSETS: ReadonlyArray<[number, number]> = [
+  [0, 0],
+  [-1, 0],
+  [0, -1],
+  [-1, -1],
+];
+
+/** 対角2点が囲む矩形内の全セル(x昇順→z昇順)。terrainEdit.ts の rectCells と同じ規約。 */
+export function rectCells(a: Pos, b: Pos): Pos[] {
+  const x0 = Math.min(a.x, b.x);
+  const x1 = Math.max(a.x, b.x);
+  const z0 = Math.min(a.z, b.z);
+  const z1 = Math.max(a.z, b.z);
+  const cells: Pos[] = [];
+  for (let x = x0; x <= x1; x++) {
+    for (let z = z0; z <= z1; z++) {
+      cells.push({ x, z });
+    }
+  }
+  return cells;
+}
+
+const cornerKey = (x: number, z: number): string => `${x},${z}`;
+const parseCornerKey = (key: string): Pos => {
+  const [x, z] = key.split(',').map(Number);
+  return { x, z };
+};
+
+/**
+ * 選択セル(rectで矩形指定)の4隅コーナーすべてを1段盛土/切土し、コーナー格子上の
+ * 1-Lipschitzを方向つきBFS伝播で回復する。terrainEdit.ts のセル版アルゴリズムを
+ * コーナー格子に移植したもの(伝播の考え方はそのまま、対象がセルからコーナーに変わる)。
+ *
+ * ブロック規則: 変化した(伝播による波及を含む)コーナーを4隅に持つセルのいずれかが
+ * blockers.isCellBlocked を満たすなら、編集全体をno-opとして同一参照の field を返す
+ * (部分適用はしない。CubicTransim全体の「同一参照no-op」規約に合わせる)。
+ */
+export function applyCornerEdit(
+  base: TerrainField,
+  editedField: EditedTerrainField,
+  rect: { a: Pos; b: Pos },
+  mode: TerrainEditMode,
+  blockers: EditBlockers
+): CornerEditResult {
+  const noop: CornerEditResult = { field: editedField, changedCorners: 0 };
+
+  const cells = rectCells(rect.a, rect.b);
+  if (cells.length === 0) return noop;
+
+  const isCornerBlocked = (cx: number, cz: number): boolean => {
+    for (const [dx, dz] of TOUCHING_CELL_OFFSETS) {
+      if (blockers.isCellBlocked(cx + dx, cz + dz)) return true;
+    }
+    return false;
+  };
+
+  const updated = new Map<string, number>();
+  const heightAt = (x: number, z: number): number => updated.get(cornerKey(x, z)) ?? editedField.cornerHeightAt(x, z);
+
+  // 1. 選択セルの4隅コーナーを±1段する(上限・下限のコーナーは変化なしのまま許容)。
+  const queue: Pos[] = [];
+  const seenCorners = new Set<string>();
+  for (const cell of cells) {
+    for (const [ox, oz] of [
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      [1, 1],
+    ] as const) {
+      const cx = cell.x + ox;
+      const cz = cell.z + oz;
+      const key = cornerKey(cx, cz);
+      if (seenCorners.has(key)) continue;
+      seenCorners.add(key);
+      const current = heightAt(cx, cz);
+      const target = mode === 'raise' ? Math.min(TERRAIN_HEIGHT_MAX, current + 1) : Math.max(0, current - 1);
+      if (target !== current) {
+        if (isCornerBlocked(cx, cz)) return noop;
+        updated.set(key, target);
+        queue.push({ x: cx, z: cz });
+      }
+    }
+  }
+  if (updated.size === 0) return noop;
+
+  // 2. 段差1以下への伝播(BFS)。raiseは隣接コーナーをh-1まで引き上げ、lowerはh+1まで
+  //    引き下げる。編集前が1-Lipschitzなら各コーナーの変化は±1段で収まる。
+  while (queue.length > 0) {
+    const { x, z } = queue.shift()!;
+    const h = heightAt(x, z);
+    for (const [dx, dz] of NEIGHBOUR_OFFSETS) {
+      const nx = x + dx;
+      const nz = z + dz;
+      const nHeight = heightAt(nx, nz);
+      if (mode === 'raise' && nHeight < h - 1) {
+        if (isCornerBlocked(nx, nz)) return noop;
+        updated.set(cornerKey(nx, nz), h - 1);
+        queue.push({ x: nx, z: nz });
+      } else if (mode === 'lower' && nHeight > h + 1) {
+        if (isCornerBlocked(nx, nz)) return noop;
+        updated.set(cornerKey(nx, nz), h + 1);
+        queue.push({ x: nx, z: nz });
+      }
+    }
+  }
+
+  // 3. 確定: 変化したコーナーだけ diffs へ反映する。基底値へ戻ったコーナーは
+  //    オーバーライドを削除する(疎性維持: 編集で往復して元に戻った箇所を残さない)。
+  const touchedChunks = new Set<string>();
+  const nextDiffs: CornerDiffs = new Map(editedField.diffs);
+  const ensureMutableChunk = (cx: number, cz: number): Map<number, number> => {
+    const key = chunkKeyOf(cx, cz);
+    if (!touchedChunks.has(key)) {
+      const existing = nextDiffs.get(key);
+      nextDiffs.set(key, existing ? new Map(existing) : new Map());
+      touchedChunks.add(key);
+    }
+    return nextDiffs.get(key)!;
+  };
+
+  let changedCorners = 0;
+  for (const [key, h] of updated) {
+    const { x, z } = parseCornerKey(key);
+    const original = editedField.cornerHeightAt(x, z);
+    if (h === original) continue;
+    changedCorners++;
+    const cx = chunkCoordOf(x);
+    const cz = chunkCoordOf(z);
+    const chunk = ensureMutableChunk(cx, cz);
+    if (h === base.cornerHeightAt(x, z)) {
+      chunk.delete(localIndexOf(x, z, cx, cz));
+      if (chunk.size === 0) nextDiffs.delete(chunkKeyOf(cx, cz));
+    } else {
+      chunk.set(localIndexOf(x, z, cx, cz), h);
+    }
+  }
+  if (changedCorners === 0) return noop;
+
+  return { field: createEditedTerrainField(base, nextDiffs), changedCorners };
+}
+
+// --- シリアライズ(将来の SaveData v15 向け) ---
+
+export type SerialisedCornerDiffs = Array<[string, Array<[number, number]>]>;
+
+/** CornerDiffs を JSON 化可能な配列表現に変換する。 */
+export function serialiseCornerDiffs(diffs: CornerDiffs): SerialisedCornerDiffs {
+  const out: SerialisedCornerDiffs = [];
+  for (const [chunkKey, chunk] of diffs) {
+    out.push([chunkKey, Array.from(chunk.entries())]);
+  }
+  return out;
+}
+
+/** serialiseCornerDiffs の逆変換。 */
+export function deserialiseCornerDiffs(data: SerialisedCornerDiffs): CornerDiffs {
+  const diffs: CornerDiffs = new Map();
+  for (const [chunkKey, entries] of data) {
+    diffs.set(chunkKey, new Map(entries));
+  }
+  return diffs;
+}
