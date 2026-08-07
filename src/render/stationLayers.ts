@@ -3,11 +3,13 @@
 // データモデル上は「upperを持ち、かつupper.stationIdがあるセル」が高架駅セルで、
 // stationId無しのupperは単なる橋桁(駅ではない)。この判定はsim層(construction.ts等)
 // と同じ定義を描画側でも使い回す(progress/cross-elevated-station-data-model.md参照)。
-import type { CellData } from '../types';
+import type { CellData, Level } from '../types';
 import { fromKey } from '../utils';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
 
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
+// P8b: 地下の駅ホーム集計用(-1〜-MAX_ELEVATED_LEVEL)。
+const UNDERGROUND_LEVELS = ELEVATED_LEVELS.map(l => -l as -1 | -2 | -3);
 
 export interface StationLayerCell {
   key: string;
@@ -15,12 +17,12 @@ export interface StationLayerCell {
   z: number;
   stationId: string;
   connections: number;
-  /** このセルの高架駅ホームがあるレベル(1〜MAX_ELEVATED_LEVEL)。地平セルでは省略(=1相当)。 */
-  level?: 1 | 2 | 3;
+  /** このセルの立体交差駅ホームがあるレベル(正=高架、負=地下)。地平セルでは省略(=1相当)。 */
+  level?: Level;
 }
 
-/** 指定レベルの高架駅セルかどうか(uppers[level]を持ち、かつstationIdがある)。 */
-export const isElevatedStationCell = (cell: CellData | undefined, level: 1 | 2 | 3 = 1): boolean =>
+/** 指定レベルの立体交差駅セルかどうか(uppers[level]を持ち、かつstationIdがある)。 */
+export const isElevatedStationCell = (cell: CellData | undefined, level: Level = 1): boolean =>
   !!cell?.uppers?.[level] && !!cell.uppers[level]!.stationId;
 
 /** 地平の駅セル一覧(従来通りcell.type==='station')。 */
@@ -40,9 +42,21 @@ export function groundStationCells(railMap: Map<string, CellData>): StationLayer
  * 同一(x,z)に併存していても両方拾える(keyはレベルを含めて一意にする)。
  */
 export function elevatedStationCells(railMap: Map<string, CellData>): StationLayerCell[] {
+  return layeredStationCells(railMap, ELEVATED_LEVELS);
+}
+
+/**
+ * 地下の駅セル一覧(cell.uppers[L].stationIdがあるセルのみ、L<0)。P8b。
+ * elevatedStationCellsと同じ集計を負のレベルに対して行う。
+ */
+export function undergroundStationCells(railMap: Map<string, CellData>): StationLayerCell[] {
+  return layeredStationCells(railMap, UNDERGROUND_LEVELS);
+}
+
+function layeredStationCells(railMap: Map<string, CellData>, levels: readonly Level[]): StationLayerCell[] {
   const out: StationLayerCell[] = [];
   for (const [key, data] of railMap) {
-    for (const level of ELEVATED_LEVELS) {
+    for (const level of levels) {
       if (!isElevatedStationCell(data, level)) continue;
       const { x, z } = fromKey(key);
       const upper = data.uppers![level]!;

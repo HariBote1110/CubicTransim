@@ -4,7 +4,7 @@ import type { ThreeEvent } from '@react-three/fiber';
 import type { TerrainField } from '../sim/terrainField';
 import { TERRAIN_HEIGHT_MAX } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
-import { MATERIALS } from '../render/palette';
+import { materialsFor } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import type { CornerDiffs } from '../sim/terrainOverlay';
 import { overlayChunkRefs } from '../sim/terrainOverlay';
@@ -35,6 +35,8 @@ interface Props {
   onPointerMove?: (e: ThreeEvent<PointerEvent>) => void;
   onPointerDown?: (e: ThreeEvent<PointerEvent>) => void;
   onPointerUp?: (e: ThreeEvent<PointerEvent>) => void;
+  /** P8b: 地下ビュー中は地表を暗く半透明にする(render/palette.tsのDIMMED_MATERIALS)。 */
+  dimmed?: boolean;
 }
 
 // この標高以上の上面を雪化粧にする(最大段数に対する相対しきい値)。
@@ -197,8 +199,9 @@ const EVICT_MARGIN = 1;
  */
 export const TerrainBlocks: React.FC<Props> = ({
   field, halfExtent, diffs, cameraTargetCell, viewRadiusCells,
-  pickable = false, onPointerMove, onPointerDown, onPointerUp,
+  pickable = false, onPointerMove, onPointerDown, onPointerUp, dimmed = false,
 }) => {
+  const MATERIALS = materialsFor(dimmed);
   const cacheRef = useRef<Map<string, ChunkCacheEntry>>(new Map());
 
   const visibleChunks = useMemo(

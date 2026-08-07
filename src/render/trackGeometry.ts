@@ -611,6 +611,52 @@ export function buildBridgeAbutmentPart(
   return abutment;
 }
 
+// --- 掘割ランプの地表開口(P8b) ---
+// 通常表示(地下ビューでない)では地下線そのものは隠すが、地表と地下を繋ぐ掘割
+// ランプの浅い側(地平に接する側、ramp.base===-1)のセルだけは、地表に「四角い暗い
+// 穴+短い擁壁」を出す(design memo: カットアウェイは採用せず、ジオラマ的な
+// 「開口部の書き割り」で地下への入口を示す)。
+const OPENING_PIT_DEPTH = 0.3;
+const OPENING_PIT_WIDTH = 0.62;
+const OPENING_WALL_THICKNESS = 0.07;
+const OPENING_WALL_OFFSET = 0.34;
+
+export interface UndergroundOpeningParts {
+  pit: THREE.BufferGeometry;
+  wallA: THREE.BufferGeometry;
+  wallB: THREE.BufferGeometry;
+}
+
+/**
+ * dir(ランプの登り方向=地表側を向くビット)のセル(x,z)に、掘割の開口部を1つ生成する。
+ * pitはセルの奥行き方向いっぱいに沈んだ暗い床、wallA/wallBはその両脇に立つ低い擁壁。
+ */
+export function buildUndergroundOpeningPart(dir: number, x = 0, z = 0): UndergroundOpeningParts | null {
+  const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
+  if (!high) return null;
+  const len = Math.hypot(high.x, high.z) || 1;
+  const ux = high.x / len;
+  const uz = high.z / len;
+  const rotY = angleFromVector(ux, uz);
+  // 進行方向に直交するベクトル(擁壁を左右に振り分けるため)。
+  const px = -uz;
+  const pz = ux;
+
+  const pit = new THREE.BoxGeometry(OPENING_PIT_WIDTH, OPENING_PIT_DEPTH, 0.96);
+  pit.rotateY(rotY);
+  pit.translate(x, -OPENING_PIT_DEPTH / 2 - 0.01, z);
+
+  const wallHeight = OPENING_PIT_DEPTH + 0.04;
+  const makeWall = (side: number): THREE.BufferGeometry => {
+    const wall = new THREE.BoxGeometry(OPENING_WALL_THICKNESS, wallHeight, 0.96);
+    wall.rotateY(rotY);
+    wall.translate(x + px * side * OPENING_WALL_OFFSET, -wallHeight / 2 + 0.03, z + pz * side * OPENING_WALL_OFFSET);
+    return wall;
+  };
+
+  return { pit, wallA: makeWall(1), wallB: makeWall(-1) };
+}
+
 /** 部品配列をマージして1つのジオメトリにする(空なら null)。 */
 export function mergeParts(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
   return mergeAndDispose(geometries);

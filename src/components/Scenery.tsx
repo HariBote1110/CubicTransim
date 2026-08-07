@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import type { CellData } from '../types';
 import type { TownTileIndex } from '../sim/townTiles';
 import { toKey } from '../utils';
-import { MATERIALS, hash01 } from '../render/palette';
+import { materialsFor, hash01 } from '../render/palette';
 import type { TerrainField } from '../sim/terrainField';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import { visibleChunkRange, chunkCells, chunkKey } from '../render/terrainChunks';
@@ -21,6 +21,8 @@ interface Props {
   cameraTargetCell: { x: number; z: number };
   /** カメラの可視半径(セル数)。 */
   viewRadiusCells: number;
+  /** P8b: 地下ビュー中は樹木を暗く半透明にする(render/palette.tsのDIMMED_MATERIALS)。 */
+  dimmed?: boolean;
 }
 
 // 草地セルに樹木を置く確率。上げすぎると森で埋まって線路が見づらくなる。
@@ -38,8 +40,9 @@ const TOWN_TILE_MARGIN = 1;
  * 数百本規模になるのでマテリアルごとにジオメトリをマージして3ドローコールに収める。
  */
 export const Scenery: React.FC<Props> = ({
-  field, railMap, townTiles, range = 45, cameraTargetCell, viewRadiusCells,
+  field, railMap, townTiles, range = 45, cameraTargetCell, viewRadiusCells, dimmed = false,
 }) => {
+  const MATERIALS = materialsFor(dimmed);
   // P4: 全セル(-range..range)を毎回走査するのではなく、TerrainBlocksと同じ
   // 可視チャンク集合(render/terrainChunks.ts)だけを候補にする。木の配置自体は
   // セル座標のハッシュ(hash01)だけで決まる純粋な関数なので、可視チャンクの

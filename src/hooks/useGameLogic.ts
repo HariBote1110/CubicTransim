@@ -6,11 +6,13 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistenc
 import type { SaveData } from '../sim/persistence';
 import {
   applyRailPath, applyStation, applyDepot, applySignal, applyElevatedPath, applyElevatedStation,
+  applyUndergroundPath, applyUndergroundStation,
   removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
 } from '../sim/construction';
-import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel } from '../sim/construction';
+import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel, UndergroundLevel } from '../sim/construction';
 import {
   STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
+  costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit,
 } from '../sim/economy';
@@ -233,12 +235,19 @@ export const useGameLogic = () => {
           // 命名は既存の町名由来/A駅フォールバックのまま(applyStationのstationNameFor)。
           // 町は輸送力が育ってから日次チェック(resolveTownSpawnTick)で湧く。
           result = applyStation(state, stationPos, field, towns, stationAxisHint, townTileIndex);
-        } else {
+        } else if (level > 0) {
           // 高架駅タイル1枚(旧'elevated-station')。
           cost = ELEVATED_STATION_COST;
           if (money < cost) return;
           const stationPos = path[path.length - 1];
           result = applyElevatedStation(state, stationPos, towns, level as ElevatedLevel);
+        } else {
+          // P8a/P8c: 地下駅タイル1枚。高架駅と対称(applyElevatedStation/applyLayeredStationの
+          // 薄いラッパー)。町タイル・水域下の制約はapplyUndergroundStation側で判定済み。
+          cost = UNDERGROUND_STATION_COST;
+          if (money < cost) return;
+          const stationPos = path[path.length - 1];
+          result = applyUndergroundStation(state, stationPos, towns, level as UndergroundLevel);
         }
         break;
       }
@@ -271,7 +280,7 @@ export const useGameLogic = () => {
             : costOfPath('rail', path.length, path, field);
           if (money < cost) return;
           result = applyRailPath(state, path, field, townTileIndex);
-        } else {
+        } else if (level > 0) {
           // 自由な高架線(旧'elevated')。坂・橋桁の内訳はconstruction.ts側の判定
           // (resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath)にそのまま
           // 問い合わせる(buildPreview.tsと同じロジックの二重実装を避けるため)。
@@ -284,6 +293,14 @@ export const useGameLogic = () => {
           cost = costOfElevatedPath(rampCount, overpassCount);
           if (money < cost) return;
           result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTileIndex);
+        } else {
+          // P8a/P8c: 自由な地下線。design docの通り、坂(掘割)/地下線本体を区別せず
+          // 経路の全セルへ一律のコスト倍率(UNDERGROUND_RAIL_COST_MULTIPLIER)を課す
+          // (buildPreview.tsのcostOfUndergroundPathと同じ計算)。
+          const undergroundLevel = level as UndergroundLevel;
+          cost = costOfUndergroundPath(path.length);
+          if (money < cost) return;
+          result = applyUndergroundPath(state, path, field, undergroundLevel);
         }
         break;
       }

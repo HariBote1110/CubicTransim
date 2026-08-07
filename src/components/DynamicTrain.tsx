@@ -9,6 +9,8 @@ import { carPositions } from '../sim/consist';
 import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
 import { TrainCar, type CarVariant } from './TrainCar';
 import { PALETTE } from '../render/palette';
+import { OVERPASS_HEIGHT } from '../sim/trackPath';
+import { isLevelDimmed, shouldRenderLevel } from '../render/viewMode';
 
 interface DynamicTrainProps {
   data: TrainData;
@@ -29,6 +31,10 @@ interface DynamicTrainProps {
   isDragging?: boolean;
   /** ドラッグ中に追従させるカーソル位置のセル。 */
   dragCell?: { x: number; z: number } | null;
+  /** P8b: 地下ビュー中かどうか(GameSceneのbuildLevel<0)。 */
+  undergroundView?: boolean;
+  /** P8b: 地下ビュー中に選択中のレベル(buildLevel)。地下ビューでないときは無視される。 */
+  selectedLevel?: number;
 }
 
 // ドラッグ中に列車を持ち上げる高さ(m相当)。地平の描画基準0.5からの上乗せ分。
@@ -55,7 +61,7 @@ const carGroupPosition = (pos: { x: number; y: number; z: number }, heading: { x
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   data, railMap, terrainField, elevatedTunnelIndex, runtimes, type, isSelected, lineColour: groupColour, onClick,
-  isDragging, dragCell,
+  isDragging, dragCell, undergroundView = false, selectedLevel = 0,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const carRefs = useRef<(THREE.Group | null)[]>([]);
@@ -64,6 +70,11 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
 
   // 選択中の経路スフィア表示のみ低頻度に再レンダリングする
   const [displayRoute, setDisplayRoute] = useState<{ x: number; z: number }[]>([]);
+  // P8b: 列車が今いる層(0=地平、正=高架、負=地下)。renderPos.yから丸めて求める。
+  // 材質(dimmed)の切替はReactのprops経由(TrainCar)で行うため、頻繁には変わらない
+  // ここだけstateに乗せ、毎フレームのuseFrameでは変化したときだけsetする。
+  const [visualLevel, setVisualLevel] = useState(0);
+  const visualLevelRef = useRef(0);
 
   useFrame(() => {
     const runtime = runtimes.get(data.id);
@@ -97,11 +108,22 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
         head.y + head.heading.y,
         head.z + head.heading.z
       );
+      // P8b: 先頭車の高さから今いる層(0=地平、正=高架、負=地下)を求める。地下は
+      // 地表からの相対深さ(underground-design.md)なので、renderPos.yをそのまま
+      // OVERPASS_HEIGHTで割って丸めるだけで層が求まる(高架と同じ式が符号対称に使える)。
+      const level = Math.round(head.y / OVERPASS_HEIGHT);
+      if (level !== visualLevelRef.current) {
+        visualLevelRef.current = level;
+        setVisualLevel(level);
+      }
+      // 通常表示(地下ビューでない)では地下の層は完全に隠す(掘割の開口を除く)。
       // OpenTTD風のトンネル演出: トンネル内部にいる車両は地形ブロックに埋もれて
       // 見えなくなるよう非表示にする(坑口の外に出たら再表示)。地平・高架(山岳内部を
       // 通る高架レール)どちらのトンネルにも対応する(isTrainHiddenInTunnelがyから
       // 高架レベルを判定して切り替える)。
-      groupRef.current.visible = !isTrainHiddenInTunnel(railMap, elevatedTunnelIndex, head.x, head.z, head.y);
+      groupRef.current.visible =
+        shouldRenderLevel(level, undergroundView) &&
+        !isTrainHiddenInTunnel(railMap, elevatedTunnelIndex, head.x, head.z, head.y);
     }
 
     // 2両目以降: 先頭からの弧長ベースで連続的に後方配置する(carPositions)。
@@ -114,7 +136,10 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       const groupPos = carGroupPosition(pos, pos.heading);
       carGroup.position.set(groupPos.x, groupPos.y, groupPos.z);
       carGroup.lookAt(pos.x + pos.heading.x, pos.y + pos.heading.y, pos.z + pos.heading.z);
-      carGroup.visible = !isTrainHiddenInTunnel(railMap, elevatedTunnelIndex, pos.x, pos.z, pos.y);
+      const carLevel = Math.round(pos.y / OVERPASS_HEIGHT);
+      carGroup.visible =
+        shouldRenderLevel(carLevel, undergroundView) &&
+        !isTrainHiddenInTunnel(railMap, elevatedTunnelIndex, pos.x, pos.z, pos.y);
     }
 
     if (isSelected) {
@@ -133,13 +158,15 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   // 1両編成なら先頭車のみ。それ以外は最後尾だけ 'rear'(尾灯つき)にする。
   const variantOf = (index: number): CarVariant =>
     index === 0 ? 'front' : (index === data.cars - 1 ? 'rear' : 'middle');
+  // P8b: 地下ビュー中、選択中のレベルにいない列車(地平・高架・別の地下レベル)は暗くする。
+  const dimmed = isLevelDimmed(visualLevel, undergroundView, selectedLevel);
 
   return (
     <group>
       {/* 2両目以降(後続車両) */}
       {Array.from({ length: trailingCars }).map((_, idx) => (
         <group key={`car-${idx}`} ref={el => { carRefs.current[idx + 1] = el; }}>
-          <TrainCar variant={variantOf(idx + 1)} lineColour={lineColour} />
+          <TrainCar variant={variantOf(idx + 1)} lineColour={lineColour} dimmed={dimmed} />
         </group>
       ))}
 
@@ -149,7 +176,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
         scale={isDragging ? 0.94 : 1}
         onClick={(e) => { e.stopPropagation(); onClick(e); }}
       >
-        <TrainCar variant="front" lineColour={lineColour} />
+        <TrainCar variant="front" lineColour={lineColour} dimmed={dimmed} />
 
         {isSelected && (
           <mesh position={[0, 0.85, 0]} rotation={[Math.PI, 0, 0]} raycast={() => null}>

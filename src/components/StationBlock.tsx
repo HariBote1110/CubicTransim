@@ -1,6 +1,6 @@
 import React from 'react';
 import type { PlatformDoorType } from '../types';
-import { MATERIALS, PALETTE, angleFromVector } from '../render/palette';
+import { materialsFor, PALETTE, angleFromVector } from '../render/palette';
 import { BOUNDARY_OFFSETS } from '../render/trackGeometry';
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   platformDoors: PlatformDoorType;
   /** ホームのどちら端か。端のセルだけ上屋の妻面(端の柱)を立てる。 */
   isEnd?: boolean;
+  /** P8b: 地下ビュー中、選択中の地下レベル以外の駅は暗く半透明にする。 */
+  dimmed?: boolean;
 }
 
 // --- 寸法(1セル=1.0、線路の軌道中心が原点) ---
@@ -38,9 +40,10 @@ export const trackAngleFromConnections = (connections = 0): number => {
 };
 
 /** ホーム片側ぶん(床・側面・点字ブロック・上屋・ホームドア)。side=+1/-1 */
-const PlatformSide: React.FC<{ side: 1 | -1; doors: PlatformDoorType; isEnd: boolean }> = ({
-  side, doors, isEnd,
+const PlatformSide: React.FC<{ side: 1 | -1; doors: PlatformDoorType; isEnd: boolean; dimmed: boolean }> = ({
+  side, doors, isEnd, dimmed,
 }) => {
+  const MATERIALS = materialsFor(dimmed);
   const cx = side * PLATFORM_CENTRE;
   const edgeX = side * (PLATFORM_INNER + TACTILE_WIDTH / 2);
   const doorHeight = doors === 'fullscreen' ? CANOPY_HEIGHT - PLATFORM_HEIGHT : 0.17;
@@ -105,12 +108,14 @@ const PlatformSide: React.FC<{ side: 1 | -1; doors: PlatformDoorType; isEnd: boo
  * 線路そのものは TrackNetwork がまとめて敷くので、ここではホーム設備だけを描く。
  * 軌道の向き(connections)に合わせて回転させるため、斜めの駅でもホームが線路に沿う。
  */
-export const StationBlock: React.FC<Props> = ({ position, connections, platformDoors, isEnd = false }) => {
+export const StationBlock: React.FC<Props> = ({
+  position, connections, platformDoors, isEnd = false, dimmed = false,
+}) => {
   const angle = trackAngleFromConnections(connections);
   return (
     <group position={position} rotation={[0, angle, 0]}>
-      <PlatformSide side={1} doors={platformDoors} isEnd={isEnd} />
-      <PlatformSide side={-1} doors={platformDoors} isEnd={isEnd} />
+      <PlatformSide side={1} doors={platformDoors} isEnd={isEnd} dimmed={dimmed} />
+      <PlatformSide side={-1} doors={platformDoors} isEnd={isEnd} dimmed={dimmed} />
     </group>
   );
 };

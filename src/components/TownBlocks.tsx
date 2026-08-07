@@ -5,7 +5,7 @@ import type { TownData } from '../types';
 import { fromKey } from '../utils';
 import type { TownSubTileIndex } from '../sim/townTiles';
 import { subTileWorldCentre, townSubTileRadius, SUB_TILES_PER_TILE, parentTileOfSub } from '../sim/townTiles';
-import { MATERIALS, hash01 } from '../render/palette';
+import { materialsFor, hash01 } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import type { TerrainField } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -20,6 +20,8 @@ interface Props {
    * 参照)ため、サブタイル単位で個別の高さを持たせる必要はなく、親タイルの標高1つで足りる。
    */
   field: TerrainField;
+  /** P8b: 地下ビュー中は町を暗く半透明にする(render/palette.tsのDIMMED_MATERIALS)。 */
+  dimmed?: boolean;
 }
 
 // この人口以上の町には、一部のサブタイルに高層ビルが混ざる。
@@ -45,7 +47,8 @@ const formatPopulation = (population: number): string =>
  * ことで、線路が路面を横切る見た目(簡易的な踏切)になる。遮断機・警報機の描画は未実装
  * (progress/tile-based-towns.md参照)。
  */
-export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles, field }) => {
+export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles, field, dimmed = false }) => {
+  const MATERIALS = materialsFor(dimmed);
   const merged = useMemo(() => {
     const townById = new Map(towns.map(t => [t.id, t]));
     const wallsA: THREE.BufferGeometry[] = [];

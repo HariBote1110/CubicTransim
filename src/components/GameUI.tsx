@@ -21,6 +21,7 @@ import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
 import type { BuildLevel } from '../sim/construction';
+import { UNDERGROUND_RAIL_COST_MULTIPLIER, UNDERGROUND_STATION_COST } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import type { EditedTerrainField } from '../sim/terrainOverlay';
 import { buildEditBlockers } from '../sim/terrainOverlay';
@@ -99,8 +100,8 @@ const BUILD_TOOLS: {
   hint: string;
 }[] = [
   { mode: 'none', label: '選択', key: '1', accent: '#8b98a6', hint: '列車や駅をクリックして選ぶ' },
-  { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: 'ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)。高架の端に当てると坂で自動接続。↑/↓で建設レベル(高架)を切替' },
-  { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: '線路の上に置くと隣接セルと繋がって長いホームになる。↑/↓で建設レベル(高架)を切替' },
+  { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: `ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)、地下は掘割(${UNDERGROUND_RAIL_COST_MULTIPLIER}倍)。高架/地下の端に当てると坂で自動接続。↑/↓で建設レベル(高架/地下)を切替` },
+  { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: `線路の上に置くと隣接セルと繋がって長いホームになる。地下駅は¥${UNDERGROUND_STATION_COST.toLocaleString()}。↑/↓で建設レベル(高架/地下)を切替` },
   { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
@@ -214,9 +215,10 @@ export const GameUI: React.FC<GameUIProps> = ({
       if ((buildMode === 'rail' || buildMode === 'station')
         && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         e.preventDefault();
-        // P8a時点ではbuildLevelの型はUndergroundLevelまで含むBuildLevelへ拡張済みだが、
-        // 地下方向のUIステップはP8cで対応する(現状はstepElevatedLevelの0..3レンジのみ)。
-        setBuildLevel(stepElevatedLevel(buildLevel as 0 | 1 | 2 | 3, e.key === 'ArrowUp' ? 1 : -1));
+        // P8c: stepElevatedLevelは-MAX_ELEVATED_LEVEL(地下)〜+MAX_ELEVATED_LEVEL(高架)まで
+        // 0をまたいで対称にステップする。ArrowUpは地表へ近づく/高架側へ、ArrowDownは
+        // 地下側へ向かう(既存の高架の向きをそのまま地下へ延長しただけ)。
+        setBuildLevel(stepElevatedLevel(buildLevel, e.key === 'ArrowUp' ? 1 : -1));
       }
     };
     window.addEventListener('keydown', onKey);
@@ -444,14 +446,21 @@ export const GameUI: React.FC<GameUIProps> = ({
           })}>
             <span style={{ color: T.textMuted }}>建設レベル</span>
             <div style={{ display: 'flex', gap: 4 }}>
-              {Array.from({ length: MAX_ELEVATED_LEVEL + 1 }, (_, i) => i as BuildLevel).map(lv => (
+              {Array.from({ length: MAX_ELEVATED_LEVEL * 2 + 1 }, (_, i) => (i - MAX_ELEVATED_LEVEL) as BuildLevel).map(lv => (
                 <button
                   key={lv}
                   onClick={() => setBuildLevel(lv)}
-                  style={{ ...button({ active: buildLevel === lv, accent: T.bridge, compact: true }), minWidth: 30 }}
-                  title={lv === 0 ? '地平に切替(↑/↓キーでも可)' : `高架Lv${lv}に切替(↑/↓キーでも可)`}
+                  style={{
+                    ...button({ active: buildLevel === lv, accent: lv < 0 ? T.accent : T.bridge, compact: true }),
+                    minWidth: 30,
+                  }}
+                  title={
+                    lv === 0 ? '地平に切替(↑/↓キーでも可)'
+                    : lv > 0 ? `高架Lv${lv}に切替(↑/↓キーでも可)`
+                    : `地下${-lv}に切替(↑/↓キーでも可。線路${UNDERGROUND_RAIL_COST_MULTIPLIER}倍・地下駅¥${UNDERGROUND_STATION_COST.toLocaleString()})`
+                  }
                 >
-                  {lv === 0 ? '地平' : `Lv${lv}`}
+                  {lv === 0 ? '地平' : lv > 0 ? `Lv${lv}` : `地下${-lv}`}
                 </button>
               ))}
             </div>

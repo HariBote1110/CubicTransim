@@ -17,8 +17,8 @@ import {
 
 describe('stepElevatedLevel: 建設レベル選択の状態遷移', () => {
   it('-MAX_ELEVATED_LEVEL(地下)〜+MAX_ELEVATED_LEVEL(高架)の範囲でクランプする', () => {
-    expect(stepElevatedLevel(-MAX_ELEVATED_LEVEL, -1)).toBe(-MAX_ELEVATED_LEVEL);
-    expect(stepElevatedLevel(MAX_ELEVATED_LEVEL, 1)).toBe(MAX_ELEVATED_LEVEL);
+    expect(stepElevatedLevel(-MAX_ELEVATED_LEVEL as -3, -1)).toBe(-MAX_ELEVATED_LEVEL);
+    expect(stepElevatedLevel(MAX_ELEVATED_LEVEL as 3, 1)).toBe(MAX_ELEVATED_LEVEL);
   });
 
   it('範囲内では単純に加算する(0をまたいでも特別扱いしない)', () => {

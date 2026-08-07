@@ -1,5 +1,5 @@
 import React from 'react';
-import { MATERIALS, PALETTE, bodyMaterial } from '../render/palette';
+import { materialsFor, PALETTE, bodyMaterial, bodyMaterialDimmed } from '../render/palette';
 
 export type CarVariant = 'front' | 'middle' | 'rear';
 
@@ -7,6 +7,8 @@ interface Props {
   variant: CarVariant;
   /** 帯(ラインカラー)。選択中の列車は色を変えて識別する。 */
   lineColour: string;
+  /** P8b: 地下ビュー中、選択中の地下レベルにいない列車は暗く半透明にする。 */
+  dimmed?: boolean;
 }
 
 // --- 寸法(1セル=1.0、車間spacing=1.0なので車体長0.86で0.14の隙間ができる) ---
@@ -29,9 +31,10 @@ const NOSE = LEN / 2;
  *
  * ローカル +Z が進行方向(DynamicTrainのlookAtがそう向ける)。
  */
-export const TrainCar: React.FC<Props> = ({ variant, lineColour }) => {
-  const body = bodyMaterial(PALETTE.carBody);
-  const line = bodyMaterial(lineColour);
+export const TrainCar: React.FC<Props> = ({ variant, lineColour, dimmed = false }) => {
+  const MATERIALS = materialsFor(dimmed);
+  const body = dimmed ? bodyMaterialDimmed(PALETTE.carBody) : bodyMaterial(PALETTE.carBody);
+  const line = dimmed ? bodyMaterialDimmed(lineColour) : bodyMaterial(lineColour);
   const isCab = variant !== 'middle';
 
   return (
