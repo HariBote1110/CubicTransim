@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { ThreeEvent } from '@react-three/fiber';
 import type { TerrainField } from '../sim/terrainField';
-import { TERRAIN_HEIGHT_MAX } from '../sim/terrainField';
+import { TERRAIN_HEIGHT_MAX, cornerGridFor, waterCornerGridFor, cellCornersFromGrid } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import { materialsFor } from '../render/palette';
 import { SURFACE_RENDER_ORDER } from '../render/viewMode';
@@ -10,7 +10,7 @@ import { mergeAndDispose } from '../render/mergeGeometry';
 import type { CornerDiffs } from '../sim/terrainOverlay';
 import { overlayChunkRefs } from '../sim/terrainOverlay';
 import {
-  chunkKey, chunkCellBounds, visibleChunkRange, type ChunkCoord,
+  chunkKey, chunkCellBounds, selectChunksToBuild, visibleChunkRange, type ChunkCoord,
 } from '../render/terrainChunks';
 
 interface Props {
@@ -90,11 +90,27 @@ function buildChunkGeometry(
   const grassTop: THREE.BufferGeometry[] = [];
   const snowTop: THREE.BufferGeometry[] = [];
 
-  for (let x = bounds.x0; x <= bounds.x1; x++) {
-    for (let z = bounds.z0; z <= bounds.z1; z++) {
-      const type = field.terrainTypeAt(x, z);
+  // P9a: セルごとに4隅を個別に問い合わせる(=隣接セルと共有するコーナーを最大4回
+  // 再計算する)代わりに、このチャンクのコーナー格子を1回だけバッチ評価し、
+  // 以降は配列引き(cellCornersFromGrid)だけで済ませる。水域判定も同様にバッチ化する。
+  const w = bounds.x1 - bounds.x0 + 1;
+  const h = bounds.z1 - bounds.z0 + 1;
+  const gh = h + 1;
+  const heightGrid = cornerGridFor(field, bounds.x0, bounds.z0, w, h);
+  const waterGrid = waterCornerGridFor(field, bounds.x0, bounds.z0, w, h);
 
-      if (type === 'water') {
+  for (let x = bounds.x0; x <= bounds.x1; x++) {
+    const lx = x - bounds.x0;
+    for (let z = bounds.z0; z <= bounds.z1; z++) {
+      const lz = z - bounds.z0;
+      const corners = cellCornersFromGrid(heightGrid, gh, lx, lz);
+      const isWater =
+        waterGrid[lx * gh + lz] === 1 &&
+        waterGrid[(lx + 1) * gh + lz] === 1 &&
+        waterGrid[lx * gh + (lz + 1)] === 1 &&
+        waterGrid[(lx + 1) * gh + (lz + 1)] === 1;
+
+      if (isWater) {
         // 岸: セル全体を砂色で塗り、その内側に水面を張る。
         // 水域の外周セルだけ縁が見えるので、自然に汀線ができる。
         const bank = new THREE.BoxGeometry(1.0, 0.08, 1.0);
@@ -109,13 +125,12 @@ function buildChunkGeometry(
 
       // mountain(トンネル敷設済みセルもOpenTTD風に地形メッシュへ埋め込んで描く。
       // 坑口はGameScene側でtunnelPortalsを使い山肌の位置に別途表示する)
-      const e = field.cellHeightAt(x, z);
+      const e = Math.min(corners[0], corners[1], corners[2], corners[3]);
       if (e <= 0) continue;
 
-      const corners = field.cellCornerHeights(x, z);
-      const worldCorners = corners.map((h, i) => {
+      const worldCorners = corners.map((height, i) => {
         const [ox, oz] = CORNER_OFFSETS[i];
-        return new THREE.Vector3(x + ox, h * OVERPASS_HEIGHT, z + oz);
+        return new THREE.Vector3(x + ox, height * OVERPASS_HEIGHT, z + oz);
       });
       const [tl, tr, br, bl] = worldCorners;
 
@@ -181,6 +196,12 @@ const CHUNK_CACHE_LIMIT = 256;
 // キャッシュに残す(視界の端で毎フレーム破棄・再構築を繰り返すのを避ける)。
 const EVICT_MARGIN = 1;
 
+// P9a: 1回のuseMemoパスで新規構築(buildChunkGeometry)してよいチャンク数の上限。
+// 遠方へジャンプして可視チャンクが一斉に未キャッシュになっても、1フレームに
+// 建てるのはこの枚数までにして、残りは次フレーム以降へなだらかに繰り越す
+// (「ヒッチ→ポップイン」への転換。詳細は progress/16k-map-architecture.md のP9a追記)。
+const MAX_CHUNK_BUILDS_PER_PASS = 3;
+
 /**
  * 地形(水域・山岳)の描画。
  *
@@ -204,6 +225,11 @@ export const TerrainBlocks: React.FC<Props> = ({
 }) => {
   const MATERIALS = materialsFor(dimmed);
   const cacheRef = useRef<Map<string, ChunkCacheEntry>>(new Map());
+  // P9a: 漸進ビルドキューを再駆動するためだけのカウンタ。増やすとuseMemoが再実行され、
+  // 前回のパスで積み残した(未キャッシュの)チャンクの続きを試みる。
+  const [buildTick, setBuildTick] = useState(0);
+  const rafRef = useRef<number | null>(null);
+  const pendingCountRef = useRef(0);
 
   const visibleChunks = useMemo(
     () => visibleChunkRange(cameraTargetCell, viewRadiusCells, halfExtent, 1),
@@ -217,7 +243,10 @@ export const TerrainBlocks: React.FC<Props> = ({
     const visibleKeySet = new Set<string>();
     let rebuilds = 0;
 
+    // 1st pass: キャッシュヒットはそのまま採用し、ミス(未キャッシュ or オーバーレイ変化)は
+    // 「今回のパスで建てるかどうか」を後で決めるための候補として集める。
     const entries: { key: string; chunk: ChunkCoord; merged: ChunkMerged }[] = [];
+    const misses: { key: string; chunk: ChunkCoord; bounds: { x0: number; x1: number; z0: number; z1: number }; overlayRefs: ReadonlyArray<Map<number, number>> }[] = [];
     for (const chunk of visibleChunks) {
       const bounds = chunkCellBounds(chunk, halfExtent);
       if (!bounds) continue; // マップ範囲外(halfExtentでクランプ済みのはずだが念のため)。
@@ -230,15 +259,31 @@ export const TerrainBlocks: React.FC<Props> = ({
         entries.push({ key, chunk, merged: cached.merged });
         continue;
       }
+      misses.push({ key, chunk, bounds, overlayRefs });
+    }
 
-      // キャッシュ無し、または地形編集でこのチャンクに重なるオーバーレイが変わった
-      // ときだけ再構築する。
+    // カメラ注視チャンクに近いものから優先して建てる(遠方の積み残しは1〜数フレーム
+    // 遅れてポップインする形にする)。優先順位づけ・上限適用そのものは
+    // render/terrainChunks.tsのselectChunksToBuild(純粋関数、Vitestでテスト済み)に委ねる。
+    const { toBuild } = selectChunksToBuild(
+      misses.map(m => m.chunk),
+      cameraTargetCell,
+      MAX_CHUNK_BUILDS_PER_PASS,
+    );
+    const toBuildKeys = new Set(toBuild.map(c => chunkKey(c.cx, c.cz)));
+
+    for (const miss of misses) {
+      if (!toBuildKeys.has(miss.key)) continue; // 積み残し。次パスへ繰り越す(このフレームでは描かない)。
+      const { key, chunk, bounds, overlayRefs } = miss;
+      const cached = cache.get(key);
       if (cached) disposeChunkMerged(cached.merged);
       const merged = buildChunkGeometry(field, bounds);
       cache.set(key, { bounds, overlayRefs, merged });
       entries.push({ key, chunk, merged });
       rebuilds++;
     }
+    const pendingThisPass = misses.length - rebuilds;
+    pendingCountRef.current = pendingThisPass;
 
     // 破棄: 可視範囲(マージン込み)から十分離れたチャンクをキャッシュから追い出す。
     if (cache.size > CHUNK_CACHE_LIMIT) {
@@ -263,12 +308,26 @@ export const TerrainBlocks: React.FC<Props> = ({
         visible: visibleChunks.length,
         cached: cache.size,
         rebuiltThisPass: rebuilds,
+        pendingThisPass,
       };
     }
 
     return entries;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field, halfExtent, diffs, visibleChunks]);
+  }, [field, halfExtent, diffs, visibleChunks, buildTick]);
+
+  // P9a: 前回のパスで建てきれなかったチャンクが残っている場合、次の描画フレームで
+  // buildTickを進めてuseMemoを再実行させる(=積み残しの続きを建てる)。可視範囲や
+  // fieldが変わらない限りキャッシュヒットは再利用されるので、この再実行の追加コストは
+  // 「積み残し分の新規ビルド」のみに収まる。
+  useEffect(() => {
+    if (pendingCountRef.current > 0) {
+      rafRef.current = requestAnimationFrame(() => setBuildTick(t => t + 1));
+    }
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [chunkEntries]);
 
   // アンマウント時は全キャッシュを破棄する。
   useEffect(() => () => {

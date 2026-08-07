@@ -382,3 +382,62 @@ describe('buildEditBlockers', () => {
     expect(blockers.isCellBlocked(9, 9)).toBe(true);
   });
 });
+
+describe('createEditedTerrainField batch corner grid (P9a)', () => {
+  it('cornerGridFor(base+overlay) matches per-corner cornerHeightAt over random windows with edits applied', () => {
+    const base = createTerrainField(11, HALF_EXTENT);
+    let field = createEditedTerrainField(base);
+    const blockers: EditBlockers = { isCellBlocked: () => false };
+    // 複数箇所を盛土して疎なdiffsを作る(境界含む複数チャンクにまたがるように散らす)。
+    const edits: Array<{ a: { x: number; z: number }; b: { x: number; z: number } }> = [
+      { a: { x: 0, z: 0 }, b: { x: 3, z: 3 } },
+      { a: { x: 60, z: -60 }, b: { x: 63, z: -57 } },
+      { a: { x: -200, z: 200 }, b: { x: -197, z: 203 } },
+    ];
+    for (const rect of edits) {
+      const result = applyCornerEdit(base, field, rect, 'raise', blockers);
+      field = result.field;
+    }
+    expect(field.diffs.size).toBeGreaterThan(0);
+
+    const rng = mulberry32(123);
+    for (let trial = 0; trial < 15; trial++) {
+      const x0 = Math.floor((rng() - 0.5) * 800);
+      const z0 = Math.floor((rng() - 0.5) * 800);
+      const w = 1 + Math.floor(rng() * 40);
+      const h = 1 + Math.floor(rng() * 40);
+      const grid = field.cornerGridFor!(x0, z0, w, h);
+      const gh = h + 1;
+      for (let lx = 0; lx <= w; lx++) {
+        for (let lz = 0; lz <= h; lz++) {
+          expect(grid[lx * gh + lz]).toBe(field.cornerHeightAt(x0 + lx, z0 + lz));
+        }
+      }
+    }
+  });
+
+  it('cornerGridFor exactly covers a window straddling an edited corner', () => {
+    const base = createTerrainField(11, HALF_EXTENT);
+    let field = createEditedTerrainField(base);
+    const blockers: EditBlockers = { isCellBlocked: () => false };
+    const result = applyCornerEdit(base, field, { a: { x: 10, z: 10 }, b: { x: 10, z: 10 } }, 'raise', blockers);
+    field = result.field;
+    expect(result.changedCorners).toBeGreaterThan(0);
+
+    const grid = field.cornerGridFor!(5, 5, 10, 10);
+    const gh = 11;
+    for (let lx = 0; lx <= 10; lx++) {
+      for (let lz = 0; lz <= 10; lz++) {
+        expect(grid[lx * gh + lz]).toBe(field.cornerHeightAt(5 + lx, 5 + lz));
+      }
+    }
+  });
+
+  it('waterCornerGridFor delegates to the base field unaffected by edits', () => {
+    const base = createTerrainField(11, HALF_EXTENT);
+    const field = createEditedTerrainField(base);
+    const grid = field.waterCornerGridFor!(0, 0, 32, 32);
+    const baseGrid = base.waterCornerGridFor!(0, 0, 32, 32);
+    expect(Array.from(grid)).toEqual(Array.from(baseGrid));
+  });
+});

@@ -43,6 +43,20 @@ export interface TerrainField {
   cellHeightAt(x: number, z: number): number;
   /** セル(x,z)の地形種別。water/mountain/grassの判定はcellCornerHeightsから導出する。 */
   terrainTypeAt(x: number, z: number): TerrainKind;
+  /**
+   * P9a: (w+1)×(h+1) のコーナー格子([x0..x0+w]×[z0..z0+h])を1回でまとめて評価する
+   * バッチAPI(任意実装)。戻り値の添字は `lx*(h+1)+lz`(lx=x-x0, lz=z-z0)。
+   * 各要素は同じ座標に対する `cornerHeightAt(x0+lx, z0+lz)` と厳密に一致すること
+   * (プロパティテストで保証)。未実装の場合は呼び出し側が `cornerGridFor` ヘルパー
+   * (下記のモジュール関数)経由でcornerHeightAtへフォールバックする。
+   */
+  cornerGridFor?(x0: number, z0: number, w: number, h: number): Uint8Array;
+  /**
+   * P9a: cornerGridForと同じ格子・添字規約で、コーナーがwater側の頂点かどうかを
+   * 1/0で返すバッチAPI(任意実装)。terrainTypeAtのwater判定(isWaterVertex)を
+   * セルごとに4回再計算させないためのもの。
+   */
+  waterCornerGridFor?(x0: number, z0: number, w: number, h: number): Uint8Array;
 }
 
 // --- 決定的ハッシュ(格子点ごとの一様乱数) ---
@@ -160,6 +174,103 @@ const compositeNoise = (seed: number, x: number, z: number): number => {
 export function createTerrainField(seed: number, halfExtent: number): TerrainField {
   const inRange = (v: number): boolean => v >= -halfExtent && v <= halfExtent;
 
+  // --- P9a: バッチ用の合成ノイズ格子計算 ---
+  //
+  // オクターブ格子の構造を利用する: valueNoise(wave)が実際に参照する格子点(gx,gz)は
+  // window(w+1)×(h+1)個の頂点に対して floor(window/wave)+2 個程度しかない
+  // (waveが5以上・windowがチャンク=32程度なら1オクターブあたり高々十数個)。
+  // 頂点ごとにhashLatticeを呼ぶ(旧cornerHeightAtの経路)代わりに、この少数の格子点の
+  // ハッシュ値を先に計算しておき、各頂点はその配列引きと双線形補間だけで済ませる。
+  const noiseGridFor = (x0: number, z0: number, w: number, h: number): Float64Array => {
+    const gw = w + 1;
+    const gh = h + 1;
+    const noise = new Float64Array(gw * gh);
+    for (let oi = 0; oi < NOISE_OCTAVES.length; oi++) {
+      const [wave, amp] = NOISE_OCTAVES[oi];
+      const octaveSeed = deriveOctaveSeed(seed, oi);
+
+      const gx0 = Math.floor(x0 / wave);
+      const gx1 = Math.floor((x0 + w) / wave) + 1;
+      const gz0 = Math.floor(z0 / wave);
+      const gz1 = Math.floor((z0 + h) / wave) + 1;
+      const lgw = gx1 - gx0 + 1;
+      const lgh = gz1 - gz0 + 1;
+      const latticeHash = new Float64Array(lgw * lgh);
+      for (let lgx = 0; lgx < lgw; lgx++) {
+        for (let lgz = 0; lgz < lgh; lgz++) {
+          latticeHash[lgx * lgh + lgz] = hashLattice(octaveSeed, gx0 + lgx, gz0 + lgz);
+        }
+      }
+
+      for (let lx = 0; lx < gw; lx++) {
+        const x = x0 + lx;
+        const gx = Math.floor(x / wave) - gx0;
+        const tx = smoothstep01(x / wave - Math.floor(x / wave));
+        for (let lz = 0; lz < gh; lz++) {
+          const z = z0 + lz;
+          const gz = Math.floor(z / wave) - gz0;
+          const tz = smoothstep01(z / wave - Math.floor(z / wave));
+          const v00 = latticeHash[gx * lgh + gz];
+          const v10 = latticeHash[(gx + 1) * lgh + gz];
+          const v01 = latticeHash[gx * lgh + (gz + 1)];
+          const v11 = latticeHash[(gx + 1) * lgh + (gz + 1)];
+          const top = v00 + (v10 - v00) * tx;
+          const bottom = v01 + (v11 - v01) * tx;
+          const value = top + (bottom - top) * tz;
+          noise[lx * gh + lz] += value * amp;
+        }
+      }
+    }
+    for (let i = 0; i < noise.length; i++) noise[i] /= AMPLITUDE_SUM;
+    return noise;
+  };
+
+  const cornerGridForImpl = (x0: number, z0: number, w: number, h: number): Uint8Array => {
+    const gw = w + 1;
+    const gh = h + 1;
+    const noise = noiseGridFor(x0, z0, w, h);
+    const grid = new Uint8Array(gw * gh);
+    for (let lx = 0; lx < gw; lx++) {
+      const x = x0 + lx;
+      for (let lz = 0; lz < gh; lz++) {
+        const z = z0 + lz;
+        const idx = lx * gh + lz;
+        if (!inRange(x) || !inRange(z)) {
+          grid[idx] = 0;
+          continue;
+        }
+        const n = noise[idx];
+        if (n < WATER_THRESHOLD) {
+          grid[idx] = 0;
+          continue;
+        }
+        const lifted = Math.max(0, n - FLATLAND_THRESHOLD);
+        grid[idx] = Math.min(TERRAIN_HEIGHT_MAX, Math.round(lifted * HEIGHT_GAIN));
+      }
+    }
+    return grid;
+  };
+
+  const waterCornerGridForImpl = (x0: number, z0: number, w: number, h: number): Uint8Array => {
+    const gw = w + 1;
+    const gh = h + 1;
+    const noise = noiseGridFor(x0, z0, w, h);
+    const grid = new Uint8Array(gw * gh);
+    for (let lx = 0; lx < gw; lx++) {
+      const x = x0 + lx;
+      for (let lz = 0; lz < gh; lz++) {
+        const z = z0 + lz;
+        const idx = lx * gh + lz;
+        if (!inRange(x) || !inRange(z)) {
+          grid[idx] = 0;
+          continue;
+        }
+        grid[idx] = noise[idx] < WATER_THRESHOLD ? 1 : 0;
+      }
+    }
+    return grid;
+  };
+
   const cornerHeightAt = (x: number, z: number): number => {
     const ix = Math.round(x);
     const iz = Math.round(z);
@@ -199,7 +310,11 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
     return cellHeightAt(x, z) >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
   };
 
-  return { cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt };
+  return {
+    cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt,
+    cornerGridFor: cornerGridForImpl,
+    waterCornerGridFor: waterCornerGridForImpl,
+  };
 }
 
 /**
@@ -263,4 +378,64 @@ export function fieldFromMaps(
   };
 
   return { cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt };
+}
+
+// --- P9a: バッチAPIの呼び出しヘルパー ---
+//
+// TerrainField.cornerGridFor/waterCornerGridForは任意実装(実装を持たないfieldや
+// テストのリテラルフィクスチャもあるため)。呼び出し側(render層)は必ずこの
+// モジュール関数を経由することで、未実装のfieldに対しても
+// cornerHeightAt/isWaterVertex相当への逐次フォールバックで動作を保証する。
+
+/**
+ * (w+1)×(h+1)のコーナー格子を返す。fieldがcornerGridForを実装していればそれを使い、
+ * 無ければcornerHeightAtへの逐次呼び出しにフォールバックする。戻り値の添字規約は
+ * TerrainField.cornerGridForと同じ(`lx*(h+1)+lz`, lx=x-x0, lz=z-z0)。
+ */
+export function cornerGridFor(field: TerrainField, x0: number, z0: number, w: number, h: number): Uint8Array {
+  if (field.cornerGridFor) return field.cornerGridFor(x0, z0, w, h);
+  const gh = h + 1;
+  const grid = new Uint8Array((w + 1) * gh);
+  for (let lx = 0; lx <= w; lx++) {
+    for (let lz = 0; lz <= h; lz++) {
+      grid[lx * gh + lz] = field.cornerHeightAt(x0 + lx, z0 + lz);
+    }
+  }
+  return grid;
+}
+
+/**
+ * cornerGridForと同じ格子・添字規約で、コーナーがwater側の頂点かどうかを1/0で返す。
+ * fieldがwaterCornerGridForを実装していなければ、terrainTypeAtで包囲4セルを調べて
+ * 「4隅すべてwater」の頂点だけを1にする(cornerGridForの旧isWaterVertex相当のフォールバック)。
+ * 高頻度パスでは使われない想定(フォールバック経路はfieldFromMaps/デバッグシナリオ用)。
+ */
+export function waterCornerGridFor(field: TerrainField, x0: number, z0: number, w: number, h: number): Uint8Array {
+  if (field.waterCornerGridFor) return field.waterCornerGridFor(x0, z0, w, h);
+  const gh = h + 1;
+  const grid = new Uint8Array((w + 1) * gh);
+  for (let lx = 0; lx <= w; lx++) {
+    for (let lz = 0; lz <= h; lz++) {
+      const x = x0 + lx;
+      const z = z0 + lz;
+      // 頂点(x,z)を共有する4セルすべてがwaterなら、その頂点はwater側とみなす。
+      const cells: ReadonlyArray<[number, number]> = [[x - 1, z - 1], [x, z - 1], [x - 1, z], [x, z]];
+      grid[lx * gh + lz] = cells.every(([cx, cz]) => field.terrainTypeAt(cx, cz) === 'water') ? 1 : 0;
+    }
+  }
+  return grid;
+}
+
+/**
+ * cornerGridFor/waterCornerGridForの格子から、ローカルセル座標(lx,lz)(cell
+ * (x0+lx, z0+lz)に対応、lxは[0,w-1]、lzは[0,h-1])の4隅コーナー標高を
+ * [nw,ne,sw,se]で取り出す。gh=h+1(格子の1列あたりの高さ)。
+ */
+export function cellCornersFromGrid(grid: Uint8Array, gh: number, lx: number, lz: number): CellCorners {
+  return [
+    grid[lx * gh + lz],
+    grid[(lx + 1) * gh + lz],
+    grid[lx * gh + (lz + 1)],
+    grid[(lx + 1) * gh + (lz + 1)],
+  ];
 }

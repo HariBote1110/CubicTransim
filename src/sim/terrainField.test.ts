@@ -163,3 +163,68 @@ describe('createTerrainField', () => {
     expect(Date.now() - start).toBeLessThan(50);
   });
 });
+
+describe('createTerrainField batch corner grid (P9a)', () => {
+  it('cornerGridFor matches per-corner cornerHeightAt over random windows', () => {
+    const field = createTerrainField(11, HALF_EXTENT);
+    const rng = mulberry32(99);
+    for (let trial = 0; trial < 20; trial++) {
+      const x0 = Math.floor((rng() - 0.5) * 16000);
+      const z0 = Math.floor((rng() - 0.5) * 16000);
+      const w = 1 + Math.floor(rng() * 40);
+      const h = 1 + Math.floor(rng() * 40);
+      const grid = field.cornerGridFor!(x0, z0, w, h);
+      const gh = h + 1;
+      for (let lx = 0; lx <= w; lx++) {
+        for (let lz = 0; lz <= h; lz++) {
+          expect(grid[lx * gh + lz]).toBe(field.cornerHeightAt(x0 + lx, z0 + lz));
+        }
+      }
+    }
+  });
+
+  it('cornerGridFor matches per-corner heights at map-edge / out-of-range windows', () => {
+    const field = createTerrainField(11, 40);
+    const grid = field.cornerGridFor!(30, 30, 20, 20);
+    const gh = 21;
+    for (let lx = 0; lx <= 20; lx++) {
+      for (let lz = 0; lz <= 20; lz++) {
+        expect(grid[lx * gh + lz]).toBe(field.cornerHeightAt(30 + lx, 30 + lz));
+      }
+    }
+  });
+
+  it('waterCornerGridFor matches the terrainTypeAt-derived water vertex definition', () => {
+    const field = createTerrainField(11, HALF_EXTENT);
+    const x0 = 100;
+    const z0 = -50;
+    const w = 32;
+    const h = 32;
+    const grid = field.waterCornerGridFor!(x0, z0, w, h);
+    const gh = h + 1;
+    for (let lx = 0; lx <= w; lx++) {
+      for (let lz = 0; lz <= h; lz++) {
+        const x = x0 + lx;
+        const z = z0 + lz;
+        const cells: ReadonlyArray<[number, number]> = [[x - 1, z - 1], [x, z - 1], [x - 1, z], [x, z]];
+        const expected = cells.every(([cx, cz]) => field.terrainTypeAt(cx, cz) === 'water') ? 1 : 0;
+        expect(grid[lx * gh + lz]).toBe(expected);
+      }
+    }
+  });
+
+  it('computes a 33x33 corner grid well under 1ms (median of several calls)', () => {
+    const field = createTerrainField(7, HALF_EXTENT);
+    // JITウォームアップ
+    field.cornerGridFor!(0, 0, 32, 32);
+    const samples: number[] = [];
+    for (let i = 0; i < 9; i++) {
+      const start = performance.now();
+      field.cornerGridFor!(8000 + i * 32, 8000 + i * 32, 32, 32);
+      samples.push(performance.now() - start);
+    }
+    samples.sort((a, b) => a - b);
+    const median = samples[Math.floor(samples.length / 2)];
+    expect(median).toBeLessThan(1);
+  });
+});

@@ -6,7 +6,10 @@
 // P3でuseGameLogic.ts/GameUI.tsxの建設・地形編集経路をこちらへ載せ替え済み。
 
 import type { CellCorners, TerrainField, TerrainKind } from './terrainField';
-import { MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_HEIGHT_MAX } from './terrainField';
+import {
+  MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_HEIGHT_MAX,
+  cornerGridFor as cornerGridForModule, waterCornerGridFor as waterCornerGridForModule,
+} from './terrainField';
 import { toKey } from '../utils';
 import type { CellData } from '../types';
 import type { TownTileIndex } from './townTiles';
@@ -93,7 +96,47 @@ export function createEditedTerrainField(base: TerrainField, diffs: CornerDiffs 
     return cellHeightAt(x, z) >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
   };
 
-  return { cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt, diffs };
+  // P9a: バッチAPI。base.cornerGridFor(未実装ならcornerHeightAtへの逐次フォールバック、
+  // cornerGridForヘルパー経由)で下地格子を1回作り、その上にdiffsの疎な上書きだけを
+  // 重ねる。overlayChunkRefsと同じ考え方で、窓に重なるオーバーレイチャンクだけを
+  // 走査するため、コスト = 下地の1回評価 + 触れられたコーナー数(疎)に収まる。
+  const cornerGridForImpl = (x0: number, z0: number, w: number, h: number): Uint8Array => {
+    const grid = cornerGridForModule(base, x0, z0, w, h);
+    if (diffs.size === 0) return grid;
+    const gh = h + 1;
+    const cx0 = chunkCoordOf(x0);
+    const cx1 = chunkCoordOf(x0 + w);
+    const cz0 = chunkCoordOf(z0);
+    const cz1 = chunkCoordOf(z0 + h);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cz = cz0; cz <= cz1; cz++) {
+        const chunk = diffs.get(chunkKeyOf(cx, cz));
+        if (!chunk) continue;
+        for (const [localIndex, height] of chunk) {
+          const lxAbs = Math.floor(localIndex / OVERLAY_CHUNK_SIZE);
+          const lzAbs = localIndex % OVERLAY_CHUNK_SIZE;
+          const x = cx * OVERLAY_CHUNK_SIZE + lxAbs;
+          const z = cz * OVERLAY_CHUNK_SIZE + lzAbs;
+          const lx = x - x0;
+          const lz = z - z0;
+          if (lx < 0 || lx > w || lz < 0 || lz > h) continue;
+          grid[lx * gh + lz] = height;
+        }
+      }
+    }
+    return grid;
+  };
+
+  // water(湖)は編集で作られない(applyCornerEditのブロック規則が水域を常にno-opにする)ため、
+  // 常に基底fieldのwater判定に委ねられる(terrainTypeAtの実装と同じ前提)。
+  const waterCornerGridForImpl = (x0: number, z0: number, w: number, h: number): Uint8Array =>
+    waterCornerGridForModule(base, x0, z0, w, h);
+
+  return {
+    cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt, diffs,
+    cornerGridFor: cornerGridForImpl,
+    waterCornerGridFor: waterCornerGridForImpl,
+  };
 }
 
 // --- コーナー地形編集(盛土/切土) ---

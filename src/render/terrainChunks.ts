@@ -119,3 +119,30 @@ export function* chunkCells(chunk: ChunkCoord, halfExtent: number): Generator<Ce
     }
   }
 }
+
+/**
+ * P9a: 未キャッシュ(または無効化された)チャンクの候補一覧から、このフレームで
+ * 実際にジオメトリを新規構築してよいチャンクを選ぶ純粋関数。
+ *
+ * - カメラの注視セルが属するチャンクからのチェビシェフ格子距離(2乗ユークリッド)が
+ *   近い順に並べ替える(遠方へジャンプしたときに手前のチャンクから埋まるように)。
+ * - 先頭 `maxBuilds` 件だけを `toBuild` に、残りは `deferred` に振り分ける
+ *   (呼び出し側は `deferred` を次フレーム以降に持ち越す)。
+ * - 同距離の候補同士は入力順(=呼び出し側が渡した順序、通常はcx昇順→cz昇順)を保つ
+ *   安定ソートにする(Array.prototype.sortは仕様上stableなので追加の実装は不要)。
+ */
+export function selectChunksToBuild<T extends ChunkCoord>(
+  candidates: ReadonlyArray<T>,
+  cameraTargetCell: CellPos,
+  maxBuilds: number,
+): { toBuild: T[]; deferred: T[] } {
+  const centreCx = chunkCoordOf(cameraTargetCell.x);
+  const centreCz = chunkCoordOf(cameraTargetCell.z);
+  const sorted = [...candidates].sort((a, b) => {
+    const da = (a.cx - centreCx) ** 2 + (a.cz - centreCz) ** 2;
+    const db = (b.cx - centreCx) ** 2 + (b.cz - centreCz) ** 2;
+    return da - db;
+  });
+  const cap = Math.max(0, maxBuilds);
+  return { toBuild: sorted.slice(0, cap), deferred: sorted.slice(cap) };
+}

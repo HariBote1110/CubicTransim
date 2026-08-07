@@ -114,3 +114,79 @@ O(セル数) のまま。2048² で合計 ~2.4s(起動時1回)。8192² は外�
 2. さらにオクターブ格子値のチャンク内キャッシュで数倍
 3. チャンク構築を1フレームN枚に制限する漸進キュー(ヒッチ→なだらかなポップイン)
 4. ズームアウト拡張はLOD(遠景モード: 粗サンプリング地形+町ドット、木・家省略)が前提
+
+## 追記2の対策結果(P9a、v0.3.0-Alpha-41a)
+
+上記「追記2」の診断(セルごとに4隅を独立再計算・水域判定も4隅×独立再計算)に対して、
+`src/sim/terrainField.ts` に `TerrainField.cornerGridFor(x0,z0,w,h)` /
+`waterCornerGridFor(x0,z0,w,h)`(いずれも任意実装、`TerrainField`インターフェースの
+オプショナルメンバ)を追加した。
+
+### 設計
+
+- `cornerGridFor`は (w+1)×(h+1) のコーナー格子を **1回のオクターブ格子キャッシュ**で
+  まとめて評価する: オクターブごとに窓が実際に参照する格子点(gx,gz)の集合(1オクターブ
+  あたり `window/wave + 2` 個程度)だけを先にハッシュ化してキャッシュし、各頂点は
+  そのキャッシュへの配列引き+双線形補間だけで済ませる(`hashLattice`をコーナーごとに
+  4回×4オクターブ呼ぶ経路を廃止)。`waterCornerGridFor`も同じオクターブキャッシュの
+  合成ノイズ値から閾値判定するだけで、追加のノイズ計算はしない。
+- `createEditedTerrainField`(terrainOverlay.ts)の`cornerGridFor`は
+  base.cornerGridForで下地格子を作ってから、overlayChunkRefsと同じ考え方で
+  「窓に重なるオーバーレイチャンクだけ」を走査して疎な上書きを重ねる合成にした。
+  waterはbaseの`waterCornerGridFor`にそのまま委譲する(編集は水域を作らない前提と一致)。
+- `cornerGridFor`/`waterCornerGridFor`はfieldインターフェース上は任意実装のため、
+  未実装のfield(テストのリテラルフィクスチャ、fieldFromMaps等)に対しては
+  モジュール関数`cornerGridFor(field,...)`/`waterCornerGridFor(field,...)`が
+  cornerHeightAt/terrainTypeAtへの逐次フォールバックを提供し、後方互換を保つ。
+- `TerrainBlocks.buildChunkGeometry`と`Scenery`の候補列挙は、チャンク/可視チャンクごとに
+  この2つのバッチAPIを1回ずつ呼び、以降はセルごとに配列引き(`cellCornersFromGrid`)
+  だけで4隅・水域判定を済ませるように書き換えた(`field.cellCornerHeights`/
+  `field.terrainTypeAt`の個別呼び出しを除去)。TownBlocksは町サブタイル単位の
+  参照(全セルスキャンではない)であり診断対象の全セルコーナー再計算パターンに
+  該当しないため対象外とした。
+
+### プロパティテスト・性能テスト(Vitest)
+
+- `src/sim/terrainField.test.ts`: `cornerGridFor`/`waterCornerGridFor`が乱数窓・境界窓で
+  `cornerHeightAt`/`terrainTypeAt`由来の定義と厳密一致することを検証。33×33格子の
+  性能ガード(9サンプルの中央値<1ms)も追加。
+- `src/sim/terrainOverlay.test.ts`: `createEditedTerrainField`の`cornerGridFor`が
+  複数箇所の盛土後も乱数窓で`cornerHeightAt`と厳密一致すること、編集コーナーを
+  跨ぐ窓でも一致すること、`waterCornerGridFor`がbaseへ委譲されることを検証。
+- `src/render/terrainChunks.test.ts`: 漸進ビルドキューの優先順位づけ(純粋関数
+  `selectChunksToBuild`)を上限件数・近接優先・非破壊性の観点でテスト。
+- 全757→762件、`npm run test`/`npm run build`green。
+
+### 実測(ブラウザ、極大16385マップ、port 5175)
+
+`window.__debugWorld.terrainField`を直接使い、追記2と同じ「フィールド問い合わせだけ」の
+コストを1チャンク(32×32セル)ぶんで比較した(10サンプルの中央値、JITウォームアップ後):
+
+| 方式 | 中央値 |
+|---|---|
+| 旧方式相当(セルごとに`cellCornerHeights`+`terrainTypeAt`を個別呼び出し) | 1.6ms |
+| 新方式(`cornerGridFor`+`waterCornerGridFor`を1回ずつ) | 0.1ms |
+
+**約16倍高速化**(追記2の診断値5.4ms/チャンクとは環境・シードが異なるため直接比較は
+できないが、同じ「4隅の重複再計算」を解消したことによる同種の改善であることを確認)。
+
+### 漸進ビルドキュー(TerrainBlocks)
+
+- `MAX_CHUNK_BUILDS_PER_PASS = 3`。`chunkEntries`のuseMemoを「キャッシュヒットの採用」
+  「ミスの収集→`selectChunksToBuild`で近接優先ソート+上限適用」「上限内だけ新規構築」の
+  3段に分け、積み残し(`pendingThisPass`)が残っていれば`requestAnimationFrame`で
+  `buildTick`を進めて次フレームで続きを処理する。
+- ブラウザでの`__terrainChunkStats`(`visible/cached/rebuiltThisPass/pendingThisPass`)を
+  使って、通常のチャンク再利用(`cached`が変わらず`rebuiltThisPass:0`)・新規構築
+  (`rebuiltThisPass`>0)の両方の遷移を確認した。
+- **未検証事項(正直な申告)**: Browserペインの非表示タブ制約(CLAUDE.md記載どおり)により
+  `requestAnimationFrame`が止まるため、実際のパン操作中のフレーム時間(rAF/PerformanceObserver
+  longtask)を本セッションでは計測できなかった。`window.__orbitControls`のtarget/positionを
+  スクリプトで直接書き換える方法も試したが、OrbitControls内部の球面座標キャッシュと
+  手動書き換えが噛み合わず、縮退した(視界チャンク数1の)ビューになってしまい、
+  ジャンプ後の`pendingThisPass`推移を安定して観測できなかった。上記の「フィールド問い合わせ
+  16倍高速化」は診断されたボトルネックそのものへの直接的な実測であり、キューの優先順位
+  ロジック自体は`selectChunksToBuild`の単体テストで担保しているが、**「1フレーム16ms超の
+  ヒッチが無くなったか」のエンドツーエンドのフレーム時間実測は今回できていない**。
+  可視タブでの実機確認(ユーザー操作 or Playwright等の可視ブラウザでのlongtask計測)を
+  今後の宿題として残す。

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   TERRAIN_CHUNK_SIZE, chunkCoordOf, chunkKey, mapChunkBounds, visibleChunkRange,
-  chunkCellBounds, chunkCells,
+  chunkCellBounds, chunkCells, selectChunksToBuild, type ChunkCoord,
 } from './terrainChunks';
 
 describe('chunkCoordOf', () => {
@@ -168,5 +168,50 @@ describe('chunkCells', () => {
       }
     }
     expect(collected).toEqual(expected);
+  });
+});
+
+describe('selectChunksToBuild (P9a漸進ビルドキュー)', () => {
+  it('上限件数までしかtoBuildに入れず、残りはdeferredへ回す', () => {
+    const candidates: ChunkCoord[] = [
+      { cx: 0, cz: 0 }, { cx: 1, cz: 0 }, { cx: 2, cz: 0 }, { cx: 3, cz: 0 }, { cx: 4, cz: 0 },
+    ];
+    const { toBuild, deferred } = selectChunksToBuild(candidates, { x: 0, z: 0 }, 2);
+    expect(toBuild.length).toBe(2);
+    expect(deferred.length).toBe(3);
+    expect(toBuild.length + deferred.length).toBe(candidates.length);
+  });
+
+  it('カメラ注視チャンクに近いものを優先してtoBuildへ入れる', () => {
+    const candidates: ChunkCoord[] = [
+      { cx: 10, cz: 10 }, // 遠い
+      { cx: 0, cz: 1 },   // 近い
+      { cx: -5, cz: -5 }, // かなり遠い
+      { cx: 1, cz: 0 },   // 近い
+    ];
+    // カメラ注視セル(0,0)はチャンク座標(0,0)に属する。
+    const { toBuild } = selectChunksToBuild(candidates, { x: 0, z: 0 }, 2);
+    expect(toBuild).toEqual([{ cx: 0, cz: 1 }, { cx: 1, cz: 0 }]);
+  });
+
+  it('上限が候補数以上なら全件toBuildに入り、deferredは空', () => {
+    const candidates: ChunkCoord[] = [{ cx: 0, cz: 0 }, { cx: 1, cz: 1 }];
+    const { toBuild, deferred } = selectChunksToBuild(candidates, { x: 0, z: 0 }, 10);
+    expect(toBuild.length).toBe(2);
+    expect(deferred.length).toBe(0);
+  });
+
+  it('上限0ならtoBuildは空で全件deferredへ', () => {
+    const candidates: ChunkCoord[] = [{ cx: 0, cz: 0 }, { cx: 1, cz: 1 }];
+    const { toBuild, deferred } = selectChunksToBuild(candidates, { x: 0, z: 0 }, 0);
+    expect(toBuild.length).toBe(0);
+    expect(deferred.length).toBe(2);
+  });
+
+  it('元の配列を変更しない(非破壊)', () => {
+    const candidates: ChunkCoord[] = [{ cx: 3, cz: 3 }, { cx: 0, cz: 0 }];
+    const snapshot = candidates.map(c => ({ ...c }));
+    selectChunksToBuild(candidates, { x: 0, z: 0 }, 1);
+    expect(candidates).toEqual(snapshot);
   });
 });

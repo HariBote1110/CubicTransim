@@ -401,3 +401,35 @@
 - **確認**: `npm run test`(667件)・`npm run build`はいずれのコミットでも green。
   ブラウザ(port 5175)で既定マップの起動・地形描画・線路建設が変更前と同じ見た目で
   動作することを確認した。
+
+## P9a実装メモ(地形field問い合わせのバッチ化・チャンク構築の漸進キュー)
+
+- 発端は map_scale_research/notes/generation-scaling.md の「追記2」の実測診断:
+  極大16385マップで遠方ジャンプ時に25チャンク新規構築が発生し、うち1チャンクあたり
+  5.4msが「隣接セルと共有するコーナーを毎回独立に再計算する」フィールド問い合わせに
+  費やされていた(4隅×4オクターブノイズをセルごとに個別ハッシュ)。
+- `sim/terrainField.ts`の`TerrainField`インターフェースへ`cornerGridFor`/
+  `waterCornerGridFor`という任意実装のバッチメソッドを追加し、`createTerrainField`の
+  実装ではオクターブごとに窓が参照する格子点だけを先にハッシュ化してキャッシュする
+  ことで、(w+1)×(h+1)の格子を1回で評価する。`terrainOverlay.ts`の
+  `createEditedTerrainField`は、この下地バッチ結果に対して疎な編集差分(diffs)だけを
+  重ねる合成実装を持つ(overlayChunkRefsと同じ「窓に重なるオーバーレイチャンクだけ
+  走査」の考え方)。未実装のfield向けに、cornerHeightAt/terrainTypeAtへ逐次
+  フォールバックするモジュール関数版も用意し後方互換を保った。
+- `TerrainBlocks.buildChunkGeometry`と`Scenery`のツリー候補列挙は、チャンクごとに
+  この2つのバッチAPIを1回ずつ呼び、以降は配列引き(`cellCornersFromGrid`)だけで
+  セルの4隅・水域判定を済ませるように書き換えた。TownBlocksは町サブタイル単位の
+  参照(全セルスキャンではない)なので対象外。
+- `TerrainBlocks`のチャンク構築(`buildChunkGeometry`呼び出し)を1回のuseMemoパスで
+  `MAX_CHUNK_BUILDS_PER_PASS`(=3)件までに制限する漸進ビルドキューを追加した。
+  優先順位づけ(カメラ注視チャンクに近い順)と上限適用は`render/terrainChunks.ts`の
+  純粋関数`selectChunksToBuild`に切り出し、単体テストで担保している。積み残しが
+  あれば`requestAnimationFrame`で`buildTick`(useState)を進めて次フレームで続きを
+  処理する。既存のキャッシュ・LRU・オーバーレイ無効化判定(overlayChunkRefs)は
+  変更していない(「いつ構築するか」だけを分散させた)。
+- 実測: ブラウザ(port 5175、極大16385マップ)で、1チャンク(32×32)ぶんの
+  フィールド問い合わせコストが1.6ms→0.1ms(約16倍)に短縮したことを確認した
+  (詳細は generation-scaling.md の「追記2の対策結果」)。エンドツーエンドの
+  フレーム時間(rAF/longtask)は、本セッションのBrowserペインが非表示タブ制約で
+  rAFを止めるため未計測(今後の宿題)。
+- テストは`npm run test`(762件)・`npm run build`とも green。

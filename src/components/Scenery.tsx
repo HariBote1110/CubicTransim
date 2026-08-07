@@ -6,8 +6,9 @@ import { toKey } from '../utils';
 import { materialsFor, hash01 } from '../render/palette';
 import { SURFACE_RENDER_ORDER } from '../render/viewMode';
 import type { TerrainField } from '../sim/terrainField';
+import { cornerGridFor, waterCornerGridFor, cellCornersFromGrid } from '../sim/terrainField';
 import { mergeAndDispose } from '../render/mergeGeometry';
-import { visibleChunkRange, chunkCells, chunkKey } from '../render/terrainChunks';
+import { visibleChunkRange, chunkCellBounds, chunkKey } from '../render/terrainChunks';
 import { slopeOf } from '../sim/slopes';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 
@@ -56,25 +57,46 @@ export const Scenery: React.FC<Props> = ({
   const candidates = useMemo(() => {
     const list: { x: number; z: number }[] = [];
     const seen = new Set<string>();
+    // P9a: チャンクごとにコーナー格子・水域格子を1回だけバッチ評価し(TerrainBlocksと
+    // 同じcornerGridFor/waterCornerGridFor)、セルごとの水域判定・slopeOf用の4隅取得は
+    // 配列引きだけにする(terrainTypeAt/cellCornerHeightsの個別呼び出しを避ける)。
     for (const chunk of visibleChunks) {
-      for (const { x, z } of chunkCells(chunk, range)) {
-        const key = chunkKey(x, z);
-        if (seen.has(key)) continue; // チャンクのマージン境界での重複を防ぐ。
-        seen.add(key);
-        if (hash01(x, z, 11) >= TREE_DENSITY) continue;
-        // P7d: mountain(標高1以上)は建設不可の障害物ではなくなったため、樹木も
-        // 平坦な高原なら生やす(水域・傾斜地は除外、標高そのものは問わない)。
-        if (field.terrainTypeAt(x, z) === 'water') continue;
-        if (slopeOf(field.cellCornerHeights(x, z)).kind !== 'flat') continue;
-        // 町タイル(家・道路)とその周囲1タイルは市街地として空けておく
-        let nearTown = false;
-        for (let dx = -TOWN_TILE_MARGIN; dx <= TOWN_TILE_MARGIN && !nearTown; dx++) {
-          for (let dz = -TOWN_TILE_MARGIN; dz <= TOWN_TILE_MARGIN && !nearTown; dz++) {
-            if (townTiles.has(toKey(x + dx, z + dz))) nearTown = true;
+      const bounds = chunkCellBounds(chunk, range);
+      if (!bounds) continue;
+      const w = bounds.x1 - bounds.x0 + 1;
+      const h = bounds.z1 - bounds.z0 + 1;
+      const gh = h + 1;
+      const heightGrid = cornerGridFor(field, bounds.x0, bounds.z0, w, h);
+      const waterGrid = waterCornerGridFor(field, bounds.x0, bounds.z0, w, h);
+
+      for (let x = bounds.x0; x <= bounds.x1; x++) {
+        const lx = x - bounds.x0;
+        for (let z = bounds.z0; z <= bounds.z1; z++) {
+          const lz = z - bounds.z0;
+          const key = chunkKey(x, z);
+          if (seen.has(key)) continue; // チャンクのマージン境界での重複を防ぐ。
+          seen.add(key);
+          if (hash01(x, z, 11) >= TREE_DENSITY) continue;
+
+          const isWater =
+            waterGrid[lx * gh + lz] === 1 &&
+            waterGrid[(lx + 1) * gh + lz] === 1 &&
+            waterGrid[lx * gh + (lz + 1)] === 1 &&
+            waterGrid[(lx + 1) * gh + (lz + 1)] === 1;
+          // P7d: mountain(標高1以上)は建設不可の障害物ではなくなったため、樹木も
+          // 平坦な高原なら生やす(水域・傾斜地は除外、標高そのものは問わない)。
+          if (isWater) continue;
+          if (slopeOf(cellCornersFromGrid(heightGrid, gh, lx, lz)).kind !== 'flat') continue;
+          // 町タイル(家・道路)とその周囲1タイルは市街地として空けておく
+          let nearTown = false;
+          for (let dx = -TOWN_TILE_MARGIN; dx <= TOWN_TILE_MARGIN && !nearTown; dx++) {
+            for (let dz = -TOWN_TILE_MARGIN; dz <= TOWN_TILE_MARGIN && !nearTown; dz++) {
+              if (townTiles.has(toKey(x + dx, z + dz))) nearTown = true;
+            }
           }
+          if (nearTown) continue;
+          list.push({ x, z });
         }
-        if (nearTown) continue;
-        list.push({ x, z });
       }
     }
     return list;
