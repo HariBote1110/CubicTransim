@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "terrain_core",
+    "renderer_wgpu",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
