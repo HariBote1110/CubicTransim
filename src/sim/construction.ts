@@ -159,7 +159,7 @@ const orIntoBaseLevel = (existing: CellData | undefined, base: number, bits: num
   if (base === 0) {
     return { ...(existing ?? { type: 'rail' }), connections: (existing?.connections ?? 0) | bits };
   }
-  const upperAtBase = existing?.uppers?.[base as 1 | 2 | 3];
+  const upperAtBase = existing?.uppers?.[base as Level];
   return {
     ...(existing ?? { type: 'rail' }),
     uppers: {
@@ -558,7 +558,7 @@ function applyGroundPathWithElevatedConnect(
       // 留める(rampは付与しない。桁+坂の二重描画を避けるため)。
       const dir = role.side === 'start' ? nextDir : prevDir;
       const existing = railMap.get(key);
-      const upperAtLevel = existing?.uppers?.[role.connectLevel as 1 | 2 | 3];
+      const upperAtLevel = existing?.uppers?.[role.connectLevel as Level];
       railMap.set(key, {
         ...(existing ?? { type: 'rail' }),
         uppers: {
@@ -819,8 +819,13 @@ export function applySignal(
 // 純粋関数に切り出してある(テスト容易性のため)。
 
 export type ElevatedLevel = 1 | 2 | 3;
+// P8a: 地下レベル(掘割ランプで地表とつながる負のレベル)。高架(ElevatedLevel)と
+// 符号対称の構造(uppers/ramp.base/pickElevatedConnection/planElevatedPathの共有ロジック)。
+export type UndergroundLevel = -1 | -2 | -3;
 // 建設レベル。0は地平(従来のapplyRailPath/applyStationと完全に同一挙動)。
-export type BuildLevel = 0 | ElevatedLevel;
+export type BuildLevel = 0 | Level;
+// uppersの全レベル(高架+地下)を走査するときに使う。
+export const ALL_LEVELS: readonly Level[] = [1, 2, 3, -1, -2, -3];
 
 /**
  * 経路の端(始点 or 終点)に既に存在する線路のレベル一覧を返す(昇順、0=地平、1〜3=uppers)。
@@ -833,7 +838,7 @@ export function resolveElevatedPathEnd(
   const existing = railMap.get(toKey(pos.x, pos.z));
   const levels: number[] = [];
   if (existing?.connections) levels.push(0);
-  for (const lvl of [1, 2, 3] as const) {
+  for (const lvl of ALL_LEVELS) {
     if (existing?.uppers?.[lvl]?.connections) levels.push(lvl);
   }
   return { levels };
@@ -860,13 +865,24 @@ export function pickElevatedConnection(
   if (info.levels.includes(level)) return { kind: 'continue' };
   if (level === 0) {
     // 地平(0)建設: 自分より高い既存レベルのうち最も近い(最小の)ものへ坂で登る。
-    const candidates = info.levels.filter(l => l > 0);
-    if (candidates.length === 0) return { kind: 'flat' };
-    return { kind: 'connect', level: Math.min(...candidates) };
+    const upCandidates = info.levels.filter(l => l > 0);
+    if (upCandidates.length > 0) return { kind: 'connect', level: Math.min(...upCandidates) };
+    // P8a: 上に無ければ、自分より低い(地下)既存レベルのうち最も近い(最大=0に近い)
+    // ものへ掘割で降りる(高架側と符号対称)。
+    const downCandidates = info.levels.filter(l => l < 0);
+    if (downCandidates.length === 0) return { kind: 'flat' };
+    return { kind: 'connect', level: Math.max(...downCandidates) };
   }
-  const candidates = info.levels.filter(l => l < level);
+  if (level > 0) {
+    const candidates = info.levels.filter(l => l < level);
+    if (candidates.length === 0) return { kind: 'flat' };
+    return { kind: 'connect', level: Math.max(...candidates) };
+  }
+  // P8a: level < 0(地下建設)。地平・高架側は0に近いほうから対称に「自分より高い
+  // (=0に近い)既存レベルのうち最も近いもの」へ坂(掘割)で繋ぐ。
+  const candidates = info.levels.filter(l => l > level);
   if (candidates.length === 0) return { kind: 'flat' };
-  return { kind: 'connect', level: Math.max(...candidates) };
+  return { kind: 'connect', level: Math.min(...candidates) };
 }
 
 export type ElevatedCellRole =
@@ -911,9 +927,17 @@ export function planElevatedPath(
 
   // アンカーが要るのはconnectLevel(M) > level のときだけ(地平などが上位の既存高架へ登る場合)。
   // M < level(高架建設が下位へ降りる、従来からの向き)はアンカー無しで従来通り。
+  // P8a: アンカーの要否は「M(接続先の既存レベル)がlevelより地表から遠いか」で決める
+  // (地表(0)からの距離で符号対称に判定する)。level>=0(高架建設)では従来通り
+  // M>levelがアンカー(地平などが上位の既存高架へ登る)。level<0(地下建設)では
+  // M<levelがアンカー(高架と符号対称: 地下建設が下位の既存地下へ潜る)。
+  // なお base の割り当て(assignRampZone内のascending)はM/levelの生の大小関係を
+  // そのまま使えば符号に関わらず正しい(そちらは変更不要)。
   const sideInfo = (end: ElevatedEndPlan): { rampCount: number; anchor: boolean } => {
     if (end.kind !== 'connect') return { rampCount: 0, anchor: false };
-    return { rampCount: 2 * Math.abs(level - end.level), anchor: end.level > level };
+    // level===0(地平)は、connectできるMが必ず0以外(=必ず地表から見て遠い)なので常にアンカー。
+    const isAnchor = level === 0 ? true : (level > 0 ? end.level > level : end.level < level);
+    return { rampCount: 2 * Math.abs(level - end.level), anchor: isAnchor };
   };
   const startInfo = sideInfo(startEnd);
   const endInfo = sideInfo(endEnd);
@@ -1085,7 +1109,7 @@ export function applyElevatedPath(
       // applyGroundPathWithElevatedConnectと同じ「既存データはORのみ」の扱いを用意しておく。
       const dir = role.side === 'start' ? nextDir : prevDir;
       const existing = railMap.get(key);
-      const upperAtLevel = existing?.uppers?.[role.connectLevel as 1 | 2 | 3];
+      const upperAtLevel = existing?.uppers?.[role.connectLevel as Level];
       railMap.set(key, {
         ...(existing ?? { type: 'rail' }),
         uppers: {
@@ -1233,7 +1257,7 @@ const removeElevatedStationCell = (
   sid: string,
   x: number,
   z: number,
-  level: ElevatedLevel
+  level: Level
 ): void => {
   const st = stations.get(sid);
   if (!st) return;
@@ -1261,7 +1285,7 @@ const RAMP_NEIGHBOUR_OFFSETS = [
  * 隣接の掃除がスキップされるため、判定は必ずこのヘルパーを通すこと。
  */
 export const hasAnyUpper = (cell: CellData | undefined): boolean =>
-  !!cell?.uppers && ([1, 2, 3] as const).some(lvl => !!cell.uppers?.[lvl]?.connections);
+  !!cell?.uppers && ALL_LEVELS.some(lvl => !!cell.uppers?.[lvl]?.connections);
 
 // uppersの各レベルからremoveBitsを外す。接続が空になったレベルはキーごと落とし、
 // 全レベルが空になったらundefinedを返す({1: undefined}のような「truthyな空」を
@@ -1272,7 +1296,7 @@ const maskUppers = (
 ): CellData['uppers'] => {
   const next: NonNullable<CellData['uppers']> = {};
   let any = false;
-  for (const lvl of [1, 2, 3] as const) {
+  for (const lvl of ALL_LEVELS) {
     const u = uppers[lvl];
     if (!u?.connections) continue;
     const remaining = u.connections & ~removeBits;
@@ -1302,8 +1326,14 @@ const revertDanglingRamps = (railMap: Map<string, CellData>, x: number, z: numbe
       const targetCell = railMap.get(targetKey);
       // ramp.level===2(上段)は登った先が橋桁(uppers[base+1])、level===1(下段)は
       // 登った先が同じ坂のlevel2セル(ramp判定のみで十分)。
+      // P8a: 地下の掘割ランプ(base=-1)ではbase+1===0(地平)になるため、その場合だけ
+      // uppers[0](存在しない)ではなくconnections(地平線路そのもの)を見る。
       const upperLevel = (nCell.ramp.base ?? 0) + 1;
-      const hasUpperTarget = nCell.ramp.level === 2 && !!targetCell?.uppers?.[upperLevel as ElevatedLevel]?.connections;
+      const hasUpperTarget = nCell.ramp.level === 2 && (
+        upperLevel === 0
+          ? !!targetCell?.connections
+          : !!targetCell?.uppers?.[upperLevel as Level]?.connections
+      );
       if (hasUpperTarget || targetCell?.ramp) continue; // 行き先はまだある
       railMap.set(nKey, { ...nCell, ramp: undefined });
       queue.push({ x: nx, z: nz }); // この坂を頼っていた1つ下の坂も確認する
@@ -1331,7 +1361,7 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
     // 別の経路)を残す。地平のconnectionsが無ければ(純粋な高架専用セルだった場合)
     // セル自体を丸ごと削除する。
     if (hasAnyUpper(cell)) {
-      for (const lvl of [1, 2, 3] as const) {
+      for (const lvl of ALL_LEVELS) {
         const u = cell.uppers?.[lvl];
         if (u?.stationId) removeElevatedStationCell(stations, u.stationId, pos.x, pos.z, lvl);
       }

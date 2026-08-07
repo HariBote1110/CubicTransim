@@ -19,6 +19,8 @@ import {
   resolveGroundRailPlanDetailed,
   type ConstructionState,
   type ElevatedEndPlan,
+  type ElevatedPathPlan,
+  type BuildLevel,
 } from './construction';
 import { fieldFromMaps } from './terrainField';
 import type { TerrainField } from './terrainField';
@@ -734,6 +736,88 @@ describe('planElevatedPath（高架線の坂/橋桁の役割割り当て・純�
     expect(planElevatedPath(3, connect(0), cont, 1)).not.toBeNull();
     expect(planElevatedPath(2, connect(0), cont, 1)).toBeNull();
     expect(planElevatedPath(1, connect(0), cont, 1)).toBeNull();
+  });
+});
+
+// P8a: pickElevatedConnection/planElevatedPathは高架(正)と地下(負)を符号対称に
+// 扱えることを要求される(progress/underground-design.md「レベル一般化」)。
+// 正レベルの入力を全部符号反転しても、返り値のlevel/baseだけ符号反転して一致するはず。
+describe('pickElevatedConnection/planElevatedPath の符号対称性(P8a: 地下レベルへの一般化)', () => {
+  it('pickElevatedConnection: 正レベルの結果を符号反転すると負レベルの結果と一致する', () => {
+    const cases: Array<{ levels: number[]; level: number }> = [
+      { levels: [0, 2], level: 2 },
+      { levels: [0, 1], level: 3 },
+      { levels: [0], level: 2 },
+      { levels: [], level: 2 },
+      { levels: [3], level: 1 },
+      { levels: [2], level: 0 },
+      { levels: [1, 3], level: 0 },
+      { levels: [], level: 0 },
+      { levels: [0], level: 0 },
+    ];
+    for (const c of cases) {
+      const positive = pickElevatedConnection({ levels: c.levels }, c.level as BuildLevel);
+      const negative = pickElevatedConnection(
+        { levels: c.levels.map(l => -l) },
+        -c.level as BuildLevel
+      );
+      if (positive.kind === 'connect') {
+        expect(negative).toEqual({ kind: 'connect', level: -positive.level });
+      } else {
+        expect(negative).toEqual(positive);
+      }
+    }
+  });
+
+  it('planElevatedPath: 正レベルの計画を符号反転しても、null/non-nullとセル数(rampCount内訳)は一致する', () => {
+    // 注意: M(接続先の既存レベル)とlevel(建設レベル)の大小関係(M<level vs M>level)は
+    // 符号反転で反転する(例: 1<2 だが -1>-2)ため、ramp内のnear/far(local level 1/2)の
+    // 割り当てやbaseの実際の値は単純な符号反転にはならない(2つ上のit「アンカー無し」/
+    // 「アンカー」で個別に正しい値を検証済み)。ここでは符号に関わらず不変であるべき
+    // 「経路が成立するか」と「各roleの種別ごとの個数」だけを対称性として検証する。
+    const cont: ElevatedEndPlan = { kind: 'continue' };
+    const flat: ElevatedEndPlan = { kind: 'flat' };
+    const negate = (e: ElevatedEndPlan): ElevatedEndPlan => (e.kind === 'connect' ? { kind: 'connect', level: -e.level } : e);
+    const cases: Array<{ length: number; start: ElevatedEndPlan; end: ElevatedEndPlan; level: number }> = [
+      { length: 6, start: flat, end: flat, level: 1 },
+      { length: 4, start: { kind: 'connect', level: 1 }, end: flat, level: 2 },
+      { length: 3, start: cont, end: cont, level: 1 },
+      { length: 10, start: { kind: 'connect', level: 1 }, end: flat, level: 3 },
+    ];
+    const counts = (roles: ElevatedPathPlan['roles']) => ({
+      ramp: roles.filter(r => r.kind === 'ramp').length,
+      anchor: roles.filter(r => r.kind === 'anchor').length,
+      span: roles.filter(r => r.kind === 'span').length,
+    });
+    for (const c of cases) {
+      const positive = planElevatedPath(c.length, c.start, c.end, c.level as BuildLevel);
+      const negative = planElevatedPath(c.length, negate(c.start), negate(c.end), -c.level as BuildLevel);
+      expect(positive === null).toBe(negative === null);
+      if (!positive || !negative) continue;
+      expect(counts(negative.roles)).toEqual(counts(positive.roles));
+    }
+  });
+
+  it('地平(0)から地下(-1)へ潜る掘割は、地平(0)から高架(1)へ登る坂と対称に「アンカー無し」になる(地平タイル自身が坂の一部を兼ねる)', () => {
+    // 地平タイルが「登る先の既存構造」になるのは level===0 かつ M!==0 のときだけ
+    // (M自身が高架/地下いずれの向きでも常にアンカー)。地平(0)からM(既存)へ向かって
+    // 新規に潜る/登るこの向きは逆(0は「新規に建設する側」)なので、正負どちらも
+    // アンカー無しで対称になる。
+    const planUp = planElevatedPath(4, { kind: 'connect', level: 0 }, { kind: 'flat' }, 1);
+    const planDown = planElevatedPath(4, { kind: 'connect', level: 0 }, { kind: 'flat' }, -1);
+    expect(planUp!.roles.map(r => r.kind)).toEqual(['ramp', 'ramp', 'span', 'span']);
+    expect(planDown!.roles.map(r => r.kind)).toEqual(['ramp', 'ramp', 'span', 'span']);
+    expect(planUp!.roles[0]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 1 });
+    expect(planUp!.roles[1]).toEqual({ kind: 'ramp', side: 'start', base: 0, level: 2 });
+    expect(planDown!.roles[0]).toEqual({ kind: 'ramp', side: 'start', base: -1, level: 2 });
+    expect(planDown!.roles[1]).toEqual({ kind: 'ramp', side: 'start', base: -1, level: 1 });
+  });
+
+  it('既存の高架(M=2)へ地平(level=0)から登る場合はアンカー(従来通り)、既存の地下(M=-2)へ地平から潜る場合もアンカー(対称)', () => {
+    const planUp = planElevatedPath(6, { kind: 'connect', level: 2 }, { kind: 'flat' }, 0);
+    const planDown = planElevatedPath(6, { kind: 'connect', level: -2 }, { kind: 'flat' }, 0);
+    expect(planUp!.roles[0]).toEqual({ kind: 'anchor', side: 'start', connectLevel: 2 });
+    expect(planDown!.roles[0]).toEqual({ kind: 'anchor', side: 'start', connectLevel: -2 });
   });
 });
 
