@@ -53,3 +53,18 @@ OpenTTD の傾斜モデル(progress/openttd-slope-notes.md)を簡約して導入
   従来どおり blockers で禁止のまま(これを緩めると走行時検証が必要になる)
 - trackPath の y 補間は「セル中心線に沿った断面標高」であり、コーナー標高の双線形と
   厳密には一致させること(レールと列車のずれ防止。CLAUDE.md の trackPath 原則)
+
+## P7a実装メモ
+
+- `src/sim/slopes.ts` を新設(construction.ts/描画には未配線、additive)。
+  `slopeOf`/`allowedRailConnections`/`edgeHeights`/`railEdgeContinuous`/
+  `canPlaceFlatStructure`/`pathSlopeViolations`/`SLOPE_RAIL_COST_MULTIPLIER`(=2)を実装。
+- `edgeHeights` はコーナー順を `N:[nw,ne] S:[sw,se] E:[ne,se] W:[nw,sw]`、対角は共有1頂点を
+  2要素とも同値で返す規約にした。実物の `TerrainField`(コーナーが隣接セル間で物理共有される)
+  なら、隣接セルの `edgeHeights` は常に要素ごと一致する(=`edge-discontinuous` は構造的に
+  発生しない)。このケースをテストするにはコーナー共有を無視する field ダブルが必要だった
+  (`slopes.test.ts` 参照)。実運用では `pathSlopeViolations` の他チェック
+  (`other-slope`/`direction-blocked`)の方が主戦場になる見込み。
+- `pathSlopeViolations` は construction.ts の `mountainCellCandidateDirs` と同型の
+  「path[i]がprev/nextへ向かう方向」導出を流用しつつ、行き止まりの反対側候補は追加しない
+  (山岳坑口ルールと違い、勾配可否判定には実際に必要な接続方向だけを見れば足りるため)。
