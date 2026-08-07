@@ -261,3 +261,71 @@
   「コーナー由来の値」と「セル固有の生の値」という2つの独立したデータ源に依存する
   旧ロジックは、そのままでは移植できず簡略化(または削除)が必要になる、という
   一般的な教訓が得られた。
+
+## P5実装メモ(町の16K対応・マップサイズ選択)
+
+- **領域ベースの決定的町配置(`sim/towns.ts`)**: `TOWN_REGION_SIZE=128`のセル領域
+  ごとに、(worldSeed, rx, rz)だけから町候補を最大1つ導出する`generateRegionTowns`
+  を追加した。旧`generateTowns`(count個ループのグローバルrejection sampling)は
+  テスト互換のため残したが、実プレイでの初期化(useGameLogicのtowns初期状態・
+  newGame)は全て新しい方に切り替えた。
+  - 存在ゲート`TOWN_REGION_DENSITY`(最終値0.4)→領域内ジッター位置→halfExtent範囲
+    チェック→`isNearTerrain`(水域・山岳回避)の順に評価し、どれか1つでも落ちれば
+    その領域に町は無い。
+  - **密度の妥協**: 「91²マップに8個」と同じセルあたり密度には、領域サイズ128が
+    91²マップ全体(halfExtent=45)より大きいため原理的に一致させられない(1領域=町0
+    か1個)。既定マップ(小91×91)は町が2〜3個以下になることがある一方、16Kマップは
+    実測4576町(狙い通り「a few thousand」のオーダー)になった。密度ゲートは
+    ブラウザ確認で「中(257)マップが町0個で始まる」を見て0.3→0.4に調整した。
+    小さいマップでの体感の薄さは`resolveTownSpawnTick`(輸送力に応じた町の湧き)が
+    実プレイで補う設計とし、ここでは深追いしていない。
+  - id体系は`town-r{rx},{rz}`。ランタイム湧き(`town-spawn-...`)と衝突しない
+    (towns.test.tsで確認)。名前の一意性(`usedNames`)は領域間で共有しない設計に
+    した(領域は他領域を参照できない=独立性の前提と両立しないため)。巨大マップでの
+    同名重複は許容する。
+  - 性能: `towns.test.ts`に16Kマップ相当(halfExtent=8192)で200ms未満のテストガード
+    を追加。実測は数十ms程度。
+- **町タイル索引の遅延キャッシュ(`sim/townTiles.ts`)**: `TownTileIndex`をMap具象型
+  から`{has(key), get(key)}`のみのインターフェースへ緩めた。既存消費側
+  (construction.ts/buildPreview.ts/GameUI.tsx/Scenery.tsx)はhas/getしか使わない
+  ため無変更で動く。旧`buildTownIndexes`/`buildTownTileIndex`(全町eager生成、
+  戻り値は具象`Map`=`EagerTownTileIndex`)は小規模な町集合向けに残しつつ、
+  新設の`TownTileCache`クラスが町ごとの遅延生成・キャッシュを担う。
+  - 空間索引: 町の中心を64セル四方のバケットへ割り当て、クエリセルの3×3バケット
+    (町タイル半径の最大値16 < バケット半分32なので十分)だけを候補として舐める。
+  - キャッシュキー: 町ごとに「最後に使ったrailMap参照」を覚え、参照が変わっていたら
+    その町だけ再生成する。**簡略化した点**: 本来は「その町のbboxに触れる編集だけ」
+    に絞り込むのが理想だが、railMapの差分セル一覧を呼び出し側が持っていないため、
+    「参照が変わっていれば再生成」にした。ただし再生成は実際にクエリされた町だけに
+    起きる(遠くの町は何度railMapが変わってもクエリされない限り再計算されない)ため、
+    「railMap更新のたびに全町を舐める」という当初の問題は解消されている。
+  - `get`/`has`はセルキー1つからtowns配列を舐めず、常に3×3バケットの候補だけを
+    見るため、マップ全域のどのセルに対しても呼べる(カメラ位置に依存しない)。
+- **TownBlocksのチャンク化(`components/GameScene.tsx`)**: `townSubTileIndex`という
+  全町eagerなpropは廃止し、GameScene内で「可視チャンク範囲(chunkView)+1チャンク
+  (32セル)先読み」に交差する町だけを`townIntersectsCellRange`で絞り込み、
+  `TownTileCache.subTilesForTowns(visibleTownIds)`で可視町だけのサブタイルを
+  都度合成してTownBlocksへ渡す。町の名前ラベル(Html)も同じ可視町リストだけを
+  描画するため、遠方の町のHtmlオーバーレイが大量に積み上がることもない。
+  TerrainBlocks/Sceneryが使っているP4のchunkView(CameraChunkTracker)をそのまま
+  再利用しており、新しいカメラ追跡の仕組みは増やしていない。
+- **マップサイズ選択UI(`App.tsx`)**: 起動ダイアログを「開始方法」から「マップサイズ
+  選択(小91/中257/大1025/特大4097/極大16385)」に変更した。選択すると
+  `useGameLogic.newGame(halfExtent)`を呼び、新しいworldSeed・指定halfExtentで
+  地形・町・所持金など全状態を初期化する。`halfExtent`はuseGameLogicで
+  `useState`(setter付き)にし、v15セーブに既にあった`halfExtent`フィールドへ
+  そのまま乗せた(セーブ形式自体の変更は無い)。
+- **カメラのパン範囲**: `OrbitControls`にtarget/distanceの制限を掛けていなかった
+  ため(既存のminZoom/maxZoomはズームのみを制限)、そのままで16Kマップ全域へパン
+  できる。追加の変更は不要だった。
+- **ブラウザ確認**: 中(257)マップで起動→町が点在(1〜数個)することを確認。
+  極大(16385)マップで起動→即座に描画(体感1秒未満、`__terrainChunkStats`は
+  `{visible:16, cached:16}`のままでマップサイズに非依存)、`__debugWorld.towns.length`
+  が4576であることを確認。保存→リロード→読込で、halfExtent(8192)・町4576件が
+  そのまま復元されることを確認した。カメラを実際に大きくパンして遠方の町の
+  タイル上に線路を敷いて踏切になることの目視確認は、座標系の都合(パン操作で
+  数千セル移動するのは現実的なドラッグ量ではない)で本セッションでは行わず、
+  代わりに`__debugWorld`から遠方町(x=-8123,z=-7963)の地形が`grass`であることの
+  直接クエリと、`townTiles.test.ts`のTownTileCache単体テスト(railMap変化での
+  再生成・マップ全域のどのセルでも呼べること)で代替検証した。今後の課題として
+  残る。
