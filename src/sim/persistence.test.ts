@@ -168,4 +168,28 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(cell.ramp).toEqual({ dir: 1, level: 2, base: -1 });
     expect(restored!.stations.get('stU')!.cells).toEqual([{ x: 0, z: 0, layer: -1 }]);
   });
+
+  it('townDensityがJSON経由で往復する', () => {
+    const saveData = serialiseWorld(
+      new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map(), 'dense'
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.townDensity).toBe('dense');
+  });
+
+  it('townDensityを省略したセーブ(このセッション内のv15旧データ)を読み込むとnormalが既定になる', () => {
+    const saveData = serialiseWorld(
+      new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const raw = JSON.parse(JSON.stringify(saveData));
+    delete raw.townDensity;
+    const restored = deserialiseWorld(raw);
+    expect(restored).not.toBeNull();
+    expect(restored!.townDensity).toBe('normal');
+  });
 });
