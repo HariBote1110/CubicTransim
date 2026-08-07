@@ -16,8 +16,8 @@ import {
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT } from '../sim/terrainField';
-import type { CornerDiffs, EditBlockers, TerrainEditMode } from '../sim/terrainOverlay';
-import { createEditedTerrainField, applyCornerEdit } from '../sim/terrainOverlay';
+import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
+import { createEditedTerrainField, applyCornerEdit, buildEditBlockers } from '../sim/terrainOverlay';
 
 // 編成の最小・最大両数
 const MIN_CARS = 1;
@@ -197,13 +197,7 @@ export const useGameLogic = () => {
     // 無いため何もしない(デバッグ専用の割り切り)。
     if (buildMode === 'raise' || buildMode === 'lower') {
       if (debugFieldOverride) return;
-      const blockers: EditBlockers = {
-        isCellBlocked: (x, z) =>
-          x < -halfExtent || x > halfExtent || z < -halfExtent || z > halfExtent ||
-          railMap.has(toKey(x, z)) ||
-          townTileIndex.has(toKey(x, z)) ||
-          baseField.terrainTypeAt(x, z) === 'water',
-      };
+      const blockers = buildEditBlockers({ halfExtent, railMap, townTileIndex, baseField });
       const a = path[0];
       const b = path[path.length - 1];
       const result = applyCornerEdit(baseField, editedField, { a, b }, buildMode, blockers);

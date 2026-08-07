@@ -82,7 +82,7 @@ export function isInTunnelInterior(railMap: Map<string, CellData>, x: number, z:
  * 高架レール(cell.uppers[level])のセルが山岳の内部に完全に埋もれているかどうか。
  * 地平のtunnel(construction.tsのterrainFlagsが敷設時に付与する保存済みフラグ)とは
  * 異なり、高架の橋桁(applyElevatedPathのspanセル)にはトンネル相当のフラグが
- * 保存されない。そのため、そのセルの4隅のコーナー標高(buildCornerElevationMap)が
+ * 保存されない。そのため、そのセルの4隅のコーナー標高(TerrainField.cellCornerHeights)が
  * すべてそのレベルの高さぶん(=level)以上あるかどうかで動的に判定する。
  *
  * 4隅すべて(1隅だけの標高ではなく)を要求するのは、コーナー標高は隣接セルの

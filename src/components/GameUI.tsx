@@ -22,8 +22,8 @@ import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
 import type { BuildLevel } from '../sim/construction';
 import type { TerrainField } from '../sim/terrainField';
-import type { EditedTerrainField, EditBlockers } from '../sim/terrainOverlay';
-import { toKey } from '../utils';
+import type { EditedTerrainField } from '../sim/terrainOverlay';
+import { buildEditBlockers } from '../sim/terrainOverlay';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -228,13 +228,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
   const preview = useMemo(() => {
     if (buildMode === 'none' || previewPath.length === 0) return null;
-    const blockers: EditBlockers = {
-      isCellBlocked: (x, z) =>
-        x < -halfExtent || x > halfExtent || z < -halfExtent || z > halfExtent ||
-        railMap.has(toKey(x, z)) ||
-        townTiles.has(toKey(x, z)) ||
-        baseField.terrainTypeAt(x, z) === 'water',
-    };
+    const blockers = buildEditBlockers({ halfExtent, railMap, townTileIndex: townTiles, baseField });
     return evaluateBuild(buildMode, previewPath, railMap, stations, field, money, buildLevel, townTiles, {
       base: baseField, editedField, blockers,
     });

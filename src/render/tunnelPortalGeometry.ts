@@ -1,10 +1,10 @@
 // トンネル坑口(OpenTTD風の垂直ヘッドウォール+アーチ開口)を描くための純粋な幾何計算。
-// GameScene(描画専任)から呼ばれる。sim層(terrain.ts)のコーナー標高そのものは
-// 変更せず、ここでは「坑口セルの4隅コーナー標高(cellCornersFromMap互換の順序)+
+// GameScene(描画専任)から呼ばれる。sim層(terrainField.ts)のコーナー標高そのものは
+// 変更せず、ここでは「坑口セルの4隅コーナー標高(cellCornerHeights互換の順序)+
 // 坑口が向く方向(dx,dz)」から、ヘッドウォールに必要な高さと埋め込み奥行きだけを導く。
 
-// セル(x,z)の4隅の平面オフセット。sim/terrain.ts の CORNER_COORD_DELTAS /
-// render/TerrainBlocks.tsx の CORNER_OFFSETS と同じ並び[左上,右上,右下,左下]。
+// セル(x,z)の4隅の平面オフセット。render/TerrainBlocks.tsx の CORNER_OFFSETS と
+// 同じ並び[左上,右上,右下,左下]。
 const CORNER_OFFSETS: ReadonlyArray<[number, number]> = [
   [-0.5, -0.5],
   [0.5, -0.5],

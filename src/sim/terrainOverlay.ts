@@ -2,11 +2,14 @@
 // OpenTTD風のコーナー地形編集(盛土/切土)。React/THREE には依存しない。
 // 詳細な設計判断は progress/16k-map-architecture.md の「P2実装メモ」参照。
 //
-// terrainEdit.ts(セル単位の±1・全域Mapクローン)を置き換える新経路。P3で消費側を
-// 載せ替えるまでは additive(既存経路には未配線)。
+// 旧terrainEdit.ts(セル単位の±1・全域Mapクローン、P6で削除)を置き換えた経路。
+// P3でuseGameLogic.ts/GameUI.tsxの建設・地形編集経路をこちらへ載せ替え済み。
 
 import type { CellCorners, TerrainField, TerrainKind } from './terrainField';
 import { MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_HEIGHT_MAX } from './terrainField';
+import { toKey } from '../utils';
+import type { CellData } from '../types';
+import type { TownTileIndex } from './townTiles';
 
 export type TerrainEditMode = 'raise' | 'lower';
 
@@ -107,6 +110,29 @@ export const TERRAIN_EDIT_COST_PER_CORNER = 1;
  */
 export interface EditBlockers {
   isCellBlocked(x: number, z: number): boolean;
+}
+
+/**
+ * ゲーム状態(railMap・町タイル索引・halfExtent・基底field)から{@link EditBlockers}を
+ * 組み立てる共有ヘルパー。P3時点ではuseGameLogic.tsとGameUI.tsx/buildPreviewの両方に
+ * 同じ4条件(範囲外/rail・station・depot・signal/町タイル/水域)の組み立てコードが
+ * 重複していた(progress/16k-map-architecture.md「P3実装メモ」参照)。以後はこの関数を
+ * 両方から呼ぶ。
+ */
+export function buildEditBlockers(params: {
+  halfExtent: number;
+  railMap: Map<string, CellData>;
+  townTileIndex: TownTileIndex;
+  baseField: TerrainField;
+}): EditBlockers {
+  const { halfExtent, railMap, townTileIndex, baseField } = params;
+  return {
+    isCellBlocked: (x, z) =>
+      x < -halfExtent || x > halfExtent || z < -halfExtent || z > halfExtent ||
+      railMap.has(toKey(x, z)) ||
+      townTileIndex.has(toKey(x, z)) ||
+      baseField.terrainTypeAt(x, z) === 'water',
+  };
 }
 
 export interface CornerEditResult {

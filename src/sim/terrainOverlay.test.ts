@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createTerrainField, MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_HEIGHT_MAX } from './terrainField';
+import { createTerrainField, fieldFromMaps, MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_HEIGHT_MAX } from './terrainField';
 import type { TerrainField } from './terrainField';
 import {
   applyCornerEdit,
+  buildEditBlockers,
   createEditedTerrainField,
   deserialiseCornerDiffs,
   overlayChunkRefs,
@@ -12,6 +13,8 @@ import {
   type CornerDiffs,
   type EditBlockers,
 } from './terrainOverlay';
+import { toKey } from '../utils';
+import type { CellData } from '../types';
 
 // mulberry32風の疑似乱数(プロパティテストのランダム選択専用)。
 const mulberry32 = (seed: number) => {
@@ -321,5 +324,48 @@ describe('overlayChunkRefs', () => {
     const refsAfterSecond = overlayChunkRefs(second.field.diffs, { x0: 0, x1: 31, z0: 0, z1: 31 });
 
     expect(refsAfterSecond[0]).not.toBe(refsAfterFirst[0]);
+  });
+});
+
+describe('buildEditBlockers', () => {
+  const baseField = createTerrainField(1, 45);
+  // TownTileIndexはhas/getの2メソッドのみを要求する。テストではhasだけを実データにし、
+  // getはこのヘルパーで満たす(buildEditBlockersはhasしか呼ばない)。
+  const townTileIndex = (has: (key: string) => boolean) => ({ has, get: () => undefined });
+
+  it('halfExtentの範囲外はブロックされる', () => {
+    const blockers = buildEditBlockers({
+      halfExtent: 45, railMap: new Map(), townTileIndex: townTileIndex(() => false), baseField,
+    });
+    expect(blockers.isCellBlocked(46, 0)).toBe(true);
+    expect(blockers.isCellBlocked(0, -46)).toBe(true);
+    expect(blockers.isCellBlocked(45, 45)).toBe(false);
+  });
+
+  it('railMapに登録済みのセルはブロックされる', () => {
+    const railMap = new Map<string, CellData>([[toKey(2, 2), { type: 'rail', connections: 1 }]]);
+    const blockers = buildEditBlockers({
+      halfExtent: 45, railMap, townTileIndex: townTileIndex(() => false), baseField,
+    });
+    expect(blockers.isCellBlocked(2, 2)).toBe(true);
+    expect(blockers.isCellBlocked(3, 3)).toBe(false);
+  });
+
+  it('町タイル索引がhasを返すセルはブロックされる', () => {
+    const blockers = buildEditBlockers({
+      halfExtent: 45, railMap: new Map(), townTileIndex: townTileIndex(key => key === toKey(5, 5)), baseField,
+    });
+    expect(blockers.isCellBlocked(5, 5)).toBe(true);
+    expect(blockers.isCellBlocked(6, 6)).toBe(false);
+  });
+
+  it('水域セルはブロックされる', () => {
+    const terrain = new Map([[toKey(7, 7), 'water' as const]]);
+    const waterField = fieldFromMaps(new Map(), terrain, 45);
+    const blockers = buildEditBlockers({
+      halfExtent: 45, railMap: new Map(), townTileIndex: townTileIndex(() => false), baseField: waterField,
+    });
+    expect(blockers.isCellBlocked(7, 7)).toBe(true);
+    expect(blockers.isCellBlocked(8, 8)).toBe(false);
   });
 });

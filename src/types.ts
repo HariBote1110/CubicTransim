@@ -2,7 +2,7 @@ import type { LineMode } from './sim/groups';
 export type TrainType = 'commuter' | 'express';
 export type CellType = 'rail' | 'station' | 'depot';
 
-// 地形。平地は既定値のため Map には載せず、terrainAt() が 'grass' を返す。
+// 地形。平地は既定値のため Map には載せず、terrainField.tsのterrainTypeAt()が'grass'を返す。
 export type TerrainType = 'water' | 'mountain';
 
 export interface CellData {
