@@ -1,10 +1,12 @@
 import type { TrainRuntime } from './simulation';
 import type { CellData } from '../types';
+import type { TerrainField } from './terrainField';
 import { toKey } from '../utils';
 import {
   curvedTrainPolyline, OVERPASS_HEIGHT, rampHeightAtPos,
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
 } from './trackPath';
+import { groundRailCentreHeight } from './slopes';
 
 export interface CarPosition {
   x: number;
@@ -22,12 +24,19 @@ const normalize3d = (x: number, y: number, z: number) => {
   return { x: x / len, y: y / len, z: z / len };
 };
 
-const trackCentreHeight = (railMap: Map<string, CellData>, point: { x: number; z: number; layer?: 0 | 1 | 2 | 3 }): number => {
+const trackCentreHeight = (
+  railMap: Map<string, CellData>,
+  point: { x: number; z: number; layer?: 0 | 1 | 2 | 3 },
+  terrainField?: TerrainField
+): number => {
   if (point.layer && point.layer > 0) return 0.5 + point.layer * OVERPASS_HEIGHT;
-  const ramp = railMap.get(toKey(point.x, point.z))?.ramp;
-  if (!ramp) return 0.5;
-  const pos = (ramp.level ?? 2) === 1 ? RAMP_POS_LEVEL1 : RAMP_POS_LEVEL2;
-  return 0.5 + rampHeightAtPos(pos, ramp.base ?? 0);
+  const cell = railMap.get(toKey(point.x, point.z));
+  if (cell?.ramp) {
+    const pos = (cell.ramp.level ?? 2) === 1 ? RAMP_POS_LEVEL1 : RAMP_POS_LEVEL2;
+    return 0.5 + rampHeightAtPos(pos, cell.ramp.base ?? 0);
+  }
+  if (!terrainField) return 0.5;
+  return 0.5 + groundRailCentreHeight(terrainField, cell, point.x, point.z);
 };
 
 /**
@@ -49,7 +58,8 @@ export function carPositions(
   rt: TrainRuntime,
   cars: number,
   spacing = 1.0,
-  railMap?: Map<string, CellData>
+  railMap?: Map<string, CellData>,
+  terrainField?: TerrainField
 ): CarPosition[] {
   // 通過済みセルを結ぶ折れ線ではなく、実際に線路が敷かれている中心線(セル曲線)を辿る。
   // 折れ線のままだとカーブで後続車がレールの外側へ膨らんで見える。
@@ -60,7 +70,7 @@ export function carPositions(
     progress: rt.progress,
     route: rt.route,
     history: rt.pathHistory,
-    heightAt: railMap ? point => trackCentreHeight(railMap, point) : undefined,
+    heightAt: railMap ? point => trackCentreHeight(railMap, point, terrainField) : undefined,
   });
 
   // 端数停車(セル中心の手前で停止)では rt.grid = 到達セル、renderPos = その手前、

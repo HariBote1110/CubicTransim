@@ -19,6 +19,7 @@ import {
   pathPointAt, pathHeightAt, rampHeightAtPos, OVERPASS_HEIGHT,
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
 } from './trackPath';
+import { groundRailCentreHeight } from './slopes';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
 import type { IntervalSamples } from './groups';
 import { tryReserve, releaseCell, findSafeSegmentEnd, findDepartureSegmentEnd, reservationKey } from './reservation';
@@ -75,21 +76,36 @@ const rampPos = (level: 1 | 2 | undefined): number =>
 // セルの正規化ramp高さ(地平からの上乗せ分、rampHeightAtPos基準)を求める。
 //   - 高架(layer>0): そのレベルの桁として layer*OVERPASS_HEIGHT
 //   - 坂(railMap上のセルにrampが付いている): base + levelに応じた正規化位置
-//   - それ以外の地平: 0
+//   - それ以外の地平: 地形の標高ぶん(P7c、groundRailCentreHeight。terrainField省略時は
+//     従来通り0=旧セーブ・テスト用フィクスチャとの後方互換)
 // railMapを見るのは、坂かどうかがGrid(x,z,layer)だけでは分からず、セルデータ
 // (CellData.ramp)に依存するため。
-const cellRampHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1 | 2 | 3): number => {
+const cellRampHeight = (
+  railMap: Map<string, CellData>,
+  x: number,
+  z: number,
+  layer?: 0 | 1 | 2 | 3,
+  terrainField?: TerrainField
+): number => {
   if (layer && layer > 0) return layer * OVERPASS_HEIGHT;
   const cell = railMap.get(toKey(x, z));
   if (cell?.ramp) return rampHeightAtPos(rampPos(cell.ramp.level), cell.ramp.base ?? 0);
-  return 0;
+  if (!terrainField) return 0;
+  return groundRailCentreHeight(terrainField, cell, x, z);
 };
 
 // セル中心の描画高さ(renderPos.y)を求める。地平の基準高さ0.5は既存の車両モデルの
 // 原点合わせ。坂の上乗せぶんはrampHeightAtPos(=1本のsmoothstep曲線)で求めるので、
-// base→level1→level2→base+1のどの境界でも折れ角が生じない。
-const cellCentreHeight = (railMap: Map<string, CellData>, x: number, z: number, layer?: 0 | 1 | 2 | 3): number =>
-  0.5 + cellRampHeight(railMap, x, z, layer);
+// base→level1→level2→base+1のどの境界でも折れ角が生じない。地形標高(P7c)は
+// groundRailCentreHeightから上乗せする。
+const cellCentreHeight = (
+  railMap: Map<string, CellData>,
+  x: number,
+  z: number,
+  layer?: 0 | 1 | 2 | 3,
+  terrainField?: TerrainField
+): number =>
+  0.5 + cellRampHeight(railMap, x, z, layer, terrainField);
 
 export interface TrainRuntime {
   id: string;
@@ -547,7 +563,7 @@ const stopAtStation = (
   // 列車が地平の高さへ沈んで見える不具合になる。
   rt.renderPos = {
     x: headPos.x,
-    y: cellCentreHeight(world.railMap, arrivedGrid.x, arrivedGrid.z, arrivedGrid.layer),
+    y: cellCentreHeight(world.railMap, arrivedGrid.x, arrivedGrid.z, arrivedGrid.layer, world.terrainField),
     z: headPos.z,
   };
   // renderTargetをリセットせず、進入方向の延長線上の点に維持する。
@@ -934,7 +950,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       // 描画位置は線路の中心線(セル曲線)上に置く。カーブではセル中心を直線で
       // 結んだ位置とレールの実形状が最大0.125セル(≒3.7m)ずれるため。
       const head = pathPointAt(oldCurrent, arrivedGrid, rt.route[0] ?? null, rt.route[1] ?? null, 0);
-      rt.renderPos = { x: head.x, y: cellCentreHeight(world.railMap, arrivedGrid.x, arrivedGrid.z, arrivedGrid.layer), z: head.z };
+      rt.renderPos = { x: head.x, y: cellCentreHeight(world.railMap, arrivedGrid.x, arrivedGrid.z, arrivedGrid.layer, world.terrainField), z: head.z };
       // renderTargetを更新せずに放置すると、この1tickだけ renderPos と renderTarget が
       // 同じ点になり、描画側の lookAt が縮退して向きが飛ぶ。次のセルがあればそこを、
       // 無ければ進入方向の延長線上を向かせる。
@@ -956,7 +972,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     // 折れて見えていた(レール描画・後続車と定義を合わせる)。
     const headY = pathHeightAt(
       rt.prevGrid, rt.grid, nextTile, rt.route[1] ?? null, newProgress,
-      (p: Grid) => cellCentreHeight(world.railMap, p.x, p.z, p.layer)
+      (p: Grid) => cellCentreHeight(world.railMap, p.x, p.z, p.layer, world.terrainField)
     );
     rt.renderPos = { x: head.x, y: headY, z: head.z };
     rt.renderTarget = { x: nextTile.x, y: 0.5, z: nextTile.z };

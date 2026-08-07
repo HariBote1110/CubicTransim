@@ -836,7 +836,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       {trains.map(train => (
         <DynamicTrain
-          key={train.id} data={train} railMap={railMap} elevatedTunnelIndex={elevatedTunnelIndex}
+          key={train.id} data={train} railMap={railMap} terrainField={field} elevatedTunnelIndex={elevatedTunnelIndex}
           runtimes={world.current.runtimes} type="commuter"
           isSelected={train.id === selectedTrainId}
           lineColour={findGroup(groups, train.groupId)?.colour}

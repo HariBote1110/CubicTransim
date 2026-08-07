@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CellData, TrainType, TrainData } from '../types';
+import type { TerrainField } from '../sim/terrainField';
 import type { TrainRuntime } from '../sim/simulation';
 import { carPositions } from '../sim/consist';
 import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
@@ -12,6 +13,8 @@ import { PALETTE } from '../render/palette';
 interface DynamicTrainProps {
   data: TrainData;
   railMap: Map<string, CellData>;
+  /** 地形field(P7c)。地上区間の勾配追従(renderPos/carPositionsの高さ)に使う。 */
+  terrainField?: TerrainField;
   /** 高架トンネル(山岳内部を通る高架レール)の内部・坑口判定の事前計算結果
    *  (sim/tunnel.tsのbuildElevatedTunnelIndex)。railMap/地形が変わったときだけ
    *  GameScene側でuseMemo再計算し、ここでは毎フレームSet参照するだけで済ませる。 */
@@ -51,7 +54,7 @@ const carGroupPosition = (pos: { x: number; y: number; z: number }, heading: { x
 };
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
-  data, railMap, elevatedTunnelIndex, runtimes, type, isSelected, lineColour: groupColour, onClick,
+  data, railMap, terrainField, elevatedTunnelIndex, runtimes, type, isSelected, lineColour: groupColour, onClick,
   isDragging, dragCell,
 }) => {
   const groupRef = useRef<THREE.Group>(null);
@@ -83,7 +86,7 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
     //   - 到着tickでは renderPos と renderTarget が同じセル中心になり、lookAt が縮退して
     //     1フレームだけワールド+Z方向を向いてしまう(向きがガクッと飛ぶ原因)
     //   - セグメントの向きをそのまま使うとセル境界で階段状に飛ぶ
-    const positions = carPositions(runtime, data.cars, 1.0, railMap);
+    const positions = carPositions(runtime, data.cars, 1.0, railMap, terrainField);
 
     const head = positions[0];
     if (head) {
