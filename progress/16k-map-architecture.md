@@ -433,3 +433,35 @@
   フレーム時間(rAF/longtask)は、本セッションのBrowserペインが非表示タブ制約で
   rAFを止めるため未計測(今後の宿題)。
 - テストは`npm run test`(762件)・`npm run build`とも green。
+
+## P5追記: 町密度オプションと大都市
+
+huge/極大マップで町が少なすぎるというユーザーフィードバックを受け、新規ゲーム開始時に
+町密度を選べるようにし、あわせて決定的な大都市(メトロポリス)を導入した
+(`sim/towns.ts`)。
+
+- **TownDensity**: `'sparse' | 'normal' | 'dense' | 'packed'`。`townDensityParams`が
+  `{regionSize, gate}`を返す。sparse/normal/denseはTOWN_REGION_SIZE(128)のまま
+  存在ゲート確率だけを0.2/0.4(従来既定)/0.8に変え、packedはregionSizeを64へ
+  細分することで地形棄却後もnormalの2倍超の密度になる(regionsInRange・
+  regionTownCandidateの両方にregionSize/gateを引数追加。省略時は従来値のため
+  既存呼び出しは無変更で動く)。`generateRegionTowns`の第4引数として渡す
+  (省略時'normal'=旧挙動と完全一致)。
+- **大都市**: 領域ごとに名前・人口のrngとは独立したハッシュソルト(4)で
+  `METROPOLIS_FRACTION`(4%)のゲートを引き、通過した町は初期人口を
+  `METROPOLIS_POPULATION_MIN..MAX`(8000〜25000)にする(通常はTOWN_POPULATION_MIN..MAX
+  =500〜5000のまま)。TownBlocks.tsの`CITY_CORE_POPULATION`(10000)判定にそのまま
+  乗るため、追加の描画実装なしで高層コアが自動的に現れる。rngの逐次消費列とは別立てに
+  したのは、将来rng()の呼び出し回数が変わっても大都市判定がズレないようにするため。
+- **UI**: App.tsxの起動ダイアログにマップサイズ選択の下へ「町の密度」4択(まばら/標準/
+  多い/過密)を追加。選択値は`newGame(halfExtent, density)`でuseGameLogicへ渡る。
+- **永続化**: `SaveDataV15.townDensity`をadditive optionalで追加(省略時'normal')。
+  towns自体は既にセーブに実体を持つため、ロード時にtownDensityから町を再生成することは
+  しない(UI表示・将来拡張のための参考情報)。
+- **性能**: 16K・packedのgenerateRegionTownsが1.5秒未満で終わることをvitestのガードで
+  担保(towns.test.ts)。ブラウザ実測(極大16385×多い=dense)でも10,887件の町(うち
+  複数が人口2万台の大都市)を生成した状態で操作可能なことを確認した。
+- ブラウザ検証: 中(257)×過密で11町、極大(16385)×多いで10,887町(上位は人口約2.5万の
+  大都市)を確認。大都市の1つ(小沢市、25.0k)にカメラを飛ばし、高層コアが密集した
+  同心円市街地として描画されることをスクリーンショットで確認した。保存→ロードで
+  townDensity='dense'と町10,887件が往復することも確認した。
