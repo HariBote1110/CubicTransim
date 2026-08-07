@@ -60,14 +60,19 @@ export function rampHeightAtPos(pos: number, base: number = 0): number {
   return (base + smoothstep01(pos)) * OVERPASS_HEIGHT;
 }
 
+/** ±MAX_ELEVATED_LEVEL段の建設レベル(0=地平、正=高架、負=地下)。 */
+export type Level3 = -3 | -2 | -1 | 0 | 1 | 2 | 3;
+
 /**
- * UIの建設レベル選択(ArrowUp/ArrowDown)の状態遷移。0(地平)〜MAX_ELEVATED_LEVELへ
- * クランプする純関数(UI側はキー入力の解釈だけを持ち、範囲の判定はここに一本化する)。
+ * UIの建設レベル選択(ArrowUp/ArrowDown)の状態遷移。-MAX_ELEVATED_LEVEL(地下)〜
+ * +MAX_ELEVATED_LEVEL(高架)へクランプする純関数(0=地平も含めて0をまたいで単純に
+ * 加算するだけでよい。UI側はキー入力の解釈だけを持ち、範囲の判定はここに一本化する)。
  * 線路(2)・駅(3)ツール選択中に常に有効(高架専用ツールは廃止済み)。
+ * P8c: 地下(負のレベル)も同じ範囲・同じ1段ずつのステップで対称に扱う。
  */
-export function stepElevatedLevel(current: 0 | 1 | 2 | 3, delta: number): 0 | 1 | 2 | 3 {
+export function stepElevatedLevel(current: Level3, delta: number): Level3 {
   const next = current + delta;
-  return Math.max(0, Math.min(MAX_ELEVATED_LEVEL, next)) as 0 | 1 | 2 | 3;
+  return Math.max(-MAX_ELEVATED_LEVEL, Math.min(MAX_ELEVATED_LEVEL, next)) as Level3;
 }
 
 const midpoint = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 });
