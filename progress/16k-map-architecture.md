@@ -23,6 +23,17 @@
 6. **町は領域ベースの決定的配置**: グローバルな「8個ループ」をやめ、128×128領域ごとに
    seed から候補1点を導出しノイズでゲート。可視領域・近傍領域だけ実体化する
 
+## 追記: コーナー格子を一次データにする(勾配レール対応の前提)
+
+ユーザー要望により OpenTTD 流の「任意標高への建設(勾配レール・段丘上の駅)」を正式スコープに
+追加。これに備え、terrainField の一次データを**セルのスカラー標高ではなくコーナー格子
+(頂点標高)**にする。OpenTTD と同じく、タイルの形状は4隅のコーナー標高から導出し、
+隣接コーナーの段差は1以下(急斜面の例外は当面導入しない)。
+
+- `cornerHeightAt(x, z)` が一次(Lipschitz保証・プロパティテストはこの格子に対して)
+- `cellHeightAt = min(4隅)` を互換ヘルパとして提供(現行の min 則コーナー導出と整合、移行期の消費側用)
+- water はセル4隅すべて0の平坦セルのみ
+
 ## 実装フェーズ
 
 - P1: `sim/terrainField.ts` 新設(純関数 heightAt/terrainAt、Lipschitz構成保証、水域ノイズ)
@@ -31,6 +42,9 @@
 - P4: TerrainBlocks → チャンク描画コンポーネント(可視集合・キャッシュ・編集時再構築)
 - P5: Scenery/TownBlocks のチャンク化と領域ベース町配置
 - P6: generateMap/normaliseHeights 系の旧経路削除、デバッグシナリオ更新
+- P7: 標高上の建設(OpenTTD流)— 勾配レール、段丘上の線路・駅、基礎(foundation)、
+  MOUNTAIN_HEIGHT_THRESHOLD=1 の「標高0だけが可住」制約の撤廃。詳細仕様は
+  openttd-slope-notes.md(調査中)を参照して別途設計する
 
 ## Alternatives considered
 
@@ -47,3 +61,24 @@
 - terrainEdit の伝播BFSはオーバーレイ上で動くが、基底値との境界でも段差1を維持する必要がある
   (編集チャンクの縁は基底 heightAt と接する)
 - 旧セーブ(v14以前)は読み捨てる(リリース前・ユーザー了承済み)
+
+## P1実装メモ(sim/terrainField.ts)
+
+- `createTerrainField(seed, halfExtent)` が `heightAt`/`terrainTypeAt` を返す。terrain.tsの
+  `generateHeights`と同じ「フラクタル値ノイズ(smoothstep双線形補間)+平地バイアス+HEIGHT_GAIN」
+  構成だが、normaliseHeights(全域2パス距離変換)を使わず、オクターブの振幅/波長そのものから
+  1-Lipschitzを導く: smoothstepの最大傾き1.5と各オクターブの波長から連続場の勾配上界を計算し
+  (`Σ (amp_i/AMPLITUDE_SUM) * 1.5/wave_i`)、HEIGHT_GAINをその逆数未満に選ぶことで、
+  丸め後も隣接差1以下になることを保証する(「1-Lipschitzな連続関数を最近接整数に丸めても
+  隣接差は1以下」という事実に依拠。詳細な式はterrainField.ts内のコメント参照)
+- オクターブのシードはrngの逐次状態ではなく `deriveOctaveSeed(seed, index)`(murmur3風
+  finalizer)で純粋に導出する。これによりheightAtがどのセルからでも同じ結果を出せる
+  (チャンク非依存性の要件)
+- 水域は同一の合成ノイズ場を2つの閾値(WATER_THRESHOLD < FLATLAND_THRESHOLD)で切るだけ。
+  別ノイズ場を使わないため、湖の縁が平地フロアの内側に必然的に収まり、1-Lipschitzの証明が
+  水域を含めてそのまま成立する
+- 範囲外(|x|または|z| > halfExtent)は常に 'grass'/標高0(境界との連続性は保証しない、
+  という設計判断。コメントに明記)
+- テストは決定性・値域・水域/山岳の整合・範囲外・1-Lipschitz(遠方x≈8000やチャンク境界
+  64の倍数を含む散らばった64×64窓)・平地優勢の分布・性能ガード(50ms)をカバー
+- terrain.ts/hooks/componentsへの配線はまだ行っていない(このフェーズはadditiveのみ)
