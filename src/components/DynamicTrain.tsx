@@ -9,7 +9,6 @@ import { carPositions } from '../sim/consist';
 import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
 import { TrainCar, type CarVariant } from './TrainCar';
 import { PALETTE } from '../render/palette';
-import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import { isLevelDimmed, shouldRenderLevel } from '../render/viewMode';
 
 interface DynamicTrainProps {
@@ -99,6 +98,18 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
     //   - セグメントの向きをそのまま使うとセル境界で階段状に飛ぶ
     const positions = carPositions(runtime, data.cars, 1.0, railMap, terrainField);
 
+    // P8b: 列車が今いる層(0=地平、正=高架、負=地下)は、renderPos.yから逆算しない
+    // (地下は地表からの相対深さなので、丘の上ではyだけから層を復元できない
+    // ——underground-design.md「地表からの相対深さ」を参照)。simが直接持つ
+    // runtime.grid.layer(sim/pathfinding.tsのLayer、sim/simulation.tsのGrid)を
+    // そのまま真実の値として使う。編成全体で共通のレベルとして扱う(簡略化。
+    // 坂の途中でレベルが跨る一瞬だけの近似だが、視覚上の破綻はない)。
+    const level = runtime.grid.layer ?? 0;
+    if (level !== visualLevelRef.current) {
+      visualLevelRef.current = level;
+      setVisualLevel(level);
+    }
+
     const head = positions[0];
     if (head) {
       const headGroupPos = carGroupPosition(head, head.heading);
@@ -108,14 +119,6 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
         head.y + head.heading.y,
         head.z + head.heading.z
       );
-      // P8b: 先頭車の高さから今いる層(0=地平、正=高架、負=地下)を求める。地下は
-      // 地表からの相対深さ(underground-design.md)なので、renderPos.yをそのまま
-      // OVERPASS_HEIGHTで割って丸めるだけで層が求まる(高架と同じ式が符号対称に使える)。
-      const level = Math.round(head.y / OVERPASS_HEIGHT);
-      if (level !== visualLevelRef.current) {
-        visualLevelRef.current = level;
-        setVisualLevel(level);
-      }
       // 通常表示(地下ビューでない)では地下の層は完全に隠す(掘割の開口を除く)。
       // OpenTTD風のトンネル演出: トンネル内部にいる車両は地形ブロックに埋もれて
       // 見えなくなるよう非表示にする(坑口の外に出たら再表示)。地平・高架(山岳内部を
@@ -136,9 +139,9 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
       const groupPos = carGroupPosition(pos, pos.heading);
       carGroup.position.set(groupPos.x, groupPos.y, groupPos.z);
       carGroup.lookAt(pos.x + pos.heading.x, pos.y + pos.heading.y, pos.z + pos.heading.z);
-      const carLevel = Math.round(pos.y / OVERPASS_HEIGHT);
+      // 後続車も先頭車と同じ層(近似)として扱う(上のlevel参照、コメント参照)。
       carGroup.visible =
-        shouldRenderLevel(carLevel, undergroundView) &&
+        shouldRenderLevel(level, undergroundView) &&
         !isTrainHiddenInTunnel(railMap, elevatedTunnelIndex, pos.x, pos.z, pos.y);
     }
 

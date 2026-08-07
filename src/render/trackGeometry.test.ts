@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DIR } from '../utils';
 import {
   buildCellTrackParts, buildRampTrackParts, buildRampAbutmentPart, buildTrackCentreLines,
-  buildOverpassSupportParts,
+  buildOverpassSupportParts, buildUndergroundOpeningPart,
 } from './trackGeometry';
 import { rampHeightAtPos, rampSegmentPositions } from '../sim/trackPath';
 
@@ -171,5 +171,29 @@ describe('buildTrackCentreLines: 曲線本線の外側へ生える分岐', () =>
       expect(Math.abs(p.z)).toBeLessThan(1e-9);
     }
     expect(branch[branch.length - 1]).toEqual(expect.objectContaining({ x: 0.5, z: 0 }));
+  });
+});
+
+describe('buildUndergroundOpeningPart: 掘割ランプの地表開口(P8b)', () => {
+  it('無効な方向ビットはnullを返す', () => {
+    expect(buildUndergroundOpeningPart(0)).toBeNull();
+  });
+
+  it('有効な方向ではpit(床)とwallA/wallB(擁壁)の3つのジオメトリを生成する', () => {
+    const parts = buildUndergroundOpeningPart(DIR.N, 3, 5);
+    expect(parts).not.toBeNull();
+    expect(parts!.pit.attributes.position.count).toBeGreaterThan(0);
+    expect(parts!.wallA.attributes.position.count).toBeGreaterThan(0);
+    expect(parts!.wallB.attributes.position.count).toBeGreaterThan(0);
+  });
+
+  it('セル位置(x,z)を変えるとジオメトリの重心もそのぶん移動する(バウンディングボックス中心で確認)', () => {
+    const at00 = buildUndergroundOpeningPart(DIR.E, 0, 0)!;
+    const at50 = buildUndergroundOpeningPart(DIR.E, 5, 0)!;
+    at00.pit.computeBoundingBox();
+    at50.pit.computeBoundingBox();
+    const cx0 = (at00.pit.boundingBox!.min.x + at00.pit.boundingBox!.max.x) / 2;
+    const cx5 = (at50.pit.boundingBox!.min.x + at50.pit.boundingBox!.max.x) / 2;
+    expect(cx5 - cx0).toBeCloseTo(5, 5);
   });
 });

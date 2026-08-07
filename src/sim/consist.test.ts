@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, TrainData, TownData } from '../types';
 import { stepWorld } from './simulation';
-import type { SimWorld } from './simulation';
+import type { SimWorld, TrainRuntime } from './simulation';
 import { carPositions } from './consist';
+import { fieldFromMaps } from './terrainField';
+import { OVERPASS_HEIGHT } from './trackPath';
 
 const buildRailMap = (cells: { x: number; z: number }[]) => {
   const map = new Map<string, CellData>();
@@ -143,5 +145,66 @@ describe('carPositions (連結車両のなめらか配置)', () => {
       checked++;
     }
     expect(checked).toBeGreaterThan(0);
+  });
+});
+
+describe('carPositions: 地下(layer<0)の描画高さは地表からの相対深さ(P8b)', () => {
+  // 先頭車(k=0)はポリラインの基準点(rt.renderPos、simulation.tsのcellCentreHeightが
+  // 既に正しく計算済みの値)をそのまま使う。ここではrenderPos.yに実際にsimが計算する
+  // であろう正しい値を与えたうえで、2両目(pathHistoryを辿ってtrackCentreHeightで
+  // 高さを引き直す経路)が同じ高さになることを確認する: 修正前は地下(layer<0)の
+  // 非rampセルがtrackCentreHeightで常に平地(0.5)扱いになるバグがあり、丘の上では
+  // 先頭と2両目の間に高さの断絶(=見た目のガクつき)が生じていた。
+  const buildRuntime = (
+    grid: { x: number; z: number; layer: -1 },
+    prevGrid: { x: number; z: number; layer: -1 },
+    headY: number
+  ) => ({
+    id: 't1', grid, prevGrid, progress: 0, speedKmh: 0, route: [],
+    reservedEndIndex: -1, trail: [grid, prevGrid], pathHistory: [grid, prevGrid],
+    stopRemaining: 0, waitTimer: 0, debugStatus: '', renderPos: { x: grid.x, y: headY, z: grid.z },
+    renderTarget: null, passengers: 0, lastStopStationId: null, haltRemaining: 0,
+  }) as unknown as TrainRuntime;
+
+  it('丘の上(標高2)の地下1段は、丘の地表高さから1段沈んだ位置になる(地表が高さ0でも同じ1段沈む)', () => {
+    // 標高2の丘(flatセル、四隅すべて2)に地下1段のspanセル(rampではない)を2つ並べる。
+    const heights = new Map<string, number>();
+    for (let x = 2; x <= 8; x++) for (let z = 2; z <= 8; z++) heights.set(`${x},${z}`, 2);
+    const terrain = new Map<string, 'water' | 'mountain'>();
+    const field = fieldFromMaps(heights, terrain, 20);
+
+    const railMap = new Map<string, CellData>([
+      ['5,5', { type: 'rail', uppers: { '-1': { connections: 0 } } }],
+      ['4,5', { type: 'rail', uppers: { '-1': { connections: 0 } } }],
+    ]);
+
+    // 丘の地表(2段=2*OVERPASS_HEIGHT)から地下1段(-1*OVERPASS_HEIGHT)沈んだ高さ:
+    // 0.5(車体基準) + 2*OVERPASS_HEIGHT(地表) - 1*OVERPASS_HEIGHT(地下1段) = 0.5 + 1*OVERPASS_HEIGHT
+    // (低地の地下1段=0.5-OVERPASS_HEIGHTとは異なり、丘の上では絶対高さがそのぶん高いまま沈む)。
+    const expectedY = 0.5 + 1 * OVERPASS_HEIGHT;
+    const grid = { x: 5, z: 5, layer: -1 as const };
+    const prevGrid = { x: 4, z: 5, layer: -1 as const };
+    const rt = buildRuntime(grid, prevGrid, expectedY);
+
+    const positions = carPositions(rt, 2, 1.0, railMap, field);
+    // grid・prevGridどちらも同じ丘・同じ地下段なので、2両目の高さも先頭と一致する
+    // (修正前はここが0.5固定になり、丘の上で先頭とずれていた)。
+    expect(positions[1].y).toBeCloseTo(expectedY, 5);
+  });
+
+  it('平地(標高0)の地下1段は0.5-OVERPASS_HEIGHTになる(比較対象)', () => {
+    const heights = new Map<string, number>();
+    const terrain = new Map<string, 'water' | 'mountain'>();
+    const field = fieldFromMaps(heights, terrain, 20);
+    const railMap = new Map<string, CellData>([
+      ['5,5', { type: 'rail', uppers: { '-1': { connections: 0 } } }],
+      ['4,5', { type: 'rail', uppers: { '-1': { connections: 0 } } }],
+    ]);
+    const expectedY = 0.5 - 1 * OVERPASS_HEIGHT;
+    const grid = { x: 5, z: 5, layer: -1 as const };
+    const prevGrid = { x: 4, z: 5, layer: -1 as const };
+    const rt = buildRuntime(grid, prevGrid, expectedY);
+    const positions = carPositions(rt, 2, 1.0, railMap, field);
+    expect(positions[1].y).toBeCloseTo(expectedY, 5);
   });
 });

@@ -36,7 +36,13 @@ const trackCentreHeight = (
     return 0.5 + rampHeightAtPos(pos, cell.ramp.base ?? 0);
   }
   if (!terrainField) return 0.5;
-  return 0.5 + groundRailCentreHeight(terrainField, cell, point.x, point.z);
+  const surface = groundRailCentreHeight(terrainField, cell, point.x, point.z);
+  // P8b: 地下(layer<0)の坂以外のセル(span)は、地表からの相対深さ
+  // (underground-design.md)なので、地表の高さ(surface、丘の上では0でない)に
+  // layer*OVERPASS_HEIGHT(負)を上乗せする。simulation.tsのcellRampHeightと
+  // 同じ式(丘の上でも地下線が正しく地表より下に沈むようにするため)。
+  if (point.layer && point.layer < 0) return 0.5 + surface + point.layer * OVERPASS_HEIGHT;
+  return 0.5 + surface;
 };
 
 /**
