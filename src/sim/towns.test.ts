@@ -12,6 +12,8 @@ import {
   resolveTownSpawnTick, townSpawnChance, TOWN_SPAWN_CAPACITY_THRESHOLD, TOWN_SPAWN_BASE_CHANCE,
   TOWN_REGION_SIZE, TOWN_REGION_DENSITY, MIN_STARTING_TOWNS,
   regionsInRange, regionTownCandidate, generateRegionTowns,
+  METROPOLIS_POPULATION_MIN, METROPOLIS_POPULATION_MAX, METROPOLIS_FRACTION,
+  townDensityParams, type TownDensity,
   type StationTransportInfo,
 } from './towns';
 
@@ -362,13 +364,14 @@ describe('regionTownCandidate / generateRegionTowns', () => {
     expect(found).toBe(true);
   });
 
-  it('populationはTOWN_POPULATION_MIN..MAXに収まる', () => {
+  it('populationは通常はTOWN_POPULATION_MIN..MAXに収まるが、大都市(METROPOLIS_POPULATION_MIN..MAX)の場合もある', () => {
     for (let rx = -10; rx <= 10; rx++) {
       for (let rz = -10; rz <= 10; rz++) {
         const c = regionTownCandidate(1, rx, rz, 4096, flatField);
         if (!c) continue;
-        expect(c.population).toBeGreaterThanOrEqual(TOWN_POPULATION_MIN);
-        expect(c.population).toBeLessThanOrEqual(TOWN_POPULATION_MAX);
+        const inNormalRange = c.population >= TOWN_POPULATION_MIN && c.population <= TOWN_POPULATION_MAX;
+        const inMetropolisRange = c.population >= METROPOLIS_POPULATION_MIN && c.population <= METROPOLIS_POPULATION_MAX;
+        expect(inNormalRange || inMetropolisRange).toBe(true);
       }
     }
   });
@@ -512,5 +515,97 @@ describe('generateRegionTowns: 最小開始町数の保証(MIN_STARTING_TOWNS)',
     const field = createTerrainField(2026, 8192);
     const towns = generateRegionTowns(2026, 8192, field);
     expect(towns.length).toBeGreaterThan(MIN_STARTING_TOWNS * 100);
+  });
+});
+
+describe('大都市(メトロポリス)', () => {
+  const flatField = createTerrainField(1, 4096);
+
+  it('ハッシュゲートを通った町のうちおよそMETROPOLIS_FRACTION(4%)が大都市になり、人口はMETROPOLIS_POPULATION_MIN..MAXに収まる', () => {
+    let total = 0;
+    let metropolises = 0;
+    for (let rx = -60; rx <= 60; rx++) {
+      for (let rz = -60; rz <= 60; rz++) {
+        const c = regionTownCandidate(1, rx, rz, 8192, flatField);
+        if (!c) continue;
+        total++;
+        if (c.population >= METROPOLIS_POPULATION_MIN) {
+          metropolises++;
+          expect(c.population).toBeLessThanOrEqual(METROPOLIS_POPULATION_MAX);
+        }
+      }
+    }
+    expect(total).toBeGreaterThan(100);
+    const ratio = metropolises / total;
+    // 決定的ハッシュゲートなので厳密に4%にはならないが、大きくは外れないはず。
+    expect(ratio).toBeGreaterThan(METROPOLIS_FRACTION * 0.3);
+    expect(ratio).toBeLessThan(METROPOLIS_FRACTION * 3);
+  });
+
+  it('同じ(worldSeed, rx, rz)からは大都市判定も決定的', () => {
+    let found: TownData | null = null;
+    for (let rx = -60; rx <= 60 && !found; rx++) {
+      for (let rz = -60; rz <= 60 && !found; rz++) {
+        const c = regionTownCandidate(1, rx, rz, 8192, flatField);
+        if (c && c.population >= METROPOLIS_POPULATION_MIN) found = c;
+      }
+    }
+    expect(found).not.toBeNull();
+  });
+});
+
+describe('町密度オプション(TownDensity)', () => {
+  it('townDensityParamsは4段階(sparse/normal/dense/packed)を返し、normalは既定値(regionSize=TOWN_REGION_SIZE, gate=TOWN_REGION_DENSITY)と一致する', () => {
+    const normal = townDensityParams('normal');
+    expect(normal.regionSize).toBe(TOWN_REGION_SIZE);
+    expect(normal.gate).toBe(TOWN_REGION_DENSITY);
+
+    const sparse = townDensityParams('sparse');
+    expect(sparse.gate).toBeLessThan(normal.gate);
+
+    const dense = townDensityParams('dense');
+    expect(dense.gate).toBeGreaterThan(normal.gate);
+
+    const packed = townDensityParams('packed');
+    expect(packed.regionSize).toBeLessThan(normal.regionSize);
+  });
+
+  it('sparse < normal < dense の順で町数が増える(中マップhalfExtent=2000)', () => {
+    const field = createTerrainField(555, 2000);
+    const sparseCount = generateRegionTowns(555, 2000, field, 'sparse').length;
+    const normalCount = generateRegionTowns(555, 2000, field, 'normal').length;
+    const denseCount = generateRegionTowns(555, 2000, field, 'dense').length;
+    expect(sparseCount).toBeLessThan(normalCount);
+    expect(normalCount).toBeLessThan(denseCount);
+  });
+
+  it('packedはnormalよりはるかに町数が多い(regionSizeが細かいため)', () => {
+    const field = createTerrainField(555, 2000);
+    const normalCount = generateRegionTowns(555, 2000, field, 'normal').length;
+    const packedCount = generateRegionTowns(555, 2000, field, 'packed').length;
+    expect(packedCount).toBeGreaterThan(normalCount * 2);
+  });
+
+  it('同じseed+densityなら決定的に同じ町配置が得られる', () => {
+    const field = createTerrainField(9, 2000);
+    const a = generateRegionTowns(9, 2000, field, 'packed');
+    const b = generateRegionTowns(9, 2000, field, 'packed');
+    expect(a).toEqual(b);
+  });
+
+  it('densityを省略するとnormal相当になる(後方互換)', () => {
+    const field = createTerrainField(9, 2000);
+    const withoutArg = generateRegionTowns(9, 2000, field);
+    const withNormal = generateRegionTowns(9, 2000, field, 'normal');
+    expect(withoutArg).toEqual(withNormal);
+  });
+
+  it('16K・packedでも1.5秒未満で生成が終わる(性能ガード)', () => {
+    const bigField = createTerrainField(2026, 8192);
+    const start = performance.now();
+    const towns = generateRegionTowns(2026, 8192, bigField, 'packed');
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(1500);
+    expect(towns.length).toBeGreaterThan(500);
   });
 });
