@@ -9,6 +9,7 @@
 //   - other: それ以外(1隅/3隅だけ高い、対角鞍点=尾根谷)。線路は敷けない
 
 import type { CellCorners, TerrainField } from './terrainField';
+import type { CellData } from '../types';
 import { DIR, getDirFromVector, getOppositeDir } from '../utils';
 
 export type SlopeInfo =
@@ -147,7 +148,8 @@ interface Pos {
 // path上のセルiが実際に必要とする接続方向(prev/nextへ向かう方向のみ)。
 // construction.tsのmountainCellCandidateDirsと違い、行き止まりの反対側を候補として
 // 足すことはしない(勾配可否の判定に実際使わない方向を混ぜないため)。
-const pathCellConnectionDirs = (path: Pos[], i: number): number[] => {
+// P7bでconstruction.tsのresolveGroundRailPlanからも再利用するためexportする。
+export const pathCellConnectionDirs = (path: Pos[], i: number): number[] => {
   const { x, z } = path[i];
   const dirs: number[] = [];
   if (i > 0) dirs.push(getDirFromVector(path[i - 1].x - x, path[i - 1].z - z));
@@ -165,6 +167,30 @@ const pathCellConnectionDirs = (path: Pos[], i: number): number[] => {
  *   - 'direction-blocked': そのセルの斜面が、経路が必要とする接続方向を許可しない
  *   - 'edge-discontinuous': 隣接セル間で共有辺の標高が繋がらない(1セルで1段登る規則含む)
  */
+/**
+ * セル(x,z)を実際に線路が走る標高(P7b、construction.ts/render層向け)。
+ * - flat: 4隅同値の標高そのもの
+ * - incline: 低い側の辺の標高(=そのセルへ「下から」進入するときの基準面。design doc
+ *   「LOW edge is the cell's base」の規約)。高い側はrailHeightAt(隣のflatセル)+1で
+ *   自然に一致する(1セル1段規則)
+ * - tunnel(cellにtunnel.heightがある場合): 地形コーナーは見ず、保存された高さをそのまま返す
+ * - other(上記どちらでもない): 線路の自然な標高が定義できないため、最も低いコーナーへ
+ *   便宜的にフォールバックする(呼び出し側はこのセルへ普通は線路を通さない前提)
+ */
+export function railHeightAt(
+  field: TerrainField,
+  cell: CellData | undefined,
+  x: number,
+  z: number
+): number {
+  if (cell?.tunnel) return cell.tunnel.height;
+  const corners = field.cellCornerHeights(x, z);
+  const slope = slopeOf(corners);
+  if (slope.kind === 'flat') return slope.height;
+  if (slope.kind === 'incline') return slope.low;
+  return Math.min(...corners);
+}
+
 export function pathSlopeViolations(field: TerrainField, path: Pos[]): SlopeViolation[] {
   const violations: SlopeViolation[] = [];
 
