@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CellData, StationData, TerrainType, TownData } from '../types';
 import { generateMap } from './terrain';
 import { fieldFromMaps } from './terrainField';
+import { createTerrainField } from './terrainField';
 import {
   mulberry32, generateTowns, growTown, townServiceLevel,
   TOWN_MIN_DISTANCE, TOWN_COORD_RANGE, TOWN_POPULATION_MIN, TOWN_POPULATION_MAX, TOWN_POPULATION_CAP,
@@ -9,6 +10,7 @@ import {
   nearestTownWithinRadius, stationNameForTown,
   NEW_TOWN_POPULATION_MIN, NEW_TOWN_POPULATION_MAX,
   resolveTownSpawnTick, townSpawnChance, TOWN_SPAWN_CAPACITY_THRESHOLD, TOWN_SPAWN_BASE_CHANCE,
+  TOWN_REGION_SIZE, regionsInRange, regionTownCandidate, generateRegionTowns,
   type StationTransportInfo,
 } from './towns';
 
@@ -387,5 +389,99 @@ describe('resolveTownSpawnTick', () => {
     }
     const allowed = resolveTownSpawnTick(infos, [], emptyField, alwaysZero, elevatedOnly);
     expect(allowed.spawnedTowns.length).toBe(1);
+  });
+});
+
+describe('regionsInRange', () => {
+  it('halfExtentがTOWN_REGION_SIZE未満なら原点をまたぐ2×2=4領域に収まる', () => {
+    // floor(-45/128)=-1, floor(45/128)=0 なので、原点をまたぐ場合は4領域になる。
+    expect(regionsInRange(45)).toEqual([
+      { rx: -1, rz: -1 }, { rx: -1, rz: 0 }, { rx: 0, rz: -1 }, { rx: 0, rz: 0 },
+    ]);
+  });
+
+  it('halfExtentが大きいと領域数はO(halfExtent^2/TOWN_REGION_SIZE^2)になる', () => {
+    const regions = regionsInRange(8192);
+    const side = Math.ceil((8192 * 2 + 1) / TOWN_REGION_SIZE);
+    // ±1領域ぶんの誤差を許容(端の丸め)
+    expect(regions.length).toBeGreaterThanOrEqual(side * side - side * 2);
+    expect(regions.length).toBeLessThanOrEqual((side + 2) * (side + 2));
+  });
+
+  it('rx昇順→rz昇順で決定的に列挙される', () => {
+    const regions = regionsInRange(300);
+    for (let i = 1; i < regions.length; i++) {
+      const a = regions[i - 1];
+      const b = regions[i];
+      expect(a.rx < b.rx || (a.rx === b.rx && a.rz < b.rz)).toBe(true);
+    }
+  });
+});
+
+describe('regionTownCandidate / generateRegionTowns', () => {
+  const flatField = createTerrainField(1, 4096); // 起伏の少ない広いfield(平地優勢)
+
+  it('同じ(worldSeed, rx, rz)からは同じ候補が決定的に得られる', () => {
+    const a = regionTownCandidate(42, 3, -2, 4096, flatField);
+    const b = regionTownCandidate(42, 3, -2, 4096, flatField);
+    expect(a).toEqual(b);
+  });
+
+  it('候補があればidはtown-r{rx},{rz}の形式', () => {
+    let found = false;
+    for (let rx = -20; rx <= 20 && !found; rx++) {
+      for (let rz = -20; rz <= 20 && !found; rz++) {
+        const c = regionTownCandidate(42, rx, rz, 4096, flatField);
+        if (c) {
+          expect(c.id).toBe(`town-r${rx},${rz}`);
+          found = true;
+        }
+      }
+    }
+    expect(found).toBe(true);
+  });
+
+  it('populationはTOWN_POPULATION_MIN..MAXに収まる', () => {
+    for (let rx = -10; rx <= 10; rx++) {
+      for (let rz = -10; rz <= 10; rz++) {
+        const c = regionTownCandidate(1, rx, rz, 4096, flatField);
+        if (!c) continue;
+        expect(c.population).toBeGreaterThanOrEqual(TOWN_POPULATION_MIN);
+        expect(c.population).toBeLessThanOrEqual(TOWN_POPULATION_MAX);
+      }
+    }
+  });
+
+  it('生成された町の中心座標はhalfExtent以内かつ平地(水域・山岳を回避)', () => {
+    const towns = generateRegionTowns(7, 2000, flatField);
+    for (const town of towns) {
+      expect(Math.abs(town.centre.x)).toBeLessThanOrEqual(2000);
+      expect(Math.abs(town.centre.z)).toBeLessThanOrEqual(2000);
+      expect(flatField.terrainTypeAt(town.centre.x, town.centre.z)).toBe('grass');
+    }
+  });
+
+  it('小さいマップ(halfExtent=45)でも数領域だけが評価され、O(regions)で終わる', () => {
+    const towns = generateRegionTowns(42, 45, createTerrainField(42, 45));
+    expect(towns.length).toBeLessThanOrEqual(4);
+  });
+
+  it('16Kマップ相当(halfExtent=8192)でも200ms未満で生成が終わる', () => {
+    const bigField = createTerrainField(2026, 8192);
+    const start = performance.now();
+    const towns = generateRegionTowns(2026, 8192, bigField);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(200);
+    // 「a few thousand towns」の想定オーダーに収まっていることの粗いガード
+    expect(towns.length).toBeGreaterThan(500);
+    expect(towns.length).toBeLessThan(20000);
+  });
+
+  it('ランタイム湧きの町id(town-spawn-...)とは衝突しない命名規則', () => {
+    const towns = generateRegionTowns(9, 2000, flatField);
+    for (const town of towns) {
+      expect(town.id.startsWith('town-r')).toBe(true);
+      expect(town.id.startsWith('town-spawn-')).toBe(false);
+    }
   });
 });

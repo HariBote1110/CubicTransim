@@ -150,6 +150,122 @@ export function generateTowns(
   return towns;
 }
 
+// --- 領域ベースの決定的な町配置(P5, progress/16k-map-architecture.md参照) ---
+//
+// 旧generateTownsは「count個ループでrejection sampling」というグローバルな手続きで、
+// マップ全域(TOWN_COORD_RANGE)を一度に見渡す必要があった。16Kマップ(halfExtent=8192)
+// では成立しない(全域を一度に扱う前提が破綻する)ため、マップを128×128セルの領域
+// (region)に分割し、各領域は(worldSeed, regionCoord)だけから独立に「町を1つ持つか・
+// 持たないか」を決める。これにより「可視・近傍の領域だけ実体化する」将来の拡張や、
+// O(regions)の新規ゲーム生成が可能になる。
+
+/** 領域の一辺(セル)。この単位でマップを分割し、各領域が町候補を最大1つ持つ。 */
+export const TOWN_REGION_SIZE = 128;
+/**
+ * 領域が町候補を持つ確率(地形による棄却より前のゲート)。16Kマップ(halfExtent=8192)は
+ * 約129×129=16641領域に分割されるため、この確率で「a few thousand towns」
+ * (設計メモの目標)になる。旧仕様の「91²マップに8個」と同じ密度(セルあたり)には
+ * 領域サイズ128が91²マップ全体より大きいため原理的に一致させられない(1領域=町0か1個)。
+ * 大きいマップでの体感密度を優先し、既定マップは町が少なめになる代わりに
+ * resolveTownSpawnTick(輸送力に応じた町の湧き)が実プレイで補う設計とした。
+ */
+export const TOWN_REGION_DENSITY = 0.3;
+
+export interface RegionCoord {
+  rx: number;
+  rz: number;
+}
+
+// (worldSeed, rx, rz, salt) からの決定的ハッシュ(0..1)。townTiles.tsのtileHashと同型。
+const regionHash = (seed: number, rx: number, rz: number, salt: number): number => {
+  let h =
+    (seed ^ Math.imul(rx | 0, 0x27d4eb2d) ^ Math.imul(rz | 0, 0x165667b1) ^ Math.imul(salt | 0, 0x9e3779b1)) | 0;
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+};
+
+// 領域専用のrng(mulberry32)。名前/人口の決定にはこちらを使う(逐次消費するが、
+// 領域ごとに独立したシードから始まるので列挙順に依存しない=チャンク非依存)。
+const regionRng = (seed: number, rx: number, rz: number): (() => number) => {
+  const s =
+    (Math.imul(seed ^ 0x9e3779b9, 1) ^ Math.imul(rx | 0, 0x27d4eb2d) ^ Math.imul(rz | 0, 0x165667b1)) >>> 0;
+  return mulberry32(s);
+};
+
+/** 領域ベースの町のid("town-r{rx},{rz}")。ランタイム湧き(town-spawn-...)と衝突しない。 */
+export const regionTownId = (rx: number, rz: number): string => `town-r${rx},${rz}`;
+
+/** halfExtent(-halfExtent..halfExtent)と交差する領域座標を、rx昇順→rz昇順で列挙する。 */
+export function regionsInRange(halfExtent: number): RegionCoord[] {
+  const extent = Math.max(0, halfExtent);
+  const rMin = Math.floor(-extent / TOWN_REGION_SIZE);
+  const rMax = Math.floor(extent / TOWN_REGION_SIZE);
+  const regions: RegionCoord[] = [];
+  for (let rx = rMin; rx <= rMax; rx++) {
+    for (let rz = rMin; rz <= rMax; rz++) {
+      regions.push({ rx, rz });
+    }
+  }
+  return regions;
+}
+
+/**
+ * 1つの領域が持つ町候補を決定的に導出する。存在ゲート(TOWN_REGION_DENSITY)→
+ * 領域内ジッター位置→マップ範囲チェック→適地判定(isNearTerrain)の順に評価し、
+ * どれか1つでも落ちればnull(=その領域に町は無い)。
+ */
+export function regionTownCandidate(
+  worldSeed: number,
+  rx: number,
+  rz: number,
+  halfExtent: number,
+  field: TerrainField
+): TownData | null {
+  if (regionHash(worldSeed, rx, rz, 1) >= TOWN_REGION_DENSITY) return null;
+
+  const jitterX = regionHash(worldSeed, rx, rz, 2);
+  const jitterZ = regionHash(worldSeed, rx, rz, 3);
+  const originX = rx * TOWN_REGION_SIZE;
+  const originZ = rz * TOWN_REGION_SIZE;
+  const x = Math.round(originX + jitterX * TOWN_REGION_SIZE);
+  const z = Math.round(originZ + jitterZ * TOWN_REGION_SIZE);
+
+  const extent = Math.max(0, halfExtent);
+  if (x < -extent || x > extent || z < -extent || z > extent) return null;
+  if (isNearTerrain(x, z, field, TOWN_TERRAIN_AVOID_RADIUS)) return null;
+
+  const rng = regionRng(worldSeed, rx, rz);
+  // 名前の一意性はここでは保証しない(巨大マップでの衝突は許容。設計判断: 領域は
+  // 互いに独立でなければならず、既出名の集合という「他領域への参照」を持たせられない)。
+  const name = nextTownName(rng, new Set<string>());
+  const population = Math.round(
+    TOWN_POPULATION_MIN + rng() * (TOWN_POPULATION_MAX - TOWN_POPULATION_MIN)
+  );
+
+  return { id: regionTownId(rx, rz), name, centre: { x, z }, population };
+}
+
+/**
+ * マップ(halfExtent)内の全領域を列挙し、町候補を持つ領域だけを実体化する。
+ * O(regions)。16Kマップ(halfExtent=8192、約1.7万領域)でも数百ms未満で終わる想定
+ * (性能はtowns.test.tsのガードで担保)。
+ */
+export function generateRegionTowns(
+  worldSeed: number,
+  halfExtent: number,
+  field: TerrainField
+): TownData[] {
+  const towns: TownData[] = [];
+  for (const { rx, rz } of regionsInRange(halfExtent)) {
+    const candidate = regionTownCandidate(worldSeed, rx, rz, halfExtent, field);
+    if (candidate) towns.push(candidate);
+  }
+  return towns;
+}
+
 // --- 駅名の町名採用 ---
 
 /** 町名末尾の「町」「市」「村」を落とす(駅名は「南宮市」→「南宮駅」のように使う)。 */
