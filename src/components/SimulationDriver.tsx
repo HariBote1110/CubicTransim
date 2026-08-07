@@ -1,5 +1,5 @@
 import React from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { stepWorld } from '../sim/simulation';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 
@@ -10,6 +10,9 @@ interface SimulationDriverProps {
 }
 
 export const SimulationDriver: React.FC<SimulationDriverProps> = ({ world, onSimEvent, speed }) => {
+  const three = useThree();
+  // 計測用デバッグフック: 非表示タブでもrendererを直接叩いて描画時間を測れるようにする
+  (window as unknown as { __dbgThree?: unknown }).__dbgThree = three;
   useFrame((_state, delta) => {
     const current = world.current;
     if (!current) return;
