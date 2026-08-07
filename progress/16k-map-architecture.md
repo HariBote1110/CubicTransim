@@ -130,6 +130,73 @@
   BFS伝播の停止条件に混ざり判定が複雑になるため、ロジック検証は平坦fieldで、
   water境界の実地形固有の検証だけ本物のfieldで行う、と役割を分けた
 
+## P4実装メモ(TerrainBlocks/Sceneryのチャンク描画化)
+
+- **チャンクサイズ**: 32×32セル(`render/terrainChunks.ts`の`TERRAIN_CHUNK_SIZE`)。
+  既定マップ(halfExtent=45、91×91セル)は4×4=16チャンクにまたがる。
+- **純粋なチャンク座標計算(`render/terrainChunks.ts`)**: `visibleChunkRange
+  (cameraTargetCell, viewRadiusCells, halfExtent, margin)`が可視範囲(注視点±半径)を
+  チャンク座標へ変換し、mapChunkBounds(halfExtentから導く)へクランプしてから
+  margin(既定1)ぶん外側へ広げる。境界クランプは「範囲同士のintersect」ではなく
+  「各端点を独立にクランプ」で実装した: 注視点がマップ外はるか遠くを向いていても
+  空配列にならず、必ずマップの縁のチャンクへ収束するようにするため(intersect方式だと
+  クランプ後にcx0>cx1の逆転が起きて空になるケースがあった)。`chunkCells(chunk,
+  halfExtent)`はチャンク内の全セルをマップ範囲でクランプしつつx昇順→z昇順で列挙する
+  (TerrainBlocks/Sceneryの旧・全域スキャンと同じ走査順を保つ)。Vitestで境界クランプ・
+  margin・縮退マップ(halfExtent=0/負)・マップサイズ非依存性(halfExtent=45と8192で
+  可視チャンク数が同じ)を検証した。
+- **キャッシュ無効化キー(`sim/terrainOverlay.ts`の`overlayChunkRefs`)**: P2の
+  `applyCornerEdit`は編集で触れたオーバーレイチャンク(OVERLAY_CHUNK_SIZE=64単位)
+  だけを新しいMapへ差し替える(immutable replace)という既存の設計を利用した。
+  `overlayChunkRefs(diffs, cellBounds)`は指定セル範囲の4隅コーナーに重なりうる
+  オーバーレイチャンクのサブMap(参照)を集めて返す。TerrainBlocksはチャンクごとに
+  この参照配列を保持し、次回描画時に同じ参照配列(浅い比較)なら地形編集の影響を
+  受けていないと判定してジオメトリを再利用する。deep equalやdiffs全体の走査は
+  不要で、判定コストは「そのチャンクに重なるオーバーレイチャンク数」のみに依存する。
+- **TerrainBlocksの構成**: 全域を1回スキャンしてマテリアル別にマージしていた処理を
+  `buildChunkGeometry(field, cellBounds)`という関数へ切り出し、チャンクごとに呼ぶ
+  ように変更した。`useRef<Map<chunkKey, ChunkCacheEntry>>`でチャンクキャッシュを
+  保持し、可視チャンク一覧(`visibleChunkRange`)を毎回の描画(chunkView変化時)で
+  なめて、キャッシュヒット/ミスに応じて再利用または`buildChunkGeometry`→
+  `dispose()`(旧ジオメトリ)を行う。可視範囲(マージン込み)からさらに1チャンク以上
+  離れたエントリはLRU的に間引く(`CHUNK_CACHE_LIMIT=256`超過時のみ)。
+- **カメラ可視範囲の取得(`GameScene.tsx`の`CameraChunkTracker`)**: 直交カメラの
+  NDC4隅(±1,±1)を`unproject`でワールド空間の近平面・遠平面点へ変換し、
+  y=0平面との交点を求めて外接矩形を計算する(design memoで指定された方式)。
+  毎フレームではなく、OrbitControlsの`'change'`イベント(パン・ズーム)を起点に
+  150msスロットルで更新する(`setTimeout`ベース、既に予約済みなら追加予約しない)。
+  戻り値は`{targetCell, viewRadiusCells}`で、TerrainBlocksとScenery両方に同じ値を渡す。
+- **Sceneryのチャンク化**: 木の候補列挙を`-range..range`の全域ループから、
+  TerrainBlocksと同じ`visibleChunkRange`→`chunkCells`の列挙に変更した。配置自体は
+  既存通りセル座標のハッシュ(`hash01`)のみで決まる純粋な関数なので、可視チャンクの
+  組み合わせが変わっても同じセルには常に同じ木が生える(チャンク非依存の決定性は
+  自動的に満たされる。設計変更は不要だった)。
+- **地面プレーン・ポインタ判定**: 既定マップ(halfExtent<=約140相当)では、以前と
+  同じく原点固定・一定サイズ(最低140、`2*halfExtent+40`)のプレーンでマップ全域を
+  覆う。halfExtentがそれを超える大きいマップでは、プレーンをカメラ注視チャンクへ
+  追従させる(`GROUND_PLANE_SPAN=320`固定サイズ、位置は注視セルを32セル単位へ
+  スナップ)。スナップにより、chunkViewが数セル動くだけでは再配置が起きず、
+  ポインタ判定用ジオメトリの位置更新頻度を抑えている。gridHelperも同じ中心・
+  サイズに追従させた。
+- **配線**: `useGameLogic`の戻り値に`cornerDiffs`を追加し、`App.tsx`→
+  `GameScene`(`cornerDiffs`prop)→`TerrainBlocks`(`diffs`prop)と橋渡しした。
+  `field`propは引き続き合成済み(baseField+cornerDiffs)のTerrainFieldを渡すが、
+  チャンクキャッシュの無効化判定には`diffs`(cornerDiffs)を別途渡す必要がある
+  (TerrainFieldインターフェース自体はdiffsを公開しないデバッグシナリオ用の
+  fieldもありうるため、propとして明示的に分離した)。
+- **デバッグ用の可視化**: 既存の`window.__debugWorld`/`window.__dbgStep`と同じ
+  慣行で`window.__terrainChunkStats = {visible, cached, rebuiltThisPass}`を
+  TerrainBlocksから公開した(消さずに残す。今後のチャンク関連デバッグに使う)。
+- **ブラウザ検証**: 既定マップ(halfExtent=45)で起動直後、`__terrainChunkStats`が
+  `{visible:16, cached:16, rebuiltThisPass:0}`(マップ全体が4×4チャンクに収まる)を
+  示すことを確認し、地形・町・木の見た目が変更前と同一であることをスクリーンショットで
+  確認した。コンソールエラーは無し。halfExtent=512相当の大規模スケール実測・
+  盛土/切土によるチャンク単位再構築のブラウザ上での直接確認(rebuiltThisPassの
+  増減)は本セッションの時間内には完了できておらず、今後の課題として残る
+  (無効化ロジック自体は`sim/terrainOverlay.test.ts`の`overlayChunkRefs`テストで
+  「無関係な遠方チャンクへの参照は変化しない」「編集チャンクの参照はimmutable
+  replaceで確実に変わる」をVitestで担保済み)。
+
 ## P3実装メモ(消費側のfield移行・SaveData v15)
 
 - **状態形状(useGameLogic.ts)**: `heights`/`terrain` Mapを廃止し、`worldSeed`
