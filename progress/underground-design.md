@@ -54,3 +54,80 @@
   (相対深さが地表に追従するため、地表を変えると地下の連続性が壊れる)
 - 列車の隠蔽描画は「選択表示レベルと列車のレベルが一致するか」で決める
   (トンネルの isTrainHiddenInTunnel とは独立の機構)
+
+## P8a実装メモ(sim層のみ、0.3.0-Alpha-39bベース)
+
+- **型の一般化**: `types.ts`に`Level = -3|-2|-1|1|2|3`を新設し、`CellData.uppers`の
+  キー型・`StationData.cells[].layer`をこれへwideningした(識別子`uppers`は
+  そのまま維持。地下も同じ辞書に負キーで載る)。`pathfinding.ts`の`Layer`・
+  `reservation.ts`の`Grid.layer`・`simulation.ts`の内部`Grid.layer`も同様に
+  widening。ramp.baseは元々`number`型だったため変更不要(負のbaseは既に
+  型上は許容されていた)。construction.tsには`ElevatedLevel(=1|2|3)`と対称の
+  `UndergroundLevel(=-1|-2|-3)`を新設し、`ALL_LEVELS`(uppers走査用の
+  `[1,2,3,-1,-2,-3]`)を追加した。
+- **pickElevatedConnection/planElevatedPathの符号対称化**: 「M(接続先の既存
+  レベル)がlevelより地表から遠いか」でアンカーの要否を決める(`level===0`は
+  常にアンカー、`level>0`は`M>level`、`level<0`は`M<level`)よう修正した。
+  素朴に「生の数値比較`end.level>level`のまま」だと、level<0の非0ケースで
+  非対称になるバグがあった(construction.test.tsに詳しいコメント付きで記録)。
+  一方`assignRampZone`のbase/ascending割り当て(near/farのlocal level 1/2、
+  baseの並び)は、M/levelの生の大小関係(`connectLevel<level`)を使う既存実装の
+  ままで符号に関わらず正しいことを確認した(変更不要)。
+  - **符号反転による素朴な鏡映テストは成立しない**: 「正レベルの入力を全部
+    符号反転すれば結果も符号反転するはず」という直感的なテストは、
+    `M<level`の大小関係が符号反転で反転する(例: `1<2`だが`-1>-2`)ため
+    成立しない(near/far割り当てが変わってしまう)。construction.test.tsでは
+    「null/non-nullとrole種別ごとの個数」という符号に関わらず不変な性質だけを
+    対称性として検証している。
+- **undergroundEdgeContinuous(slopes.ts)**: design docの「相対深さ方式」により
+  深さkは連続性条件から相殺で消えるため、実装は「両セルとも地表がflatで
+  railEdgeContinuousが真」の合成になった(depth引数は型合わせのため残すが
+  未使用)。地下はこのバージョンでは地表がinclineなセルの下には通せない
+  (design doc本文にも明記済みの制約)。
+- **applyUndergroundPath/applyUndergroundStation(construction.ts)**:
+  applyElevatedPath/Stationと同じプランナー(resolveElevatedPathEnd/
+  pickElevatedConnection/planElevatedPath)を再利用する新規関数として追加した
+  (levelの符号だけが違うのでapplyElevatedStationの本体は`applyLayeredStation`
+  へ共通化し、両関数はその薄いラッパーにした)。地下線特有の相違点:
+  町タイルは無視・水域下は禁止・坂だけでなく地下線(span)自体も地表flat限定・
+  地下線どうしの隣接はundergroundEdgeContinuousで検査・既存の地平/高架とは
+  常に共存(地平のconnectionsを一切書き換えない)。
+- **地平↔地下ランプのpathfindingバグ**: `pickElevatedConnection`/
+  `planElevatedPath`は正しく地下対応できていたが、実際に統合テスト
+  (underground-integration.test.ts)を書いて初めて、地平(0)から
+  base=-1の掘割ランプへ接続する経路で列車が発車すらできない
+  (`resolveEntryLayer`が「今いる層のconnections/uppersしか見ない」ため、
+  ランプセルの接続ビットがuppers[-1]だけに書かれると地平側から先へ進めない)
+  欠陥が発覚した。elevated(base===0)の場合は`orIntoBaseLevel`がconnections
+  へ書くために自然に動いていたが、地下(base===-1、地平0への掘割)はそうならない。
+  修正: base===-1のランプセルは、connectionsにもuppers[-1]と同じビットを
+  重ねて持たせる(ramp.base自体は-1のまま。rendering/層遷移のadjacency判定
+  (`rampBaseOf===min(現在層,次の層)`)には影響しない)。**教訓**: 高架と
+  地下の「符号対称」は型・プランナーレベルでは成立していても、pathfinding/
+  reservationの実装が暗黙に「base=0はconnections」という非対称な前提を
+  1箇所に持っていると、実際に列車を走らせるテストを書くまで気づけない。
+  設計を鏡映しただけでは不十分で、末端の統合テスト(departure→arrival)が
+  最終的な検証として必須だった。
+- **コスト(economy.ts/buildPreview.ts)**: `UNDERGROUND_RAIL_COST_MULTIPLIER=6`・
+  `UNDERGROUND_STATION_COST_MULTIPLIER=3`・`costOfUndergroundPath`・
+  `UNDERGROUND_STATION_COST(=ELEVATED_STATION_COST×3)`をdesign doc通りに追加し、
+  `evaluateBuild`のlevel<0分岐から配線した。elevatedと異なり、地下は坂/地下線を
+  区別せず経路の全セルに同じ倍率を課す(設計をそのまま反映した単純化)。
+- **地形編集ブロック(terrainOverlay.ts)**: `buildEditBlockers`は変更不要だった。
+  `applyUndergroundPath`が地下専用セルでも`railMap.set(key,{type:'rail',...})`
+  として登録するため、既存の`railMap.has(x,z)`チェックだけで「地下線があるセル
+  は地形編集をブロックする」が自動的に成立する(テストで確認)。
+- **永続化(persistence.ts)**: **v15のまま据え置き**。`CellData.uppers`/
+  `ramp.base`/`StationData.cells[].layer`の型wideningはTypeScriptの型のみの
+  変更で、実行時の形(数値キーを持つ素朴なオブジェクト・普通のnumber)は一切
+  変わっていないため、シリアライズ形式は追加互換になる(ラウンドトリップ
+  テストで確認)。バージョンを上げる理由が無かった。
+- **テスト一覧(新規/大幅追加ファイル)**: `construction.test.ts`(符号対称性・
+  applyUndergroundPath/Station)・`slopes.test.ts`(undergroundEdgeContinuous)・
+  `buildPreview.test.ts`(地下のコスト・no-effect)・`terrainOverlay.test.ts`
+  (地下セルのブロック確認)・`persistence.test.ts`(地下のラウンドトリップ)・
+  `underground-integration.test.ts`(新規ファイル。車庫→掘割→地下線→地下駅の
+  走行、地上+地下の同一駅ID統合)。
+- **やらなかったこと(P8b/c送り)**: 描画(地下ビュー切替・掘割の開口部表現)・
+  UIのレベル選択(ArrowUp/Downの負方向拡張、現状は`stepElevatedLevel`が0..3
+  固定のままGameUI.tsxでキャストして型だけ通した)。
