@@ -9,6 +9,9 @@
 // 振幅/波長そのものを縛ることで、正規化パスなしに「構成で」1-Lipschitzを保証する
 // (詳細は下記コメント参照)。
 
+import type { TerrainType } from '../types';
+import { toKey } from '../utils';
+
 export const TERRAIN_HEIGHT_MAX = 10;
 
 // この標高以上のセルをmountainとして扱う。terrain.tsのMOUNTAIN_HEIGHT_THRESHOLDと同じ規約
@@ -191,6 +194,69 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
       return 'water';
     }
     return cellHeightAt(x, z) >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
+  };
+
+  return { cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt };
+}
+
+/**
+ * 手組みの(セル単位)heights/terrain Mapを TerrainField としてラップする橋渡しヘルパー。
+ * デバッグシナリオ(debugScenarios.ts)や、Mapを直接組み立てるテストのフィクスチャを
+ * field APIへ移行するために使う。コーナー標高の導出規約はterrain.tsの
+ * cellCornerElevations(min則: コーナー(cx,cz)を囲む4セル(cx-1,cz-1)/(cx,cz-1)/(cx-1,cz)/(cx,cz)
+ * のうち最小の標高)と完全に同じにしてある。
+ *
+ * terrainTypeAtはheightsからの導出ではなく、terrain Mapの明示的な値(あれば)を優先する。
+ * water判定は標高からは導出できない(標高0=平地と標高0=水面を区別できない)ため、
+ * 呼び出し側が組み立てたterrain Mapのwaterマーカーをそのまま信頼する。
+ */
+export function fieldFromMaps(
+  heights: Map<string, number>,
+  terrain: Map<string, TerrainType>,
+  halfExtent: number
+): TerrainField {
+  const inRange = (v: number): boolean => v >= -halfExtent && v <= halfExtent;
+  const cellHeight = (x: number, z: number): number => {
+    if (!inRange(x) || !inRange(z)) return 0;
+    return heights.get(toKey(x, z)) ?? 0;
+  };
+
+  const cornerHeightAt = (x: number, z: number): number => {
+    const ix = Math.round(x);
+    const iz = Math.round(z);
+    const cells: ReadonlyArray<[number, number]> = [
+      [ix - 1, iz - 1],
+      [ix, iz - 1],
+      [ix - 1, iz],
+      [ix, iz],
+    ];
+    let min = Infinity;
+    for (const [cx, cz] of cells) {
+      const h = cellHeight(cx, cz);
+      if (h < min) min = h;
+    }
+    return min === Infinity ? 0 : min;
+  };
+
+  const cellCornerHeights = (x: number, z: number): CellCorners => [
+    cornerHeightAt(x, z),
+    cornerHeightAt(x + 1, z),
+    cornerHeightAt(x, z + 1),
+    cornerHeightAt(x + 1, z + 1),
+  ];
+
+  const cellHeightAt = (x: number, z: number): number => {
+    const [nw, ne, sw, se] = cellCornerHeights(x, z);
+    return Math.min(nw, ne, sw, se);
+  };
+
+  const terrainTypeAt = (x: number, z: number): TerrainKind => {
+    const ix = Math.round(x);
+    const iz = Math.round(z);
+    const t = terrain.get(toKey(ix, iz));
+    if (t === 'water') return 'water';
+    if (t === 'mountain') return 'mountain';
+    return cellHeightAt(ix, iz) >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
   };
 
   return { cornerHeightAt, cellCornerHeights, cellHeightAt, terrainTypeAt };
