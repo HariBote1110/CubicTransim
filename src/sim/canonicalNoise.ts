@@ -7,10 +7,11 @@
 // プレーンなnumber演算で厳密に計算できる。64bit分割が本当に必要なのは
 // lerpQ内部の (2^32未満の値)×(2^32未満の値) の積(最大約1.8e19)だけ。
 
-/** u32×u32の厳密な64bit積を {hi, lo}(ともにu32)で返す。BigIntなしの分割乗算。 */
-export function umul32to64(a: number, b: number): { hi: number; lo: number } {
-  a >>>= 0;
-  b >>>= 0;
+/**
+ * u32×u32の厳密な64bit積の上位32bit floor(a*b/2^32) だけを返す(オブジェクト非生成)。
+ * lerpQのホットパス専用: lerpQが必要とするのは積の上位ワードのみなので、下位32bitは計算しない。
+ */
+function mulHi32(a: number, b: number): number {
   const aLo = a & 0xffff;
   const aHi = a >>> 16;
   const bLo = b & 0xffff;
@@ -19,11 +20,22 @@ export function umul32to64(a: number, b: number): { hi: number; lo: number } {
   const p1 = aHi * bLo;
   const p2 = aLo * bHi;
   const p3 = aHi * bHi;
-  let low = p0 + ((p1 + p2) % 65536) * 65536;
-  const carry = Math.floor(low / 4294967296);
-  low %= 4294967296;
-  const high = (p3 + Math.floor((p1 + p2) / 65536) + carry) % 4294967296;
-  return { hi: high >>> 0, lo: low >>> 0 };
+  const mid = p1 + p2 + Math.floor(p0 / 65536);
+  const high = p3 + Math.floor(mid / 65536);
+  return high >>> 0;
+}
+
+/** u32×u32の厳密な64bit積を {hi, lo}(ともにu32)で返す。BigIntなしの分割乗算。検証・非ホットパス用。 */
+export function umul32to64(a: number, b: number): { hi: number; lo: number } {
+  a >>>= 0;
+  b >>>= 0;
+  const aLo = a & 0xffff;
+  const bLo = b & 0xffff;
+  const p0 = aLo * bLo;
+  const p1 = (a >>> 16) * bLo;
+  const p2 = aLo * (b >>> 16);
+  const low = (p0 + ((p1 + p2) % 65536) * 65536) % 4294967296;
+  return { hi: mulHi32(a, b), lo: low >>> 0 };
 }
 
 /**
@@ -61,34 +73,45 @@ function floorEuclidean(x: number, wave: number): number {
   return Math.floor(x / wave);
 }
 
-/** smoothQ: 格子座標gridと、smoothstep多項式をQ0.32へround_half_upしたtを返す。 */
-function smoothQ(x: number, wave: number): { grid: number; t: number } {
+/**
+ * smoothQ: 格子座標gridと、smoothstep多項式をQ0.32へround_half_upしたtを返す。
+ * バッチAPI(terrainField.tsのnoiseGridFor)がオクターブ格子を再利用するために公開している。
+ */
+export function smoothQ(x: number, wave: number): { grid: number; t: number } {
   const grid = floorEuclidean(x, wave);
+  return { grid, t: quantiseTFromGrid(x, grid, wave) };
+}
+
+/**
+ * lerpQ: 単調な向きに応じてtruncating(切り捨て)補間する。64bit積の上位32bit=floor(diff*t/2^32)を使う。
+ * バッチAPI(terrainField.tsのnoiseGridFor)がハッシュ格子を再利用して各コーナーを補間するために公開している。
+ */
+export function lerpQ(a: number, b: number, t: number): number {
+  if (b >= a) {
+    return (a + mulHi32(b - a, t)) >>> 0;
+  }
+  return (a - mulHi32(a - b, t)) >>> 0;
+}
+
+/**
+ * quantiseTFromGrid: smoothQのt(Q0.32のround_half_up)だけを、オブジェクト非生成で返す。
+ * grid(=floor_euclidean(x/wave))は呼び出し側からもらう(valueNoiseQが1回のfloorEuclideanの
+ * 結果をgrid算出とt算出の両方で使い回すため、ここでは再計算しない)。
+ */
+function quantiseTFromGrid(x: number, grid: number, wave: number): number {
   const r = x - grid * wave; // 0 <= r < wave
   const n = r * r * (3 * wave - 2 * r);
   const d = wave * wave * wave;
-  // round_half_up(n * 2^32 / d) を厳密整数演算(floor((2n*2^32+d)/(2d)))で計算する。
   const numerator2 = 2 * n * 4294967296 + d;
-  const t = floorDivExact(numerator2, 2 * d);
-  return { grid, t: t >>> 0 };
+  return floorDivExact(numerator2, 2 * d) >>> 0;
 }
 
-/** lerpQ: 単調な向きに応じてtruncating(切り捨て)補間する。64bit積の上位32bit=floor(diff*t/2^32)を使う。 */
-function lerpQ(a: number, b: number, t: number): number {
-  if (b >= a) {
-    const diff = b - a;
-    const hi = umul32to64(diff, t).hi;
-    return (a + hi) >>> 0;
-  }
-  const diff = a - b;
-  const hi = umul32to64(diff, t).hi;
-  return (a - hi) >>> 0;
-}
-
-/** 1オクターブぶんの値ノイズ(u32, Q0.32)。 */
+/** 1オクターブぶんの値ノイズ(u32, Q0.32)。オブジェクト割り当てなしのホットパス。 */
 function valueNoiseQ(seed: number, x: number, z: number, wave: number): number {
-  const { grid: gx, t: tx } = smoothQ(x, wave);
-  const { grid: gz, t: tz } = smoothQ(z, wave);
+  const gx = floorEuclidean(x, wave);
+  const gz = floorEuclidean(z, wave);
+  const tx = quantiseTFromGrid(x, gx, wave);
+  const tz = quantiseTFromGrid(z, gz, wave);
   const v00 = hashU32(seed, gx, gz);
   const v10 = hashU32(seed, gx + 1, gz);
   const v01 = hashU32(seed, gx, gz + 1);

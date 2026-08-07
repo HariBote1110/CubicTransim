@@ -11,6 +11,16 @@
 
 import type { TerrainType } from '../types';
 import { toKey } from '../utils';
+import {
+  NOISE_WAVE_WEIGHTS,
+  compositeNoiseNumerator,
+  deriveSeedU32,
+  hashU32,
+  heightFromNumerator,
+  isWaterNumerator,
+  lerpQ,
+  smoothQ,
+} from './canonicalNoise';
 
 /** 既定マップの生成半径(-45..45)。旧terrain.tsのTERRAIN_COORD_RANGEを引き継ぐ。 */
 export const DEFAULT_HALF_EXTENT = 45;
@@ -59,105 +69,18 @@ export interface TerrainField {
   waterCornerGridFor?(x0: number, z0: number, w: number, h: number): Uint8Array;
 }
 
-// --- 決定的ハッシュ(格子点ごとの一様乱数) ---
-
-// mulberry32風のビット撹拌。terrain.tsのhashLatticeと同じ考え方だが、
-// オクターブごとのseedはrng(状態を持つ乱数生成器)からではなく、
-// (フィールドseed, オクターブ番号)から純粋に導出する(下のderiveOctaveSeed)。
-const hashLattice = (seed: number, x: number, z: number): number => {
-  let h = (seed ^ Math.imul(x, 374761393) ^ Math.imul(z, 668265263)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-};
-
-// murmur3風のfinalizerで(フィールドseed, オクターブ番号)から32bit整数シードを導出する。
-// rngの逐次状態を使わないため、任意のオクターブのシードを他のオクターブと無関係にO(1)で得られる
-// (チャンク非依存性の要件: heightAtがどのセルからでも同じ結果を出す必要がある)。
-const deriveOctaveSeed = (seed: number, index: number): number => {
-  let h = (seed ^ Math.imul(index + 1, 0x9e3779b9)) | 0;
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35);
-  h ^= h >>> 16;
-  return h >>> 0;
-};
-
-const smoothstep01 = (t: number): number => t * t * (3 - 2 * t);
-
-// 1オクターブぶんの値ノイズ: 波長waveの格子上の乱数[0,1]をsmoothstepで双線形補間する。
-const valueNoise = (seed: number, x: number, z: number, wave: number): number => {
-  const gx = Math.floor(x / wave);
-  const gz = Math.floor(z / wave);
-  const tx = smoothstep01(x / wave - gx);
-  const tz = smoothstep01(z / wave - gz);
-  const v00 = hashLattice(seed, gx, gz);
-  const v10 = hashLattice(seed, gx + 1, gz);
-  const v01 = hashLattice(seed, gx, gz + 1);
-  const v11 = hashLattice(seed, gx + 1, gz + 1);
-  const top = v00 + (v10 - v00) * tx;
-  const bottom = v01 + (v11 - v01) * tx;
-  return top + (bottom - top) * tz;
-};
-
-// --- ノイズのオクターブ構成と1-Lipschitzの構成的な導出 ---
+// --- 決定的ハッシュ・ノイズ ---
 //
-// [波長, 振幅] の組。terrain.tsと同様、低周波の大きな地形に高周波の細部を重ねる。
-// wave はすべて 5 以上(波長がセル1個分に対して十分大きい)にしてある。
-const NOISE_OCTAVES: ReadonlyArray<[number, number]> = [
-  [40, 1],
-  [20, 0.5],
-  [10, 0.25],
-  [5, 0.125],
-];
-const AMPLITUDE_SUM = NOISE_OCTAVES.reduce((sum, [, amp]) => sum + amp, 0); // 1.875
-
-// 合成ノイズ(0..1)がこの値以下のセルは標高0(平地)になる。terrain.tsのFLATLAND_THRESHOLDと
-// 同じ役割。平地率を過半にするため0.5よりやや高めに設定。
-const FLATLAND_THRESHOLD = 0.55;
-
-// 同じ合成ノイズ値がこの値未満のセルはwater(標高は自動的に0になる。下記コメント参照)。
-// FLATLAND_THRESHOLD より十分低いことが前提(水域は必ず「平地化フロア」の内側にあるため、
-// 湖の縁は必然的に標高0の平地と滑らかに接続する)。
-const WATER_THRESHOLD = 0.15;
-
-// 平地フロアを超えたぶんを標高へ変換する倍率。
+// progress/canonical-terrain-noise-integer.md の正準整数固定小数点定義(u32/64bit整数演算のみ、
+// 浮動小数点は一切介在しない)を ./canonicalNoise.ts が実装している。ここでは合成ノイズ分子N
+// (=8*q0+4*q1+2*q2+q3)から標高・water判定を導出するだけの薄いラッパーにする。
 //
-// 1-Lipschitzの導出:
-//   smoothstepの導関数 S'(t) = 6t(1-t) の最大値は t=0.5 で 1.5。
-//   1オクターブの値ノイズは、格子点の値(すべて[0,1])の凸結合をsmoothstepで補間したものなので、
-//   x方向(zを固定)の傾き |d(valueNoise)/dx| は、格子点差の絶対値(最大1)× S'(tx)の最大値(1.5)
-//   ÷ 波長wave で抑えられる: |d(valueNoise_i)/dx| <= 1.5 / wave_i。z方向も同様(双線形補間の
-//   対称性による)。
+// 旧実装(f64のsmoothstep + FLATLAND_THRESHOLD/HEIGHT_GAINによる後付けスケーリング)は
+// WASMレンダラーとのノイズ不一致を解消するため、この正準整数定義に一本化された
+// (既存seedの地形形状が変わることは移行時に許容: progress/16k-map-architecture.md参照)。
 //
-//   合成ノイズ noise = Σ amp_i * valueNoise_i / AMPLITUDE_SUM なので、
-//   |d(noise)/dx| <= Σ (amp_i / AMPLITUDE_SUM) * (1.5 / wave_i)
-//                  = 1.5/AMPLITUDE_SUM * Σ (amp_i / wave_i)
-//   NOISE_OCTAVESでは Σ(amp_i/wave_i) = 1/40 + 0.5/20 + 0.25/10 + 0.125/5 = 0.1 なので、
-//   |d(noise)/dx| <= 1.5 * 0.1 / 1.875 = 0.08。
-//
-//   標高(rounding前)は HEIGHT_GAIN * max(0, noise - FLATLAND_THRESHOLD)。max(0, ·) は
-//   1-Lipschitzを広げない(傾きを弱めるか0にするだけ)ので、
-//   |Δheight_raw| <= HEIGHT_GAIN * |Δnoise| <= HEIGHT_GAIN * 0.08 (連続近似での上界)。
-//
-//   これが 1 以下であれば、「1-Lipschitzな連続関数を最近接整数に丸めると、隣接する
-//   整数値の差はやはり1以下になる」という事実(丸めのズレは片側最大0.5、往復しても
-//   連続差+1を超えない)より、量子化後も隣接差1以下が保証される。
-//   HEIGHT_GAIN=11 なら 11*0.08=0.88 < 1 となり、正規化パスなしで安全マージンを確保できる。
-const HEIGHT_GAIN = 11;
-
-// 指定された頂点座標(x,z)の合成ノイズ値(0..1相当。理論上はこの範囲に収まる)を返す。
-// cornerHeightAt/terrainTypeAt の両方がこの同一の連続場を参照することで、水域(低い側の閾値)と
-// 陸地の標高(高い側の閾値からの持ち上げ)が同じ場に基づく一貫した挙動になる。
-const compositeNoise = (seed: number, x: number, z: number): number => {
-  let noise = 0;
-  for (let i = 0; i < NOISE_OCTAVES.length; i++) {
-    const [wave, amp] = NOISE_OCTAVES[i];
-    const octaveSeed = deriveOctaveSeed(seed, i);
-    noise += valueNoise(octaveSeed, x, z, wave) * amp;
-  }
-  return noise / AMPLITUDE_SUM;
-};
+// 1-Lipschitzは正準定義でも同じオクターブ構造(波長40/20/10/5、smoothstep補間)を保つため
+// 構成的に成立する(既存のプロパティテストで担保)。
 
 /**
  * seedとhalfExtentから、チャンク非依存(O(1)/頂点)の地形fieldを作る。
@@ -174,20 +97,22 @@ const compositeNoise = (seed: number, x: number, z: number): number => {
 export function createTerrainField(seed: number, halfExtent: number): TerrainField {
   const inRange = (v: number): boolean => v >= -halfExtent && v <= halfExtent;
 
-  // --- P9a: バッチ用の合成ノイズ格子計算 ---
+  // --- P9a: バッチ用の合成ノイズ分子(N)格子計算 ---
   //
-  // オクターブ格子の構造を利用する: valueNoise(wave)が実際に参照する格子点(gx,gz)は
+  // オクターブ格子の構造を利用する: valueNoiseQ(wave)が実際に参照する格子点(gx,gz)は
   // window(w+1)×(h+1)個の頂点に対して floor(window/wave)+2 個程度しかない
   // (waveが5以上・windowがチャンク=32程度なら1オクターブあたり高々十数個)。
-  // 頂点ごとにhashLatticeを呼ぶ(旧cornerHeightAtの経路)代わりに、この少数の格子点の
-  // ハッシュ値を先に計算しておき、各頂点はその配列引きと双線形補間だけで済ませる。
-  const noiseGridFor = (x0: number, z0: number, w: number, h: number): Float64Array => {
+  // 頂点ごとにhashU32を呼ぶ(旧cornerHeightAtの経路)代わりに、この少数の格子点のu32
+  // ハッシュ値を先に計算しておき、各頂点はその配列引きとlerpQ(64bit積)だけで済ませる。
+  // canonicalNoise.tsのcompositeNoiseNumerator(単一頂点版)と完全に同じ値になることを
+  // プロパティテストで保証する。
+  const noiseNumeratorGridFor = (x0: number, z0: number, w: number, h: number): Float64Array => {
     const gw = w + 1;
     const gh = h + 1;
     const noise = new Float64Array(gw * gh);
-    for (let oi = 0; oi < NOISE_OCTAVES.length; oi++) {
-      const [wave, amp] = NOISE_OCTAVES[oi];
-      const octaveSeed = deriveOctaveSeed(seed, oi);
+    for (let oi = 0; oi < NOISE_WAVE_WEIGHTS.length; oi++) {
+      const [wave, weight] = NOISE_WAVE_WEIGHTS[oi];
+      const octaveSeed = deriveSeedU32(seed, oi);
 
       const gx0 = Math.floor(x0 / wave);
       const gx1 = Math.floor((x0 + w) / wave) + 1;
@@ -198,37 +123,36 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
       const latticeHash = new Float64Array(lgw * lgh);
       for (let lgx = 0; lgx < lgw; lgx++) {
         for (let lgz = 0; lgz < lgh; lgz++) {
-          latticeHash[lgx * lgh + lgz] = hashLattice(octaveSeed, gx0 + lgx, gz0 + lgz);
+          latticeHash[lgx * lgh + lgz] = hashU32(octaveSeed, gx0 + lgx, gz0 + lgz);
         }
       }
 
       for (let lx = 0; lx < gw; lx++) {
         const x = x0 + lx;
-        const gx = Math.floor(x / wave) - gx0;
-        const tx = smoothstep01(x / wave - Math.floor(x / wave));
+        const { grid: gxAbs, t: tx } = smoothQ(x, wave);
+        const gx = gxAbs - gx0;
         for (let lz = 0; lz < gh; lz++) {
           const z = z0 + lz;
-          const gz = Math.floor(z / wave) - gz0;
-          const tz = smoothstep01(z / wave - Math.floor(z / wave));
+          const { grid: gzAbs, t: tz } = smoothQ(z, wave);
+          const gz = gzAbs - gz0;
           const v00 = latticeHash[gx * lgh + gz];
           const v10 = latticeHash[(gx + 1) * lgh + gz];
           const v01 = latticeHash[gx * lgh + (gz + 1)];
           const v11 = latticeHash[(gx + 1) * lgh + (gz + 1)];
-          const top = v00 + (v10 - v00) * tx;
-          const bottom = v01 + (v11 - v01) * tx;
-          const value = top + (bottom - top) * tz;
-          noise[lx * gh + lz] += value * amp;
+          const top = lerpQ(v00, v10, tx);
+          const bottom = lerpQ(v01, v11, tx);
+          const value = lerpQ(top, bottom, tz);
+          noise[lx * gh + lz] += value * weight;
         }
       }
     }
-    for (let i = 0; i < noise.length; i++) noise[i] /= AMPLITUDE_SUM;
     return noise;
   };
 
   const cornerGridForImpl = (x0: number, z0: number, w: number, h: number): Uint8Array => {
     const gw = w + 1;
     const gh = h + 1;
-    const noise = noiseGridFor(x0, z0, w, h);
+    const noise = noiseNumeratorGridFor(x0, z0, w, h);
     const grid = new Uint8Array(gw * gh);
     for (let lx = 0; lx < gw; lx++) {
       const x = x0 + lx;
@@ -239,13 +163,7 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
           grid[idx] = 0;
           continue;
         }
-        const n = noise[idx];
-        if (n < WATER_THRESHOLD) {
-          grid[idx] = 0;
-          continue;
-        }
-        const lifted = Math.max(0, n - FLATLAND_THRESHOLD);
-        grid[idx] = Math.min(TERRAIN_HEIGHT_MAX, Math.round(lifted * HEIGHT_GAIN));
+        grid[idx] = Math.min(TERRAIN_HEIGHT_MAX, heightFromNumerator(noise[idx]));
       }
     }
     return grid;
@@ -254,7 +172,7 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
   const waterCornerGridForImpl = (x0: number, z0: number, w: number, h: number): Uint8Array => {
     const gw = w + 1;
     const gh = h + 1;
-    const noise = noiseGridFor(x0, z0, w, h);
+    const noise = noiseNumeratorGridFor(x0, z0, w, h);
     const grid = new Uint8Array(gw * gh);
     for (let lx = 0; lx < gw; lx++) {
       const x = x0 + lx;
@@ -265,7 +183,7 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
           grid[idx] = 0;
           continue;
         }
-        grid[idx] = noise[idx] < WATER_THRESHOLD ? 1 : 0;
+        grid[idx] = isWaterNumerator(noise[idx]) ? 1 : 0;
       }
     }
     return grid;
@@ -275,19 +193,8 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
     const ix = Math.round(x);
     const iz = Math.round(z);
     if (!inRange(ix) || !inRange(iz)) return 0;
-    const noise = compositeNoise(seed, ix, iz);
-    if (noise < WATER_THRESHOLD) return 0;
-    const lifted = Math.max(0, noise - FLATLAND_THRESHOLD);
-    return Math.min(TERRAIN_HEIGHT_MAX, Math.round(lifted * HEIGHT_GAIN));
-  };
-
-  // 頂点(x,z)がwater側の閾値未満か(=標高0が「地形として低い」ためではなく、湖の水面だから)。
-  // cornerHeightAtの値だけでは平地(高さ0)と水面(高さ0)を区別できないため、セルのwater判定に使う。
-  const isWaterVertex = (x: number, z: number): boolean => {
-    const ix = Math.round(x);
-    const iz = Math.round(z);
-    if (!inRange(ix) || !inRange(iz)) return false;
-    return compositeNoise(seed, ix, iz) < WATER_THRESHOLD;
+    const n = compositeNoiseNumerator(seed, ix, iz);
+    return Math.min(TERRAIN_HEIGHT_MAX, heightFromNumerator(n));
   };
 
   const cellCornerHeights = (x: number, z: number): CellCorners => [
@@ -302,12 +209,30 @@ export function createTerrainField(seed: number, halfExtent: number): TerrainFie
     return Math.min(nw, ne, sw, se);
   };
 
+  // (nw,ne,sw,se)の4隅。terrainTypeAtは「water判定」と「標高」の両方を必要とするが、
+  // どちらも同じcompositeNoiseNumerator(N)から導出できるため、頂点ごとに1回だけ評価して
+  // height/waterの両方をそこから読み出す(旧: isWaterVertex×4 + cellHeightAt(cornerHeightAt×4)の
+  // 8回評価を4回へ半減)。
+  const CELL_CORNER_OFFSETS: ReadonlyArray<[number, number]> = [[0, 0], [1, 0], [0, 1], [1, 1]];
+
   const terrainTypeAt = (x: number, z: number): TerrainKind => {
-    // water: セルの4隅すべてがwater側の頂点(=完全に平坦な標高0の水面)であること。
-    if (isWaterVertex(x, z) && isWaterVertex(x + 1, z) && isWaterVertex(x, z + 1) && isWaterVertex(x + 1, z + 1)) {
-      return 'water';
+    let allWater = true;
+    let minHeight = TERRAIN_HEIGHT_MAX;
+    for (const [dx, dz] of CELL_CORNER_OFFSETS) {
+      const ix = Math.round(x + dx);
+      const iz = Math.round(z + dz);
+      if (!inRange(ix) || !inRange(iz)) {
+        allWater = false;
+        minHeight = 0;
+        continue;
+      }
+      const n = compositeNoiseNumerator(seed, ix, iz);
+      if (!isWaterNumerator(n)) allWater = false;
+      const h = Math.min(TERRAIN_HEIGHT_MAX, heightFromNumerator(n));
+      if (h < minHeight) minHeight = h;
     }
-    return cellHeightAt(x, z) >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
+    if (allWater) return 'water';
+    return minHeight >= MOUNTAIN_HEIGHT_THRESHOLD ? 'mountain' : 'grass';
   };
 
   return {

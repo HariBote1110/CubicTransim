@@ -425,12 +425,17 @@ describe('regionTownCandidate / generateRegionTowns', () => {
     expect(towns.length).toBeLessThanOrEqual(4);
   });
 
-  it('16Kマップ相当(halfExtent=8192)でも500ms未満で生成が終わる', () => {
+  // 閾値は正準整数ノイズ移行(progress/canonical-terrain-noise-integer.md)で500ms→900msへ緩和。
+  // 整数固定小数点(u32分割乗算・厳密整数除算)は旧f64実装よりコストが高く、towns.tsが
+  // terrainTypeAt/cellCornerHeightsをセルごとに逐次呼ぶ(バッチAPI非経由)ため、その差が
+  // そのまま乗る。単体では~150-250ms、フルスイート並列実行時の負荷下で~600-900msだった
+  // 実測に安全マージンを載せた値(progress/canonical-terrain-noise-integer.md参照)。
+  it('16Kマップ相当(halfExtent=8192)でも900ms未満で生成が終わる', () => {
     const bigField = createTerrainField(2026, 8192);
     const start = performance.now();
     const towns = generateRegionTowns(2026, 8192, bigField);
     const elapsed = performance.now() - start;
-    expect(elapsed).toBeLessThan(500);
+    expect(elapsed).toBeLessThan(900);
     // 「a few thousand towns」の想定オーダーに収まっていることの粗いガード
     expect(towns.length).toBeGreaterThan(500);
     expect(towns.length).toBeLessThan(20000);

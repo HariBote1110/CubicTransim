@@ -465,3 +465,33 @@ huge/極大マップで町が少なすぎるというユーザーフィードバ
   大都市)を確認。大都市の1つ(小沢市、25.0k)にカメラを飛ばし、高層コアが密集した
   同心円市街地として描画されることをスクリーンショットで確認した。保存→ロードで
   townDensity='dense'と町10,887件が往復することも確認した。
+
+## 正準整数ノイズへの移行(0.3.0-Alpha-43a)
+
+`src/sim/terrainField.ts`の地形ノイズを、`progress/canonical-terrain-noise-integer.md`が
+定義する正準整数固定小数点定義へ一本化した(WASMレンダラー側で確定した定義に本体TSを
+合わせる移行。既存seedの地形形状が変わることは移行時に許容)。
+
+- **実装**: `src/sim/canonicalNoise.ts`。BigIntは使わずu32のペア({hi,lo})で64bit演算する。
+  合成ノイズ分子N(=8*q0+4*q1+2*q2+q3、最大15*(2^32-1)≈6.44e10)はNumber.isSafeInteger
+  の範囲(2^53)に収まるため、64bit分割なしのプレーンなnumber演算で厳密に扱える。
+  64bit分割が本当に必要なのはlerpQ内部の(2^32未満)×(2^32未満)の積(最大約1.8e19)だけで、
+  `mulHi32`がオブジェクト割り当てなしで上位32bitのみを厳密計算する。
+- **検証**: 正準ドキュメントのJSON test vector(1000件)をスクリプトで
+  `src/sim/__fixtures__/canonicalNoiseVectors.json`へ抽出し、`canonicalNoise.test.ts`が
+  全件(numerator hi/lo・height・water)をbyte-for-byteで検証する。全件一致。
+- **water/標高のセマンティクス**: 正準定義は頂点単位でwater/heightをNから直接導出する
+  (旧実装のFLATLAND_THRESHOLD/HEIGHT_GAINによる後付けスケーリングは廃止)。
+  セル単位のwater判定(4隅すべてwater頂点なら水面セル)はterrainField.ts側の既存規約を
+  そのまま維持。
+- **1-Lipschitz**: 正準定義でも同じオクターブ構造(波長40/20/10/5、smoothstep補間)を
+  保つため、既存のプロパティテスト(隣接コーナー標高差1以下)はそのまま緑のまま通った。
+- **性能**: 整数演算(u32分割乗算・厳密整数除算)は旧f64実装より重く、単一頂点評価は
+  ベンチ(4M点)で約740ns/callだった。ホットパスのオブジェクト割り当て除去
+  (smoothQ/lerpQ相当をオブジェクト非生成の`quantiseTFromGrid`/`mulHi32`へ)と、
+  `terrainTypeAt`内の重複評価解消(旧: isWaterVertex×4+cellHeightAt経由のcornerHeightAt×4
+  =頂点あたり8回のノイズ評価だったのを、water/heightを同じNから同時に読む4回評価へ半減)
+  で約240ns/callまで削減。それでも`towns.test.ts`の16Kマップ性能ガードは
+  500ms→900ms、1.5秒ガードはそのまま(実測はフルスイート並列実行時の負荷下で
+  600〜900ms程度)へ緩和した。バッチAPI(`cornerGridFor`)は格子再利用構造を維持しており
+  33×33グリッドの<1msガードは変更なしで通っている。
