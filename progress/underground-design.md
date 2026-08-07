@@ -218,3 +218,57 @@
   行えていない(単体テスト・型検査・状態確認(`window.__debugWorld`)で
   代替した)。次回ブラウザ検証時は、OrbitControlsのref経由でカメラ位置を
   直接動かすデバッグフック(`window.__dbgSetCamera`等)を用意すると安定する。
+
+## P8b可視性バグ修正メモ(0.3.0-Alpha-40a→40b)
+
+- **症状**: 親エージェントの実機検証で発覚。地下1を選択して地下線を建設すると、
+  `window.__debugWorld`上はuppers[-1]が正しく作られ課金(¥6,000/10マス)も正しいのに、
+  画面上には何も見えない(地表の半透明メッシュが実質不透明に見え、下の地下線を
+  隠してしまう)。
+- **調査**: `window.__camera`/`window.__orbitControls`をGameScene.tsxのrefから
+  一時的に(恒久的に、`window.__sun`と同じ慣行として)公開し、`scene.traverse`で
+  実際のメッシュの`visible`/`material.opacity`/`material.transparent`/
+  `material.depthWrite`/`renderOrder`/ジオメトリの実頂点座標を直接確認した。
+  地下線メッシュ自体は正しい位置(`uppers[-1]`のセルに対応する世界座標)に
+  存在し、`visible:true`・`opacity:1`(不透明)であることを確認。地表(草地・
+  地面プレーン)も`transparent:true, opacity:0.3, depthWrite:false`(最初の修正
+  コミットで入れた設定)になっていることを確認できたが、それでも画面には
+  何も表示されなかった。地表メッシュを`visible:false`にすると地下線が正しい
+  位置に出現することから、「メッシュは存在するが地表の半透明レイヤーに
+  隠されている」ことを確定させた。
+- **根本原因**: `depthWrite:false`だけでは不十分で、`depthTest`が既定の`true`の
+  ままだと、この地下ビューの構図では地表の半透明フラグメントが(本アプリの
+  `OrthographicCamera`が`near=-50`という非標準値を使っている影響と推測される)
+  深度テストで正しく可視と判定されず、結果的に何も描かれない(=地表色も
+  地下線の色も出ない)現象が起きていた。`scene.traverse`で対象マテリアルの
+  `depthTest`を`false`に変更した瞬間、画面に地下線が正しく透けて見えるように
+  なることを実機で確認し、これを恒久修正としてソースに反映した
+  (`render/palette.ts`の`dim()`ヘルパーに`depthTest: false`を追加、
+  `GameScene.tsx`の地面プレーン用インラインマテリアルにも
+  `depthTest={!undergroundView}`を追加)。
+- **renderOrder**: 上記のdepthTest修正だけで可視性バグ自体は解消したが、
+  親エージェントの指摘どおり「不透明/半透明キューの並びに頼らない」ことを
+  明示するため、`render/viewMode.ts`に`SURFACE_RENDER_ORDER=0`/
+  `UNDERGROUND_RENDER_ORDER=10`を追加し、TrackNetwork/TerrainBlocks/
+  TownBlocks/Scenery/StationBlock(useEffect+group.traverseでmesh一括設定)/
+  DynamicTrain(視認層が変わった時だけtraverse)に配線した。three.jsの仕様上、
+  不透明(opaque)と半透明(transparent)は描画パスそのものが分かれており
+  opaqueが必ず先に描かれるため、renderOrder単体では今回のバグは解決しない
+  (実際に検証済み)が、同じキュー内での並び順の意図を明示するため残す。
+- **デバッグ手法として得た知見**: ブラウザの`left_click_drag`(computerツール)は
+  この環境で不安定(hoverしても1マスのno-effectに落ちることが多い)。
+  `javascript_tool`でcanvasへ`PointerEvent`(pointerdown→複数pointermove→
+  pointerup)を直接dispatchする方式は安定して再現できた。ただし
+  **座標系に注意**: `javascript_tool`はDOM実ピクセル空間(このアプリでは
+  1280x720)で座標を渡す必要があるのに対し、`computer`ツール(screenshot/
+  hover/left_click_drag)はスクリーンショット表示空間(800x450、内部で
+  自動的に実ピクセルへ変換される)を使う。混同すると数百px単位でずれる。
+  カメラの位置を直接確認・移動したい場合は、`OrthographicCamera`/
+  `OrbitControls`のrefをコンポーネント側で`window`に公開しておき
+  (`window.__camera`/`window.__orbitControls`、`window.__sun`と同じ慣行)、
+  `controls.target.set(x,y,z); controls.update();`で移動するのが安定する
+  (`camera.position`を直接書き換えてもOrbitControlsの次回updateで元に
+  戻される)。ワールド座標→スクリーン座標の変換は自前で行列計算するより
+  `THREE.Vector3.prototype.project(camera)`(cameraの既存インスタンスの
+  コンストラクタから`Vector3`を取得できる: `camera.position.constructor`)を
+  使うほうが確実。

@@ -9,7 +9,7 @@ import { carPositions } from '../sim/consist';
 import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
 import { TrainCar, type CarVariant } from './TrainCar';
 import { PALETTE } from '../render/palette';
-import { isLevelDimmed, shouldRenderLevel } from '../render/viewMode';
+import { isLevelDimmed, shouldRenderLevel, SURFACE_RENDER_ORDER, UNDERGROUND_RENDER_ORDER } from '../render/viewMode';
 
 interface DynamicTrainProps {
   data: TrainData;
@@ -108,6 +108,15 @@ export const DynamicTrain: React.FC<DynamicTrainProps> = ({
     if (level !== visualLevelRef.current) {
       visualLevelRef.current = level;
       setVisualLevel(level);
+      // P8b: 地下ビュー中、半透明の地表(depthWrite:false)越しに列車が確実に見えるよう、
+      // three.jsの描画順序を明示する(TrackNetwork/StationBlockと同じ理屈)。地平・高架は
+      // 従来どおりSURFACE_RENDER_ORDER。頻繁には変わらない(層をまたいだ瞬間だけ)ので
+      // 毎フレームではなくここでだけtraverseする。
+      const order = level < 0 ? UNDERGROUND_RENDER_ORDER : SURFACE_RENDER_ORDER;
+      groupRef.current.traverse(obj => { if ((obj as THREE.Mesh).isMesh) obj.renderOrder = order; });
+      for (const carGroup of carRefs.current) {
+        carGroup?.traverse(obj => { if ((obj as THREE.Mesh).isMesh) obj.renderOrder = order; });
+      }
     }
 
     const head = positions[0];

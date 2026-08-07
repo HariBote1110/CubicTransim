@@ -22,7 +22,7 @@ import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis, BuildLevel } from '../sim/construction';
 import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
-import { isUndergroundView, isLevelDimmed } from '../render/viewMode';
+import { isUndergroundView, isLevelDimmed, SURFACE_RENDER_ORDER, UNDERGROUND_RENDER_ORDER } from '../render/viewMode';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
 import type { TerrainField } from '../sim/terrainField';
@@ -566,9 +566,12 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <hemisphereLight args={['#dcefff', '#75825a', 0.55]} />
       <ambientLight intensity={0.2} />
       <SunLight />
-      <OrthographicCamera makeDefault position={[20, 20, 20]} zoom={40} near={-50} far={200} />
+      <OrthographicCamera
+        makeDefault position={[20, 20, 20]} zoom={40} near={-50} far={200}
+        ref={(cam) => { if (cam) (window as any).__camera = cam; }}
+      />
       <OrbitControls
-        ref={orbitControlsRef}
+        ref={(c) => { orbitControlsRef.current = c; if (c) (window as any).__orbitControls = c; }}
         makeDefault
         enableRotate={false}
         enableZoom={true}
@@ -801,6 +804,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
             platformDoors={stations.get(cell.stationId)?.platformDoors ?? 'none'}
             isEnd={undergroundEndKeys.has(cell.key)}
             dimmed={isLevelDimmed(level, undergroundView, buildLevel)}
+            renderOrder={UNDERGROUND_RENDER_ORDER}
           />
         );
       })}
@@ -868,6 +872,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         rotation={[-Math.PI / 2, 0, 0]}
         position={[groundCentre.x, -0.02, groundCentre.z]}
         receiveShadow
+        renderOrder={SURFACE_RENDER_ORDER}
         onPointerMove={handlePointerMove}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
@@ -875,7 +880,17 @@ export const GameScene: React.FC<GameSceneProps> = ({
         onClick={handleClick}
       >
         <planeGeometry args={[groundSpan, groundSpan]} />
-        <meshStandardMaterial map={groundTexture} color="#ffffff" roughness={1} />
+        {/* P8b: 地下ビュー中はこの地面プレーンも半透明+depthWrite/depthTest無効に
+            しないと、地表が(視覚上は薄くても)下の地下線路を覆い隠してしまう
+            (TerrainBlocks/DIMMED_MATERIALSと同じ理由・同じ実測結果。
+            render/palette.tsのdim()のコメント参照)。ここは共有インスタンスではなく
+            地面プレーン専用の1つだけのメッシュなので、クローンではなくprops切替で
+            済ませる。 */}
+        <meshStandardMaterial
+          map={groundTexture} color="#ffffff" roughness={1}
+          transparent={undergroundView} opacity={undergroundView ? 0.3 : 1}
+          depthWrite={!undergroundView} depthTest={!undergroundView}
+        />
       </mesh>
 
       {/* 建設モードのときだけグリッドを出す(通常時はジオラマの見た目を邪魔しない) */}

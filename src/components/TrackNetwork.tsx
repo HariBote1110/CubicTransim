@@ -15,6 +15,7 @@ import {
 } from '../sim/trackPath';
 import { railRenderHeight } from '../sim/slopes';
 import { ALL_LEVELS } from '../sim/construction';
+import { SURFACE_RENDER_ORDER, UNDERGROUND_RENDER_ORDER } from '../render/viewMode';
 
 // 高架のレベル1〜MAX_ELEVATED_LEVELを走査するための配列([1,2,3])。
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
@@ -269,43 +270,46 @@ export const TrackNetwork: React.FC<Props> = ({ railMap, field, undergroundView 
   return (
     <group>
       {merged.surface.decks && (
-        <mesh geometry={merged.surface.decks} material={surfaceMaterials.overpassDeck} castShadow receiveShadow raycast={noRaycast} />
+        <mesh geometry={merged.surface.decks} material={surfaceMaterials.overpassDeck} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
       )}
       {merged.surface.piers && (
-        <mesh geometry={merged.surface.piers} material={surfaceMaterials.overpassPier} castShadow receiveShadow raycast={noRaycast} />
+        <mesh geometry={merged.surface.piers} material={surfaceMaterials.overpassPier} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
       )}
       {merged.surface.abutments && (
-        <mesh geometry={merged.surface.abutments} material={surfaceMaterials.overpassPier} castShadow receiveShadow raycast={noRaycast} />
+        <mesh geometry={merged.surface.abutments} material={surfaceMaterials.overpassPier} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
       )}
-      {merged.surface.ballast && <mesh geometry={merged.surface.ballast} material={surfaceMaterials.ballast} receiveShadow raycast={noRaycast} />}
-      {merged.surface.sleepers && <mesh geometry={merged.surface.sleepers} material={surfaceMaterials.sleeper} receiveShadow raycast={noRaycast} />}
+      {merged.surface.ballast && <mesh geometry={merged.surface.ballast} material={surfaceMaterials.ballast} receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.surface.sleepers && <mesh geometry={merged.surface.sleepers} material={surfaceMaterials.sleeper} receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
       {merged.surface.rails && (
-        <mesh geometry={merged.surface.rails} material={surfaceMaterials.rail as THREE.Material} castShadow raycast={noRaycast} />
+        <mesh geometry={merged.surface.rails} material={surfaceMaterials.rail as THREE.Material} castShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
       )}
 
-      {/* 地下ビュー中のみ: 選択レベルの地下線(通常輝度)+それ以外の地下線(暗い)。 */}
+      {/* 地下ビュー中のみ: 選択レベルの地下線(通常輝度)+それ以外の地下線(暗い)。
+          renderOrderをsurfaceより大きくし、three.jsの不透明/半透明キューの並びに
+          頼らず「地表の後に必ず描く」ことを明示する(depthWrite:falseの地表越しに
+          安定して見えるようにするため)。 */}
       {undergroundView && merged.undergroundBright.ballast && (
-        <mesh geometry={merged.undergroundBright.ballast} material={MATERIALS.ballast} receiveShadow raycast={noRaycast} />
+        <mesh geometry={merged.undergroundBright.ballast} material={MATERIALS.ballast} receiveShadow raycast={noRaycast} renderOrder={UNDERGROUND_RENDER_ORDER} />
       )}
       {undergroundView && merged.undergroundBright.sleepers && (
-        <mesh geometry={merged.undergroundBright.sleepers} material={MATERIALS.sleeper} receiveShadow raycast={noRaycast} />
+        <mesh geometry={merged.undergroundBright.sleepers} material={MATERIALS.sleeper} receiveShadow raycast={noRaycast} renderOrder={UNDERGROUND_RENDER_ORDER} />
       )}
       {undergroundView && merged.undergroundBright.rails && (
-        <mesh geometry={merged.undergroundBright.rails} material={MATERIALS.rail as THREE.Material} castShadow raycast={noRaycast} />
+        <mesh geometry={merged.undergroundBright.rails} material={MATERIALS.rail as THREE.Material} castShadow raycast={noRaycast} renderOrder={UNDERGROUND_RENDER_ORDER} />
       )}
       {undergroundView && merged.undergroundDim.ballast && (
-        <mesh geometry={merged.undergroundDim.ballast} material={DIMMED_MATERIALS.ballast} raycast={noRaycast} />
+        <mesh geometry={merged.undergroundDim.ballast} material={DIMMED_MATERIALS.ballast} raycast={noRaycast} renderOrder={UNDERGROUND_RENDER_ORDER} />
       )}
       {undergroundView && merged.undergroundDim.sleepers && (
-        <mesh geometry={merged.undergroundDim.sleepers} material={DIMMED_MATERIALS.sleeper} raycast={noRaycast} />
+        <mesh geometry={merged.undergroundDim.sleepers} material={DIMMED_MATERIALS.sleeper} raycast={noRaycast} renderOrder={UNDERGROUND_RENDER_ORDER} />
       )}
       {undergroundView && merged.undergroundDim.rails && (
-        <mesh geometry={merged.undergroundDim.rails} material={DIMMED_MATERIALS.rail as THREE.Material} raycast={noRaycast} />
+        <mesh geometry={merged.undergroundDim.rails} material={DIMMED_MATERIALS.rail as THREE.Material} raycast={noRaycast} renderOrder={UNDERGROUND_RENDER_ORDER} />
       )}
 
       {/* 通常表示のみ: 掘割ランプの地表開口(暗い穴+短い擁壁)。 */}
       {!undergroundView && merged.openings && (
-        <mesh geometry={merged.openings} material={MATERIALS.undergroundPit} receiveShadow raycast={noRaycast} />
+        <mesh geometry={merged.openings} material={MATERIALS.undergroundPit} receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
       )}
     </group>
   );

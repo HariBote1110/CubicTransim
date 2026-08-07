@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
+import * as THREE from 'three';
 import type { PlatformDoorType } from '../types';
 import { materialsFor, PALETTE, angleFromVector } from '../render/palette';
 import { BOUNDARY_OFFSETS } from '../render/trackGeometry';
+import { SURFACE_RENDER_ORDER } from '../render/viewMode';
 
 interface Props {
   position: [number, number, number];
@@ -11,6 +13,14 @@ interface Props {
   isEnd?: boolean;
   /** P8b: 地下ビュー中、選択中の地下レベル以外の駅は暗く半透明にする。 */
   dimmed?: boolean;
+  /**
+   * P8b: three.jsの描画順序(render/viewMode.tsのSURFACE_RENDER_ORDER/
+   * UNDERGROUND_RENDER_ORDER)。地下ビュー中、地表越しに選択中の地下駅を
+   * 確実に見せるため、地下セルの呼び出し側はUNDERGROUND_RENDER_ORDERを渡す。
+   * 内部の各meshへはuseEffectのtraverseでまとめて反映する(ホーム設備は
+   * 複数meshに分かれているため、1つずつpropsを配線せずに済ませる)。
+   */
+  renderOrder?: number;
 }
 
 // --- 寸法(1セル=1.0、線路の軌道中心が原点) ---
@@ -109,11 +119,17 @@ const PlatformSide: React.FC<{ side: 1 | -1; doors: PlatformDoorType; isEnd: boo
  * 軌道の向き(connections)に合わせて回転させるため、斜めの駅でもホームが線路に沿う。
  */
 export const StationBlock: React.FC<Props> = ({
-  position, connections, platformDoors, isEnd = false, dimmed = false,
+  position, connections, platformDoors, isEnd = false, dimmed = false, renderOrder = SURFACE_RENDER_ORDER,
 }) => {
   const angle = trackAngleFromConnections(connections);
+  const groupRef = useRef<THREE.Group>(null);
+  useEffect(() => {
+    groupRef.current?.traverse(obj => {
+      if ((obj as THREE.Mesh).isMesh) obj.renderOrder = renderOrder;
+    });
+  }, [renderOrder, dimmed, connections, isEnd, platformDoors]);
   return (
-    <group position={position} rotation={[0, angle, 0]}>
+    <group position={position} rotation={[0, angle, 0]} ref={groupRef}>
       <PlatformSide side={1} doors={platformDoors} isEnd={isEnd} dimmed={dimmed} />
       <PlatformSide side={-1} doors={platformDoors} isEnd={isEnd} dimmed={dimmed} />
     </group>

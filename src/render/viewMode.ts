@@ -21,6 +21,14 @@ export function shouldRenderLevel(level: number, undergroundView: boolean): bool
   return true;
 }
 
+// P8b: 地下ビュー中の描画順序。three.jsの不透明/半透明キューの並び替えに任せず、
+// 「地表(半透明・depthWrite無効)は必ず先に描き、選択中の地下(不透明)は必ず後に
+// 描く」ことをrenderOrderで明示する。ballast/sleepers/rails等バケット間の相対順は
+// 問題にならない(同じレイヤー内なので)。値そのものに意味は無く、SURFACE<UNDERGROUNDの
+// 大小関係だけが効く。
+export const SURFACE_RENDER_ORDER = 0;
+export const UNDERGROUND_RENDER_ORDER = 10;
+
 /**
  * レベルlevelのコンテンツを暗く(dimmed)描くべきか。
  * 通常表示では何も暗くしない。地下ビュー中は、選択中のレベル以外(地平・高架・

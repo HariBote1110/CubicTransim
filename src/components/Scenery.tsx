@@ -4,6 +4,7 @@ import type { CellData } from '../types';
 import type { TownTileIndex } from '../sim/townTiles';
 import { toKey } from '../utils';
 import { materialsFor, hash01 } from '../render/palette';
+import { SURFACE_RENDER_ORDER } from '../render/viewMode';
 import type { TerrainField } from '../sim/terrainField';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import { visibleChunkRange, chunkCells, chunkKey } from '../render/terrainChunks';
@@ -125,10 +126,10 @@ export const Scenery: React.FC<Props> = ({
 
   return (
     <group>
-      {merged.trunks && <mesh geometry={merged.trunks} material={MATERIALS.trunk} raycast={noRaycast} />}
-      {merged.foliage && <mesh geometry={merged.foliage} material={MATERIALS.foliage} castShadow raycast={noRaycast} />}
+      {merged.trunks && <mesh geometry={merged.trunks} material={MATERIALS.trunk} raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.foliage && <mesh geometry={merged.foliage} material={MATERIALS.foliage} castShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
       {merged.foliageDark && (
-        <mesh geometry={merged.foliageDark} material={MATERIALS.foliageDark} castShadow raycast={noRaycast} />
+        <mesh geometry={merged.foliageDark} material={MATERIALS.foliageDark} castShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
       )}
     </group>
   );

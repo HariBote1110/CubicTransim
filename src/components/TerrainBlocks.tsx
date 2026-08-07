@@ -5,6 +5,7 @@ import type { TerrainField } from '../sim/terrainField';
 import { TERRAIN_HEIGHT_MAX } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import { materialsFor } from '../render/palette';
+import { SURFACE_RENDER_ORDER } from '../render/viewMode';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import type { CornerDiffs } from '../sim/terrainOverlay';
 import { overlayChunkRefs } from '../sim/terrainOverlay';
@@ -287,13 +288,13 @@ export const TerrainBlocks: React.FC<Props> = ({
     <group>
       {chunkEntries.map(({ key, merged }) => (
         <group key={key}>
-          {merged.shore && <mesh geometry={merged.shore} material={MATERIALS.shore} receiveShadow raycast={noRaycast} />}
-          {merged.water && <mesh geometry={merged.water} material={MATERIALS.water} raycast={noRaycast} />}
+          {merged.shore && <mesh geometry={merged.shore} material={MATERIALS.shore} receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+          {merged.water && <mesh geometry={merged.water} material={MATERIALS.water} raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
           {merged.rock && (
-            <mesh geometry={merged.rock} material={MATERIALS.rock} castShadow receiveShadow raycast={noRaycast} />
+            <mesh geometry={merged.rock} material={MATERIALS.rock} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
           )}
           {merged.rockDark && (
-            <mesh geometry={merged.rockDark} material={MATERIALS.rockDark} castShadow receiveShadow raycast={noRaycast} />
+            <mesh geometry={merged.rockDark} material={MATERIALS.rockDark} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />
           )}
           {merged.grassTop && (
             <mesh
@@ -301,6 +302,7 @@ export const TerrainBlocks: React.FC<Props> = ({
               material={MATERIALS.grassTerrace}
               castShadow
               receiveShadow
+              renderOrder={SURFACE_RENDER_ORDER}
               {...topFaceProps}
             />
           )}
@@ -310,6 +312,7 @@ export const TerrainBlocks: React.FC<Props> = ({
               material={MATERIALS.rockSnow}
               castShadow
               receiveShadow
+              renderOrder={SURFACE_RENDER_ORDER}
               {...topFaceProps}
             />
           )}

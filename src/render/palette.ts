@@ -147,8 +147,27 @@ export const bodyMaterial = (color: string): THREE.MeshStandardMaterial => {
 // セル数・建物数が多い(数百〜数千メッシュ)ため、メッシュごとにマテリアルを
 // クローンするのは高コスト。MATERIALSと同じキー構成を持つ「暗い版」を1つずつ
 // 生成し、描画側はどちらの共有インスタンスを使うか(dimmed props)を選ぶだけにする。
+//
+// depthWrite:false と depthTest:false の両方が必須(実測のブラウザ検証で判明した
+// バグの修正)。
+//   - depthWrite:false が無いと、地表(TerrainBlocks)や地面プレーン(GameScene)の
+//     ような「カメラに近い側の半透明メッシュ」が深度バッファへ書き込んでしまい、
+//     同じく半透明な他の地表レイヤー(町・樹木・別の地形チャンク)同士が描画順序
+//     次第で互いを覆い隠し合う。
+//   - depthTest:false も併せて無効化しないと、実機検証で「メッシュはvisible=true・
+//     opacity<1で実在するのに画面には一切映らない(地下の線路が完全に隠れる)」
+//     不具合が再現した。本アプリのOrthographicCameraはnear=-50という非標準の値を
+//     使っており(P8a以前からの既存設定)、これが原因で深度テストの前後判定が
+//     直感どおりに働かない現象が起きていたと推測される(scene.traverseで実測:
+//     depthTest:trueのままdepthWrite:falseだけにすると地下の不透明メッシュが
+//     一切透けて見えず、depthTest:falseに変えた瞬間に正しく透けて見えるように
+//     なることをブラウザで確認した)。地表は「常に手前にある半透明の書き割り」
+//     という役割なので、深度テストを無効化してもopacity<1が前提で他の不透明物を
+//     隠さない設計上、副作用は無い。
 const dim = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) =>
-  new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.22, ...extra });
+  new THREE.MeshStandardMaterial({
+    color, transparent: true, opacity: 0.3, depthWrite: false, depthTest: false, ...extra,
+  });
 
 export const DIMMED_MATERIALS = {
   ballast: dim(PALETTE.ballast, { roughness: 1 }),

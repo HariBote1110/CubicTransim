@@ -6,6 +6,7 @@ import { fromKey } from '../utils';
 import type { TownSubTileIndex } from '../sim/townTiles';
 import { subTileWorldCentre, townSubTileRadius, SUB_TILES_PER_TILE, parentTileOfSub } from '../sim/townTiles';
 import { materialsFor, hash01 } from '../render/palette';
+import { SURFACE_RENDER_ORDER } from '../render/viewMode';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import type { TerrainField } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -161,13 +162,13 @@ export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles, field, dimmed
 
   return (
     <group>
-      {merged.kerbs && <mesh geometry={merged.kerbs} material={MATERIALS.roadKerb} receiveShadow raycast={noRaycast} />}
-      {merged.roads && <mesh geometry={merged.roads} material={MATERIALS.roadAsphalt} receiveShadow raycast={noRaycast} />}
-      {merged.wallsA && <mesh geometry={merged.wallsA} material={MATERIALS.buildingA} castShadow receiveShadow raycast={noRaycast} />}
-      {merged.wallsB && <mesh geometry={merged.wallsB} material={MATERIALS.buildingB} castShadow receiveShadow raycast={noRaycast} />}
-      {merged.wallsC && <mesh geometry={merged.wallsC} material={MATERIALS.buildingC} castShadow receiveShadow raycast={noRaycast} />}
-      {merged.roofs && <mesh geometry={merged.roofs} material={MATERIALS.buildingRoof} castShadow raycast={noRaycast} />}
-      {merged.roofsFlat && <mesh geometry={merged.roofsFlat} material={MATERIALS.buildingRoofFlat} raycast={noRaycast} />}
+      {merged.kerbs && <mesh geometry={merged.kerbs} material={MATERIALS.roadKerb} receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.roads && <mesh geometry={merged.roads} material={MATERIALS.roadAsphalt} receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.wallsA && <mesh geometry={merged.wallsA} material={MATERIALS.buildingA} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.wallsB && <mesh geometry={merged.wallsB} material={MATERIALS.buildingB} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.wallsC && <mesh geometry={merged.wallsC} material={MATERIALS.buildingC} castShadow receiveShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.roofs && <mesh geometry={merged.roofs} material={MATERIALS.buildingRoof} castShadow raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
+      {merged.roofsFlat && <mesh geometry={merged.roofsFlat} material={MATERIALS.buildingRoofFlat} raycast={noRaycast} renderOrder={SURFACE_RENDER_ORDER} />}
 
       {towns.map(town => (
         <Html
