@@ -803,6 +803,22 @@ describe('自由に敷ける高架線（applyElevatedPath）', () => {
     expect(mid.connections! & DIR.S).toBe(DIR.S);
   });
 
+  it('P7b: 坂になるセルが平坦でも標高1以上(flatな高原)の場合はno-op(坂は標高0の地平専用)', () => {
+    // isBuildableGroundはP7bで「flatなら任意標高で可」に緩んだが、坂(ramp)は従来通り
+    // 標高0限定のガード(isFlatGroundLevelZero)を通す。applyBridge(旧・固定長橋)は
+    // 両端2セルずつを強制的に地平(level0)接続の坂にするため、この検証に使える。
+    const field: TerrainField = {
+      cornerHeightAt: () => 1,
+      cellCornerHeights: () => [1, 1, 1, 1],
+      cellHeightAt: () => 1,
+      terrainTypeAt: () => 'mountain',
+    };
+    const state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
+    const result = applyBridge(state, path, field);
+    expect(result).toBe(state);
+  });
+
   it('水域の上にも高架線を敷ける(橋の役割を兼ねる)', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);

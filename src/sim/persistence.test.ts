@@ -11,6 +11,9 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
+      // P7b: tunnelはboolean→{height:number}に拡張された。JSON経由でも
+      // 高さが失われず往復することを確認する。
+      ['2,0', { type: 'rail', connections: 3, tunnel: { height: 2 } }],
     ]);
     const stations = new Map<string, StationData>([
       ['stA', { id: 'stA', name: 'Station A', cells: [{ x: 1, z: 0, layer: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],

@@ -71,6 +71,14 @@ const isBuildableGround = (field: TerrainField, x: number, z: number): boolean =
   return canPlaceFlatStructure(slopeOf(field.cellCornerHeights(x, z)));
 };
 
+// 坂(ramp)セルは従来通り「標高0の地平」にしか置けない(高架/自由な高架線の坂は、
+// 地表からOVERPASS_HEIGHT単位で登る前提の描画・物理モデルなので、標高のある地面
+// からの発着は想定していない)。P7bでisBuildableGroundが「flatなら任意標高で可」に
+// 緩んだため、坂だけはここで明示的に標高0を要求するガードを別に用意する
+// (design doc「Elevated tracks: unchanged」を維持する)。
+const isFlatGroundLevelZero = (field: TerrainField, x: number, z: number): boolean =>
+  isBuildableGround(field, x, z) && field.cellHeightAt(x, z) === 0;
+
 // --- ヘルパー ---
 const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
   const key = toKey(x, z);
@@ -435,7 +443,7 @@ export function isElevatedConnectPlanBuildable(
   for (let i = 0; i < path.length; i++) {
     if (plan.roles[i].kind !== 'ramp') continue;
     if (railMap.get(toKey(path[i].x, path[i].z))?.type === 'depot') return false;
-    if (!isBuildableGround(field, path[i].x, path[i].z)) return false;
+    if (!isFlatGroundLevelZero(field, path[i].x, path[i].z)) return false;
   }
   if (pathConflictsWithExistingRamp(railMap, path)) return false;
   return planHasStraightRamps(path, plan);
@@ -987,7 +995,7 @@ export function applyElevatedPath(
   // 桁(span)は家の上空を通過できるが、坂は地面に接するため)。
   for (let i = 0; i < path.length; i++) {
     if (plan.roles[i].kind !== 'ramp') continue;
-    if (!isBuildableGround(field, path[i].x, path[i].z)) return state;
+    if (!isFlatGroundLevelZero(field, path[i].x, path[i].z)) return state;
     if (isTownBlocked(townTiles, path[i].x, path[i].z)) return state;
   }
 
