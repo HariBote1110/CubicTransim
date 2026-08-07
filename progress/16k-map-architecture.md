@@ -64,21 +64,25 @@
 
 ## P1実装メモ(sim/terrainField.ts)
 
-- `createTerrainField(seed, halfExtent)` が `heightAt`/`terrainTypeAt` を返す。terrain.tsの
-  `generateHeights`と同じ「フラクタル値ノイズ(smoothstep双線形補間)+平地バイアス+HEIGHT_GAIN」
-  構成だが、normaliseHeights(全域2パス距離変換)を使わず、オクターブの振幅/波長そのものから
-  1-Lipschitzを導く: smoothstepの最大傾き1.5と各オクターブの波長から連続場の勾配上界を計算し
+- `createTerrainField(seed, halfExtent)` が `cornerHeightAt`(頂点格子・一次データ)/
+  `cellCornerHeights`/`cellHeightAt`/`terrainTypeAt` を返す(上記「コーナー格子を一次データに
+  する」追記を反映した最終形)。terrain.tsの`generateHeights`と同じ「フラクタル値ノイズ
+  (smoothstep双線形補間)+平地バイアス+HEIGHT_GAIN」構成だが、normaliseHeights(全域2パス
+  距離変換)を使わず、オクターブの振幅/波長そのものから1-Lipschitzを導く: smoothstepの
+  最大傾き1.5と各オクターブの波長から連続場の勾配上界を計算し
   (`Σ (amp_i/AMPLITUDE_SUM) * 1.5/wave_i`)、HEIGHT_GAINをその逆数未満に選ぶことで、
   丸め後も隣接差1以下になることを保証する(「1-Lipschitzな連続関数を最近接整数に丸めても
-  隣接差は1以下」という事実に依拠。詳細な式はterrainField.ts内のコメント参照)
+  隣接差は1以下」という事実に依拠。詳細な式はterrainField.ts内のコメント参照)。
+  1-Lipschitzの保証・プロパティテストはこのコーナー(頂点)格子に対して行う
 - オクターブのシードはrngの逐次状態ではなく `deriveOctaveSeed(seed, index)`(murmur3風
-  finalizer)で純粋に導出する。これによりheightAtがどのセルからでも同じ結果を出せる
+  finalizer)で純粋に導出する。これによりcornerHeightAtがどの頂点からでも同じ結果を出せる
   (チャンク非依存性の要件)
-- 水域は同一の合成ノイズ場を2つの閾値(WATER_THRESHOLD < FLATLAND_THRESHOLD)で切るだけ。
-  別ノイズ場を使わないため、湖の縁が平地フロアの内側に必然的に収まり、1-Lipschitzの証明が
-  水域を含めてそのまま成立する
-- 範囲外(|x|または|z| > halfExtent)は常に 'grass'/標高0(境界との連続性は保証しない、
-  という設計判断。コメントに明記)
-- テストは決定性・値域・水域/山岳の整合・範囲外・1-Lipschitz(遠方x≈8000やチャンク境界
-  64の倍数を含む散らばった64×64窓)・平地優勢の分布・性能ガード(50ms)をカバー
+- 水域はセルの4隅すべてが「同一の合成ノイズ場でWATER_THRESHOLD未満の頂点」であることで判定する
+  (`isWaterVertex`)。WATER_THRESHOLD < FLATLAND_THRESHOLDなので、水域は必ず4隅とも標高0の
+  完全に平坦なセルになり、湖の縁も平地フロアの内側に必然的に収まる
+- 範囲外(|x|または|z| > halfExtent)は常に頂点標高0('grass'/標高0)(境界との連続性は
+  保証しない、という設計判断。コメントに明記)
+- テストは決定性・値域・cellCornerHeightsの並び([nw,ne,sw,se])・cellHeightAt=4隅min・
+  水域/山岳の整合・範囲外・頂点格子上の1-Lipschitz(遠方x≈8000やチャンク境界64の倍数を
+  含む散らばった64×64窓)・平地優勢の分布・性能ガード(50ms)をカバー
 - terrain.ts/hooks/componentsへの配線はまだ行っていない(このフェーズはadditiveのみ)
