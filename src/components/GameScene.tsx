@@ -772,7 +772,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TownBlocks towns={visibleTowns} townSubTiles={visibleTownSubTiles} />
+      <TownBlocks towns={visibleTowns} townSubTiles={visibleTownSubTiles} field={field} />
 
       {Array.from(stations.values()).map(station => {
         const orderIndices: number[] = [];

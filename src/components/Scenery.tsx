@@ -7,6 +7,8 @@ import { MATERIALS, hash01 } from '../render/palette';
 import type { TerrainField } from '../sim/terrainField';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import { visibleChunkRange, chunkCells, chunkKey } from '../render/terrainChunks';
+import { slopeOf } from '../sim/slopes';
+import { OVERPASS_HEIGHT } from '../sim/trackPath';
 
 interface Props {
   field: TerrainField;
@@ -56,7 +58,10 @@ export const Scenery: React.FC<Props> = ({
         if (seen.has(key)) continue; // チャンクのマージン境界での重複を防ぐ。
         seen.add(key);
         if (hash01(x, z, 11) >= TREE_DENSITY) continue;
-        if (field.terrainTypeAt(x, z) !== 'grass') continue; // 水域・山岳は除外
+        // P7d: mountain(標高1以上)は建設不可の障害物ではなくなったため、樹木も
+        // 平坦な高原なら生やす(水域・傾斜地は除外、標高そのものは問わない)。
+        if (field.terrainTypeAt(x, z) === 'water') continue;
+        if (slopeOf(field.cellCornerHeights(x, z)).kind !== 'flat') continue;
         // 町タイル(家・道路)とその周囲1タイルは市街地として空けておく
         let nearTown = false;
         for (let dx = -TOWN_TILE_MARGIN; dx <= TOWN_TILE_MARGIN && !nearTown; dx++) {
@@ -84,15 +89,18 @@ export const Scenery: React.FC<Props> = ({
       const oz = c.z + (hash01(c.x, c.z, 13) - 0.5) * 0.6;
       const scale = 0.75 + hash01(c.x, c.z, 14) * 0.6;
       const conifer = hash01(c.x, c.z, 15) < 0.55;
+      // P7d: 樹木は地形の表面(セル標高)に乗せる。候補セルはflat限定なので
+      // cellHeightAtの単一値で足りる(inclineのような低い側/高い側の使い分けは不要)。
+      const oy = field.cellHeightAt(c.x, c.z) * OVERPASS_HEIGHT;
 
       const trunk = new THREE.CylinderGeometry(0.035, 0.05, 0.26 * scale, 5);
-      trunk.translate(ox, 0.13 * scale, oz);
+      trunk.translate(ox, oy + 0.13 * scale, oz);
       trunks.push(trunk);
 
       const crown = conifer
         ? new THREE.ConeGeometry(0.22 * scale, 0.62 * scale, 6)
         : new THREE.IcosahedronGeometry(0.24 * scale, 0);
-      crown.translate(ox, (conifer ? 0.55 : 0.42) * scale, oz);
+      crown.translate(ox, oy + (conifer ? 0.55 : 0.42) * scale, oz);
       (hash01(c.x, c.z, 16) < 0.45 ? foliageDark : foliage).push(crown);
     }
 
@@ -103,7 +111,7 @@ export const Scenery: React.FC<Props> = ({
       foliage: mergeAll(foliage),
       foliageDark: mergeAll(foliageDark),
     };
-  }, [candidates, railMap]);
+  }, [candidates, railMap, field]);
 
   useEffect(() => () => {
     Object.values(merged).forEach(g => g?.dispose());

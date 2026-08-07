@@ -4,14 +4,22 @@ import { Html } from '@react-three/drei';
 import type { TownData } from '../types';
 import { fromKey } from '../utils';
 import type { TownSubTileIndex } from '../sim/townTiles';
-import { subTileWorldCentre, townSubTileRadius, SUB_TILES_PER_TILE } from '../sim/townTiles';
+import { subTileWorldCentre, townSubTileRadius, SUB_TILES_PER_TILE, parentTileOfSub } from '../sim/townTiles';
 import { MATERIALS, hash01 } from '../render/palette';
 import { mergeAndDispose } from '../render/mergeGeometry';
+import type { TerrainField } from '../sim/terrainField';
+import { OVERPASS_HEIGHT } from '../sim/trackPath';
 
 interface Props {
   towns: TownData[];
   /** 町サブタイル索引(sim/townTiles.tsのbuildTownIndexes)。家・道路をこのサブタイル通りに描く。 */
   townSubTiles: TownSubTileIndex;
+  /**
+   * 地形(P7d)。サブタイルは親タイル単位の標高(flat限定なのでcellHeightAtで一意)ぶん
+   * y方向に持ち上げる。2x2のサブタイルは親セルを跨がない(sim/townTiles.tsのP7d実装メモ
+   * 参照)ため、サブタイル単位で個別の高さを持たせる必要はなく、親タイルの標高1つで足りる。
+   */
+  field: TerrainField;
 }
 
 // この人口以上の町には、一部のサブタイルに高層ビルが混ざる。
@@ -37,7 +45,7 @@ const formatPopulation = (population: number): string =>
  * ことで、線路が路面を横切る見た目(簡易的な踏切)になる。遮断機・警報機の描画は未実装
  * (progress/tile-based-towns.md参照)。
  */
-export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles }) => {
+export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles, field }) => {
   const merged = useMemo(() => {
     const townById = new Map(towns.map(t => [t.id, t]));
     const wallsA: THREE.BufferGeometry[] = [];
@@ -52,15 +60,18 @@ export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles }) => {
       const { x: sx, z: sz } = fromKey(key);
       const wx = subTileWorldCentre(sx);
       const wz = subTileWorldCentre(sz);
+      // P7d: サブタイルは親タイルを跨がない(sim/townTiles.ts)ので、親タイルの標高
+      // (flat限定なのでcellHeightAtで一意に決まる)ぶんだけ丸ごと持ち上げれば足りる。
+      const wy = field.cellHeightAt(parentTileOfSub(sx), parentTileOfSub(sz)) * OVERPASS_HEIGHT;
 
       if (entry.kind === 'road') {
         // 縁石(サブタイル全面のわずかに明るい下地)+アスファルトの路面スラブ。
         // 隣接する道路サブタイル同士はスラブが繋がって幅0.5の帯になる。
         const kerb = new THREE.BoxGeometry(0.5, 0.03, 0.5);
-        kerb.translate(wx, 0.015, wz);
+        kerb.translate(wx, wy + 0.015, wz);
         kerbs.push(kerb);
         const slab = new THREE.BoxGeometry(0.44, 0.045, 0.44);
-        slab.translate(wx, 0.0225, wz);
+        slab.translate(wx, wy + 0.0225, wz);
         roads.push(slab);
         continue;
       }
@@ -106,23 +117,23 @@ export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles }) => {
             : 0.24 + hash01(sx, sz, 26) * 0.28;
 
       const wall = new THREE.BoxGeometry(width, height, depth);
-      wall.translate(wx, height / 2, wz);
+      wall.translate(wx, wy + height / 2, wz);
       const bucket = hash01(sx, sz, 23);
       (bucket < 0.34 ? wallsA : bucket < 0.67 ? wallsB : wallsC).push(wall);
 
       if (tall || midRise) {
         // 高層・中層はパラペット(平屋根)で「ビル」らしく。
         const parapet = new THREE.BoxGeometry(width + 0.03, 0.04, depth + 0.03);
-        parapet.translate(wx, height + 0.02, wz);
+        parapet.translate(wx, wy + height + 0.02, wz);
         roofsFlat.push(parapet);
         const plant = new THREE.BoxGeometry(width * 0.4, 0.07, depth * 0.4);
-        plant.translate(wx, height + 0.07, wz);
+        plant.translate(wx, wy + height + 0.07, wz);
         roofsFlat.push(plant);
       } else {
         // 低層の住宅には寄棟屋根を載せる。
         const roof = new THREE.ConeGeometry(Math.max(width, depth) * 0.8, 0.15, 4);
         roof.rotateY(Math.PI / 4);
-        roof.translate(wx, height + 0.075, wz);
+        roof.translate(wx, wy + height + 0.075, wz);
         roofs.push(roof);
       }
     }
@@ -136,7 +147,7 @@ export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles }) => {
       roads: mergeAndDispose(roads),
       kerbs: mergeAndDispose(kerbs),
     };
-  }, [towns, townSubTiles]);
+  }, [towns, townSubTiles, field]);
 
   useEffect(() => () => {
     Object.values(merged).forEach(g => g?.dispose());
@@ -156,7 +167,12 @@ export const TownBlocks: React.FC<Props> = ({ towns, townSubTiles }) => {
       {merged.roofsFlat && <mesh geometry={merged.roofsFlat} material={MATERIALS.buildingRoofFlat} raycast={noRaycast} />}
 
       {towns.map(town => (
-        <Html key={town.id} position={[town.centre.x, 2.6, town.centre.z]} center style={{ pointerEvents: 'none' }}>
+        <Html
+          key={town.id}
+          position={[town.centre.x, 2.6 + field.cellHeightAt(town.centre.x, town.centre.z) * OVERPASS_HEIGHT, town.centre.z]}
+          center
+          style={{ pointerEvents: 'none' }}
+        >
           <div style={{
             background: 'rgba(24,30,38,0.62)', color: '#f2f5f8', padding: '2px 7px',
             borderRadius: '999px', fontSize: '10px', whiteSpace: 'nowrap',
