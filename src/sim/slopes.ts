@@ -136,6 +136,33 @@ export function canPlaceFlatStructure(slope: SlopeInfo): boolean {
   return slope.kind === 'flat';
 }
 
+/**
+ * P8a: 地下(level -k)の隣接セル同士が標高的に繋がるかどうか。
+ * design doc(underground-design.md)「相対深さ方式」により、地下セルの世界標高は
+ * 「そのセル自身の地表標高 - k*OVERPASS_HEIGHT」であり、地表標高が異なるセル同士は
+ * 同じ-kでも世界高さが食い違う。そのため地下の線路は「地表が flat(4隅同値)、かつ
+ * 隣接セルと地表の共有辺の標高が一致する」場合にしか繋げない
+ * (このバージョンでは地下は flat な地表の下にしか通せない — incline/other の下は
+ * 禁止。詳細はunderground-design.mdのP8a追記を参照)。
+ *
+ * 実装: 深さkは両セルに一様に効くため、連続性条件からは相殺で消える
+ * (worldHeight(A) - worldHeight(B) = surfaceHeight(A) - surfaceHeight(B) が
+ * 常に成り立つ)。よって「両セルとも地表がflatで、railEdgeContinuousが真」と
+ * するだけで、深さkそのものを引数に取る必要はない(呼び出し側の型合わせのため
+ * depth引数は残すが未使用)。
+ */
+export function undergroundEdgeContinuous(
+  cornersA: CellCorners,
+  cornersB: CellCorners,
+  dirFromAtoB: number,
+  _depth?: number
+): boolean {
+  const slopeA = slopeOf(cornersA);
+  const slopeB = slopeOf(cornersB);
+  if (slopeA.kind !== 'flat' || slopeB.kind !== 'flat') return false;
+  return railEdgeContinuous(cornersA, cornersB, dirFromAtoB);
+}
+
 export interface SlopeViolation {
   index: number;
   reason: 'other-slope' | 'direction-blocked' | 'edge-discontinuous';

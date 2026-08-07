@@ -9,6 +9,7 @@ import {
   railHeightAt,
   railRenderHeight,
   slopeOf,
+  undergroundEdgeContinuous,
   SLOPE_RAIL_COST_MULTIPLIER,
 } from './slopes';
 import { OVERPASS_HEIGHT } from './trackPath';
@@ -184,6 +185,23 @@ describe('railEdgeContinuous', () => {
     const flatA: CellCorners = [0, 0, 0, 0];
     const flatB: CellCorners = [1, 1, 1, 1];
     expect(railEdgeContinuous(flatA, flatB, DIR.SE)).toBe(false);
+  });
+});
+
+describe('undergroundEdgeContinuous (P8a: 地下の相対深さ隣接判定)', () => {
+  it('両セルとも地表が同じ標高のflatなら連続(深さkに関わらず)', () => {
+    expect(undergroundEdgeContinuous([2, 2, 2, 2], [2, 2, 2, 2], DIR.E, -1)).toBe(true);
+    expect(undergroundEdgeContinuous([2, 2, 2, 2], [2, 2, 2, 2], DIR.E, -3)).toBe(true);
+  });
+
+  it('地表の標高が異なるflat同士は不連続(相対深さが世界高さで食い違うため)', () => {
+    expect(undergroundEdgeContinuous([2, 2, 2, 2], [3, 3, 3, 3], DIR.E, -1)).toBe(false);
+  });
+
+  it('片方でもincline/otherなら不連続(地下はflatな地表の下にしか通せない)', () => {
+    const flat: CellCorners = [0, 0, 0, 0];
+    const incline: CellCorners = [0, 1, 0, 1];
+    expect(undergroundEdgeContinuous(flat, incline, DIR.E, -1)).toBe(false);
   });
 });
 
