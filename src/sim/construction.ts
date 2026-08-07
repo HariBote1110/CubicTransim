@@ -12,6 +12,7 @@ import {
   railEdgeContinuous,
   railHeightAt,
   slopeOf,
+  undergroundEdgeContinuous,
 } from './slopes';
 
 // 旧・固定長の橋(applyBridge)が使っていた上限値。自由な高架線(applyElevatedPath)には
@@ -1135,6 +1136,123 @@ export function applyElevatedPath(
   return { railMap, stations: state.stations };
 }
 
+/**
+ * P8a: 自由に敷ける地下線。applyElevatedPathと同じ経路制約・同じ坂/橋桁(この場合は
+ * 「地下線」)の役割分担(resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath
+ * を共有)だが、以下の点でapplyElevatedPathと異なる(design doc 4.):
+ * - 町タイルはブロックしない(地下は町の下を素通りできるのがそもそもの意義)
+ * - 水面下は禁止(pathのどのセルであっても、そこが水域なら建設不可)
+ * - underground-design.md「相対深さ方式」により、地下は地表がflat(4隅同値、
+ *   任意標高)なセルの下にしか通せない(incline/otherの下は禁止)。これは坂だけでなく
+ *   地下線そのもの(span)にも掛かる制約で、applyElevatedPathの「坂だけ地平0限定」とは
+ *   異なる
+ * - 地下線どうしの隣接(span-span)は undergroundEdgeContinuous で地表標高の連続性を
+ *   確認する(地表標高が異なるflatセル同士は繋がらない)
+ * - 既存の地平/高架構造とは常に共存する(地平の平面交差ビットを剥がすapplyElevatedPathの
+ *   level===1特例に相当する処理を行わない。overpassと同様、地下線は地平線路の下を
+ *   ただ通過するだけ)
+ */
+export function applyUndergroundPath(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  level: UndergroundLevel = -1,
+  forcedEnds?: { start?: ElevatedEndPlan; end?: ElevatedEndPlan }
+): ConstructionState {
+  if (path.length < 2) return state;
+  for (let i = 0; i < path.length - 1; i++) {
+    const dx = path[i + 1].x - path[i].x;
+    const dz = path[i + 1].z - path[i].z;
+    if (getDirFromVector(dx, dz) === 0) return state;
+  }
+
+  const startEnd = forcedEnds?.start ?? pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[0]), level);
+  const endEnd = forcedEnds?.end ?? pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[path.length - 1]), level);
+  const plan = planElevatedPath(path.length, startEnd, endEnd, level);
+  if (!plan) return state;
+
+  if (!planHasStraightRamps(path, plan)) return state;
+  if (pathConflictsWithExistingRamp(state.railMap, path)) return state;
+
+  for (const cell of path) {
+    if (state.railMap.get(toKey(cell.x, cell.z))?.type === 'depot') return state;
+  }
+
+  // 地下は(坂・地下線を問わず)水面下禁止・地表がflatなセルの下にしか通せない。
+  for (const p of path) {
+    if (field.terrainTypeAt(p.x, p.z) === 'water') return state;
+    if (!canPlaceFlatStructure(slopeOf(field.cellCornerHeights(p.x, p.z)))) return state;
+  }
+
+  // 地下線どうし(span-span)の隣接は地表標高の連続性が必要。
+  for (let i = 0; i < path.length - 1; i++) {
+    if (plan.roles[i].kind !== 'span' || plan.roles[i + 1].kind !== 'span') continue;
+    const dir = getDirFromVector(path[i + 1].x - path[i].x, path[i + 1].z - path[i].z);
+    const cornersA = field.cellCornerHeights(path[i].x, path[i].z);
+    const cornersB = field.cellCornerHeights(path[i + 1].x, path[i + 1].z);
+    if (!undergroundEdgeContinuous(cornersA, cornersB, dir)) return state;
+  }
+
+  // 同レベルの地下線の二重架け禁止(継ぎ足し元の端は許容)。applyElevatedPathと同型。
+  for (let i = 0; i < path.length; i++) {
+    if (plan.roles[i].kind !== 'span') continue;
+    const isContinuationAnchor =
+      (i === 0 && startEnd.kind === 'continue') || (i === path.length - 1 && endEnd.kind === 'continue');
+    if (isContinuationAnchor) continue;
+    if (state.railMap.get(toKey(path[i].x, path[i].z))?.uppers?.[level]) return state;
+  }
+
+  const railMap = new Map(state.railMap);
+  const dirBetween = (a: number, b: number): number =>
+    getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
+  const rampDirFor = rampDirResolver(plan, path.length);
+
+  for (let i = 0; i < path.length; i++) {
+    const role = plan.roles[i];
+    const key = toKey(path[i].x, path[i].z);
+    const prevDir = i > 0 ? dirBetween(i, i - 1) : 0;
+    const nextDir = i < path.length - 1 ? dirBetween(i, i + 1) : 0;
+
+    if (role.kind === 'span') {
+      const axisBits = prevDir | nextDir;
+      // 地平・既存高架の接続ビットは一切いじらない(常に共存)。
+      const existing = railMap.get(key);
+      const upperAtLevel = existing?.uppers?.[level];
+      railMap.set(key, {
+        ...(existing ?? { type: 'rail' }),
+        uppers: {
+          ...(existing?.uppers ?? {}),
+          [level]: { connections: (upperAtLevel?.connections ?? 0) | axisBits, stationId: upperAtLevel?.stationId },
+        },
+      });
+    } else if (role.kind === 'anchor') {
+      const dir = role.side === 'start' ? nextDir : prevDir;
+      const existing = railMap.get(key);
+      const upperAtLevel = existing?.uppers?.[role.connectLevel as Level];
+      railMap.set(key, {
+        ...(existing ?? { type: 'rail' }),
+        uppers: {
+          ...(existing?.uppers ?? {}),
+          [role.connectLevel]: { connections: (upperAtLevel?.connections ?? 0) | dir, stationId: upperAtLevel?.stationId },
+        },
+      });
+    } else {
+      const bits = prevDir | nextDir;
+      const existing = railMap.get(key);
+      const merged = orIntoBaseLevel(existing, role.base, bits);
+      const rampDir = rampDirFor(role.side, prevDir, nextDir);
+      railMap.set(key, {
+        ...merged,
+        type: merged.type ?? 'rail',
+        ramp: { dir: rampDir, level: role.level, base: role.base },
+      });
+      if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
+    }
+  }
+
+  return { railMap, stations: state.stations };
+}
+
 // 旧・固定長の橋(2セルずつの坂+中間が桁、直線のみ)。自由な高架線(applyElevatedPath)へ
 // 置き換えられたが、既存の呼び出し元(pathfinding/reservation/simulationのテスト等)との
 // 後方互換のため薄いラッパーとして残す。新仕様の「浮いた端(flat)」は適用せず、
@@ -1163,11 +1281,14 @@ export function applyBridge(
  *   重ねて置くことで手作業で作れる)。
  * - 隣接する同レベルの高架駅セルがあれば、その駅IDへ統合する(高架ホームの延伸)。
  */
-export function applyElevatedStation(
+// P8a: applyElevatedStation/applyUndergroundStationの共通実装。levelの符号だけが
+// 違い(高架は正、地下は負)、駅セルのマージ・命名ロジックは完全に同一のため
+// ここへ一本化した(コピーしない)。
+function applyLayeredStation(
   state: ConstructionState,
   pos: Pos,
-  towns: TownData[] = [],
-  level: ElevatedLevel = 1
+  towns: TownData[],
+  level: Level
 ): ConstructionState {
   const key = toKey(pos.x, pos.z);
   const existing = state.railMap.get(key);
@@ -1247,6 +1368,29 @@ export function applyElevatedStation(
     uppers: { ...existing!.uppers, [level]: { ...upperAtLevel, stationId: targetId } },
   });
   return { railMap, stations };
+}
+
+export function applyElevatedStation(
+  state: ConstructionState,
+  pos: Pos,
+  towns: TownData[] = [],
+  level: ElevatedLevel = 1
+): ConstructionState {
+  return applyLayeredStation(state, pos, towns, level);
+}
+
+/**
+ * P8a: 地下駅。applyElevatedStationと符号対称(levelは-1..-3)。地下線は町タイル・
+ * 水面下禁止(construction時点でapplyUndergroundPathがブロック済み)の制約を
+ * 引き継ぐだけで、駅セル自体のマージ・命名ロジックはapplyElevatedStationと同一。
+ */
+export function applyUndergroundStation(
+  state: ConstructionState,
+  pos: Pos,
+  towns: TownData[] = [],
+  level: UndergroundLevel = -1
+): ConstructionState {
+  return applyLayeredStation(state, pos, towns, level);
 }
 
 // 高架駅のホームセル(x,z,指定レベル)をstations Mapから取り除く。

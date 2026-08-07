@@ -10,6 +10,8 @@ import {
   applyBridge,
   applyElevatedPath,
   applyElevatedStation,
+  applyUndergroundPath,
+  applyUndergroundStation,
   removePath,
   nextStationName,
   resolveElevatedPathEnd,
@@ -1055,6 +1057,105 @@ describe('高架駅タイル（applyElevatedStation）', () => {
     state = applyElevatedStation(state, { x: 2, z: 0 });
     const result = applyElevatedStation(state, { x: 2, z: 0 });
     expect(result).toBe(state);
+  });
+});
+
+describe('地下線(applyUndergroundPath, P8a)', () => {
+  const flatField = fieldFromMaps(new Map(), new Map(), 45);
+
+  it('両端とも浮いた地下線を敷ける(uppers[-1]にconnectionsが立つ)', () => {
+    let state = emptyState();
+    state = applyUndergroundPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+    ], flatField, -1);
+    for (const x of [0, 1, 2]) {
+      expect(state.railMap.get(toKey(x, 0))?.uppers?.[-1]?.connections).toBeGreaterThan(0);
+    }
+  });
+
+  it('地平の既存線路と同じセルに共存できる(地平のconnectionsを一切変更しない、overpassと同じ発想)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    const groundBefore = state.railMap.get(toKey(1, 0))!.connections;
+    state = applyUndergroundPath(state, [
+      { x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 },
+    ], flatField, -1);
+    const cell = state.railMap.get(toKey(1, 0))!;
+    expect(cell.connections).toBe(groundBefore); // 地平の線路はそのまま
+    expect(cell.uppers?.[-1]?.connections).toBeGreaterThan(0); // 地下線も併存
+  });
+
+  it('水域のセルを経路が通るとno-op', () => {
+    const state = emptyState();
+    const waterField = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(1, 0), 'water']]), 45);
+    const result = applyUndergroundPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+    ], waterField, -1);
+    expect(result).toBe(state);
+  });
+
+  it('地表がinclineなセルを経路が通るとno-op(地下はflatな地表の下にしか通せない)', () => {
+    const state = emptyState();
+    // z=0行をincline(z=-1側は標高0、z=1側は標高1)にする(construction.test.ts冒頭の
+    // 「地形による建設制約」describeのinclineTerrainと同じ作り方)。
+    const inclineHeights = new Map<string, number>();
+    for (let x = -3; x <= 3; x++) {
+      inclineHeights.set(toKey(x, 0), 1);
+      inclineHeights.set(toKey(x, 1), 1);
+    }
+    const inclineField = fieldFromMaps(inclineHeights, new Map(), 45);
+    const result = applyUndergroundPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+    ], inclineField, -1);
+    expect(result).toBe(state);
+  });
+
+  it('地平の自由端からapplyUndergroundPathで直接繋ぐと、地平タイル自身が掘割ランプの一部になる(アンカー無し)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    state = applyUndergroundPath(state, [
+      { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ], flatField, -1);
+    const groundCell = state.railMap.get(toKey(2, 0))!;
+    expect(groundCell.ramp).toBeDefined();
+    expect(groundCell.ramp!.base).toBe(-1);
+  });
+});
+
+describe('地下駅(applyUndergroundStation, P8a)', () => {
+  const flatField = fieldFromMaps(new Map(), new Map(), 45);
+
+  it('地下線が無いセルへは置けない(no-op)', () => {
+    const state = emptyState();
+    const result = applyUndergroundStation(state, { x: 0, z: 0 });
+    expect(result).toBe(state);
+  });
+
+  it('地下線セルに置くと、そのセルがuppers[-1].stationIdを持つ新しい地下駅になる', () => {
+    let state = emptyState();
+    state = applyUndergroundPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ], flatField, -1);
+    const result = applyUndergroundStation(state, { x: 2, z: 0 });
+    const cell = result.railMap.get(toKey(2, 0))!;
+    expect(cell.uppers?.[-1]?.stationId).toBeDefined();
+  });
+
+  it('同じ(x,z)の地平駅と統合され、乗換駅(地上+地下)になる', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 2, z: 0 }, undefined, [], 'ns');
+    const groundStationId = state.railMap.get(toKey(2, 0))!.stationId!;
+    state = applyUndergroundPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 },
+    ], flatField, -1);
+    const result = applyUndergroundStation(state, { x: 2, z: 0 });
+    const cell = result.railMap.get(toKey(2, 0))!;
+    expect(cell.stationId).toBe(groundStationId);
+    expect(cell.uppers?.[-1]?.stationId).toBe(groundStationId);
+    const st = result.stations.get(groundStationId)!;
+    expect(st.cells).toEqual(
+      expect.arrayContaining([{ x: 2, z: 0 }, { x: 2, z: 0, layer: -1 }])
+    );
   });
 });
 
