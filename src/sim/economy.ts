@@ -166,6 +166,23 @@ export function costOfElevatedPath(rampCellCount: number, overpassCellCount: num
 // 高架駅タイル1枚のコスト。立体交差の橋桁を兼ねるぶん通常の駅より割高になる。
 export const ELEVATED_STATION_COST = STATION_COST * OVERPASS_COST_MULTIPLIER;
 
+// P8a: 地下線・地下駅のコスト倍率。underground-design.md「5. コスト」の初版値
+// (「制約がない代わりに高い」の原則)。地下は町タイル・地形種別の制約をほぼ受けない
+// 代わりに、高架より高い倍率にする。
+export const UNDERGROUND_RAIL_COST_MULTIPLIER = 6;
+export const UNDERGROUND_STATION_COST_MULTIPLIER = 3;
+
+// 自由な地下線(applyUndergroundPath)のコスト。design docの通り、坂(掘割ランプ)/
+// 地下線(span)を区別せず経路の全セルにRAIL_COST×6を課す(applyElevatedPathの
+// 「坂と橋桁で倍率が違う」構成とは異なる、地下ならではの単純化)。
+export function costOfUndergroundPath(cellCount: number): number {
+  return cellCount * RAIL_COST * UNDERGROUND_RAIL_COST_MULTIPLIER;
+}
+
+// 地下駅タイル1枚のコスト。design docの通りELEVATED_STATION_COST(高架駅コスト)を
+// さらに3倍する(地下駅は「立体交差の橋桁を兼ねる高架駅」よりもさらに割高)。
+export const UNDERGROUND_STATION_COST = ELEVATED_STATION_COST * UNDERGROUND_STATION_COST_MULTIPLIER;
+
 // 地平(level 0)の線路が、浮いた高架の端タイルに自動接続する坂を含む場合のコスト。
 // 坂になるセルはRAIL_COST(4倍にはならない。あくまで登り降りの坂であり橋桁ではないため)、
 // それ以外の平坦なセルは従来通り地形(水域=橋/山岳=隧道)の倍率つきRAIL_COSTを使う。

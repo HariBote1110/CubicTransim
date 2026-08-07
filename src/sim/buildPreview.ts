@@ -9,7 +9,7 @@
 // levelパラメータ(0=地平〜3)に従う形に統合した。level===0のときは従来の
 // applyRailPath/applyStationと完全に同一の判定になる(回帰させないための最重要制約)。
 import type { CellData, StationData } from '../types';
-import type { ConstructionState, BuildLevel, ElevatedLevel } from './construction';
+import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel } from './construction';
 import {
   applyRailPathDetailed,
   applyStation,
@@ -17,6 +17,8 @@ import {
   applySignal,
   applyElevatedPath,
   applyElevatedStation,
+  applyUndergroundPath,
+  applyUndergroundStation,
   removePath,
   resolveElevatedPathEnd,
   pickElevatedConnection,
@@ -26,7 +28,7 @@ import {
   resolveGroundRailPlanDetailed,
   type GroundRailPlanFailureReason,
 } from './construction';
-import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, ELEVATED_STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
 import type { TerrainField } from './terrainField';
 import type { EditedTerrainField } from './terrainOverlay';
 import { applyCornerEdit, type EditBlockers } from './terrainOverlay';
@@ -108,8 +110,11 @@ export function evaluateBuild(
     };
   }
 
-  const elevated = level !== 0 && (mode === 'rail' || mode === 'station');
+  const elevated = level > 0 && (mode === 'rail' || mode === 'station');
   const elevatedLevel = level as ElevatedLevel;
+  // P8a: level<0(地下)。elevatedと同様、rail/stationのみ対象。
+  const underground = level < 0 && (mode === 'rail' || mode === 'station');
+  const undergroundLevel = level as UndergroundLevel;
 
   // P7b: bridgeCells/tunnelCellsはresolveGroundRailPlan(construction.ts、実際の建設
   // ロジックそのもの)に問い合わせる。tunnelはplanのtunnel役割セル数、bridgeは
@@ -119,7 +124,7 @@ export function evaluateBuild(
   let tunnelCells = 0;
   let groundPlan: ReturnType<typeof resolveGroundRailPlan> = null;
   let groundSlopeIssue: GroundRailPlanFailureReason | undefined;
-  if (mode === 'rail' && !elevated) {
+  if (mode === 'rail' && !elevated && !underground) {
     const detailed = resolveGroundRailPlanDetailed(field, path);
     groundPlan = detailed.plan;
     groundSlopeIssue = detailed.reason;
@@ -151,7 +156,7 @@ export function evaluateBuild(
   // resolveElevatedPathEnd/pickElevatedConnection/planElevatedPathへ問い合わせ、
   // 自動で作られる坂の内訳(コスト計算・rampCells表示用)を求める。
   let groundRampFlags: boolean[] | null = null;
-  if (mode === 'rail' && !elevated && path.length >= 2) {
+  if (mode === 'rail' && !elevated && !underground && path.length >= 2) {
     const startEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[0]), 0);
     const endEnd = pickElevatedConnection(resolveElevatedPathEnd(railMap, path[path.length - 1]), 0);
     if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
@@ -170,12 +175,16 @@ export function evaluateBuild(
     ? 0
     : mode === 'rail' && elevated
     ? costOfElevatedPath(elevatedRampCount, elevatedOverpassCount)
+    : mode === 'rail' && underground
+    ? costOfUndergroundPath(path.length)
     : mode === 'rail' && groundRampFlags
     ? costOfGroundPathWithRamps(path, field, groundRampFlags)
-    : mode === 'rail' && !elevated && groundPlan
+    : mode === 'rail' && !elevated && !underground && groundPlan
     ? costOfGroundRailPlan(path, field, groundPlan)
     : mode === 'station' && elevated
     ? ELEVATED_STATION_COST
+    : mode === 'station' && underground
+    ? UNDERGROUND_STATION_COST
     : costOfPath(
         mode === 'bridge' ? 'bridge' : mode,
         path.length,
@@ -194,6 +203,8 @@ export function evaluateBuild(
     case 'station':
       result = elevated
         ? applyElevatedStation(state, path[path.length - 1], [], elevatedLevel)
+        : underground
+        ? applyUndergroundStation(state, path[path.length - 1], [], undergroundLevel)
         : applyStation(state, path[path.length - 1], field, [], undefined, townTiles);
       break;
     case 'depot': result = applyDepot(state, path[path.length - 1], field, townTiles); break;
@@ -201,6 +212,8 @@ export function evaluateBuild(
       if (elevated) {
         result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTiles);
         if (result.railMap !== state.railMap) overpassCells = elevatedOverpassCount;
+      } else if (underground) {
+        result = applyUndergroundPath(state, path, field, undergroundLevel);
       } else {
         const detailed = applyRailPathDetailed(state, path, field, townTiles);
         result = detailed;
@@ -226,7 +239,7 @@ export function evaluateBuild(
   else if (cost > money) reason = 'insufficient-funds';
 
   const slopeIssue =
-    mode === 'rail' && !elevated && !effective ? groundSlopeIssue : undefined;
+    mode === 'rail' && !elevated && !underground && !effective ? groundSlopeIssue : undefined;
 
   return {
     mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells,

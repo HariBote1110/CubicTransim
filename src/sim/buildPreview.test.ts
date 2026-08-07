@@ -11,8 +11,10 @@ import {
   OVERPASS_COST_MULTIPLIER,
   ELEVATED_STATION_COST,
   TERRAIN_EDIT_COST,
+  UNDERGROUND_RAIL_COST_MULTIPLIER,
+  UNDERGROUND_STATION_COST,
 } from './economy';
-import { applyElevatedPath } from './construction';
+import { applyElevatedPath, applyUndergroundPath } from './construction';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import type { EditBlockers } from './terrainOverlay';
@@ -333,6 +335,44 @@ describe('evaluateBuild(station, level>=1) 高架駅タイル1枚', () => {
   it('高架の線路が無ければno-effect', () => {
     const { railMap, stations, field } = emptyMaps();
     const p = evaluateBuild('station', [{ x: 2, z: 0 }], railMap, stations, field, 100_000, 1);
+    expect(p.reason).toBe('no-effect');
+  });
+});
+
+describe('evaluateBuild(rail/station, level<0) 地下線・地下駅(P8a)', () => {
+  it('地下線はRAIL_COST×UNDERGROUND_RAIL_COST_MULTIPLIER×セル数で建設できる', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+    ];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000, -1);
+    expect(p.reason).toBe('ok');
+    expect(p.cost).toBe(RAIL_COST * UNDERGROUND_RAIL_COST_MULTIPLIER * 3);
+  });
+
+  it('水域を通る地下線はno-effect', () => {
+    const { railMap, stations } = emptyMaps();
+    const waterField = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(1, 0), 'water']]), 45);
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, waterField, 100_000, -1);
+    expect(p.reason).toBe('no-effect');
+  });
+
+  it('地下駅はUNDERGROUND_STATION_COSTで建設できる', () => {
+    let { railMap, stations, field } = emptyMaps();
+    ({ railMap, stations } = applyUndergroundPath(
+      { railMap, stations },
+      [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }],
+      field, -1
+    ));
+    const p = evaluateBuild('station', [{ x: 2, z: 0 }], railMap, stations, field, 100_000, -1);
+    expect(p.reason).toBe('ok');
+    expect(p.cost).toBe(UNDERGROUND_STATION_COST);
+  });
+
+  it('地下線が無ければ地下駅はno-effect', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('station', [{ x: 2, z: 0 }], railMap, stations, field, 100_000, -1);
     expect(p.reason).toBe('no-effect');
   });
 });

@@ -13,7 +13,7 @@ import {
   type CornerDiffs,
   type EditBlockers,
 } from './terrainOverlay';
-import { toKey } from '../utils';
+import { toKey, DIR } from '../utils';
 import type { CellData } from '../types';
 
 // mulberry32風の疑似乱数(プロパティテストのランダム選択専用)。
@@ -367,5 +367,18 @@ describe('buildEditBlockers', () => {
     });
     expect(blockers.isCellBlocked(7, 7)).toBe(true);
     expect(blockers.isCellBlocked(8, 8)).toBe(false);
+  });
+
+  it('P8a: 地下線しか無い(地平のconnectionsが0の)セルもブロックされる(railMap.hasが層を問わず判定するため)', () => {
+    // applyUndergroundPathは地下専用セルでも{type:'rail', connections:0, uppers:{-1:{...}}}を
+    // railMapへ登録するため、buildEditBlockersの既存のrailMap.hasチェックだけで
+    // 「地下線があるセルは地形編集をブロックする」(design doc 4.)が自動的に成立する。
+    const railMap = new Map<string, CellData>([
+      [toKey(9, 9), { type: 'rail', connections: 0, uppers: { [-1]: { connections: DIR.E } } }],
+    ]);
+    const blockers = buildEditBlockers({
+      halfExtent: 45, railMap, townTileIndex: townTileIndex(() => false), baseField,
+    });
+    expect(blockers.isCellBlocked(9, 9)).toBe(true);
   });
 });
