@@ -17,11 +17,14 @@ export interface TunnelPortal {
   /** 坑口が向く方向(隣接する非tunnelセルへの単位ベクトル)。 */
   dx: number;
   dz: number;
+  /** P7c: このトンネルセルが実際に走る標高(段数、cell.tunnel.height)。
+   *  地平の坑口はこの標高ぶん(*OVERPASS_HEIGHT)持ち上げて描く。 */
+  height: number;
 }
 
-const pushPortal = (portals: TunnelPortal[], x: number, z: number, dir: number): void => {
+const pushPortal = (portals: TunnelPortal[], x: number, z: number, dir: number, height: number): void => {
   const { x: dx, z: dz } = getVectorFromDir(dir);
-  portals.push({ x, z, dx, dz });
+  portals.push({ x, z, dx, dz, height });
 };
 
 /**
@@ -50,17 +53,19 @@ export function tunnelPortals(railMap: Map<string, CellData>, field: TerrainFiel
     const conns = cell.connections ?? 0;
     const connectedDirs = ALL_DIRS.filter(dir => (conns & dir) !== 0);
 
+    const height = cell.tunnel.height;
+
     for (const dir of connectedDirs) {
       const { x: dx, z: dz } = getVectorFromDir(dir);
       const neighbour = railMap.get(toKey(x + dx, z + dz));
-      if (!neighbour?.tunnel) pushPortal(portals, x, z, dir);
+      if (!neighbour?.tunnel) pushPortal(portals, x, z, dir, height);
     }
 
     if (connectedDirs.length === 1) {
       const oppositeDir = getOppositeDir(connectedDirs[0]);
       const { x: dx, z: dz } = getVectorFromDir(oppositeDir);
       if (field.terrainTypeAt(x + dx, z + dz) !== 'mountain') {
-        pushPortal(portals, x, z, oppositeDir);
+        pushPortal(portals, x, z, oppositeDir, height);
       }
     }
   }
@@ -184,13 +189,13 @@ function computeElevatedTunnelLevelData(
         const nx = x + dx;
         const nz = z + dz;
         const neighbourHasUpper = !!railMap.get(toKey(nx, nz))?.uppers?.[level];
-        if (!neighbourHasUpper || !isInterior(nx, nz)) portals.push({ x, z, dx, dz, level });
+        if (!neighbourHasUpper || !isInterior(nx, nz)) portals.push({ x, z, dx, dz, level, height: level });
       }
 
       if (connectedDirs.length === 1) {
         const oppositeDir = getOppositeDir(connectedDirs[0]);
         const { x: dx, z: dz } = getVectorFromDir(oppositeDir);
-        if (!isInterior(x + dx, z + dz)) portals.push({ x, z, dx, dz, level });
+        if (!isInterior(x + dx, z + dz)) portals.push({ x, z, dx, dz, level, height: level });
       }
     }
   }

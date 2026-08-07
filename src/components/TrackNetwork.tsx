@@ -1,22 +1,26 @@
 import React, { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
 import type { CellData } from '../types';
+import type { TerrainField } from '../sim/terrainField';
 import { DIR, fromKey, getOppositeDir } from '../utils';
 import { MATERIALS } from '../render/palette';
 import {
-  buildBridgeAbutmentPart, buildCellTrackParts, buildOverpassSupportParts, mergeParts,
-  buildRampTrackParts, buildRampAbutmentPart, buildRampPierPart, shouldPlacePier,
+  buildBridgeAbutmentPart, buildCellTrackParts, buildGroundInclineTrackParts, buildOverpassSupportParts,
+  mergeParts, buildRampTrackParts, buildRampAbutmentPart, buildRampPierPart, shouldPlacePier,
   type TrackParts, type SupportParts,
 } from '../render/trackGeometry';
 import {
   OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL, rampHeightAtPos, rampSegmentPositions,
 } from '../sim/trackPath';
+import { railRenderHeight } from '../sim/slopes';
 
 // 高架のレベル1〜MAX_ELEVATED_LEVELを走査するための配列([1,2,3])。
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
 
 interface Props {
   railMap: Map<string, CellData>;
+  /** 地形field(P7c)。地上区間の勾配追従(flat/incline/tunnelの高さ)に使う。 */
+  field: TerrainField;
 }
 
 const DIR_BITS = [DIR.N, DIR.NE, DIR.E, DIR.SE, DIR.S, DIR.SW, DIR.W, DIR.NW];
@@ -42,7 +46,7 @@ const DIR_VECTORS: Record<number, { x: number; z: number }> = {
  * ぶん持ち上げた高架側の線路(バラスト無し)と、それを支える細い桁・間引いた橋脚を
  * 追加で描く。橋桁に隣接する橋台セル(upperを持たない側)には擁壁を1つ置く。
  */
-export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
+export const TrackNetwork: React.FC<Props> = ({ railMap, field }) => {
   const merged = useMemo(() => {
     const all: TrackParts = { ballast: [], sleepers: [], rails: [] };
     const supports: SupportParts = { piers: [], decks: [] };
@@ -59,10 +63,22 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       const rampAxisBits = data.ramp ? (data.ramp.dir | getOppositeDir(data.ramp.dir)) : 0;
       const flatConnections = (data.connections ?? 0) & ~rampAxisBits;
 
-      const parts = buildCellTrackParts(flatConnections, x, z);
-      all.ballast.push(...parts.ballast);
-      all.sleepers.push(...parts.sleepers);
-      all.rails.push(...parts.rails);
+      // 地平の高さ(P7c): flat/tunnelは単一のY、incline(傾斜地)は低い側→高い側の
+      // 直線として描く(sim/slopes.tsのrailRenderHeightがsimと共通の高さ式)。
+      const renderHeight = railRenderHeight(field, data, x, z);
+      if (renderHeight.kind === 'incline') {
+        const inclineParts = buildGroundInclineTrackParts(
+          renderHeight.dir, x, z, renderHeight.lowY, renderHeight.highY,
+        );
+        all.ballast.push(...inclineParts.ballast);
+        all.sleepers.push(...inclineParts.sleepers);
+        all.rails.push(...inclineParts.rails);
+      } else {
+        const parts = buildCellTrackParts(flatConnections, x, z, renderHeight.y);
+        all.ballast.push(...parts.ballast);
+        all.sleepers.push(...parts.sleepers);
+        all.rails.push(...parts.rails);
+      }
 
       if (data.ramp) {
         // level1(base寄り)は base/level1境界→level1/level2境界、level2(base+1寄り)は
@@ -151,7 +167,7 @@ export const TrackNetwork: React.FC<Props> = ({ railMap }) => {
       decks: mergeParts(supports.decks),
       abutments: mergeParts(abutments),
     };
-  }, [railMap]);
+  }, [railMap, field]);
 
   useEffect(() => () => {
     merged.ballast?.dispose();

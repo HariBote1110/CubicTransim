@@ -292,6 +292,35 @@ export function buildCellTrackParts(
   return parts;
 }
 
+/**
+ * 地上の傾斜(incline)セルの線路を、低い側の境界(lowY)から高い側の境界(highY)へ
+ * 一直線に登る形で生成する(P7c)。地形コーナーが作る面そのものが線形(1段/セル)
+ * なので、坂(ramp、rampHeightAtPosのsmoothstep)とは違いここは単純な直線で足りる
+ * (地形メッシュの傾斜面とレールがずれないよう、あえて曲げない)。
+ * dir は登る方向(高い側)のビット。境界オフセットは正反対どうしで点対称
+ * (BOUNDARY_OFFSETS参照)なので、低い側は高い側の符号を反転するだけで求まる。
+ * layTrackAlongをそのまま再利用するので、バラスト・枕木・レールの生成方法は
+ * buildCellTrackParts/buildRampTrackPartsと共通(見た目の一貫性を保つ)。
+ */
+export function buildGroundInclineTrackParts(
+  dir: number,
+  originX = 0,
+  originZ = 0,
+  lowY = 0,
+  highY = 0
+): TrackParts {
+  const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
+  const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
+  if (!high) return parts;
+  const low = { x: -high.x, z: -high.z };
+  const points: Pt[] = [
+    { x: low.x, z: low.z, y: lowY },
+    { x: high.x, z: high.z, y: highY },
+  ];
+  layTrackAlong(parts, points, originX, originZ, 0, true);
+  return parts;
+}
+
 // 坂の線路を何本の直線サブセグメントに分けて近似するか。増やすほど滑らかに
 // 見えるが、ジオメトリも比例して増える。
 const RAMP_CURVE_SEGMENTS = 4;

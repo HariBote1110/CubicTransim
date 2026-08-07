@@ -572,7 +572,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
       {/* 建設プレビュー。高架のrail(buildLevel>=1)は坂になるセルと高架のままのセルを色分けする。 */}
       {previewPath.map((pos, i) => {
         if (buildMode === 'rail' && buildLevel === 0) {
-          return <RailBlock key={`preview-${i}`} position={[pos.x, 0.02, pos.z]} isPreview connections={0} />;
+          // 地平の線路プレビュー(P7c): incline/tunnelでの低い側/高い側の描き分けまでは
+          // 建設可否確定前のプレビューでは行わず、セルの代表標高(cellHeightAt)へ
+          // シンプルに乗せるだけにする(design memo「keep it simple」)。
+          const railY = 0.02 + field.cellHeightAt(pos.x, pos.z) * OVERPASS_HEIGHT;
+          return <RailBlock key={`preview-${i}`} position={[pos.x, railY, pos.z]} isPreview connections={0} />;
         }
         const role = elevatedPreviewPlan?.roles[i];
         const color = buildMode === 'rail' && buildLevel > 0
@@ -584,8 +588,9 @@ export const GameScene: React.FC<GameSceneProps> = ({
           ? 0.2 + (role?.kind === 'ramp' ? role.base : buildLevel) * OVERPASS_HEIGHT
           : buildMode === 'station' && buildLevel > 0
           ? 0.2 + buildLevel * OVERPASS_HEIGHT
-          // 地形編集はセルの現在の標高の上にゴーストを重ねる(丘の上でも埋もれない)。
-          : terrainEditActive
+          // 地形編集・地平の駅/車庫/信号プレビューはセルの現在の標高の上にゴーストを
+          // 重ねる(丘の上でも埋もれない)。
+          : (terrainEditActive || buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
           ? 0.2 + field.cellHeightAt(pos.x, pos.z) * OVERPASS_HEIGHT
           : 0.2;
         return (
@@ -620,26 +625,29 @@ export const GameScene: React.FC<GameSceneProps> = ({
         cameraTargetCell={chunkView.targetCell}
         viewRadiusCells={chunkView.viewRadiusCells}
       />
-      <TrackNetwork railMap={railMap} />
+      <TrackNetwork railMap={railMap} field={field} />
 
       {Array.from(railMap.entries()).map(([key, data]) => {
         const { x, z } = fromKey(key);
         const elements = [];
+        // 駅・車庫・信号はflatセル限定(P7a)なので、単一のセル標高(cellHeightAt)を
+        // そのまま持ち上げに使える(inclineのような低い側/高い側の使い分けは不要)。
+        const groundY = field.cellHeightAt(x, z) * OVERPASS_HEIGHT;
         if (data.type === 'station') {
           elements.push(
             <StationBlock
               key={key}
-              position={[x, 0, z]}
+              position={[x, groundY, z]}
               connections={data.connections}
               platformDoors={stations.get(data.stationId ?? '')?.platformDoors ?? 'none'}
               isEnd={stationEndKeys.has(key)}
             />
           );
         } else if (data.type === 'depot') {
-           elements.push(<DepotBlock key={key} position={[x, 0, z]} rotation={data.rotation} />);
+           elements.push(<DepotBlock key={key} position={[x, groundY, z]} rotation={data.rotation} />);
         }
         if (data.signalDir) {
-           elements.push(<SignalBlock key={`${key}-sig`} position={[x, 0.05, z]} dir={data.signalDir} />);
+           elements.push(<SignalBlock key={`${key}-sig`} position={[x, groundY + 0.05, z]} dir={data.signalDir} />);
         }
         // 橋(水上の線路)は桁と橋脚を、トンネル(山岳の線路)は坑口を表す。
         if (data.bridge) {
@@ -692,7 +700,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
         // 高さぶん(level*OVERPASS_HEIGHT)持ち上げる。
         const faceX = portal.x + portal.dx * 0.5;
         const faceZ = portal.z + portal.dz * 0.5;
-        const faceY = portal.level * OVERPASS_HEIGHT;
+        // P7c: 地平の坑口(level:0)はcell.tunnel.height(portal.height)ぶん、高架の坑口
+        // (level>0)は従来通りlevel*OVERPASS_HEIGHTぶん持ち上げる(elevatedTunnelPortals側で
+        // height=levelを詰めているため、この式はどちらにも共通して使える)。
+        const faceY = portal.height * OVERPASS_HEIGHT;
         // groupをdx/dz方向(非mountain側)へ向ける。ローカル+Zがこの方向に一致する
         // (=局所+Zが坑口の外向き=手前側、局所-Zが山の内側=奥)。
         const angle = Math.atan2(portal.dx, portal.dz);
@@ -787,10 +798,16 @@ export const GameScene: React.FC<GameSceneProps> = ({
           ? railMap.get(toKey(centreCell.x, centreCell.z))?.uppers?.[houseLevel]?.connections
           : railMap.get(toKey(centreCell.x, centreCell.z))?.connections;
         const angle = trackAngleFromConnections(centreConnections);
-        const houseY = houseIsElevated ? houseLevel * OVERPASS_HEIGHT : 0;
+        // 地平の駅舎(P7c)はセルの地形標高ぶん持ち上げる(駅は常にflatセルなので
+        // cellHeightAtで単一の標高が求まる)。
+        const houseY = houseIsElevated
+          ? houseLevel * OVERPASS_HEIGHT
+          : field.cellHeightAt(centreCell.x, centreCell.z) * OVERPASS_HEIGHT;
         // 高架ホームを含む駅は、ラベルが高架の上屋にめり込まないよう、最も高いレベルに
         // 合わせてさらに高い位置に出す。
-        const labelY = hasElevatedCells ? 1.35 + Math.max(...elevatedLevels) * OVERPASS_HEIGHT : 1.35;
+        const labelY = hasElevatedCells
+          ? 1.35 + Math.max(...elevatedLevels) * OVERPASS_HEIGHT
+          : 1.35 + houseY;
         return (
           <group key={station.id}>
             <StationHouse position={[centreCell.x, houseY, centreCell.z]} angle={angle} />

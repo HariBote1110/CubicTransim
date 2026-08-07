@@ -51,8 +51,8 @@ describe('tunnelPortals', () => {
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
       expect.arrayContaining([
-        { x: 0, z: 0, dx: 0, dz: -1 },
-        { x: 0, z: 2, dx: 0, dz: 1 },
+        { x: 0, z: 0, dx: 0, dz: -1, height: 0 },
+        { x: 0, z: 2, dx: 0, dz: 1, height: 0 },
       ])
     );
   });
@@ -68,8 +68,8 @@ describe('tunnelPortals', () => {
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
       expect.arrayContaining([
-        { x: 5, z: 5, dx: 0, dz: -1 },
-        { x: 5, z: 5, dx: 0, dz: 1 },
+        { x: 5, z: 5, dx: 0, dz: -1, height: 0 },
+        { x: 5, z: 5, dx: 0, dz: 1, height: 0 },
       ])
     );
   });
@@ -88,8 +88,8 @@ describe('tunnelPortals', () => {
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
       expect.arrayContaining([
-        { x: 0, z: 0, dx: -1, dz: 0 },
-        { x: 1, z: 1, dx: 0, dz: 1 },
+        { x: 0, z: 0, dx: -1, dz: 0, height: 0 },
+        { x: 1, z: 1, dx: 0, dz: 1, height: 0 },
       ])
     );
   });
@@ -115,7 +115,7 @@ describe('tunnelPortals', () => {
     const portals = tunnelPortals(railMap, field);
 
     // (0,0)の北側(行き止まり方向)には坑口が立たない。(0,1)の南側は非mountainなので立つ。
-    expect(portals).toEqual([{ x: 0, z: 1, dx: 0, dz: 1 }]);
+    expect(portals).toEqual([{ x: 0, z: 1, dx: 0, dz: 1, height: 0 }]);
   });
 
   it('山肌(行き止まり方向の隣接セルが非mountain)で終端する場合は坑口を作る', () => {
@@ -130,8 +130,8 @@ describe('tunnelPortals', () => {
 
     expect(portals).toEqual(
       expect.arrayContaining([
-        { x: 0, z: 0, dx: 0, dz: -1 },
-        { x: 0, z: 1, dx: 0, dz: 1 },
+        { x: 0, z: 0, dx: 0, dz: -1, height: 0 },
+        { x: 0, z: 1, dx: 0, dz: 1, height: 0 },
       ])
     );
     expect(portals).toHaveLength(2);
@@ -245,8 +245,8 @@ describe('elevatedTunnelPortals / isInElevatedTunnelInterior (孤立セル・線
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
       expect.arrayContaining([
-        { x: 0, z: 0, dx: 0, dz: -1, level: 1 },
-        { x: 0, z: 2, dx: 0, dz: 1, level: 1 },
+        { x: 0, z: 0, dx: 0, dz: -1, level: 1, height: 1 },
+        { x: 0, z: 2, dx: 0, dz: 1, level: 1, height: 1 },
       ])
     );
   });
@@ -327,8 +327,8 @@ describe('elevatedTunnelPortals (実際の5x5山の標高から導出、坑口�
     expect(portals).toHaveLength(2);
     expect(portals).toEqual(
       expect.arrayContaining([
-        { x: -1, z: 0, dx: -1, dz: 0, level: 1 },
-        { x: 1, z: 0, dx: 1, dz: 0, level: 1 },
+        { x: -1, z: 0, dx: -1, dz: 0, level: 1, height: 1 },
+        { x: 1, z: 0, dx: 1, dz: 0, level: 1, height: 1 },
       ])
     );
   });
