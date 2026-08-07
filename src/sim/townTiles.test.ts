@@ -222,6 +222,26 @@ describe('townTiles: サブタイル生成', () => {
     }
   });
 
+  it('P7d: 標高1のflatな高原でも、素の線路の親タイルと道路は同居できる(踏切)', () => {
+    // 全域が標高1のflatなスタブfield上に、z=1の行だけ地平の素の線路を敷く。
+    // isFlatBuildable(P7d)は標高を問わずflatなら適地とするため、旧仕様(terrainTypeAt
+    // ==='grass'限定=標高0限定)では成立しなかったこの踏切が、標高1の高原でも
+    // 通常の平地と同じように機能することを確認する。
+    const plateauField: TerrainField = {
+      cornerHeightAt: () => 1,
+      cellCornerHeights: () => [1, 1, 1, 1],
+      cellHeightAt: () => 1,
+      terrainTypeAt: () => 'mountain',
+    };
+    const railMap = new Map<string, CellData>();
+    for (let x = -15; x <= 15; x++) {
+      railMap.set(toKey(x, 1), { type: 'rail', connections: DIR.E | DIR.W });
+    }
+    const subs = generateTownSubTiles(town('town-plateau-crossing', 0, 0, 9000), plateauField, { railMap });
+    expect(subs.get(toKey(0, 2))).toBe('road');
+    expect(subs.get(toKey(0, 3))).toBe('road');
+  });
+
   it('空の道路格子は刈り込まれる: 全道路サブタイルは家からチェビシェフ距離2以内(平地)', () => {
     for (const pop of [800, 1500, 6000]) {
       const subs = generateTownSubTiles(town('town-prune', 0, 0, pop), emptyField);
