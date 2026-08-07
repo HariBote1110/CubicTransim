@@ -20,7 +20,8 @@ describe('createTerrainField', () => {
     const a = createTerrainField(42, HALF_EXTENT);
     const b = createTerrainField(42, HALF_EXTENT);
     for (const [x, z] of [[0, 0], [10, -5], [8000, -8000], [-100, 250]] as const) {
-      expect(a.heightAt(x, z)).toBe(b.heightAt(x, z));
+      expect(a.cornerHeightAt(x, z)).toBe(b.cornerHeightAt(x, z));
+      expect(a.cellHeightAt(x, z)).toBe(b.cellHeightAt(x, z));
       expect(a.terrainTypeAt(x, z)).toBe(b.terrainTypeAt(x, z));
     }
   });
@@ -31,17 +32,17 @@ describe('createTerrainField', () => {
     let diffCount = 0;
     for (let x = 0; x < 200; x++) {
       for (let z = 0; z < 200; z++) {
-        if (a.heightAt(x, z) !== b.heightAt(x, z)) diffCount++;
+        if (a.cornerHeightAt(x, z) !== b.cornerHeightAt(x, z)) diffCount++;
       }
     }
     expect(diffCount).toBeGreaterThan(0);
   });
 
-  it('keeps heights within 0..TERRAIN_HEIGHT_MAX', () => {
+  it('keeps corner heights within 0..TERRAIN_HEIGHT_MAX', () => {
     const field = createTerrainField(7, HALF_EXTENT);
     for (let x = -50; x <= 50; x++) {
       for (let z = -50; z <= 50; z++) {
-        const h = field.heightAt(x, z);
+        const h = field.cornerHeightAt(x, z);
         expect(h).toBeGreaterThanOrEqual(0);
         expect(h).toBeLessThanOrEqual(TERRAIN_HEIGHT_MAX);
         expect(Number.isInteger(h)).toBe(true);
@@ -49,13 +50,34 @@ describe('createTerrainField', () => {
     }
   });
 
-  it('water cells always have height 0, mountain iff height >= threshold and not water', () => {
+  it('cellCornerHeights returns [nw, ne, sw, se] matching cornerHeightAt at (x,z)/(x+1,z)/(x,z+1)/(x+1,z+1)', () => {
+    const field = createTerrainField(7, HALF_EXTENT);
+    for (const [x, z] of [[0, 0], [12, -7], [8000, 8000]] as const) {
+      const [nw, ne, sw, se] = field.cellCornerHeights(x, z);
+      expect(nw).toBe(field.cornerHeightAt(x, z));
+      expect(ne).toBe(field.cornerHeightAt(x + 1, z));
+      expect(sw).toBe(field.cornerHeightAt(x, z + 1));
+      expect(se).toBe(field.cornerHeightAt(x + 1, z + 1));
+    }
+  });
+
+  it('cellHeightAt is the min of the 4 corners', () => {
+    const field = createTerrainField(7, HALF_EXTENT);
+    for (const [x, z] of [[0, 0], [12, -7], [8000, 8000], [-300, 150]] as const) {
+      const [nw, ne, sw, se] = field.cellCornerHeights(x, z);
+      expect(field.cellHeightAt(x, z)).toBe(Math.min(nw, ne, sw, se));
+    }
+  });
+
+  it('water cells have all 4 corners at height 0, mountain iff cellHeightAt >= threshold and not water', () => {
     const field = createTerrainField(7, HALF_EXTENT);
     for (let x = -300; x <= 300; x++) {
       for (let z = -300; z <= 300; z++) {
-        const h = field.heightAt(x, z);
+        const h = field.cellHeightAt(x, z);
         const t = field.terrainTypeAt(x, z);
-        if (t === 'water') expect(h).toBe(0);
+        if (t === 'water') {
+          expect(field.cellCornerHeights(x, z)).toEqual([0, 0, 0, 0]);
+        }
         if (t === 'mountain') {
           expect(h).toBeGreaterThanOrEqual(MOUNTAIN_HEIGHT_THRESHOLD);
         } else {
@@ -67,13 +89,14 @@ describe('createTerrainField', () => {
 
   it('returns grass/height 0 outside the half-extent range', () => {
     const field = createTerrainField(7, HALF_EXTENT);
-    expect(field.heightAt(HALF_EXTENT + 1, 0)).toBe(0);
+    expect(field.cornerHeightAt(HALF_EXTENT + 1, 0)).toBe(0);
+    expect(field.cellHeightAt(HALF_EXTENT + 1, 0)).toBe(0);
     expect(field.terrainTypeAt(HALF_EXTENT + 1, 0)).toBe('grass');
-    expect(field.heightAt(0, -HALF_EXTENT - 100)).toBe(0);
+    expect(field.cornerHeightAt(0, -HALF_EXTENT - 100)).toBe(0);
     expect(field.terrainTypeAt(0, -HALF_EXTENT - 100)).toBe('grass');
   });
 
-  it('is 1-Lipschitz (4-neighbour height diff <= 1) across scattered 64x64 windows, including far coordinates', () => {
+  it('is 1-Lipschitz on the vertex lattice (4-neighbour corner height diff <= 1) across scattered 64x64 windows, including far coordinates', () => {
     const seeds = [1, 2, 3, 42, 99];
     for (const seed of seeds) {
       const field = createTerrainField(seed, HALF_EXTENT);
@@ -94,7 +117,7 @@ describe('createTerrainField', () => {
         for (let dx = 0; dx < size; dx++) {
           grid.push([]);
           for (let dz = 0; dz < size; dz++) {
-            grid[dx].push(field.heightAt(ox + dx, oz + dz));
+            grid[dx].push(field.cornerHeightAt(ox + dx, oz + dz));
           }
         }
         for (let dx = 0; dx < size; dx++) {
@@ -116,7 +139,7 @@ describe('createTerrainField', () => {
     const size = 400;
     for (let x = -size; x < size; x++) {
       for (let z = -size; z < size; z++) {
-        const h = field.heightAt(x, z);
+        const h = field.cellHeightAt(x, z);
         const t = field.terrainTypeAt(x, z);
         if (h === 0 && t === 'grass') flat++;
         if (t === 'mountain') mountain++;
@@ -129,12 +152,12 @@ describe('createTerrainField', () => {
     expect(water).toBeGreaterThan(0);
   });
 
-  it('computes a 64x64 window well under 50ms', () => {
+  it('computes a 64x64 window of corner heights well under 50ms', () => {
     const field = createTerrainField(7, HALF_EXTENT);
     const start = Date.now();
     for (let x = 0; x < 64; x++) {
       for (let z = 0; z < 64; z++) {
-        field.heightAt(8000 + x, 8000 + z);
+        field.cornerHeightAt(8000 + x, 8000 + z);
       }
     }
     expect(Date.now() - start).toBeLessThan(50);
