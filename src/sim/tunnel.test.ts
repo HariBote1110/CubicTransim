@@ -7,7 +7,7 @@ import {
   isTrainHiddenInTunnel,
 } from './tunnel';
 import { OVERPASS_HEIGHT } from './trackPath';
-import { computeElevation } from './terrain';
+import { computeElevation } from './testSupport/elevationFixture';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 

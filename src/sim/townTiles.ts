@@ -61,7 +61,7 @@ export const TOWN_ROAD_SUB_SPACING = 5;
 /**
  * 町タイルの最大半径(タイル、チェビシェフ距離)。人口上限(TOWN_POPULATION_CAP=50000)の
  * 直前(約47000人)で初めて到達する値にし、成長が上限近くまで見た目に反映されるようにする。
- * 隣接する町とはTOWN_MIN_DISTANCE(towns.ts、16)+先勝ちのoccupied索引で棲み分ける。
+ * 隣接する町とは町間の最低距離(領域配置のジッター幅相当)+先勝ちのoccupied索引で棲み分ける。
  */
 export const TOWN_TILE_RADIUS_MAX = 16;
 /** 町サブタイルの最大半径(サブタイル、チェビシェフ距離)。 */

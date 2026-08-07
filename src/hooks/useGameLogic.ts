@@ -15,10 +15,9 @@ import {
   calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
-import { createTerrainField, fieldFromMaps } from '../sim/terrainField';
+import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT } from '../sim/terrainField';
 import type { CornerDiffs, EditBlockers, TerrainEditMode } from '../sim/terrainOverlay';
 import { createEditedTerrainField, applyCornerEdit } from '../sim/terrainOverlay';
-import { TERRAIN_COORD_RANGE } from '../sim/terrain';
 
 // 編成の最小・最大両数
 const MIN_CARS = 1;
@@ -54,9 +53,9 @@ export const useGameLogic = () => {
   // ★追加(P3): 地形の乱数シード。terrainField.tsのcreateTerrainFieldへそのまま渡す
   // 決定的な純関数のパラメータで、全セルを実体化しない(progress/16k-map-architecture.md)。
   const [worldSeed, setWorldSeed] = useState<number>(() => Date.now() % 2 ** 31);
-  // マップの生成半径(-halfExtent..halfExtentのセルを生成する)。既定は旧TERRAIN_COORD_RANGE
+  // マップの生成半径(-halfExtent..halfExtentのセルを生成する)。既定はDEFAULT_HALF_EXTENT
   // (45、小91×91)。新規ゲーム時(newGame)にマップサイズ選択UIから差し替えられる。
-  const [halfExtent, setHalfExtent] = useState<number>(TERRAIN_COORD_RANGE);
+  const [halfExtent, setHalfExtent] = useState<number>(DEFAULT_HALF_EXTENT);
   // 盛土/切土の疎な編集差分(コーナー格子)。terrainOverlay.tsのCornerDiffs。
   const [cornerDiffs, setCornerDiffs] = useState<CornerDiffs>(new Map());
   // デバッグシナリオが手組みの地形(尾根など、乱数シードでは表現できない形)を使うときの

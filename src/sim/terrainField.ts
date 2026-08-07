@@ -12,6 +12,9 @@
 import type { TerrainType } from '../types';
 import { toKey } from '../utils';
 
+/** 既定マップの生成半径(-45..45)。旧terrain.tsのTERRAIN_COORD_RANGEを引き継ぐ。 */
+export const DEFAULT_HALF_EXTENT = 45;
+
 export const TERRAIN_HEIGHT_MAX = 10;
 
 // この標高以上のセルをmountainとして扱う。terrain.tsのMOUNTAIN_HEIGHT_THRESHOLDと同じ規約

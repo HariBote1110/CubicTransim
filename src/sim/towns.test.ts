@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { CellData, StationData, TerrainType, TownData } from '../types';
-import { generateMap } from './terrain';
 import { fieldFromMaps } from './terrainField';
 import { createTerrainField } from './terrainField';
 import {
-  mulberry32, generateTowns, growTown, townServiceLevel,
-  TOWN_MIN_DISTANCE, TOWN_COORD_RANGE, TOWN_POPULATION_MIN, TOWN_POPULATION_MAX, TOWN_POPULATION_CAP,
+  mulberry32, growTown, townServiceLevel,
+  TOWN_POPULATION_MIN, TOWN_POPULATION_MAX, TOWN_POPULATION_CAP,
   TOWN_STATION_RADIUS,
   nearestTownWithinRadius, stationNameForTown,
   NEW_TOWN_POPULATION_MIN, NEW_TOWN_POPULATION_MAX,
@@ -40,93 +39,11 @@ describe('mulberry32', () => {
   });
 });
 
-describe('generateTowns', () => {
-  it('同じシードからは同じ街配置が決定的に得られる', () => {
-    const townsA = generateTowns(mulberry32(42), 8);
-    const townsB = generateTowns(mulberry32(42), 8);
-    expect(townsA).toEqual(townsB);
-  });
-
-  it('指定した個数の街が生成される', () => {
-    const towns = generateTowns(mulberry32(42), 8);
-    expect(towns.length).toBe(8);
-  });
-
-  it('中心座標は-40..40の範囲に収まる', () => {
-    const towns = generateTowns(mulberry32(7), 8);
-    for (const town of towns) {
-      expect(town.centre.x).toBeGreaterThanOrEqual(-TOWN_COORD_RANGE);
-      expect(town.centre.x).toBeLessThanOrEqual(TOWN_COORD_RANGE);
-      expect(town.centre.z).toBeGreaterThanOrEqual(-TOWN_COORD_RANGE);
-      expect(town.centre.z).toBeLessThanOrEqual(TOWN_COORD_RANGE);
-    }
-  });
-
-  it('街同士は最低TOWN_MIN_DISTANCE離れている', () => {
-    const towns = generateTowns(mulberry32(7), 8);
-    for (let i = 0; i < towns.length; i++) {
-      for (let j = i + 1; j < towns.length; j++) {
-        const dist = Math.hypot(
-          towns[i].centre.x - towns[j].centre.x,
-          towns[i].centre.z - towns[j].centre.z
-        );
-        expect(dist).toBeGreaterThanOrEqual(TOWN_MIN_DISTANCE);
-      }
-    }
-  });
-
-  it('populationは500〜5000の範囲に収まる', () => {
-    const towns = generateTowns(mulberry32(7), 8);
-    for (const town of towns) {
-      expect(town.population).toBeGreaterThanOrEqual(TOWN_POPULATION_MIN);
-      expect(town.population).toBeLessThanOrEqual(TOWN_POPULATION_MAX);
-    }
-  });
-
-  it('各街のidは一意である', () => {
-    const towns = generateTowns(mulberry32(7), 8);
-    const ids = new Set(towns.map(t => t.id));
-    expect(ids.size).toBe(towns.length);
-  });
-
-  it('標高地形(generateMap)を渡しても、街は必ず平地(標高0の草地)に8つ生成される', () => {
-    // 標高が一次データになりmountainセルが数千個規模になっても、
-    // rejection samplingが平地を見つけて8つの街を置けることを確認する。
-    for (const seed of [1, 42, 2026]) {
-      const { terrain, heights } = generateMap(mulberry32(seed));
-      const towns = generateTowns(mulberry32(seed + 1), 8, fieldFromMaps(heights, terrain, 45));
-      expect(towns.length).toBe(8);
-      for (const town of towns) {
-        const key = `${town.centre.x},${town.centre.z}`;
-        expect(terrain.has(key)).toBe(false); // 水域・山岳ではない
-        expect(heights.has(key)).toBe(false); // 標高0の平地
-      }
-    }
-  });
-
-  it('terrainを渡すと水域セルの半径3タイル以内には街が生成されない', () => {
-    // マップ中央付近を広く水域で埋め、街がその近傍を避けることを確認する
-    const terrain = new Map<string, 'water' | 'mountain'>();
-    for (let x = -5; x <= 5; x++) {
-      for (let z = -5; z <= 5; z++) {
-        terrain.set(`${x},${z}`, 'water');
-      }
-    }
-
-    const towns = generateTowns(mulberry32(7), 8, fieldFromMaps(new Map(), terrain, 45));
-    for (const town of towns) {
-      for (const key of terrain.keys()) {
-        const [tx, tz] = key.split(',').map(Number);
-        const dist = Math.hypot(town.centre.x - tx, town.centre.z - tz);
-        expect(dist).toBeGreaterThan(3);
-      }
-    }
-  });
-});
-
 describe('町名', () => {
-  it('生成された街には名前が付く', () => {
-    const towns = generateTowns(mulberry32(42), 8);
+  it('生成された街には名前が付く(generateRegionTownsのフィクスチャで確認)', () => {
+    const field = createTerrainField(42, 45);
+    const towns = generateRegionTowns(42, 45, field);
+    expect(towns.length).toBeGreaterThan(0);
     for (const town of towns) {
       expect(town.name).toBeTruthy();
       expect(town.name.endsWith('町') || town.name.endsWith('市') || town.name.endsWith('村')).toBe(true);
@@ -134,13 +51,15 @@ describe('町名', () => {
   });
 
   it('同じシードなら町名も同じ(決定的)', () => {
-    const a = generateTowns(mulberry32(7), 8).map(t => t.name);
-    const b = generateTowns(mulberry32(7), 8).map(t => t.name);
+    const field = createTerrainField(7, 45);
+    const a = generateRegionTowns(7, 45, field).map(t => t.name);
+    const b = generateRegionTowns(7, 45, field).map(t => t.name);
     expect(a).toEqual(b);
   });
 
   it('町名は重複しない', () => {
-    const names = generateTowns(mulberry32(3), 8).map(t => t.name);
+    const field = createTerrainField(3, 45);
+    const names = generateRegionTowns(3, 45, field).map(t => t.name);
     expect(new Set(names).size).toBe(names.length);
   });
 });

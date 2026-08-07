@@ -20,7 +20,7 @@ import {
   type ElevatedEndPlan,
 } from './construction';
 import { fieldFromMaps } from './terrainField';
-import { computeElevation } from './terrain';
+import { computeElevation } from './testSupport/elevationFixture';
 
 const emptyState = (): ConstructionState => ({
   railMap: new Map<string, CellData>(),

@@ -6,11 +6,6 @@ import { cellOccupiesGround } from './townTiles';
 
 type Pos = { x: number; z: number };
 
-export const TOWN_COORD_RANGE = 40; // 中心座標は -40..40
-// 街同士の最低距離(タイル)。町タイルの最大半径(townTiles.ts、16)まで成長した
-// 大都市が隣町を丸ごと飲み込まないよう、旧値12から引き上げた(重なり自体は
-// buildTownIndexesの先勝ちoccupied索引が防ぐが、間隔を空けたほうが見た目がよい)。
-export const TOWN_MIN_DISTANCE = 16;
 export const TOWN_POPULATION_MIN = 500;
 export const TOWN_POPULATION_MAX = 5000;
 /** 人口の上限。鉄道が便利でもこれ以上は増えない。 */
@@ -20,7 +15,6 @@ export const TOWN_GROWTH_RATE_MAX = 0.03;
 /** 街の中心からこの距離(タイル)までの駅を「その町の駅」とみなす。 */
 export const TOWN_STATION_RADIUS = 10;
 export const TOWN_TERRAIN_AVOID_RADIUS = 3; // 水域・山岳セルからこの半径以内には街を生成しない
-const MAX_ATTEMPTS_PER_TOWN = 500; // rejection samplingの試行回数上限
 
 // 候補座標が水域・山岳セルの半径TOWN_TERRAIN_AVOID_RADIUS以内にあるかどうかを判定する。
 // 標高地形の導入で水域・山岳セルは数千個規模になったため、terrain全走査ではなく
@@ -114,46 +108,10 @@ export function growTown(town: TownData, serviceLevel: number): TownData {
   return { ...town, population: grown };
 }
 
-// マップ上に人口を持つ街を生成する。中心座標は rejection sampling で
-// 最低 TOWN_MIN_DISTANCE 離すよう決定的に配置する。
-export function generateTowns(
-  rng: () => number,
-  count = 8,
-  field?: TerrainField
-): TownData[] {
-  const towns: TownData[] = [];
-  const usedNames = new Set<string>();
-
-  for (let i = 0; i < count; i++) {
-    for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_TOWN; attempt++) {
-      const x = Math.round((rng() * 2 - 1) * TOWN_COORD_RANGE);
-      const z = Math.round((rng() * 2 - 1) * TOWN_COORD_RANGE);
-
-      const farEnough = towns.every(
-        t => Math.hypot(t.centre.x - x, t.centre.z - z) >= TOWN_MIN_DISTANCE
-      );
-      // 街は必ず平地に生成される: 水域・山岳セルの半径TOWN_TERRAIN_AVOID_RADIUS以内は避ける
-      const avoidsTerrain = !field || !isNearTerrain(x, z, field, TOWN_TERRAIN_AVOID_RADIUS);
-
-      if (farEnough && avoidsTerrain) {
-        const population = Math.round(
-          TOWN_POPULATION_MIN + rng() * (TOWN_POPULATION_MAX - TOWN_POPULATION_MIN)
-        );
-        const name = nextTownName(rng, usedNames);
-        usedNames.add(name);
-        towns.push({ id: `town-${i}`, name, centre: { x, z }, population });
-        break;
-      }
-    }
-  }
-
-  return towns;
-}
-
 // --- 領域ベースの決定的な町配置(P5, progress/16k-map-architecture.md参照) ---
 //
-// 旧generateTownsは「count個ループでrejection sampling」というグローバルな手続きで、
-// マップ全域(TOWN_COORD_RANGE)を一度に見渡す必要があった。16Kマップ(halfExtent=8192)
+// 旧generateTowns(P6で削除)は「count個ループでrejection sampling」というグローバルな
+// 手続きで、マップ全域を一度に見渡す必要があった。16Kマップ(halfExtent=8192)
 // では成立しない(全域を一度に扱う前提が破綻する)ため、マップを128×128セルの領域
 // (region)に分割し、各領域は(worldSeed, regionCoord)だけから独立に「町を1つ持つか・
 // 持たないか」を決める。これにより「可視・近傍の領域だけ実体化する」将来の拡張や、
