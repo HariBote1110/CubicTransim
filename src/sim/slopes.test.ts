@@ -5,6 +5,7 @@ import {
   edgeHeights,
   pathSlopeViolations,
   railEdgeContinuous,
+  railHeightAt,
   slopeOf,
   SLOPE_RAIL_COST_MULTIPLIER,
 } from './slopes';
@@ -239,5 +240,23 @@ describe('pathSlopeViolations', () => {
 describe('SLOPE_RAIL_COST_MULTIPLIER', () => {
   it('is the documented incline cost multiplier (P7b, unwired here)', () => {
     expect(SLOPE_RAIL_COST_MULTIPLIER).toBe(2);
+  });
+});
+
+describe('railHeightAt (P7b)', () => {
+  it('flatセルはその一定標高を返す', () => {
+    const field = stubField({ '0,0': 2, '1,0': 2, '0,1': 2, '1,1': 2 });
+    expect(railHeightAt(field, undefined, 0, 0)).toBe(2);
+  });
+
+  it('inclineセルは低い側の辺の標高(base)を返す', () => {
+    // N辺(nw,ne)=1, S辺(sw,se)=0 → 北へ登るincline。基準(base)は低い側=0。
+    const field = stubField({ '0,0': 1, '1,0': 1, '0,1': 0, '1,1': 0 });
+    expect(railHeightAt(field, undefined, 0, 0)).toBe(0);
+  });
+
+  it('tunnelセルはCellDataに保存された高さをそのまま返す(地形コーナーは見ない)', () => {
+    const field = stubField({ '0,0': 5, '1,0': 5, '0,1': 3, '1,1': 3 });
+    expect(railHeightAt(field, { type: 'rail', tunnel: { height: 1 } }, 0, 0)).toBe(1);
   });
 });
