@@ -1119,6 +1119,11 @@ describe('地下線(applyUndergroundPath, P8a)', () => {
     const groundCell = state.railMap.get(toKey(2, 0))!;
     expect(groundCell.ramp).toBeDefined();
     expect(groundCell.ramp!.base).toBe(-1);
+    // pathfinding(resolveEntryLayer)は「今いる層」のconnections/uppersしか見ないため、
+    // 地平から掘割ランプへ進めるにはbase===-1のランプセルがconnections側にも
+    // 同じビットを持つ必要がある(base===0の場合にorIntoBaseLevelがconnectionsへ
+    // 書くのと対称の理由)。ramp.base自体は-1のまま変わらない。
+    expect(groundCell.connections).toBeGreaterThan(0);
   });
 });
 

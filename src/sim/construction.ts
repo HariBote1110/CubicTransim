@@ -1239,7 +1239,17 @@ export function applyUndergroundPath(
     } else {
       const bits = prevDir | nextDir;
       const existing = railMap.get(key);
-      const merged = orIntoBaseLevel(existing, role.base, bits);
+      let merged = orIntoBaseLevel(existing, role.base, bits);
+      // P8a: base===-1(地平0への掘割ランプの最初の1段)は、地平から見て「今いる層」が
+      // 常に0のまま経路探索されるため(resolveEntryLayerは移動元の層のconnections/uppers
+      // しか見ない)、pathfindingが地平側からこのセルへ入ってすぐ先(地下方向)へ進める
+      // よう、connections側にも同じビットを重ねて持たせる必要がある(base===0の場合に
+      // orIntoBaseLevelがconnectionsへ書くのと対称の理由。base+1===0(地平)の側は
+      // このセル自身がuppers[-1]だけを持っていても、地平の層から一切辿り着けない)。
+      // ramp.base自体(レンダリング・層遷移のadjacency判定に使う)は-1のまま変えない。
+      if (role.base === -1) {
+        merged = { ...merged, connections: (merged.connections ?? 0) | bits };
+      }
       const rampDir = rampDirFor(role.side, prevDir, nextDir);
       railMap.set(key, {
         ...merged,

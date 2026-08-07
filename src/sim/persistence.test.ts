@@ -137,4 +137,35 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     // v1系の移行チェーンは廃止したため、STARTING_MONEYは新規ゲームの初期値としてのみ使う。
     expect(STARTING_MONEY).toBeGreaterThan(0);
   });
+
+  it('P8a: 地下(負レベル)のuppers/ramp.base/StationData.cells[].layerもv15のままJSON経由で往復する', () => {
+    // design docの決定: CellData.uppersはPartial<Record<Level,...>>への型widening
+    // (実体はキーが数値の素朴なオブジェクト)、ramp.baseは元からnumber型なので、
+    // 地下(負レベル)の追加はランタイムの形を一切変えていない(TypeScriptの型だけの
+    // 拡張)。よってv15のシリアライズ形式は無変更のまま追加互換になる、というのが
+    // このタスクの結論。以下はそれを裏付けるラウンドトリップ確認。
+    const railMap = new Map<string, CellData>([
+      ['0,0', {
+        type: 'rail',
+        connections: 0,
+        uppers: { [-1]: { connections: 3, stationId: 'stU' } },
+        ramp: { dir: 1, level: 2, base: -1 },
+      }],
+    ]);
+    const stations = new Map<string, StationData>([
+      ['stU', { id: 'stU', name: '地下駅', cells: [{ x: 0, z: 0, layer: -1 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const saveData = serialiseWorld(
+      railMap, stations, [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    const cell = restored!.railMap.get('0,0')!;
+    expect(cell.uppers?.[-1]).toEqual({ connections: 3, stationId: 'stU' });
+    expect(cell.ramp).toEqual({ dir: 1, level: 2, base: -1 });
+    expect(restored!.stations.get('stU')!.cells).toEqual([{ x: 0, z: 0, layer: -1 }]);
+  });
 });
