@@ -432,3 +432,204 @@ glb インポータ+バリデータのツールチェーンを新設した。cla
 - 建設プレビューの地平レールケース(RailBlock実形状)をwgpu側でも再現したい
   場合は`buildCellTrackParts`(railGeometry.ts)を1セル分だけ呼び出す形になる
   (現状は意図的にボックスへ簡略化)。
+
+## R4d 実装メモ(0.5.0-Alpha-1a)
+
+### 到達点
+
+three.js の**描画スタック**を全面退役した。r3f の `<Canvas>`・drei（OrbitControls /
+OrthographicCamera / Html）・classic モード・rendererPreference はすべて削除し、
+ゲーム画面は wgpu キャンバス1枚 + DOM オーバーレイ（ラベル）+ GUI だけになった。
+`three` npm パッケージは `src/render/*.ts` の **CPU側ジオメトリ演算** としてのみ残る
+（完全撤去は R4e）。`@react-three/fiber` / `@react-three/drei` は package.json から削除。
+
+### 1. フレームループ(`src/render/frameLoop.ts`)
+
+r3f の描画ループが暗黙に決めていた実行順を、優先度つきの購読バスとして明示した。
+
+```
+FRAME_ORDER = { simulation: 0, feed: 10, camera: 20, render: 30 }
+```
+
+- `FrameLoop.runFrame(dt)` が1フレーム分を同期実行する。`start()/stop()` が rAF を回す
+  （App.tsx の useEffect で起動）
+- `dt` は `maxDelta = 0.1` 秒でクランプする（タブ復帰直後の巨大 delta でシミュレーションが
+  飛ばないように。旧 r3f には無かった保護）
+- 購読中の unsubscribe / 例外に耐える（スナップショットを取って回し、例外は console.error して
+  次の購読者へ進む）
+- React 側は `src/hooks/useFrameLoop.ts`（useFrame の置き換え）で購読する。コールバックは ref
+  経由で最新版を呼ぶので、購読順は初回マウント順で安定する
+
+移行したもの: `SimulationDriver`（simulation）、`useMeshChunkFeeder` / `WebGpuTrains` /
+`WebGpuBuildPreview` / `WebGpuTownMarkers`（feed）、可視チャンク追跡とズームクランプ（camera）、
+`WebGpuRenderDriver`（render、旧 `WebGpuCameraSync`）。
+
+**デバッグフック**: `__dbgStep(dt,n)` は sim を n 回進めたあと `frameLoop.runFrame(0)` を呼ぶ
+（delta=0 なので simulation フェーズは何もせず、feed→camera→render だけが走る）。
+非表示タブでの検証手順がそのまま通る。`__debugWorld` / `__dbgFrames` も維持。
+廃止: `__dbgThree` / `__camera` / `__orbitControls` / `__sun`。
+新設: `__webgpuCamera`（`{centreX, centreZ, zoom}` の読み書き可能なオブジェクト）。
+
+### 2. カメラ所有権と入力(`src/render/cameraState.ts` / GameScene の入力レイヤー)
+
+カメラの真実源は TS の `GameCameraState = {centreX, centreZ, zoom}`。`zoom` は
+**CSSピクセル/ワールド単位**で、旧 `OrthographicCamera.zoom` と同義（初期値 40、
+`minZoomForFullMap` の戻り値をそのまま下限に使える）。毎フレーム `toWebGpuCameraState` で
+物理ピクセル基準の `WebGpuCameraState` に変換して wasm へ push する。
+
+旧 OrbitControls の設定（`enableRotate={false}`、`mouseButtons={{LEFT: undefined,
+MIDDLE: DOLLY, RIGHT: PAN}}`、`minZoom`、`maxZoom=100`）を素のハンドラで再現した:
+
+| 操作 | 旧(OrbitControls) | 新(入力レイヤー div) |
+| --- | --- | --- |
+| パン | 右ドラッグ | `pointerdown(button===2)` → `panByScreenDelta`（setPointerCapture、contextmenu は preventDefault） |
+| ドリー | 中ドラッグ | `pointerdown(button===1)` → 下方向で縮小（OrbitControls の `_handleMouseMoveDolly` と同じ向き） |
+| ズーム | ホイール | 非パッシブな native `wheel` リスナ。`0.95^notches`（1イベント最大4ノッチにクランプ）。**画面中心ズーム**（OrbitControls の orthographic dolly は注視点を動かさないので UX 据え置き） |
+| 回転 | 無効 | 実装しない |
+| キーボード | 未使用（`listenToKeyEvents` 未呼び出し） | 無し（GameUI の ArrowUp/Down による建設レベル切替は無関係なので従来どおり） |
+
+ズーム下限は `minZoomFor(halfExtent, cssW, cssH)`（= `minZoomForFullMap` に 0.001 の床）。
+R3 で WebGPU モードだけ解禁していた全図ズームアウトが、唯一の下限になった。
+DPR・リサイズは App の ResizeObserver が `viewportRef` を更新し、`WebGpuRenderDriver` が
+バックバッファサイズを合わせる。ビューポートが縮んで minZoom が上がった場合は camera フェーズで
+現在のズームをクランプし直す。
+
+**可視チャンク追跡**（旧 `CameraChunkTracker`）は `picking.ts` の `chunkViewFromCamera` で
+閉形式化した（ビューポート4隅を y=0 平面へ落とした外接矩形の中心と半径、`halfExtent` でクランプ）。
+スロットルは旧実装と同じ 150ms 間隔で、カメラ状態の署名が変わったフレームだけ再計算する。
+
+### 3. 閉形式ピッキング(`src/render/picking.ts`)
+
+`projectToScreenPx` の逆関数。`sx = (rx-rz)·ppu·ISO_X`, `sy = (rx+rz)·ppu·ISO_Y - y·ppu·ISO_H`
+を y 固定で解く。
+
+- `screenPxToGround(camera, sx, sy, yWorld)` — 任意の水平面への逆投影
+- `pickGroundCell` — y=0 での丸め。**建設・選択の既定**（旧・地面プレーンの `e.point` 相当）
+- `pickTerrainCell(camera, sx, sy, field)` — 高さ候補 `TERRAIN_HEIGHT_MAX..1` を上から走査し、
+  「その高さの面へ落としたセルの実標高がその高さと一致する」最初のセルを返す。
+  旧 `TerrainBlocks` の pickable 上面レイキャストと同じ結果になる（丘の頂上をクリックしたら
+  頂上のセルが選ばれる）。**地形編集モード(raise/lower)でのみ使う**
+- `clientToScreenPx` / `visibleGroundBounds` / `chunkViewFromCamera`
+
+**注意（挙動の据え置き）**: 建設・選択は旧実装と同じく y=0 平面ピッキングのまま。したがって
+標高のあるセルでは「見た目より手前のセル」が選ばれる（旧 three.js の地面プレーンと同じ癖で、
+`elevatedCellCandidateFromGroundClick` はこの癖を前提にした補正）。ここを terrain-aware に
+変えると高架駅クリックの補正と二重にずれるため、R4d では意図的に変更していない。
+
+### ハンドラ移送表(GameScene の地面プレーン + window ハンドラ → 入力レイヤー div)
+
+| 旧 | 新 | 備考 |
+| --- | --- | --- |
+| 地面プレーン `onPointerMove` | `handlePointerMove` | `cellFromEvent`（地形編集時のみ terrain-aware）で cursorPos 更新。同一セルなら state 更新をスキップ |
+| 〃（列車ドラッグ昇格） | 同上の後半 | trainPress のセルから動いたら `setDraggingTrainId` |
+| 地面プレーン `onPointerDown` | `handlePointerDown` | `button===2/1` はカメラ操作へ分岐。`button===0` のみゲーム入力。選択モードは `trainAtCell` で掴む、建設モードは `dragStartRef`+state |
+| 地面プレーン `onPointerUp` | `handlePointerUp` | 列車ドロップ（`onRelocateTrain`）/ 建設コミット（`getConstrainedPath` / `rectCells` / 単セル、駅の軸ヒント）。`dragStartRef` を読む理由（単発クリックで state が未コミット）はコメントごと移設 |
+| 地面プレーン `onPointerLeave` | `handlePointerLeave` | `handlePointerUp` + cursorPos クリア |
+| 地面プレーン `onClick` | `handleClick` | shift+信号=撤去 / 駅クリック（運行表追加・駅選択）/ 車庫クリック=列車購入 / 高架駅候補 / 列車の画面空間ピック / 何も無ければ選択解除 |
+| `DynamicTrain` の `onClick` | `handleClick` 内の `pickTrainAt` | R4c の `trainPicking.ts` をそのまま使う |
+| `justDraggedRef`（DynamicTrain 側で消費） | `handleClick` の先頭で消費 | 元コメントの意図（ドラッグ直後の余計なクリックを1回無視）どおりに一本化 |
+| `TerrainBlocks` の pickable 上面ハンドラ | `cellFromEvent` の `pickTerrainCell` 分岐 | メッシュを持たずに同じ結果を得る |
+| OrbitControls の contextmenu 抑止 | `onContextMenu={preventDefault}` | 右ドラッグパンのため必須 |
+
+### 4. 削除したファイル
+
+`src/components/`: TerrainBlocks.tsx / TrackNetwork.tsx / Scenery.tsx / TownBlocks.tsx /
+TownMarkers.tsx / DynamicTrain.tsx / TrainCar.tsx / StationLabel.tsx / RailBlock.tsx /
+StationBlock.tsx / DepotBlock.tsx / SignalBlock.tsx
+`src/render/`: groundTexture.ts（地面プレーン専用だった）
+`src/ui/`: rendererPreference.ts（設定パネルのレンダラー選択ごと削除）
+`src/render/palette.ts`: `MATERIALS` / `DIMMED_MATERIALS` / `materialsFor` / `bodyMaterial` /
+`bodyMaterialDimmed` / `GEOMETRIES`（three.js マテリアル・共有ジオメトリ）を削除し、
+色定数（`PALETTE`）・`angleFromVector`・`hash01` だけ残した。
+`StationBlock.tsx` が持っていたホーム寸法定数（`PLATFORM_HEIGHT` 等）は
+`src/render/stationGeometry.ts` へ移設し、そちらを一次情報源にした。
+
+### 5. 新規・移管したもの
+
+- `src/components/GameLabels.tsx` — 駅名・町名・列車ツールチップの DOM ラベル。R4c で App.tsx に
+  あったものを GameScene 側へ移し、**R4c の既知ギャップ2件を解消**した:
+  駅ラベルの Y は `computeStationHousePlacement` の `labelY`（高架駅で上屋にめり込まない値）を使う。
+  選択中列車の運行表に含まれる駅には停車順バッジ（①②）を出す。アンカーも drei `<Html center>` と
+  同じ中央合わせに戻した
+- `src/components/WebGpuTownMarkers.tsx` — 遠景の町ドット。**R3 で wgpu へ移されていたという
+  申し送りは誤りで、実際には three.js の `<TownMarkers>`（Points, sizeAttenuation:false）のまま
+  残っていた**ので、ここで初めて wgpu へ移した。インスタンス API にスケール要素が無いため、
+  プロトタイプメッシュ（八面体）自体をズームに応じた大きさで作り直す（比率 1.35 を超えたときだけ
+  再登録）。極大マップの全図ズームアウトで 5074 町のドットが描けることを確認済み
+- 建設グリッド（旧 `<gridHelper>`）— `WebGpuBuildPreview` の3つ目のチャンクとして、
+  中心セル±48セルぶんの細板を半透明クラスで描く。中心は8セル単位にスナップして焼き直しを抑える
+- WebGPU 非対応 / wasm 未ビルド / 初期化失敗の3種の**日本語案内画面**（App.tsx の
+  `UnavailableScreen`）。three.js に依存しない素の DOM
+
+### 6. 途中で見つけて直した既存バグ(R4d の本題外だが致命的)
+
+- **メッシュチャンクの内容更新漏れ（R4b から潜在）**: `useMeshChunkFeeder` は
+  「キーが可視集合に入ったか」でしか再構築を判断しておらず、**キーが変わらないまま内容だけが
+  変わるチャンク**（レール網の `'surface'`、駅・車庫・信号・坑口・水上橋など）を初回の内容の
+  まま放置していた。R4b/R4c の検証がシナリオ読込直後（=キーが新規）ばかりだったため見逃されて
+  いたもので、実際に線路を敷いても何も現れない。`buildChunk` の**関数同一性の変化**を
+  「焼き込み入力が変わった」信号として使い、既存キーを stale 集合に入れて予算内で載せ替える
+  方式に変更した（remove→再作成ではなく上書きなので、作り直し中にちらつかない）。
+  併せて `WebGpuStations` がインラインのアロー関数を `buildChunk` に渡していたのを
+  `useCallback` 化した（そのままだと毎レンダー全再構築になる）
+- **デバッグシナリオの地形不一致（R1 から潜在）**: wgpu は `(seed, halfExtent)` からしか地形を
+  作れないのに、デバッグシナリオは `debugFieldOverride`（手組みの平坦 field など）を使う。
+  classic が既定だった間は表面化しなかったが、wgpu 一本化で「TS は平地・描画はランダムな丘」に
+  なり、線路も駅も丘に埋もれて**何も見えない**状態になっていた。`cornerDiffsFromField`
+  （`sim/terrainOverlay.ts` に追加）で上書き field を全域のコーナー差分へ焼き直し、
+  既存のオーバーレイ転送経路で wasm へ送るようにした。
+  制約: `cellCornerHeights` を直接実装して4隅を不揃いにする擬似 field（山岳トンネルの尾根）は
+  コーナー標高では表現できないため、そのシナリオの尾根は平坦に描かれる（R4e 以降の課題）
+
+### 7. 既知の視覚差・簡略化(現状の一覧)
+
+- 動的影が無い（R4a から。頂点色への焼き込み陰影のみ）
+- 地下ビューの非選択レベルの**列車**は減光ではなく非表示（R4c から。インスタンス API に
+  半透明クラスが無い。Rust 側 API 拡張が要るので R4d でも見送った）
+- 駅のホームドアのガラスは全レベル alpha=0.55 固定（R4b から）
+- 地平レールの建設プレビューは実レール形状ではなく半透明ボックス（R4c から、意図的）
+- 列車ドラッグ中の向きは常に yaw=0（R4c から）
+- 建設グリッドは中心±48セルまで（旧 gridHelper は地面プレーン全面）
+- 建設・選択のピッキングは y=0 平面のまま（上記「注意（挙動の据え置き）」）
+
+### ブラウザ検証(すべて WebGPU 実機、Chrome / Apple M4)
+
+新規マップ（中 257×257）で: 右ドラッグのパン（`__webgpuCamera` の centre 変化を数値で確認）→
+ホイールズーム（`maxZoom=100` と `minZoomForFullMap(128,1280,720)=3.4446` の両端でクランプ）→
+地平線路のドラッグ敷設（直線 + 直角カーブ、`railMap` ダンプで `0,0..8,0 / 8,1..8,5` を確認、
+スクリーンショットでカーブのベジェが繋がることを確認）→ 駅設置（ホーム・上屋・駅舎・ラベル）→
+車庫設置 → 車庫クリックで列車購入 → 駅クリックで駅選択パネル → 信号設置（`signalDir:32`）→
+**shift+クリックで信号撤去**（`railMap` から消えることを確認）→ 盛土の矩形ドラッグ
+（(0,5)-(3,8) がちょうど1段上がることを確認）→ **丘の上（高さ1の面）を1回クリックして
+(1,6) だけが2段になること**を確認（terrain-aware ピッキングが視覚どおりのセルを拾う。
+y=0 平面ピックだと (0,5) が選ばれるケース）→ Lv1 の高架線路（桁・橋脚・端の坂）→
+地下1の線路（地表が一括減光され、地下セグメントだけ通常輝度で上描き）→ 保存 → 読込
+（線路・駅・車庫・高架・地形編集がすべて復元）。
+
+デバッグシナリオ「坂・高架・往復列車」で: `__dbgStep(0.1,60)` の走行 → 列車が線路の上を
+正しい向きで走ることをスクリーンショットで確認 → 列車のクリック選択（選択マーカー・黄色の
+経路ドット・DOM ツールチップ・**駅ラベル上の停車順バッジ①②**）→ ドラッグでの置き直し
+（掴んだ列車が持ち上がり、置き先に緑のゴーストが出る → 離すと `runtime.grid` が (-4,0) から
+(2,0) へ移動、選択は維持）。
+
+極大マップ（16385×16385、町 5074）で: 全図ズームアウト（zoom=0.05382 でクランプ、
+`__webgpuStats` は drawCalls 9 / lod 5 / meshDrawCalls 17、`__dbgStep` 60回の平均 **1.71 ms/frame**）、
+全町のドットが描画されることをスクリーンショットで確認。zoom=40 でのパン（120フレーム連続）も
+破綻なし（`residentTiles` 25 / `tileGpuBytes` 6.6MB）。
+
+ウィンドウリサイズ（1280×720 → 900×600）でバックバッファが 1800×1200 へ追従することを確認。
+`public/renderer/` を退避した状態で「WebGPU レンダラーがビルドされていません +
+`npm run build:renderer`」の案内画面が出ることを確認。
+
+`npm run test` 899件 green / `npm run build` green / `npm run build:renderer` green。
+`renderer/**` は未変更のため層A/層Bゲートは対象外。
+
+### R4e への申し送り
+
+- `three` の完全撤去（`src/render/*.ts` の BufferGeometry 生成・`mergeGeometry.ts`・
+  `bakedMesh.ts` の THREE 依存を素の Float32Array ベースへ置き換える）
+- 山岳トンネルのシナリオのように「コーナー標高では表現できない擬似 field」を wgpu へ渡す手段
+  （wasm 側に生の高さグリッドを流し込む API か、シナリオ側を fieldFromMaps へ寄せるか）
+- 地下ビューの非選択レベルの列車を半透明で描くためのインスタンス API 3クラス化（Rust 側）
+- 建設・選択のピッキングを terrain-aware にするなら、`elevatedCellCandidateFromGroundClick`
+  の補正と同時に見直すこと
