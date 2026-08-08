@@ -25,8 +25,8 @@ describe('FrameLoop', () => {
     const loop = new FrameLoop();
     const seen: number[] = [];
     loop.subscribe(FRAME_ORDER.simulation, dt => seen.push(dt));
-    loop.runFrame(0.25);
-    expect(seen).toEqual([0.25]);
+    loop.runFrame(0.05);
+    expect(seen).toEqual([0.05]);
   });
 
   it('stops calling a subscriber once it unsubscribes', () => {

@@ -71,13 +71,14 @@ describe('pickTerrainCell', () => {
   });
 
   it('picks the hill top the cursor is visually over, not the ground cell behind it', () => {
-    // A hill of height 4 at (10,10). Clicking its top face lands on the y=0 plane at
-    // (10-4, 10-4) = (6,6), so a naive ground pick would select the wrong cell.
+    // A hill of height 4 (= 3.2 world units) at (10,10). Clicking its top face lands on
+    // the y=0 plane at (6.8, 6.8), so a naive ground pick would select the wrong cell.
     const cam = camera();
     const height = 4;
+    const offset = Math.round(height * OVERPASS_HEIGHT);
     const field = stubField(new Map([['10,10', height]]));
     const { sx, sy } = projectToScreenPx({ x: 10, y: height * OVERPASS_HEIGHT, z: 10 }, cam);
-    expect(pickGroundCell(cam, sx, sy)).toEqual({ x: 10 - height, z: 10 - height });
+    expect(pickGroundCell(cam, sx, sy)).toEqual({ x: 10 - offset, z: 10 - offset });
     expect(pickTerrainCell(cam, sx, sy, field)).toEqual({ x: 10, z: 10 });
   });
 

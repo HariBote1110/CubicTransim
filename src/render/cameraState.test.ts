@@ -26,22 +26,21 @@ describe('toWebGpuCameraState', () => {
 });
 
 describe('panByScreenDelta', () => {
-  it('brings the ground point that was under the drag start back to the screen centre', () => {
+  it('keeps the grabbed ground point under the pointer for the whole drag', () => {
     const before = { centreX: 12, centreZ: -7, zoom: 33 };
     const dragDx = 140;
     const dragDy = -60;
-    // The world point currently drawn at (dragDx, dragDy) — physical pixels.
-    const grabbed = screenPxToGround(
-      toWebGpuCameraState(before, viewport), dragDx * viewport.dpr, dragDy * viewport.dpr, 0,
-    );
+    // The world point drawn under the pointer when the drag started (screen centre here).
+    const grabbed = screenPxToGround(toWebGpuCameraState(before, viewport), 0, 0, 0);
 
     const after = panByScreenDelta(before, dragDx, dragDy);
 
+    // After the drag it must be drawn exactly where the pointer moved to.
     const projected = projectToScreenPx(
       { x: grabbed.x, y: 0, z: grabbed.z }, toWebGpuCameraState(after, viewport),
     );
-    expect(projected.sx).toBeCloseTo(0, 6);
-    expect(projected.sy).toBeCloseTo(0, 6);
+    expect(projected.sx).toBeCloseTo(dragDx * viewport.dpr, 6);
+    expect(projected.sy).toBeCloseTo(dragDy * viewport.dpr, 6);
   });
 
   it('moves the world with the pointer (dragging right pushes the centre west)', () => {
