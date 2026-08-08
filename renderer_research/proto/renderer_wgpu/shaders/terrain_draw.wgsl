@@ -1,6 +1,8 @@
 struct TileParams { origin_x:i32, origin_z:i32, stride:i32, grid_size:u32 };
 struct CameraParams { center_x:f32, center_z:f32, pixels_per_cell:f32, height_scale:f32, viewport_w:f32, viewport_h:f32, half_extent:f32, _pad:f32 };
-struct RenderArgs { total_vertices:u32, cliff_vertices:u32, water_vertices:u32, instance_count:u32 };
+// Mirrors tile_finalize.wgsl's RenderArgs: words 0..3 are the draw_indirect quad,
+// words 4..5 are the per-class counts this shader splits the vertex range with.
+struct RenderArgs { vertex_count:u32, instance_count:u32, first_vertex:u32, first_instance:u32, cliff_vertices:u32, water_vertices:u32, _pad0:u32, _pad1:u32 };
 @group(0) @binding(0) var<uniform> tile:TileParams;
 @group(0) @binding(1) var<storage,read> samples:array<u32>;
 @group(0) @binding(2) var<storage,read> cliff_edges:array<u32>;

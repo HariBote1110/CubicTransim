@@ -11,8 +11,9 @@
 //!   3. full-map      - zoom out to the whole 16K map             (120 frames)
 //!   4. zoom-in       - zoomBy(exp(0.035)) every frame             (90 frames)
 //!   5. zoom-out      - zoomBy(exp(-0.035)) every frame            (90 frames)
-//! Total 540 frames/cycle. The cycle is repeated until >= 10,000 frames have been
-//! rendered, matching the "same scripted camera path, >=10,000 frames" requirement.
+//! Total 540 frames/cycle. The complete cycle - both zoom legs included - is repeated
+//! until >= 10,000 frames have been rendered, matching the "same scripted camera path,
+//! >=10,000 frames" requirement.
 //!
 //! Terraform (地形編集連打) is NOT included: it is out of scope for the prototype
 //! (see progress/quarterview-renderer-spec.md, "プロトタイプ(縦切り)スコープ" - the
@@ -24,7 +25,7 @@
 //! CPU timing is used for the frame-time gates (noted in the output).
 
 use quarterview_renderer_wgpu::{
-    MAX_DRAW_VERTICES, RENDER_ARGS_TOTAL_BYTES, TERRAIN_DRAW_WGSL, TILE_CLAMP_ARGS_WGSL,
+    MAX_DRAW_VERTICES, RENDER_ARGS_TOTAL_BYTES, RENDER_COUNTS_BYTES, TERRAIN_DRAW_WGSL, TILE_CLAMP_ARGS_WGSL,
     TILE_FINALIZE_WGSL, TILE_GENERATE_WGSL,
 };
 use quarterview_terrain_core::clipmap::{select_tiles_into, tile_cell_span, TileKey, ViewRequest, TILE_SAMPLES};
@@ -42,7 +43,6 @@ const MAX_NEW_TILES_PER_FRAME: usize = 24;
 const INDEX_COUNT_PER_TILE: u32 = (GRID - 1) * (GRID - 1) * 6;
 const MAX_CLIFF_EDGES: usize = 2 * (GRID as usize - 1) * (GRID as usize - 2);
 const MAX_WATER_CELLS: usize = (GRID as usize - 1) * (GRID as usize - 1);
-const RENDER_ARGS_BYTES: u64 = 16;
 
 const WIDTH: u32 = 1600;
 const HEIGHT: u32 = 900;
@@ -152,7 +152,7 @@ fn read_render_args(
     queue: &wgpu::Queue,
     staging: &wgpu::Buffer,
     render_args: &wgpu::Buffer,
-) -> [u32; 8] {
+) -> [u32; 12] {
     let mut encoder = device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("args-trace") });
     encoder.copy_buffer_to_buffer(render_args, 0, staging, 0, RENDER_ARGS_TOTAL_BYTES);
@@ -165,7 +165,7 @@ fn read_render_args(
     device.poll(wgpu::Maintain::Wait);
     rx.recv().unwrap().unwrap();
     let data = slice.get_mapped_range();
-    let mut out = [0u32; 8];
+    let mut out = [0u32; 12];
     for (i, slot) in out.iter_mut().enumerate() {
         *slot = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
     }
@@ -259,14 +259,14 @@ fn main() {
             .expect("adapter (expected Metal on macOS)");
     let info = adapter.get_info();
     // Timestamps are written via the render pass's `timestamp_writes` (bracketing the
-    // terrain draw pass only), not via CommandEncoder::write_timestamp. The encoder-level
-    // call needs TIMESTAMP_QUERY_INSIDE_ENCODERS and was found to make
-    // device.poll(Maintain::Wait) stall for exactly 60s on this Mac (wgpu 24.0.5 / Metal)
-    // once a frame mixed compute passes, a render pass and encoder-level timestamp writes
-    // in the same command buffer - see renderer_research/notes/layer-b-mac-2026-08-08.md.
-    // Pass-scoped writes only need plain TIMESTAMP_QUERY and did not reproduce the stall.
-    // Trade-off: gpu_ms below covers the render pass only, not tile-generation compute
-    // (which only runs on cache-miss frames); noted in the results JSON.
+    // terrain draw pass only), not via CommandEncoder::write_timestamp, so plain
+    // TIMESTAMP_QUERY suffices. Trade-off: gpu_ms below covers the render pass only, not
+    // tile-generation compute (which only runs on cache-miss frames).
+    //
+    // Historical note: the first flush of this query path once took exactly ~60s. That was
+    // not a query-set problem - poll(Maintain::Wait) was genuinely waiting on a GPU that had
+    // been handed billions of vertices per frame by a mis-encoded indirect quad, and 60s is
+    // wgpu-core's submission-wait timeout. With the encoding fixed, flushes take 60-160ms.
     let timestamp_features = wgpu::Features::TIMESTAMP_QUERY;
     let mut timestamp_supported = adapter.features().contains(timestamp_features) && std::env::var("LAYER_B_FORCE_NO_TS").is_err();
     // Set once if the adaptive fallback below (a pathologically slow first flush) turns
@@ -397,11 +397,8 @@ fn main() {
     let min_ppc = full_map_min_ppc(WIDTH, HEIGHT, HALF_EXTENT);
 
     // Tile generation gets its own command buffer, submitted immediately, rather than
-    // being appended to the frame's draw encoder. Packing many tiles' compute passes
-    // (up to MAX_NEW_TILES_PER_FRAME=24, each 2 compute passes + a buffer copy) into one
-    // encoder alongside the render pass reproduced multi-second-to-~60s stalls on this
-    // Mac (wgpu 24.0.5, Metal) during the zoom-out leg's rapid LOD churn - see
-    // renderer_research/notes/layer-b-mac-2026-08-08.md. Submitting per tile avoids it.
+    // being appended to the frame's draw encoder, so a cache-miss burst never delays the
+    // frame's own render pass.
     let create_gpu_tile = |device: &wgpu::Device, queue: &wgpu::Queue, key: TileKey, frame_index: u64| -> GpuTile {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tile-gen") });
         let origin_x = key.x * tile_cell_span(key.lod);
@@ -431,8 +428,9 @@ fn main() {
         let cliff_edges = device.create_buffer(&wgpu::BufferDescriptor { label: Some("cliff-edges"), size: (MAX_CLIFF_EDGES * 4) as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
         let water_cells = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water-cells"), size: (MAX_WATER_CELLS * 4) as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
         let base_vertices = INDEX_COUNT_PER_TILE;
-        // Words 4..8 are the diagnostics region filled in by tile_clamp_args.wgsl.
-        let render_args_bytes = [base_vertices, 0u32, 0u32, 1u32, 0u32, 0u32, 0u32, 0u32];
+        // words: [vertex_count, instance_count, first_vertex, first_instance,
+        //         cliff_vertices, water_vertices, pad, pad, diagnostics x4]
+        let render_args_bytes = [base_vertices, 1u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
         let render_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("render-indirect-args"), contents: bytemuck::cast_slice(&render_args_bytes), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC });
         let finalize_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-finalize-bg"), layout: &finalize_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: finalize_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() }, wgpu::BindGroupEntry { binding: 4, resource: render_args.as_entire_binding() }] });
         {
@@ -441,11 +439,8 @@ fn main() {
             pass.set_bind_group(0, &finalize_bg, &[]);
             pass.dispatch_workgroups(((GRID - 1) * (GRID - 1) + 255) / 256, 1, 1);
         }
-        let render_counts = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render-counts"), size: RENDER_ARGS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_ARGS_BYTES);
-        // The counts snapshot above is what the vertex shader reads; the clamp below then
-        // makes the live indirect quad safe to submit. Order matters: clamping first would
-        // erase the counts the vertex shader needs to split surface/cliff/water ranges.
+        // Clamp first (words 0..3), then snapshot words 0..7 for the vertex shader: the
+        // clamp only rewrites the draw quad and the diagnostics region, never the counts.
         {
             let clamp_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-clamp-args-bg"), layout: &clamp_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: clamp_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: render_args.as_entire_binding() }] });
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile-clamp-args"), timestamp_writes: None });
@@ -453,6 +448,8 @@ fn main() {
             pass.set_bind_group(0, &clamp_bg, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
+        let render_counts = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render-counts"), size: RENDER_COUNTS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_COUNTS_BYTES);
         let mut tile_bytes = [0u8; 16];
         put_i32(&mut tile_bytes, 0, origin_x);
         put_i32(&mut tile_bytes, 4, origin_z);
@@ -514,46 +511,19 @@ fn main() {
     assert_eq!(cycle_len, 540, "camera cycle should mirror camera_replay.mjs frame counts");
     let zoom_leg_start = 360usize; // index of the zoom-roundtrip SetCamera step within the cycle
 
-    // The zoom round-trip leg (frames 361..540 of `cycle`, i.e. deep zoom-out crossing
-    // several LOD boundaries) was found to trigger a severe, reproducible, and
-    // COMPOUNDING per-frame stall on this Mac (wgpu 24.0.5 / Metal): tens of seconds per
-    // frame, worsening frame over frame within the leg (documented in
-    // renderer_research/notes/layer-b-mac-2026-08-08.md). Replaying it a realistic number
-    // of times (e.g. the ~19 cycles a naive 10,000-frame target would need) would take
-    // multiple hours and add no new information over replaying it a couple of times - the
-    // failure is reproduced and its magnitude is already extreme on the first occurrence.
-    // FULL_CYCLES therefore captures the zoom leg (and hence T3/T5) a bounded, honest
-    // number of times; the >=10,000 frame target is met by replaying only the fast,
-    // non-stalling prefix of the SAME script (static -> max-speed-pan -> full-map) for
-    // the remainder. This is a scope reduction under real time constraints, not a result
-    // being tuned away: the full zoom-leg stall IS captured and reported as a T3/T5
-    // failure below.
-    const FULL_CYCLES: usize = 2;
-    let mut fast_cycle: Vec<Step> = Vec::with_capacity(zoom_leg_start);
-    fast_cycle.extend(cycle[..zoom_leg_start].iter().map(|s| Step { phase: s.phase, action: s.action }));
-    let fast_cycle_len = fast_cycle.len();
-    assert_eq!(fast_cycle_len, 360);
-
+    // The zoom round-trip leg used to be replayed only twice, because a mis-encoded
+    // indirect draw quad made it collapse into multi-second frames (see
+    // renderer_research/notes/layer-b-mac-2026-08-08.md). With that fault fixed the full
+    // protocol runs as specified: every frame of the >=10,000 frame target comes from the
+    // complete 540-frame cycle, zoom legs included. No scope reduction remains.
     let target_frames: usize = std::env::var("LAYER_B_TARGET_FRAMES").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
-    let frames_from_full_cycles = FULL_CYCLES * cycle_len;
-    let fast_cycles = if target_frames > frames_from_full_cycles {
-        (target_frames - frames_from_full_cycles + fast_cycle_len - 1) / fast_cycle_len
-    } else {
-        0
-    };
-    let total_frames = frames_from_full_cycles + fast_cycles * fast_cycle_len;
+    let full_cycles = (target_frames + cycle_len - 1) / cycle_len;
+    let total_frames = full_cycles * cycle_len;
 
     let mut stats: Vec<FrameStats> = Vec::with_capacity(total_frames);
     let first_frame_ms: Option<f64>;
     let progress_started = Instant::now();
 
-    // Safety valve for the stall documented above: if cpu_ms stays catastrophically high
-    // (>5000ms) for several consecutive frames, the run has entered the permanent
-    // collapsed state (observed: once triggered it does not recover; extrapolated cost
-    // for a full run would be tens of hours). Abort the rest of the current cycle's
-    // frames rather than hang - the collapse is already evidenced by the frames that DID
-    // run, and this keeps the bench's own wall-clock time bounded. Recorded honestly in
-    // the output JSON, not hidden.
     // Hard early-abort: a single frame over this budget means the run has entered the
     // pathological state, and continuing only burns the researcher's machine (the GPU is
     // shared with the desktop). Abort at the FIRST such frame and record it, rather than
@@ -561,7 +531,7 @@ fn main() {
     const ABORT_MS_THRESHOLD: f64 = 2000.0;
     let mut anomalies: Vec<String> = Vec::new();
 
-    let schedule: Vec<(&Vec<Step>, usize)> = vec![(&cycle, FULL_CYCLES), (&fast_cycle, fast_cycles)];
+    let schedule: Vec<(&Vec<Step>, usize)> = vec![(&cycle, full_cycles)];
     'schedule: for (cycle_ref, repeats) in schedule {
         for _cyc in 0..repeats {
         for (i, step) in cycle_ref.iter().enumerate() {
@@ -648,7 +618,7 @@ fn main() {
                         let tile = tiles.get(key).unwrap();
                         read_render_args(&device, &queue, staging, &tile.render_args)
                     };
-                    let requested = [words[4], words[5], words[6], words[7]];
+                    let requested = [words[8], words[9], words[10], words[11]];
                     max_requested_vertices = max_requested_vertices.max(requested[0]);
                     max_requested_instances = max_requested_instances.max(requested[1]);
                     if requested[0] > MAX_DRAW_VERTICES || requested[1] > 1 {
@@ -729,16 +699,6 @@ fn main() {
             // (reproduced: cpu_ms blew up to ~16s per frame around frame 500 with no
             // polling at all). Maintain::Poll does not block on GPU completion.
             device.poll(wgpu::Maintain::Poll);
-            // KNOWN ISSUE (documented, not silently tuned away - see
-            // renderer_research/notes/layer-b-mac-2026-08-08.md): this bench reproducibly
-            // stalls for 45-60s once per cycle, during the zoom-out leg's rapid LOD churn,
-            // on this Mac (wgpu 24.0.5 / Metal). A periodic *blocking* poll every few
-            // frames was tried as a backpressure valve and made total wall-clock time far
-            // worse (every blocking wait itself took seconds), so it was reverted in
-            // favour of the non-blocking Poll above, which is fast everywhere except that
-            // one recurring stall. The stall itself is left in the measured data: it
-            // produces genuine (if extreme) hitch frames, which is the honest T3/T5 result
-            // for this toolchain/hardware combination rather than something to hide.
 
             if tiles.len() > MAX_RESIDENT_TILES {
                 let remove_count = tiles.len() - MAX_RESIDENT_TILES;
@@ -808,13 +768,11 @@ fn main() {
                         "progress: {}/{} frames, {:.1}s elapsed, resident_tiles={}, phase={}, generated_in_batch~={}, flush_ms={flush_wall_ms:.0}",
                         stats.len(), total_frames, progress_started.elapsed().as_secs_f64(), tiles.len(), stats.last().map(|s| s.phase).unwrap_or("?"), batch_generated
                     );
-                    // Adaptive fallback: the QuerySet resolve/map_async/poll(Wait) path was
-                    // found to reproducibly stall for ~60s on this Mac (wgpu 24.0.5 /
-                    // Metal) - see renderer_research/notes/layer-b-mac-2026-08-08.md. If a
-                    // single flush takes an unreasonable amount of wall time, stop paying
-                    // that cost every TS_BATCH frames for the rest of the run: fall back to
-                    // CPU-only timing (gpu_ms stays None from here on) rather than letting a
-                    // ~10,000 frame run take tens of minutes just from query readback.
+                    // Adaptive fallback kept as a guard: if a single flush ever takes an
+                    // unreasonable amount of wall time again, stop paying that cost every
+                    // TS_BATCH frames and fall back to CPU-only timing (gpu_ms stays None
+                    // from here on) rather than letting the run take tens of minutes just
+                    // from query readback. It no longer trips in normal operation.
                     if flush_wall_ms > 2000.0 {
                         eprintln!("timestamp-query readback took {flush_wall_ms:.0}ms (>2000ms threshold) - disabling further GPU timestamp measurement for the rest of this run");
                         timestamp_degraded = true;
@@ -846,6 +804,36 @@ fn main() {
         );
     }
     first_frame_ms = stats.first().map(|s| s.cpu_ms + s.gpu_ms.unwrap_or(0.0));
+
+    // Structural check that the indirect draws actually produced geometry rather than
+    // silently drawing nothing: read back the last rendered frame and count pixels that
+    // differ from the clear colour. A mis-encoded indirect quad (instance_count 0) would
+    // show up here as 0.
+    let final_non_background_pixels = {
+        let row_bytes = (WIDTH * 4) as u64; // 6400, already a multiple of 256
+        let readback = device.create_buffer(&wgpu::BufferDescriptor { label: Some("final-frame-readback"), size: row_bytes * HEIGHT as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("final-frame-copy") });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &color, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &readback, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes as u32), rows_per_image: Some(HEIGHT) } },
+            wgpu::Extent3d { width: WIDTH, height: HEIGHT, depth_or_array_layers: 1 },
+        );
+        queue.submit(Some(encoder.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            tx.send(r).ok();
+        });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+        let data = slice.get_mapped_range();
+        // Clear colour 0.604/0.722/0.435 in Rgba8Unorm.
+        let clear = [154u8, 184u8, 111u8];
+        let count = data.chunks_exact(4).filter(|p| p[0] != clear[0] || p[1] != clear[1] || p[2] != clear[2]).count();
+        drop(data);
+        readback.unmap();
+        count
+    };
 
     // --- summarise -------------------------------------------------------------------
     let phase_names = ["static", "max-speed-pan", "full-map", "zoom-roundtrip"];
@@ -933,7 +921,7 @@ fn main() {
 
     let anomalies_json = format!("[{}]", anomalies.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(","));
     let json = format!(
-        "{{\"kind\":\"layer-b-bench\",\"startedAtUnix\":{started_at},\"environment\":{{\"host\":\"macOS (Apple Silicon)\",\"osVersion\":\"{os_version}\",\"cpu\":\"{cpu_brand}\",\"adapterName\":{:?},\"adapterBackend\":\"{:?}\",\"adapterDeviceType\":\"{:?}\",\"timestampQuerySupported\":{timestamp_supported},\"timestampQueryDegradedDuringRun\":{timestamp_degraded},\"timestampPeriodNs\":{timestamp_period_ns:.4}}},\"config\":{{\"width\":{WIDTH},\"height\":{HEIGHT},\"halfExtent\":{HALF_EXTENT},\"seed\":\"0x{SEED:08x}\",\"framesPerFullCycle\":{cycle_len},\"fullCycles\":{FULL_CYCLES},\"framesPerFastCycle\":{fast_cycle_len},\"fastCycles\":{fast_cycles},\"totalFramesTargeted\":{total_frames},\"framesActuallyCompleted\":{},\"zoomLegScopeNote\":\"zoom round-trip leg replayed only {FULL_CYCLES}x (not full 10000-frame cycle count) due to a reproduced per-frame stall during zoom-out LOD churn on this Mac; remaining frames replay the fast static/pan/full-map prefix of the same script - see notes/layer-b-mac-2026-08-08.md\",\"terraform\":\"skipped-not-in-prototype-scope\"}},\"anomalies\":{anomalies_json},\"drawSafety\":{{\"argTraceEnabled\":{arg_trace},\"maxDrawVerticesCap\":{MAX_DRAW_VERTICES},\"overCapDraws\":{over_cap_draws},\"maxRequestedVertexCount\":{max_requested_vertices},\"maxRequestedInstanceCount\":{max_requested_instances}}},\"phases\":[{}],\"tileLatency\":{{\"sampleCount\":{},\"medianFrames\":{t7_median_frames:.2},\"p99Frames\":{t7_p99_frames:.2},\"medianMs\":{t7_median_ms:.3},\"p99Ms\":{t7_p99_ms:.3}}},\"memory\":{{\"residentTilesFinal\":{final_resident},\"estimatedTileSampleBytesFinal\":{final_bytes},\"maxResidentTilesConfigured\":{MAX_RESIDENT_TILES}}},\"gates\":[{}]}}",
+        "{{\"kind\":\"layer-b-bench\",\"startedAtUnix\":{started_at},\"environment\":{{\"host\":\"macOS (Apple Silicon)\",\"osVersion\":\"{os_version}\",\"cpu\":\"{cpu_brand}\",\"adapterName\":{:?},\"adapterBackend\":\"{:?}\",\"adapterDeviceType\":\"{:?}\",\"timestampQuerySupported\":{timestamp_supported},\"timestampQueryDegradedDuringRun\":{timestamp_degraded},\"timestampPeriodNs\":{timestamp_period_ns:.4}}},\"config\":{{\"width\":{WIDTH},\"height\":{HEIGHT},\"halfExtent\":{HALF_EXTENT},\"seed\":\"0x{SEED:08x}\",\"framesPerFullCycle\":{cycle_len},\"fullCycles\":{full_cycles},\"totalFramesTargeted\":{total_frames},\"framesActuallyCompleted\":{},\"zoomLegScopeNote\":\"none: every frame comes from the complete 540-frame cycle including both zoom legs\",\"terraform\":\"skipped-not-in-prototype-scope\"}},\"anomalies\":{anomalies_json},\"drawSafety\":{{\"argTraceEnabled\":{arg_trace},\"maxDrawVerticesCap\":{MAX_DRAW_VERTICES},\"overCapDraws\":{over_cap_draws},\"maxRequestedVertexCount\":{max_requested_vertices},\"maxRequestedInstanceCount\":{max_requested_instances},\"finalFrameNonBackgroundPixels\":{final_non_background_pixels}}},\"phases\":[{}],\"tileLatency\":{{\"sampleCount\":{},\"medianFrames\":{t7_median_frames:.2},\"p99Frames\":{t7_p99_frames:.2},\"medianMs\":{t7_median_ms:.3},\"p99Ms\":{t7_p99_ms:.3}}},\"memory\":{{\"residentTilesFinal\":{final_resident},\"estimatedTileSampleBytesFinal\":{final_bytes},\"maxResidentTilesConfigured\":{MAX_RESIDENT_TILES}}},\"gates\":[{}]}}",
         info.name, info.backend, info.device_type,
         stats.len(),
         phase_json.join(","),

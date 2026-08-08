@@ -19,9 +19,12 @@ pub const TILE_CLAMP_ARGS_WGSL: &str = include_str!("../shaders/tile_clamp_args.
 /// clamp + diagnostics record) and asserted on the CPU by the bench harness.
 pub const MAX_DRAW_VERTICES: u32 = 2_000_000;
 
-/// Size of the indirect-args buffer: the 16-byte draw quad plus a 16-byte diagnostics
-/// region holding the pre-clamp request.
-pub const RENDER_ARGS_TOTAL_BYTES: u64 = 32;
+/// Size of the indirect-args buffer: the 16-byte draw quad, then the 16-byte per-class
+/// count block the vertex shader reads, then a 16-byte diagnostics region holding the
+/// pre-clamp request. See `tile_finalize.wgsl` / `tile_clamp_args.wgsl`.
+pub const RENDER_ARGS_TOTAL_BYTES: u64 = 48;
+/// Bytes copied into the vertex shader's read-only snapshot: the draw quad plus counts.
+pub const RENDER_COUNTS_BYTES: u64 = 32;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
@@ -40,7 +43,7 @@ mod wasm {
     const INDEX_COUNT_PER_TILE: u32 = (GRID - 1) * (GRID - 1) * 6;
     const MAX_CLIFF_EDGES: usize = 2 * (GRID as usize - 1) * (GRID as usize - 2);
     const MAX_WATER_CELLS: usize = (GRID as usize - 1) * (GRID as usize - 1);
-    const RENDER_ARGS_BYTES: u64 = 16;
+    use super::{MAX_DRAW_VERTICES, RENDER_ARGS_TOTAL_BYTES, RENDER_COUNTS_BYTES};
     fn push_u32(out: &mut Vec<u8>, v: u32) {
         out.extend_from_slice(&v.to_le_bytes());
     }
@@ -119,6 +122,9 @@ mod wasm {
         camera_bind_group: wgpu::BindGroup,
         finalize_pipeline: wgpu::ComputePipeline,
         finalize_bgl: wgpu::BindGroupLayout,
+        clamp_pipeline: wgpu::ComputePipeline,
+        clamp_bgl: wgpu::BindGroupLayout,
+        clamp_params: wgpu::Buffer,
 
         tiles: HashMap<TileKey, GpuTile>,
         visible: Vec<TileKey>,
@@ -270,6 +276,21 @@ mod wasm {
             let finalize_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-finalize-layout"), bind_group_layouts: &[&finalize_bgl], push_constant_ranges: &[] });
             let finalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-finalize-pipeline"), layout: Some(&finalize_layout), module: &finalize_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
 
+            // Draw-safety guard: clamps every tile's indirect quad before it can be
+            // submitted (see shaders/tile_clamp_args.wgsl).
+            let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tile-clamp-args"), source: wgpu::ShaderSource::Wgsl(super::TILE_CLAMP_ARGS_WGSL.into()) });
+            let clamp_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("tile-clamp-args-bgl"), entries: &[
+                    wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                    wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                ],
+            });
+            let clamp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-clamp-args-layout"), bind_group_layouts: &[&clamp_bgl], push_constant_ranges: &[] });
+            let clamp_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-clamp-args-pipeline"), layout: Some(&clamp_layout), module: &clamp_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+            let mut clamp_params_bytes = [0u8; 16];
+            put_u32(&mut clamp_params_bytes, 0, MAX_DRAW_VERTICES);
+            let clamp_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-clamp-args-params"), contents: &clamp_params_bytes, usage: wgpu::BufferUsages::UNIFORM });
+
             let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("terrain-camera-params"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain-camera-bg"), layout: &camera_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() }] });
 
@@ -325,6 +346,9 @@ mod wasm {
                 camera_bind_group,
                 finalize_pipeline,
                 finalize_bgl,
+                clamp_pipeline,
+                clamp_bgl,
+                clamp_params,
                 tiles: HashMap::with_capacity(128),
                 visible: Vec::with_capacity(64),
                 needed: Vec::with_capacity(96),
@@ -579,11 +603,14 @@ mod wasm {
                 usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false,
             });
             let base_vertices = INDEX_COUNT_PER_TILE;
-            let render_args_bytes = [base_vertices, 0u32, 0u32, 1u32];
+            // words: [vertex_count, instance_count, first_vertex, first_instance,
+            //         cliff_vertices, water_vertices, pad, pad, diagnostics x4]
+            let render_args_bytes = [base_vertices, 1u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
             let render_args = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("terrain-render-indirect-args"), contents: bytemuck::cast_slice(&render_args_bytes),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             });
+            debug_assert_eq!(render_args.size(), RENDER_ARGS_TOTAL_BYTES);
             let finalize_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("terrain-tile-finalize-bg"), layout: &self.finalize_bgl,
                 entries: &[
@@ -599,10 +626,22 @@ mod wasm {
                 pass.set_pipeline(&self.finalize_pipeline); pass.set_bind_group(0, &finalize_bg, &[]);
                 pass.dispatch_workgroups(((GRID - 1) * (GRID - 1) + 255) / 256, 1, 1);
             }
+            {
+                let clamp_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("terrain-tile-clamp-args-bg"), layout: &self.clamp_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: self.clamp_params.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: render_args.as_entire_binding() },
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("terrain-tile-clamp-args"), timestamp_writes: None });
+                pass.set_pipeline(&self.clamp_pipeline); pass.set_bind_group(0, &clamp_bg, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
             let render_counts = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("terrain-render-counts"), size: RENDER_ARGS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+                label: Some("terrain-render-counts"), size: RENDER_COUNTS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
             });
-            encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_ARGS_BYTES);
+            encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_COUNTS_BYTES);
 
             let mut tile_bytes = [0u8; 16];
             put_i32(&mut tile_bytes, 0, origin_x); put_i32(&mut tile_bytes, 4, origin_z);
