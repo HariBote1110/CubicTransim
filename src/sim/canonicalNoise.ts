@@ -147,19 +147,89 @@ export function compositeNoiseNumerator(seed: number, x: number, z: number): num
 /** water iff N < 9*2^30(64bit比較だが、Nはdoubleで厳密なのでそのまま比較できる)。 */
 export const WATER_NUMERATOR_THRESHOLD = 9 * 2 ** 30;
 
-/** 標高1..10の下限しきい値(標高0はこれらすべて未満)。 */
-export const HEIGHT_NUMERATOR_THRESHOLDS: readonly number[] = [
-  35433480192, 41290253778, 47147027363, 53003800949, 58860574534,
-  64717348120, 70574121705, 76430895291, 82287668876, 88144442462,
-];
+/**
+ * 地形プロファイル(新規ゲームで選ぶ「地形の起伏」)。
+ *
+ * ハッシュ・オクターブ・合成ノイズ分子Nの計算は**一切変えない**。変えるのは
+ * 「Nを標高へ落とすしきい値テーブル」だけであり、これにより正準定義(1000件の
+ * テストベクタ・TS/Rust/WGSLのバイト一致検証)の仕組みがそのまま生き続ける。
+ */
+export type TerrainProfile = 'flat' | 'normal' | 'mountain';
 
-export function heightFromNumerator(n: number): number {
+/** UI・テストが走査に使うプロファイル一覧。 */
+export const TERRAIN_PROFILES: readonly TerrainProfile[] = ['flat', 'normal', 'mountain'];
+
+/**
+ * 隣接コーナー間の合成ノイズ分子Nの差の上界(整数、保守側に切り上げ済み)。
+ *
+ * 構成論拠: 各オクターブiの値ノイズは、u32の格子ハッシュ(値域 2^32-1)を
+ * smoothstep(最大傾き 1.5/wave_i)で補間した連続かつ区分C1の関数なので、
+ * x(またはz)方向に1進んだときの変化は高々 (2^32-1) * 1.5/wave_i。
+ * N = Σ weight_i * q_i なので
+ *   |ΔN| <= (2^32-1) * 1.5 * (8/40 + 4/20 + 2/10 + 1/5) = (2^32-1) * 1.2 < 1.2 * 2^32
+ *         = 5,153,960,755.2
+ * さらに整数化の丸め(lerpQの切り捨てが1オクターブあたり3回・重み合計15、
+ * smoothQのtのround_half_up)の誤差を合わせても高々64しか増えないため、
+ * 5,153,960,756 + 64 を上界として採用する。
+ *
+ * しきい値の間隔Sがこの上界以上であれば、隣接コーナーが2段以上またぐには
+ * |ΔN| > S が必要となり矛盾する。よって「間隔 >= この上界」が
+ * 1-Lipschitz(隣接コーナー標高差1以下)の構成保証になる。
+ */
+export const ADJACENT_NUMERATOR_BOUND = 5153960820;
+
+/**
+ * プロファイル別の標高1..10の下限しきい値(標高0はこれらすべて未満)。
+ * 正準の分母は FULL = 15 * 2^32 = 64,424,509,440(=正規化ノイズ1.0)。
+ *
+ * - normal: 歴史的な既定(正準ドキュメントのテーブル)。T1=0.55*FULL、間隔≈FULL/11。
+ *   バイト単位で不変(1000件のテストベクタがこの値に依存している)。
+ * - mountain: T1=0.45*FULL へ引き下げ、間隔を上界近く(5.2e9 > 5,153,960,820)まで
+ *   詰めて起伏を密にする。標高1以上のコーナーが約63%になり、標高5〜7の高山も出る。
+ * - flat: T1=0.675*FULL へ引き上げ、間隔を7.8e9へ広げる。標高1以上は約8%で
+ *   広大な平野が支配的になり、2段以上の丘はごく稀。
+ */
+const HEIGHT_THRESHOLDS_BY_PROFILE: Readonly<Record<TerrainProfile, readonly number[]>> = {
+  flat: [
+    43486543872, 51286543872, 59086543872, 66886543872, 74686543872,
+    82486543872, 90286543872, 98086543872, 105886543872, 113686543872,
+  ],
+  normal: [
+    35433480192, 41290253778, 47147027363, 53003800949, 58860574534,
+    64717348120, 70574121705, 76430895291, 82287668876, 88144442462,
+  ],
+  mountain: [
+    28991029248, 34191029248, 39391029248, 44591029248, 49791029248,
+    54991029248, 60191029248, 65391029248, 70591029248, 75791029248,
+  ],
+};
+
+/** プロファイルのしきい値テーブル。未知の値はnormalへフォールバックする。 */
+export function heightThresholdsFor(profile: TerrainProfile): readonly number[] {
+  return HEIGHT_THRESHOLDS_BY_PROFILE[profile] ?? HEIGHT_THRESHOLDS_BY_PROFILE.normal;
+}
+
+/** 標高1..10の下限しきい値(既定=normalプロファイル)。 */
+export const HEIGHT_NUMERATOR_THRESHOLDS: readonly number[] = HEIGHT_THRESHOLDS_BY_PROFILE.normal;
+
+/** しきい値テーブルを直接受け取る標高導出(ホットパス用: テーブル解決を呼び出し側で済ませる)。 */
+export function heightFromNumeratorWith(n: number, thresholds: readonly number[]): number {
   let height = 0;
-  for (let i = 0; i < HEIGHT_NUMERATOR_THRESHOLDS.length; i++) {
-    if (n >= HEIGHT_NUMERATOR_THRESHOLDS[i]) height = i + 1;
+  for (let i = 0; i < thresholds.length; i++) {
+    if (n >= thresholds[i]) height = i + 1;
     else break;
   }
   return height;
+}
+
+/** プロファイル指定の標高導出。 */
+export function heightFromNumeratorFor(n: number, profile: TerrainProfile): number {
+  return heightFromNumeratorWith(n, heightThresholdsFor(profile));
+}
+
+/** 標高導出(既定=normalプロファイル。正準テストベクタが参照する経路)。 */
+export function heightFromNumerator(n: number): number {
+  return heightFromNumeratorWith(n, HEIGHT_NUMERATOR_THRESHOLDS);
 }
 
 export function isWaterNumerator(n: number): boolean {
