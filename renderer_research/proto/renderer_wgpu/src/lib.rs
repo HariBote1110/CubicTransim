@@ -8,6 +8,20 @@ pub const TERRAIN_NOISE_WGSL: &str = include_str!("../shaders/terrain_noise.wgsl
 pub const TILE_GENERATE_WGSL: &str = include_str!("../shaders/tile_generate.wgsl");
 pub const TERRAIN_DRAW_WGSL: &str = include_str!("../shaders/terrain_draw.wgsl");
 pub const TILE_FINALIZE_WGSL: &str = include_str!("../shaders/tile_finalize.wgsl");
+pub const TILE_CLAMP_ARGS_WGSL: &str = include_str!("../shaders/tile_clamp_args.wgsl");
+
+/// Hard upper bound on the vertex count of any single indirect terrain draw.
+///
+/// One tile can legitimately emit at most
+/// `256*256*6 (surface) + 6*130560 (cliffs) + 6*65536 (water) = 1,569,792` vertices,
+/// so 2,000,000 leaves headroom while still catching an argument-encoding fault long
+/// before it can hang the GPU. Enforced on the GPU by `tile_clamp_args.wgsl` (release
+/// clamp + diagnostics record) and asserted on the CPU by the bench harness.
+pub const MAX_DRAW_VERTICES: u32 = 2_000_000;
+
+/// Size of the indirect-args buffer: the 16-byte draw quad plus a 16-byte diagnostics
+/// region holding the pre-clamp request.
+pub const RENDER_ARGS_TOTAL_BYTES: u64 = 32;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {

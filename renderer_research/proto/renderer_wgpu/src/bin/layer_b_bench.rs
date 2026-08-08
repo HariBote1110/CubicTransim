@@ -23,7 +23,10 @@
 //! the adapter supports them; otherwise GPU timing is reported as unsupported and only
 //! CPU timing is used for the frame-time gates (noted in the output).
 
-use quarterview_renderer_wgpu::{TERRAIN_DRAW_WGSL, TILE_FINALIZE_WGSL, TILE_GENERATE_WGSL};
+use quarterview_renderer_wgpu::{
+    MAX_DRAW_VERTICES, RENDER_ARGS_TOTAL_BYTES, TERRAIN_DRAW_WGSL, TILE_CLAMP_ARGS_WGSL,
+    TILE_FINALIZE_WGSL, TILE_GENERATE_WGSL,
+};
 use quarterview_terrain_core::clipmap::{select_tiles_into, tile_cell_span, TileKey, ViewRequest, TILE_SAMPLES};
 use std::collections::HashMap;
 use std::fs;
@@ -136,6 +139,39 @@ struct GpuTile {
     _render_counts: wgpu::Buffer,
     draw_bind_group: wgpu::BindGroup,
     last_used: u64,
+    /// Indirect draw quad as *requested* by tile_finalize, before the safety clamp:
+    /// `[vertex_count, instance_count, first_vertex, first_instance]`. Only populated
+    /// when argument tracing is enabled (`LAYER_B_ARG_TRACE=1`); `None` otherwise.
+    requested_args: Option<[u32; 4]>,
+}
+
+/// Reads back a tile's indirect-args buffer, including the pre-clamp diagnostics
+/// region written by `tile_clamp_args.wgsl`. Synchronous; tracing only.
+fn read_render_args(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    staging: &wgpu::Buffer,
+    render_args: &wgpu::Buffer,
+) -> [u32; 8] {
+    let mut encoder = device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("args-trace") });
+    encoder.copy_buffer_to_buffer(render_args, 0, staging, 0, RENDER_ARGS_TOTAL_BYTES);
+    queue.submit(Some(encoder.finish()));
+    let slice = staging.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        tx.send(r).ok();
+    });
+    device.poll(wgpu::Maintain::Wait);
+    rx.recv().unwrap().unwrap();
+    let data = slice.get_mapped_range();
+    let mut out = [0u32; 8];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap());
+    }
+    drop(data);
+    staging.unmap();
+    out
 }
 
 struct FrameStats {
@@ -296,6 +332,22 @@ fn main() {
     let finalize_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-finalize-layout"), bind_group_layouts: &[&finalize_bgl], push_constant_ranges: &[] });
     let finalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-finalize-pipeline"), layout: Some(&finalize_layout), module: &finalize_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
 
+    // Draw-safety guard (see shaders/tile_clamp_args.wgsl): records the requested
+    // indirect arguments and clamps them before any draw can consume them.
+    let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tile-clamp-args"), source: wgpu::ShaderSource::Wgsl(TILE_CLAMP_ARGS_WGSL.into()) });
+    let clamp_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("tile-clamp-args-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+        ],
+    });
+    let clamp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-clamp-args-layout"), bind_group_layouts: &[&clamp_bgl], push_constant_ranges: &[] });
+    let clamp_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-clamp-args-pipeline"), layout: Some(&clamp_layout), module: &clamp_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+    let mut clamp_params_bytes = [0u8; 16];
+    put_u32(&mut clamp_params_bytes, 0, MAX_DRAW_VERTICES);
+    let clamp_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-clamp-args-params"), contents: &clamp_params_bytes, usage: wgpu::BufferUsages::UNIFORM });
+
     let draw_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("terrain-draw-pipeline"),
         layout: Some(&draw_layout),
@@ -379,7 +431,8 @@ fn main() {
         let cliff_edges = device.create_buffer(&wgpu::BufferDescriptor { label: Some("cliff-edges"), size: (MAX_CLIFF_EDGES * 4) as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
         let water_cells = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water-cells"), size: (MAX_WATER_CELLS * 4) as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
         let base_vertices = INDEX_COUNT_PER_TILE;
-        let render_args_bytes = [base_vertices, 0u32, 0u32, 1u32];
+        // Words 4..8 are the diagnostics region filled in by tile_clamp_args.wgsl.
+        let render_args_bytes = [base_vertices, 0u32, 0u32, 1u32, 0u32, 0u32, 0u32, 0u32];
         let render_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("render-indirect-args"), contents: bytemuck::cast_slice(&render_args_bytes), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC });
         let finalize_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-finalize-bg"), layout: &finalize_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: finalize_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() }, wgpu::BindGroupEntry { binding: 4, resource: render_args.as_entire_binding() }] });
         {
@@ -390,6 +443,16 @@ fn main() {
         }
         let render_counts = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render-counts"), size: RENDER_ARGS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_ARGS_BYTES);
+        // The counts snapshot above is what the vertex shader reads; the clamp below then
+        // makes the live indirect quad safe to submit. Order matters: clamping first would
+        // erase the counts the vertex shader needs to split surface/cliff/water ranges.
+        {
+            let clamp_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-clamp-args-bg"), layout: &clamp_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: clamp_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: render_args.as_entire_binding() }] });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile-clamp-args"), timestamp_writes: None });
+            pass.set_pipeline(&clamp_pipeline);
+            pass.set_bind_group(0, &clamp_bg, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
         let mut tile_bytes = [0u8; 16];
         put_i32(&mut tile_bytes, 0, origin_x);
         put_i32(&mut tile_bytes, 4, origin_z);
@@ -398,8 +461,20 @@ fn main() {
         let tile_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("draw-params"), contents: &tile_bytes, usage: wgpu::BufferUsages::UNIFORM });
         let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw-bg"), layout: &draw_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: tile_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() }, wgpu::BindGroupEntry { binding: 4, resource: render_counts.as_entire_binding() }] });
         queue.submit(Some(encoder.finish()));
-        GpuTile { _samples: samples, _tile_params: tile_params, _cliff_edges: cliff_edges, _water_cells: water_cells, render_args, _render_counts: render_counts, draw_bind_group, last_used: frame_index }
+        GpuTile { _samples: samples, _tile_params: tile_params, _cliff_edges: cliff_edges, _water_cells: water_cells, render_args, _render_counts: render_counts, draw_bind_group, last_used: frame_index, requested_args: None }
     };
+
+    // Argument tracing (LAYER_B_ARG_TRACE=1): read every newly created tile's requested
+    // indirect quad back to the CPU so an over-cap draw can be reported with its exact
+    // parameters, and per-frame LOD/residency/draw-arg state can be logged for the frames
+    // named by LAYER_B_TRACE_FROM/LAYER_B_TRACE_TO.
+    let arg_trace = std::env::var("LAYER_B_ARG_TRACE").map(|v| v == "1").unwrap_or(false);
+    let trace_from: u64 = std::env::var("LAYER_B_TRACE_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
+    let trace_to: u64 = std::env::var("LAYER_B_TRACE_TO").ok().and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
+    let args_staging = arg_trace.then(|| device.create_buffer(&wgpu::BufferDescriptor { label: Some("args-trace-staging"), size: RENDER_ARGS_TOTAL_BYTES, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false }));
+    let mut over_cap_draws = 0usize;
+    let mut max_requested_vertices = 0u32;
+    let mut max_requested_instances = 0u32;
 
     // --- scripted camera path -------------------------------------------------------
     #[derive(Clone, Copy)]
@@ -479,9 +554,11 @@ fn main() {
     // frames rather than hang - the collapse is already evidenced by the frames that DID
     // run, and this keeps the bench's own wall-clock time bounded. Recorded honestly in
     // the output JSON, not hidden.
-    const EXTREME_MS_THRESHOLD: f64 = 5000.0;
-    const EXTREME_STREAK_TO_ABORT: u32 = 3;
-    let mut extreme_streak = 0u32;
+    // Hard early-abort: a single frame over this budget means the run has entered the
+    // pathological state, and continuing only burns the researcher's machine (the GPU is
+    // shared with the desktop). Abort at the FIRST such frame and record it, rather than
+    // waiting for a streak.
+    const ABORT_MS_THRESHOLD: f64 = 2000.0;
     let mut anomalies: Vec<String> = Vec::new();
 
     let schedule: Vec<(&Vec<Step>, usize)> = vec![(&cycle, FULL_CYCLES), (&fast_cycle, fast_cycles)];
@@ -533,6 +610,7 @@ fn main() {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
 
             let mut generated = 0usize;
+            let mut created_keys: Vec<TileKey> = Vec::new();
             for i in 0..visible.len() {
                 let key = visible[i];
                 if !tiles.contains_key(&key) {
@@ -541,6 +619,7 @@ fn main() {
                     }
                     let tile = create_gpu_tile(&device, &queue, key, frame_index);
                     tiles.insert(key, tile);
+                    created_keys.push(key);
                     generated += 1;
                 }
                 if let Some(t) = tiles.get_mut(&key) {
@@ -555,10 +634,39 @@ fn main() {
                 if !tiles.contains_key(&key) {
                     let tile = create_gpu_tile(&device, &queue, key, frame_index);
                     tiles.insert(key, tile);
+                    created_keys.push(key);
                     generated += 1;
                 }
                 if let Some(t) = tiles.get_mut(&key) {
                     t.last_used = frame_index;
+                }
+            }
+            if arg_trace {
+                let staging = args_staging.as_ref().unwrap();
+                for key in &created_keys {
+                    let words = {
+                        let tile = tiles.get(key).unwrap();
+                        read_render_args(&device, &queue, staging, &tile.render_args)
+                    };
+                    let requested = [words[4], words[5], words[6], words[7]];
+                    max_requested_vertices = max_requested_vertices.max(requested[0]);
+                    max_requested_instances = max_requested_instances.max(requested[1]);
+                    if requested[0] > MAX_DRAW_VERTICES || requested[1] > 1 {
+                        over_cap_draws += 1;
+                        eprintln!(
+                            "OVER-CAP DRAW: frame={frame_index} tile=(lod={},x={},z={}) requested vertex_count={} instance_count={} first_vertex={} first_instance={} -> clamped to vertex_count={} instance_count={} (cap {MAX_DRAW_VERTICES}); total vertex invocations would have been {}",
+                            key.lod, key.x, key.z, requested[0], requested[1], requested[2], requested[3],
+                            words[0], words[1],
+                            requested[0] as u64 * requested[1].max(1) as u64,
+                        );
+                    }
+                    debug_assert!(
+                        requested[0] <= MAX_DRAW_VERTICES && requested[1] <= 1,
+                        "indirect draw args exceed the per-draw cap: {requested:?}"
+                    );
+                    if let Some(tile) = tiles.get_mut(key) {
+                        tile.requested_args = Some(requested);
+                    }
                 }
             }
             for &key in visible.iter() {
@@ -641,20 +749,36 @@ fn main() {
                 }
             }
 
+            if frame_index >= trace_from && frame_index <= trace_to {
+                let resident_visible = visible.iter().filter(|k| tiles.contains_key(k)).count();
+                let mut draw_args_desc = String::new();
+                for key in visible.iter() {
+                    if let Some(tile) = tiles.get(key) {
+                        match tile.requested_args {
+                            Some(a) => draw_args_desc.push_str(&format!(" [lod{} {},{} v={} i={} fv={} fi={}]", key.lod, key.x, key.z, a[0], a[1], a[2], a[3])),
+                            None => draw_args_desc.push_str(&format!(" [lod{} {},{} args=untraced]", key.lod, key.x, key.z)),
+                        }
+                    } else {
+                        draw_args_desc.push_str(&format!(" [lod{} {},{} NOT-RESIDENT]", key.lod, key.x, key.z));
+                    }
+                }
+                eprintln!(
+                    "trace: frame={frame_index} phase={} ppc={pixels_per_cell:.4} lod={} visible={} resident_visible={resident_visible} needed={} generated={generated} resident_total={} cpu_ms={cpu_ms:.3} submit_ms={submit_ms:.3} draws:{draw_args_desc}",
+                    step.phase,
+                    visible.first().map(|t| t.lod).unwrap_or(0),
+                    visible.len(), needed.len(), tiles.len(),
+                );
+            }
+
             let lod = visible.first().map(|t| t.lod).unwrap_or(0);
             // gpu_ms is patched in once its batch is resolved/read back (see flush_batch
             // calls below); until then it is None and excluded from totals.
             stats.push(FrameStats { phase: step.phase, cpu_ms, gpu_ms: None, draw_calls: visible.len(), generated_tiles: generated, resident_tiles: tiles.len(), lod });
 
-            if cpu_ms > EXTREME_MS_THRESHOLD {
-                extreme_streak += 1;
-            } else {
-                extreme_streak = 0;
-            }
-            if extreme_streak >= EXTREME_STREAK_TO_ABORT {
+            if cpu_ms + submit_ms > ABORT_MS_THRESHOLD {
                 let msg = format!(
-                    "ABORT: {extreme_streak} consecutive frames >{EXTREME_MS_THRESHOLD}ms ending at frame_index={frame_index} (phase={}, last cpu_ms={cpu_ms:.0}) - collapsed state does not recover within research time budget, stopping the run early. {} of the originally targeted {total_frames} frames were completed.",
-                    step.phase, stats.len()
+                    "ABORT: frame_index={frame_index} took {:.0}ms (cpu {cpu_ms:.0}ms + submit {submit_ms:.0}ms) > {ABORT_MS_THRESHOLD}ms budget (phase={}) - stopping the run immediately. {} of the targeted {total_frames} frames were completed.",
+                    cpu_ms + submit_ms, step.phase, stats.len()
                 );
                 eprintln!("{msg}");
                 anomalies.push(msg);
@@ -809,7 +933,7 @@ fn main() {
 
     let anomalies_json = format!("[{}]", anomalies.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(","));
     let json = format!(
-        "{{\"kind\":\"layer-b-bench\",\"startedAtUnix\":{started_at},\"environment\":{{\"host\":\"macOS (Apple Silicon)\",\"osVersion\":\"{os_version}\",\"cpu\":\"{cpu_brand}\",\"adapterName\":{:?},\"adapterBackend\":\"{:?}\",\"adapterDeviceType\":\"{:?}\",\"timestampQuerySupported\":{timestamp_supported},\"timestampQueryDegradedDuringRun\":{timestamp_degraded},\"timestampPeriodNs\":{timestamp_period_ns:.4}}},\"config\":{{\"width\":{WIDTH},\"height\":{HEIGHT},\"halfExtent\":{HALF_EXTENT},\"seed\":\"0x{SEED:08x}\",\"framesPerFullCycle\":{cycle_len},\"fullCycles\":{FULL_CYCLES},\"framesPerFastCycle\":{fast_cycle_len},\"fastCycles\":{fast_cycles},\"totalFramesTargeted\":{total_frames},\"framesActuallyCompleted\":{},\"zoomLegScopeNote\":\"zoom round-trip leg replayed only {FULL_CYCLES}x (not full 10000-frame cycle count) due to a reproduced per-frame stall during zoom-out LOD churn on this Mac; remaining frames replay the fast static/pan/full-map prefix of the same script - see notes/layer-b-mac-2026-08-08.md\",\"terraform\":\"skipped-not-in-prototype-scope\"}},\"anomalies\":{anomalies_json},\"phases\":[{}],\"tileLatency\":{{\"sampleCount\":{},\"medianFrames\":{t7_median_frames:.2},\"p99Frames\":{t7_p99_frames:.2},\"medianMs\":{t7_median_ms:.3},\"p99Ms\":{t7_p99_ms:.3}}},\"memory\":{{\"residentTilesFinal\":{final_resident},\"estimatedTileSampleBytesFinal\":{final_bytes},\"maxResidentTilesConfigured\":{MAX_RESIDENT_TILES}}},\"gates\":[{}]}}",
+        "{{\"kind\":\"layer-b-bench\",\"startedAtUnix\":{started_at},\"environment\":{{\"host\":\"macOS (Apple Silicon)\",\"osVersion\":\"{os_version}\",\"cpu\":\"{cpu_brand}\",\"adapterName\":{:?},\"adapterBackend\":\"{:?}\",\"adapterDeviceType\":\"{:?}\",\"timestampQuerySupported\":{timestamp_supported},\"timestampQueryDegradedDuringRun\":{timestamp_degraded},\"timestampPeriodNs\":{timestamp_period_ns:.4}}},\"config\":{{\"width\":{WIDTH},\"height\":{HEIGHT},\"halfExtent\":{HALF_EXTENT},\"seed\":\"0x{SEED:08x}\",\"framesPerFullCycle\":{cycle_len},\"fullCycles\":{FULL_CYCLES},\"framesPerFastCycle\":{fast_cycle_len},\"fastCycles\":{fast_cycles},\"totalFramesTargeted\":{total_frames},\"framesActuallyCompleted\":{},\"zoomLegScopeNote\":\"zoom round-trip leg replayed only {FULL_CYCLES}x (not full 10000-frame cycle count) due to a reproduced per-frame stall during zoom-out LOD churn on this Mac; remaining frames replay the fast static/pan/full-map prefix of the same script - see notes/layer-b-mac-2026-08-08.md\",\"terraform\":\"skipped-not-in-prototype-scope\"}},\"anomalies\":{anomalies_json},\"drawSafety\":{{\"argTraceEnabled\":{arg_trace},\"maxDrawVerticesCap\":{MAX_DRAW_VERTICES},\"overCapDraws\":{over_cap_draws},\"maxRequestedVertexCount\":{max_requested_vertices},\"maxRequestedInstanceCount\":{max_requested_instances}}},\"phases\":[{}],\"tileLatency\":{{\"sampleCount\":{},\"medianFrames\":{t7_median_frames:.2},\"p99Frames\":{t7_p99_frames:.2},\"medianMs\":{t7_median_ms:.3},\"p99Ms\":{t7_p99_ms:.3}}},\"memory\":{{\"residentTilesFinal\":{final_resident},\"estimatedTileSampleBytesFinal\":{final_bytes},\"maxResidentTilesConfigured\":{MAX_RESIDENT_TILES}}},\"gates\":[{}]}}",
         info.name, info.backend, info.device_type,
         stats.len(),
         phase_json.join(","),
