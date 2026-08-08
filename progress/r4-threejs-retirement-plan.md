@@ -633,3 +633,135 @@ y=0 平面ピックだと (0,5) が選ばれるケース）→ Lv1 の高架線�
 - 地下ビューの非選択レベルの列車を半透明で描くためのインスタンス API 3クラス化（Rust 側）
 - 建設・選択のピッキングを terrain-aware にするなら、`elevatedCellCandidateFromGroundClick`
   の補正と同時に見直すこと
+
+## R4e 実装メモ(0.5.0-Alpha-2a)
+
+R4の最終フェーズ。`src/render/*.ts` のCPU側ジオメトリ演算から `three` npm パッケージへの
+依存を完全に取り除いた(R4dで描画スタック自体は撤去済み、残っていたのはBufferGeometry生成用の
+ライブラリとしての利用のみ)。
+
+### 1. キット設計(`src/render/geom/`)
+
+対象コード(bakedMesh.ts / mergeGeometry.ts / 各 `*Geometry.ts`)の実際の使い方を先に棚卸しした
+ところ、three.js のジオメトリから最終的に読まれる属性は **`position` だけ**だと判明した
+(`bakedMesh.ts` の `bakeFlatShaded` が三角形ごとに自前で面法線を計算してフラットシェーディング
+用の頂点色を焼き込むため、`normal`/`uv` は元から未使用)。この事実を前提に、キットは
+position(と互換性のためだけのindex)のみを保持する最小クラスにした:
+
+- `geom.ts` — `BufferGeometry`(position配列+任意のindex、`translate`/`rotateX,Y,Z`/
+  `toNonIndexed`/`getAttribute`/`setAttribute`/`computeBoundingBox`/`dispose`(no-op)を持つ)、
+  `BufferAttribute`/`Float32BufferAttribute`
+- `primitives.ts` — `BoxGeometry`/`CylinderGeometry`/`ConeGeometry`(Cylinderのradius top=0特殊形)/
+  `CircleGeometry`/`IcosahedronGeometry`/`OctahedronGeometry`。すべて **非indexedの三角形スープ**
+  として直接生成する(flat shadingでは共有頂点に意味が無く、indexed→非index展開と直接生成が
+  数学的に同じ結果になるため、常に非indexedにして変換コストそのものを無くした)。多面体系は
+  three.js と同じ頂点/面テーブル(黄金比の正20面体、軸正8面体)を使い、detail>=1はエッジ中点を
+  単位球へ再投影する再帰分割で対応(three.jsの重心分割アルゴリズムとdetail=1では一致する)
+- `shape.ts` — `Shape`(moveTo/lineTo/closePathで点列を積むだけ)、`ExtrudeGeometry`(下記)
+- `index.ts` — `import * as THREE from 'three'` を `import * as THREE from './geom'` へ
+  置き換えるだけで済むよう、同じ名前をすべて再エクスポート。呼び出し側の `THREE.BoxGeometry(...)`
+  等のコードは一切変更していない(型注釈の `THREE.BufferGeometry` もそのまま通る)
+
+各ビルダーは頂点数・AABB・「全三角形の法線が形状の中心/重心から見て外向き」をテストで固定した
+(`geom.test.ts`/`primitives.test.ts`/`shape.test.ts`、TDD)。box/cylinder/cone/circleは
+手計算した頂点順の外積で外向きになることを事前検証してから実装し、extrudeは巻き順を
+入力輪郭の向きに依存させず「各三角形の法線を実測し、期待方向でなければ頂点順を入れ替える」
+頑健な実装にした(輪郭がCW/CCWどちらで渡されても正しい陰影になる)。
+
+### 2. earcut採用
+
+`tunnelPortalMeshGeometry.ts` の坑口ヘッドウォール/暗がりは `THREE.Shape`+`ExtrudeGeometry`
+(bevel無効)で生成していた。対象の輪郭(`tunnelPortalGeometry.ts` の `buildHeadwallOutline`/
+`buildArchOutline`)はいずれも**穴を持たない単一の閉じた折れ線**(アーチ開口は輪郭自体への
+切り欠きとして織り込まれている)なので、three.jsが内部で使っているのと同じ `earcut`
+(穴なしの単純多角形の三角形分割)をそのまま追加依存にした。バージョン3.2.3、型定義を同梱、
+ESM。前面(z=0)・背面(z=depth)のキャップをearcutで三角形分割し、側面は輪郭の各辺を
+矩形2枚として押し出す(caps/sidesとも法線を実測して外向きに補正する前述の頑健な方式)。
+
+### 3. 移植したファイル
+
+`import * as THREE from 'three'` → `import * as THREE from './geom'`(または
+`'../render/geom'`)への置き換えのみで済んだファイル: `bakedMesh.ts` / `depotGeometry.ts` /
+`railGeometry.ts`(型注釈のみ) / `sceneryGeometry.ts` / `signalGeometry.ts` /
+`stationGeometry.ts` / `townGeometry.ts` / `trainMeshBuilder.ts` /
+`tunnelPortalMeshGeometry.ts` / `waterBridgeGeometry.ts` / `components/WebGpuBuildPreview.tsx` /
+`components/WebGpuTownMarkers.tsx`。
+
+手を入れたファイル:
+
+- `mergeGeometry.ts` — 「position以外の属性を保持しない」設計に合わせ、three.js版が
+  やっていた「属性セットの和集合をゼロ埋めで揃えてから `mergeGeometries` へ渡す」処理を
+  全面撤去。非indexed化した各ジオメトリの `position` 配列を単純に連結するだけになった
+- `trackGeometry.ts` — 坂(ramp)のくさびジオメトリ(`makeCurvedWedgeGeometry`)が持っていた
+  `uv` 属性と `computeVertexNormals()` 呼び出しを削除(前述のとおり最終的に未使用だった)
+- `bakedMesh.test.ts` / `mergeGeometry.test.ts` / `stationGeometry.test.ts` — three.js製の
+  ジオメトリをテスト用フィクスチャとして使っていた箇所をキット製に置き換え。
+  `stationGeometry.test.ts` の `THREE.Vector3().getCenter()` はAABBの中心を手計算する形に
+  書き換えた
+- `webgpuCamera.test.ts` — `THREE.OrthographicCamera.lookAt`+`Vector3.project` を
+  「投影の正しさを検証するオラクル」として使っていた箇所を、同じ行列演算(Matrix4.lookAt +
+  対称正射影)を素のベクトル計算で再現したものに置き換えた。`render/webgpuCamera.ts`
+  冒頭のコメントが既に基底ベクトル(Z_cam=(1,1,1)/√3等)を導出済みだったので、その式が
+  素のベクトル演算と一致することを確認しながら実装した
+
+### 4. 撤去
+
+`package.json` から `three` と `@types/three` を削除(`npm uninstall three @types/three`)。
+`grep -rl "from 'three'" src/` が0件になったことを確認。`vitest.config.ts` 等の設定ファイルは
+元々threeへの直接依存が無かった。
+
+### 5. バンドルサイズ
+
+本番ビルド(`npm run build`、`tsc -b && vite build`)の出力を、R4d末尾コミット(8e11127、
+`three`込み)との一時worktreeビルドで比較した:
+
+| | three込み(R4d末) | three撤去後(R4e) | 差分 |
+| --- | --- | --- | --- |
+| JS(raw) | 486.65 kB | 383.08 kB | -103.57 kB(-21.3%) |
+| JS(gzip) | 157.86 kB | 128.92 kB | -28.94 kB(-18.3%) |
+
+### 6. ブラウザ検証(WebGPU実機、Chrome、dev port 5175)
+
+デバッグシナリオ「坂・高架・往復列車」(地平線路・駅ホーム/上屋/柱/駅舎・坂・高架桁+橋脚・
+列車、`__dbgStep`で走行)、「山岳トンネル」(坑口=ExtrudeGeometry+earcutの実地確認、
+ヘッドウォール/笠石/暗がり/中実ボディの4パーツとも黒面・法線反転なし)、新規マップ生成時の
+町(box+coneの住宅、高層/中層のパラペット付きビル、道路スラブ+縁石)を目視確認。
+手動で線路(直線+坂の自動接続)・信号(mast/head/wings/marker、CylinderGeometry+BoxGeometry+
+CircleGeometry)・車庫(BoxGeometry群、屋根の傾斜込み)を建設し、いずれも陰影が正しく
+(面ごとに明暗が付き、黒面や裏返りが無い)描画されることを確認した。地下ビューへの切替で
+地表全体が一括減光されることも確認(wgpu側のdim uniformは変更していないため回帰なし)。
+`__debugWorld.railMap`/`stations` のダンプで建設結果の座標・接続を照合し、目視確認の裏取りとした。
+
+セッション中、`npm uninstall three` 直後のVite依存事前バンドル再構築のタイミングで
+一時的に「WebGPUレンダラーが未ビルドです」の404+Reactフックエラーが発生したが、
+これはR4dの実装メモに記録済みのHMRアーティファクト(依存関係変更直後のVite再最適化に
+起因する開発時限定の現象)と同種で、ページの再読み込み(新規セッション)後は再発しなかった。
+
+### 7. ゲート結果
+
+`npm run test`: 930件 green(キットのテスト31件を含む)。`npm run build`: green。
+`npm run build:renderer`: green(`renderer/**` は今回無変更)。
+
+**層B(Mac / Apple M4 / Metal、3回計測、`renderer/renderer_wgpu` の `layer_b_bench` release
+バイナリ)**: T1〜T7 のstrict閾値すべて3回とも全pass。
+run1: T1 median 0.605ms/p99 2.693ms、T4 median 1.983ms/p99 5.320ms、T3/T5 hitch 0/10260。
+run2: T1 median 0.603ms/p99 2.844ms、T4 median 1.920ms/p99 5.191ms、T3/T5 hitch 0/10260。
+run3: T1 median 0.620ms/p99 2.758ms、T4 median 1.946ms/p99 4.850ms、T3/T5 hitch 0/10260。
+T6(firstFrame)は3回とも10ms未満(閾値300ms)。T8はプロトタイプスコープ外(既定どおりnull)。
+`renderer/**` は本フェーズで無変更のため回帰は想定どおり無し。
+
+**層A(VM / llvmpipe / Vulkan、`node renderer/bench/run-layer-a.mjs --browser-exact
+--check-ts-migration`)**: build(workspaceTests/nativeBins/productionTsVsRust1M/wasmPack/vite)
+すべて true。判定対象のゲートは全pass(`pass:null` は層B専用ゲート)。
+A1 median 0.000099ms・p99 0.000173ms、A2 0.000835ms/tile、A3 mismatches 0・CPU diff median
+0.010272ms、A5/T10 heap 1,245,184B(上限96MiB)、A6/T15 wasm gzip 86,816B(上限1MiB)、A7 hitch 0、
+A8 決定性true、T4/T11 drawCalls 9(上限24)、T6 firstFrame 63.29ms、T14 5シード×1000万点
+mismatch 0、A4 browser-exact(BrowserWebGPU読み戻し・`src/sim/terrainField.ts`とRustの
+100万点バイト一致含む)mismatch 0、cameraReplay 3回とも ok(score 122/245/68)。
+`renderer/**` は本フェーズで無変更のため、R4d以前と同じ数値帯であることを確認できた
+(回帰なし)。
+
+### 8. 既知の非互換・見た目の差
+
+- 無し(見た目・寸法・配置は意図的にthree.js版と同一になるよう作った。差分は「表現手段が
+  変わっただけ」に留める設計方針を貫いた)

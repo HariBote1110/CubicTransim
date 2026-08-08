@@ -62,13 +62,16 @@ Browser ツール（`mcp__Claude_Browser__*`）で検証する。`preview_start`
 
 ## 描画の注意点
 
-- ジオメトリのマージは `render/mergeGeometry.ts` の `mergeAndDispose()` を使う。three の
-  `mergeGeometries` は index 付き（Box/Cone/Cylinder）と index 無し（Octahedron/Icosahedron）が
-  混ざると黙って null を返す
+- ジオメトリ生成は `render/geom/`（three.js を代替する自前の最小キット。R4e で `three`
+  パッケージそのものを撤去した）。`BoxGeometry`/`CylinderGeometry`/`ConeGeometry`/
+  `CircleGeometry`/`IcosahedronGeometry`/`OctahedronGeometry`/`Shape`+`ExtrudeGeometry`
+  はいずれも **非indexed の三角形スープ**を直接生成する（`position` 属性しか保持しない。
+  `bakedMesh.ts` が三角形ごとに面法線を計算し直すため normal/uv は元から不要）。マージは
+  `render/mergeGeometry.ts` の `mergeAndDispose()`（非indexed化してから `position` を連結する
+  だけ）。ExtrudeGeometry の三角形分割には `earcut`（唯一の外部依存）を使い、輪郭の巻き順に
+  関わらず各三角形の法線を実測して外向きに補正する
 - ライトは無い。陰影は `render/bakedMesh.ts` が頂点色へ焼き込む（光方向は旧 SunLight と同じ
   `(-30, 34, 14)` の正規化）。動的影も無い
-- `three` パッケージは **CPU 側のジオメトリ演算ライブラリとしてのみ**残っている（`render/*.ts` の
-  BufferGeometry 生成・マージ）。描画には一切使わない。完全撤去は R4e の課題
 
 ## 規約
 
