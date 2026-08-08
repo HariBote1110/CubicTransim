@@ -228,3 +228,111 @@ describe('createTerrainField batch corner grid (P9a)', () => {
     expect(median).toBeLessThan(1);
   });
 });
+
+describe('createTerrainField: 地形プロファイル', () => {
+  it('プロファイル省略時はnormalと完全に同じ地形になる', () => {
+    const implicit = createTerrainField(42, HALF_EXTENT);
+    const explicitNormal = createTerrainField(42, HALF_EXTENT, 'normal');
+    for (let x = -80; x <= 80; x += 3) {
+      for (let z = -80; z <= 80; z += 3) {
+        expect(explicitNormal.cornerHeightAt(x, z), `(${x},${z})`).toBe(implicit.cornerHeightAt(x, z));
+        expect(explicitNormal.terrainTypeAt(x, z), `(${x},${z})`).toBe(implicit.terrainTypeAt(x, z));
+      }
+    }
+  });
+
+  it('同じseedで 平坦 <= 標準 <= 山がち の標高になり、山がちは平坦よりずっと起伏が多い', () => {
+    const seed = 20260809;
+    const flat = createTerrainField(seed, HALF_EXTENT, 'flat');
+    const normal = createTerrainField(seed, HALF_EXTENT, 'normal');
+    const mountain = createTerrainField(seed, HALF_EXTENT, 'mountain');
+    let flatRaised = 0;
+    let normalRaised = 0;
+    let mountainRaised = 0;
+    let total = 0;
+    for (let x = -150; x <= 150; x++) {
+      for (let z = -150; z <= 150; z++) {
+        const f = flat.cornerHeightAt(x, z);
+        const n = normal.cornerHeightAt(x, z);
+        const m = mountain.cornerHeightAt(x, z);
+        expect(f, `(${x},${z})`).toBeLessThanOrEqual(n);
+        expect(n, `(${x},${z})`).toBeLessThanOrEqual(m);
+        if (f > 0) flatRaised++;
+        if (n > 0) normalRaised++;
+        if (m > 0) mountainRaised++;
+        total++;
+      }
+    }
+    // 平坦は広大な平野が支配的、山がちは過半が起伏、どちらも極端(0%/100%)にはならない。
+    expect(flatRaised / total).toBeLessThan(0.2);
+    expect(flatRaised / total).toBeGreaterThan(0);
+    expect(mountainRaised / total).toBeGreaterThan(0.45);
+    expect(mountainRaised / total).toBeLessThan(0.9);
+    expect(normalRaised).toBeGreaterThan(flatRaised);
+    expect(mountainRaised).toBeGreaterThan(normalRaised);
+  });
+
+  it('全プロファイルで頂点格子が1-Lipschitz(隣接コーナー標高差1以下、100万ペア超)', () => {
+    const seeds = [1, 7, 42, 0xdead, 20260809];
+    const size = 128;
+    for (const profile of ['flat', 'normal', 'mountain'] as const) {
+      let pairs = 0;
+      for (const seed of seeds) {
+        const field = createTerrainField(seed, HALF_EXTENT, profile);
+        const rng = mulberry32(seed * 7919 + 13);
+        const offsets: Array<[number, number]> = [
+          [0, 0],
+          [64, -64],
+          [8000, 8000],
+          [-8000, 3000],
+          [Math.floor(rng() * 16000) - 8000, Math.floor(rng() * 16000) - 8000],
+          [Math.floor(rng() * 16000) - 8000, Math.floor(rng() * 16000) - 8000],
+          [Math.floor(rng() * 16000) - 8000, Math.floor(rng() * 16000) - 8000],
+        ];
+        for (const [ox, oz] of offsets) {
+          const grid = field.cornerGridFor!(ox, oz, size, size);
+          const gh = size + 1;
+          for (let lx = 0; lx <= size; lx++) {
+            for (let lz = 0; lz <= size; lz++) {
+              const h = grid[lx * gh + lz];
+              if (lx < size) {
+                expect(Math.abs(grid[(lx + 1) * gh + lz] - h), `${profile} x (${ox + lx},${oz + lz})`).toBeLessThanOrEqual(1);
+                pairs++;
+              }
+              if (lz < size) {
+                expect(Math.abs(grid[lx * gh + lz + 1] - h), `${profile} z (${ox + lx},${oz + lz})`).toBeLessThanOrEqual(1);
+                pairs++;
+              }
+            }
+          }
+        }
+      }
+      expect(pairs, profile).toBeGreaterThan(1_000_000);
+    }
+  });
+
+  it('全プロファイルで水セルの4隅は必ず標高0(水域しきい値 < 標高1しきい値)', () => {
+    for (const profile of ['flat', 'normal', 'mountain'] as const) {
+      const field = createTerrainField(7, HALF_EXTENT, profile);
+      for (let x = -250; x <= 250; x++) {
+        for (let z = -250; z <= 250; z++) {
+          if (field.terrainTypeAt(x, z) === 'water') {
+            expect(field.cellCornerHeights(x, z), `${profile} (${x},${z})`).toEqual([0, 0, 0, 0]);
+          }
+        }
+      }
+    }
+  });
+
+  it('全プロファイルでバッチAPIの格子が cornerHeightAt と一致する', () => {
+    for (const profile of ['flat', 'normal', 'mountain'] as const) {
+      const field = createTerrainField(99, HALF_EXTENT, profile);
+      const grid = field.cornerGridFor!(-33, 77, 32, 32);
+      for (let lx = 0; lx <= 32; lx++) {
+        for (let lz = 0; lz <= 32; lz++) {
+          expect(grid[lx * 33 + lz], `${profile} (${lx},${lz})`).toBe(field.cornerHeightAt(-33 + lx, 77 + lz));
+        }
+      }
+    }
+  });
+});
