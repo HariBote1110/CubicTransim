@@ -226,6 +226,10 @@ fn main() {
                 binding: 1,
                 resource: output.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: overrides_buf.as_entire_binding(),
+            },
         ],
     });
     let mut samples = Vec::with_capacity(10_000);
