@@ -1,6 +1,9 @@
 use std::sync::mpsc;
 use wgpu::util::DeviceExt;
 
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 fn main() {
     let seed: u32 = std::env::args()
         .nth(1)
@@ -16,7 +19,7 @@ fn main() {
         .unwrap_or(356);
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
+        backends: bench_common::select_backends(),
         ..Default::default()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

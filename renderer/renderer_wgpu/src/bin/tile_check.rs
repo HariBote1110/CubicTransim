@@ -3,6 +3,9 @@ use std::sync::mpsc;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
 
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 const GRID: u32 = 257;
 const WORKGROUP: u32 = 256;
 
@@ -17,7 +20,7 @@ fn main() {
     let seed = 0x1234_5678u32;
     let half_extent = 8192i32;
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
+        backends: bench_common::select_backends(),
         ..Default::default()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

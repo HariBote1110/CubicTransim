@@ -36,6 +36,9 @@ use std::sync::mpsc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
 
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 const GRID: u32 = TILE_SAMPLES as u32 + 1;
 const TILE_BYTES: u64 = GRID as u64 * GRID as u64 * 4;
 const MAX_RESIDENT_TILES: usize = 384;
@@ -252,12 +255,12 @@ fn main() {
 
     // --- device setup -------------------------------------------------------------
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::METAL,
+        backends: bench_common::select_backends(),
         ..Default::default()
     });
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-            .expect("adapter (expected Metal on macOS)");
+            .expect("adapter (Metal on macOS / Vulkan on the CI VM; override with WGPU_BACKEND)");
     let info = adapter.get_info();
     // Timestamps are written via the render pass's `timestamp_writes` (bracketing the
     // terrain draw pass only), not via CommandEncoder::write_timestamp, so plain

@@ -17,6 +17,9 @@ use std::sync::mpsc;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
 
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 const GRID: u32 = 257;
 const WORKGROUP: u32 = 256;
 const SEED: u32 = 0x4242_4242;
@@ -92,7 +95,7 @@ fn main() {
     let field = TerrainField::new(SEED, HALF_EXTENT);
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
+        backends: bench_common::select_backends(),
         ..Default::default()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

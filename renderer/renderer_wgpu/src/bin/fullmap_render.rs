@@ -39,9 +39,12 @@ struct TileGpu {
     draw_bg: wgpu::BindGroup,
 }
 
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 fn main() {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::METAL,
+        backends: bench_common::select_backends(),
         ..Default::default()
     });
     let adapter =

@@ -1,6 +1,9 @@
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 fn main() {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
+        backends: bench_common::select_backends(),
         ..Default::default()
     });
     let adapter =

@@ -1,5 +1,8 @@
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 fn main() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN, ..Default::default() });
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: bench_common::select_backends(), ..Default::default() });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("adapter");
     let (device, _) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("shader-check"), required_features: wgpu::Features::empty(),

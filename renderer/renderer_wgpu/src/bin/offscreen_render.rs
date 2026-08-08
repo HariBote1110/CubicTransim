@@ -1,6 +1,9 @@
 use std::{fs, sync::mpsc, time::Instant};
 use wgpu::util::DeviceExt;
 
+#[path = "bench_common/mod.rs"]
+mod bench_common;
+
 const GRID: u32 = 257;
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -32,7 +35,7 @@ fn build_indices() -> Vec<u32> {
 
 fn main() {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::METAL,
+        backends: bench_common::select_backends(),
         ..Default::default()
     });
     let adapter =
