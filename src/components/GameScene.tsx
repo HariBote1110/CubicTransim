@@ -19,8 +19,10 @@ import { DepotBlock } from './DepotBlock';
 import { SignalBlock } from './SignalBlock';
 import { StationLabel } from './StationLabel';
 import { StationBlock, StationHouse, trackAngleFromConnections } from './StationBlock';
-import { TownBlocks } from './TownBlocks';
+import { TownBlocks, TownLabels } from './TownBlocks';
 import { Scenery } from './Scenery';
+import { WebGpuScenery } from './WebGpuScenery';
+import { WebGpuTownBlocks } from './WebGpuTownBlocks';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData, Level } from '../types';
 import { findGroup } from '../sim/groups';
@@ -602,9 +604,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
     const z1 = chunkView.targetCell.z + chunkView.viewRadiusCells + TOWN_VISIBLE_MARGIN_CELLS;
     return towns.filter(t => townIntersectsCellRange(t, x0, x1, z0, z1));
   }, [towns, chunkView, farViewHidden]);
+  // R4a: WebGPUモードでは町ごとにサブタイルを引く(WebGpuTownBlocks)ため、ここでの
+  // 一括生成は不要。従来モードのTownBlocksだけが使う。
   const visibleTownSubTiles = useMemo(
-    () => townTiles.subTilesForTowns(visibleTowns.map(t => t.id)),
-    [townTiles, visibleTowns]
+    () => (webGpuLayer ? new Map() : townTiles.subTilesForTowns(visibleTowns.map(t => t.id))),
+    [townTiles, visibleTowns, webGpuLayer]
   );
 
   // 駅セルがホームの端かどうか(=同一stationIdの隣接セルが1つ以下)を判定する。
@@ -703,17 +707,34 @@ export const GameScene: React.FC<GameSceneProps> = ({
       )}
       {/* R3: 遠景(farViewHidden)では樹木そのものを列挙しない(render/farView.ts参照、
           hidden propが立つとvisibleChunkRangeを呼ばない)。dimmed段階では既存の
-          DIMMED_MATERIALS機構を再利用して唐突に消えないフェード感を出す。 */}
-      <Scenery
-        field={field}
-        railMap={railMap}
-        townTiles={townTiles}
-        range={halfExtent}
-        cameraTargetCell={chunkView.targetCell}
-        viewRadiusCells={chunkView.viewRadiusCells}
-        dimmed={undergroundView || farViewDimmed}
-        hidden={farViewHidden}
-      />
+          DIMMED_MATERIALS機構を再利用して唐突に消えないフェード感を出す。
+          R4a: WebGPUモードでは three.js の Scenery を外し、同じジオメトリ生成関数を使う
+          フィーダ(WebGpuScenery)でwgpuのメッシュチャンクとして載せる。地下ビューの減光は
+          wgpu側のdim uniformが地形ごと担当するため、焼き込みの減光は遠景フェードだけに使う。 */}
+      {webGpuLayer ? (
+        <WebGpuScenery
+          layerRef={webGpuLayer}
+          field={field}
+          railMap={railMap}
+          townTiles={townTiles}
+          range={halfExtent}
+          cameraTargetCell={chunkView.targetCell}
+          viewRadiusCells={chunkView.viewRadiusCells}
+          dimMultiplier={farViewDimmed ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
+          hidden={farViewHidden}
+        />
+      ) : (
+        <Scenery
+          field={field}
+          railMap={railMap}
+          townTiles={townTiles}
+          range={halfExtent}
+          cameraTargetCell={chunkView.targetCell}
+          viewRadiusCells={chunkView.viewRadiusCells}
+          dimmed={undergroundView || farViewDimmed}
+          hidden={farViewHidden}
+        />
+      )}
       {/* R3: レール・列車は player-built でスパースなため遠景でも基本は表示し続けるが、
           極端に巨大なrailMapに対する保険としてFAR_VIEW_RAIL_CELL_BUDGETを超える場合だけ
           遠景で描画を止める。 */}
@@ -890,6 +911,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
           wgpu移管が進むまでの繋ぎ(progress/renderer-integration-plan.md参照)。 */}
       {farViewHidden ? (
         <TownMarkers towns={towns} field={field} />
+      ) : webGpuLayer ? (
+        // R4a: 家・道路はwgpuのメッシュチャンク(町1つ=1チャンク)。町名ラベルだけは
+        // R4cでDOMオーバーレイへ移すまで three.js 側(drei Html)に残す。
+        <>
+          <WebGpuTownBlocks
+            layerRef={webGpuLayer}
+            towns={visibleTowns}
+            townTiles={townTiles}
+            field={field}
+            dimMultiplier={farViewDimmed ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
+          />
+          <TownLabels towns={visibleTowns} field={field} />
+        </>
       ) : (
         <TownBlocks towns={visibleTowns} townSubTiles={visibleTownSubTiles} field={field} dimmed={undergroundView || farViewDimmed} />
       )}
