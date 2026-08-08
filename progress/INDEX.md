@@ -1,4 +1,5 @@
 # progress インデックス
+- [renderer-integration-plan.md](renderer-integration-plan.md) — WebGPUレンダラー本体統合の計画。二層合成(wgpu地形+three.js動的物)から漸進置換、R1〜R4
 - [canonical-terrain-noise-integer.md](canonical-terrain-noise-integer.md) — 地形ノイズの正準整数定義(WASMレンダラー側で確定・5シード5000万点一致)。本体TSはこの定義へ移行必須、1000件のテストベクタ付き
 - [quarterview-renderer-spec.md](quarterview-renderer-spec.md) — WASM+WebGPU クォータービュー特化レンダラーの要件定義とプロトタイプ(GPUノイズ+クリップマップ)仕様
 - [underground-design.md](underground-design.md) — P8地下線・地下駅の設計。uppersを両符号レベルへ対称拡張、掘割ランプ、相対深さ方式、地下ビュー切替
