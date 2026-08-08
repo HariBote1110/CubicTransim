@@ -22,6 +22,7 @@ import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
 import { findGroup } from '../sim/groups';
 import { carGroupPosition, headingToYawPitch } from '../render/trainInstanceMath';
 import { buildTrainCarMesh, buildSelectionMarkerMesh, buildRouteDotMesh } from '../render/trainMeshBuilder';
+import { loadTrainModel, TRAIN_MODEL_REGISTRY } from '../render/trainModelLoader';
 import { parseColourHex } from '../render/bakedMesh';
 import { PALETTE } from '../render/palette';
 import { MESH_INSTANCE_STRIDE, MESH_INSTANCE_FLAG_UNDERGROUND } from '../render/webgpuLayer';
@@ -108,6 +109,10 @@ export const WebGpuTrains: React.FC<Props> = ({
 
     if (lastControllerRef.current !== controller) {
       lastControllerRef.current = controller;
+      // まずプレースホルダを即時登録する(glbロードは非同期・失敗しうるため、
+      // 列車が一瞬でも無表示にならないようにする)。実モデルが用意されている車種は
+      // ロード完了後に同じidへ再登録して差し替える(setInstancesは既存インスタンス
+      // 配列をそのまま使い回せるので、差し替え中も列車の位置は飛ばない)。
       const head = buildTrainCarMesh('head');
       const mid = buildTrainCarMesh('mid');
       const marker = buildSelectionMarkerMesh();
@@ -116,6 +121,17 @@ export const WebGpuTrains: React.FC<Props> = ({
       if (mid) controller.registerInstancedMesh(MESH_ID_MID, mid);
       if (marker) controller.registerInstancedMesh(MESH_ID_SELECTION, marker);
       if (dot) controller.registerInstancedMesh(MESH_ID_ROUTE_DOT, dot);
+
+      // R4c: 車種id→glbモデルidの対応表(現時点ではTRAIN_MODEL_REGISTRYが空なので
+      // 全車種がプレースホルダのまま。モデル納品後はここに登録するだけで自動的に使われる)。
+      const modelId = TRAIN_MODEL_REGISTRY['commuter'];
+      if (modelId) {
+        loadTrainModel(modelId).then(model => {
+          if (!model || lastControllerRef.current !== controller) return;
+          controller.registerInstancedMesh(MESH_ID_HEAD, model.head);
+          controller.registerInstancedMesh(MESH_ID_MID, model.mid);
+        });
+      }
     }
 
     const head = headBuf.current;
