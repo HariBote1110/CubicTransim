@@ -420,6 +420,24 @@ describe('regionTownCandidate / generateRegionTowns', () => {
     }
   });
 
+  it('山がち地形でも小マップでMIN_STARTING_TOWNS以上の町が確保される(複数seed)', () => {
+    for (const seed of [1, 7, 42, 2026, 20260809]) {
+      const field = createTerrainField(seed, 45, 'mountain');
+      const towns = generateRegionTowns(seed, 45, field);
+      expect(towns.length, `seed=${seed}`).toBeGreaterThanOrEqual(MIN_STARTING_TOWNS);
+      // 町は水域には置かれない(標高は問わない=平坦な高原も適地、P7d)
+      for (const town of towns) {
+        expect(field.terrainTypeAt(town.centre.x, town.centre.z), `seed=${seed} ${town.name}`).not.toBe('water');
+      }
+    }
+  });
+
+  it('平坦地形でも町生成が壊れない(密度が上がりすぎない)', () => {
+    const field = createTerrainField(42, 128, 'flat');
+    const towns = generateRegionTowns(42, 128, field);
+    expect(towns.length).toBeGreaterThanOrEqual(MIN_STARTING_TOWNS);
+  });
+
   it('小さいマップ(halfExtent=45)でも数領域だけが評価され、O(regions)で終わる', () => {
     const towns = generateRegionTowns(42, 45, createTerrainField(42, 45));
     expect(towns.length).toBeLessThanOrEqual(4);
