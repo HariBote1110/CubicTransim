@@ -136,8 +136,18 @@ setInstances(meshId: u32, data: &[f32])
   T3 hitch 0/10260(3回とも)、T4 median 2.05〜2.21 ms・p99 6.99〜8.90 ms、
   T5 zoom hitch 0、T6 firstFrame 6.7〜11.4 ms。新パイプラインは空シーンでは
   ドロー0本のため、地形ベンチへの影響は無い
-- **層A(VM / llvmpipe)**: `node bench/run-layer-a.mjs --browser-exact --check-ts-migration`
-  を実施(結果は下記の実行ログ参照)
+- **層A(VM / llvmpipe / Vulkan)**: `node bench/run-layer-a.mjs --browser-exact --check-ts-migration`
+  を実施し、**判定対象のゲートは全pass**(`pass:null` は層B専用ゲート)。
+  build は workspaceTests / nativeBins / productionTsVsRust1M / wasmPack / vite すべて true。
+  A1 median 0.000099 ms・p99 0.000173 ms、A2 0.000837 ms/tile、A3 mismatches 0・
+  CPU diff median 0.0095 ms、A5/T10 heap 1,245,184 B(上限 96 MiB)、A6/T15 wasm gzip
+  86,816 B(上限 1 MiB)、A7 hitch 0、A8 決定性 true、T4/T11 drawCalls 9(上限24)、
+  T6 firstFrame 56.7 ms、T14 5シード×1000万点 mismatch 0、
+  A4 browser-exact(BrowserWebGPU 読み戻し)mismatch 0、cameraReplay 3回とも ok
+- **`mesh_shader_check`**: Mac(Metal / Apple M4)・VM(Vulkan / llvmpipe)の両方で
+  5パイプライン構築+4項目の読み戻し検証が pass
+  (地表 dim=1.0 → (255,0,0)、dim=0.3 → (77,0,0)/(76,0,0)、地下クラスは dim 無視、
+  インスタンス tint で白→緑)
 
 ### 次フェーズ(R4b)への申し送り
 
