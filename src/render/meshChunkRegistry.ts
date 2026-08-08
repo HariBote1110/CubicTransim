@@ -12,6 +12,20 @@
 export const MESH_CHUNK_NAMESPACE = {
   scenery: 0x1000_0000,
   town: 0x2000_0000,
+  // R4b: 線路網は「surface / 地下bright / 地下dim」でlayerClassが異なるため、
+  // 同じキー('surface'等)を使っていても id 空間が衝突しないよう名前空間を分ける。
+  railSurface: 0x3000_0000,
+  railUndergroundBright: 0x3100_0000,
+  railUndergroundDim: 0x3200_0000,
+  station: 0x4000_0000,
+  stationUndergroundBright: 0x4100_0000,
+  stationUndergroundDim: 0x4200_0000,
+  stationGlass: 0x4300_0000,
+  depot: 0x5000_0000,
+  signal: 0x6000_0000,
+  signalMarker: 0x6100_0000,
+  tunnelPortal: 0x7000_0000,
+  waterBridge: 0x8000_0000,
 } as const;
 
 export class MeshChunkRegistry {

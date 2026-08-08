@@ -24,16 +24,18 @@ interface Props {
 }
 
 // --- 寸法(1セル=1.0、線路の軌道中心が原点) ---
-const PLATFORM_HEIGHT = 0.19;   // ホーム面の高さ(レール上面0.13より少し高い)
-const PLATFORM_INNER = 0.22;    // 軌道中心からホーム端までの距離
-const PLATFORM_OUTER = 0.5;     // セル境界まで
-const PLATFORM_WIDTH = PLATFORM_OUTER - PLATFORM_INNER;
-const PLATFORM_CENTRE = (PLATFORM_INNER + PLATFORM_OUTER) / 2;
-const TACTILE_WIDTH = 0.06;
-const CANOPY_HEIGHT = 0.72;
+// R4b: render/stationGeometry.ts(WebGPUフィーダ)が同じ寸法でホームを組み立てるため、
+// export して「配置ロジックの一次情報源」をここ1箇所にまとめる。
+export const PLATFORM_HEIGHT = 0.19;   // ホーム面の高さ(レール上面0.13より少し高い)
+export const PLATFORM_INNER = 0.22;    // 軌道中心からホーム端までの距離
+export const PLATFORM_OUTER = 0.5;     // セル境界まで
+export const PLATFORM_WIDTH = PLATFORM_OUTER - PLATFORM_INNER;
+export const PLATFORM_CENTRE = (PLATFORM_INNER + PLATFORM_OUTER) / 2;
+export const TACTILE_WIDTH = 0.06;
+export const CANOPY_HEIGHT = 0.72;
 // 上屋の幅。ホーム幅より狭くして軌道側を開けておく。
-const CANOPY_WIDTH = 0.2;
-const PILLAR_RADIUS = 0.022;
+export const CANOPY_WIDTH = 0.2;
+export const PILLAR_RADIUS = 0.022;
 
 /**
  * 線路の接続方向からホームの向き(軌道の軸)を求める。

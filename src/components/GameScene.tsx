@@ -23,6 +23,9 @@ import { TownBlocks, TownLabels } from './TownBlocks';
 import { Scenery } from './Scenery';
 import { WebGpuScenery } from './WebGpuScenery';
 import { WebGpuTownBlocks } from './WebGpuTownBlocks';
+import { WebGpuTrackNetwork } from './WebGpuTrackNetwork';
+import { WebGpuStations } from './WebGpuStations';
+import { WebGpuTrackExtras } from './WebGpuTrackExtras';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData, Level } from '../types';
 import { findGroup } from '../sim/groups';
@@ -738,11 +741,51 @@ export const GameScene: React.FC<GameSceneProps> = ({
       {/* R3: レール・列車は player-built でスパースなため遠景でも基本は表示し続けるが、
           極端に巨大なrailMapに対する保険としてFAR_VIEW_RAIL_CELL_BUDGETを超える場合だけ
           遠景で描画を止める。 */}
-      {!(farViewHidden && railMap.size > FAR_VIEW_RAIL_CELL_BUDGET) && (
-        <TrackNetwork railMap={railMap} field={field} undergroundView={undergroundView} selectedLevel={buildLevel} />
+      {/* R4b: WebGPUモードでは線路・駅・車庫・信号・坑口・水上橋のいずれもthree.jsでは
+          描かず、同じ純粋関数(render/railGeometry.ts・stationGeometry.ts・depotGeometry.ts・
+          signalGeometry.ts・tunnelPortalMeshGeometry.ts・waterBridgeGeometry.ts)を使う
+          wgpuメッシュチャンクフィーダに置き換える。配置ロジックは1箇所のまま二重化しない。 */}
+      {webGpuLayer ? (
+        !(farViewHidden && railMap.size > FAR_VIEW_RAIL_CELL_BUDGET) && (
+          <WebGpuTrackNetwork
+            layerRef={webGpuLayer}
+            railMap={railMap}
+            field={field}
+            undergroundView={undergroundView}
+            selectedLevel={buildLevel}
+          />
+        )
+      ) : (
+        !(farViewHidden && railMap.size > FAR_VIEW_RAIL_CELL_BUDGET) && (
+          <TrackNetwork railMap={railMap} field={field} undergroundView={undergroundView} selectedLevel={buildLevel} />
+        )
       )}
 
-      {Array.from(railMap.entries()).map(([key, data]) => {
+      {webGpuLayer && (
+        <>
+          <WebGpuStations
+            layerRef={webGpuLayer}
+            groundCells={groundCells}
+            elevatedCells={elevatedCells}
+            undergroundCells={undergroundCells}
+            stationEndKeys={stationEndKeys}
+            elevatedEndKeys={elevatedEndKeys}
+            undergroundEndKeys={undergroundEndKeys}
+            stations={stations}
+            field={field}
+            undergroundView={undergroundView}
+            selectedLevel={buildLevel}
+          />
+          <WebGpuTrackExtras
+            layerRef={webGpuLayer}
+            railMap={railMap}
+            field={field}
+            tunnelPortalList={tunnelPortalList}
+          />
+        </>
+      )}
+
+      {!webGpuLayer && Array.from(railMap.entries()).map(([key, data]) => {
         const { x, z } = fromKey(key);
         const elements = [];
         // 駅・車庫・信号はflatセル限定(P7a)なので、単一のセル標高(cellHeightAt)を
@@ -811,7 +854,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
           に同じジオメトリを平行移動して置くだけで、地平と同じ見た目の坑口を高架にも
           流用できる。装飾であり選択対象ではないため地面クリックを奪わないよう
           全meshのレイキャストを外す。 */}
-      {portalGeometryData.map(({ portal, wallHeight, embedDepth, headwallGeometry }) => {
+      {!webGpuLayer && portalGeometryData.map(({ portal, wallHeight, embedDepth, headwallGeometry }) => {
         // セル境界面(x+dx*0.5, z+dz*0.5)を基準に置く。高架の坑口(level>0)はそのレベルの
         // 高さぶん(level*OVERPASS_HEIGHT)持ち上げる。
         const faceX = portal.x + portal.dx * 0.5;
@@ -875,7 +918,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       {/* 高架駅セル(uppers[L].stationIdがあるセル)。地平の駅セルと同じStationBlockを
           レベルLぶん(L*OVERPASS_HEIGHT)持ち上げて描く。柱の端判定は高架層だけで独立に行う。 */}
-      {elevatedCells.map(cell => {
+      {!webGpuLayer && elevatedCells.map(cell => {
         const level = cell.level ?? 1;
         return (
           <StationBlock
@@ -891,7 +934,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       {/* P8b: 地下駅セル(uppers[L].stationIdがあるセル、L<0)。通常表示では隠し、
           地下ビュー中だけ描く(選択レベル以外は暗く)。 */}
-      {undergroundView && undergroundCells.map(cell => {
+      {!webGpuLayer && undergroundView && undergroundCells.map(cell => {
         const level = cell.level ?? -1;
         return (
           <StationBlock
