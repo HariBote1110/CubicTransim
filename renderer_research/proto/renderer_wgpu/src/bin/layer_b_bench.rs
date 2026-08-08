@@ -571,7 +571,11 @@ fn main() {
             prefetch_view.prefetch_border = 1;
             select_tiles_into(prefetch_view, &mut needed);
 
-            for &key in visible.iter().chain(needed.iter()) {
+            // T7 measures how long a tile the user can actually SEE stays missing, so
+            // only the visible set starts the clock. Counting prefetch-border tiles too
+            // would charge the metric for tiles that are merely queued and may not enter
+            // the view for hundreds of frames.
+            for &key in visible.iter() {
                 if !tiles.contains_key(&key) {
                     first_seen.entry(key).or_insert(frame_index);
                 }
@@ -646,6 +650,9 @@ fn main() {
                     }
                 }
             }
+            // A tile that left the view before it was ever generated never produced a
+            // visible gap, so it must not contribute a latency sample later on.
+            first_seen.retain(|k, _| visible.contains(k));
 
             let mut camera_bytes = [0u8; 32];
             put_f32(&mut camera_bytes, 0, center_x as f32);
