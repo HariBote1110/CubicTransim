@@ -13,107 +13,132 @@
 ## 環境
 
 - ホスト: Mac, Apple M4, macOS 26.5.2 (25F84)
-- GPU adapter: `Apple M4` / backend `Metal` / device type `IntegratedGpu`(wgpu `adapter.get_info()`)
+- GPU adapter: `Apple M4` / backend `Metal` / device type `IntegratedGpu`
 - Rust: rustc 1.93.0 / cargo 1.93.0
-- wgpu: 24.0.5 (`renderer_research/proto/renderer_wgpu/Cargo.toml`)
-- リリースビルド: `cargo build --release`
-- 対象コード: `renderer_research/proto/renderer_wgpu/src/bin/layer_b_bench.rs`(今回新規作成)、
-  および `renderer_research/proto/renderer_wgpu/src/bin/{offscreen_render,fullmap_render}.rs`
-  (Mac 実行のため `Backends::VULKAN` → `Backends::METAL` に変更、既存の Layer-A/VM 用ロジックは無改修)
+- wgpu: 24.0.5 / リリースビルド
+- 対象: `renderer_research/proto/renderer_wgpu/src/bin/layer_b_bench.rs`、`src/lib.rs`(wasm CanvasRenderer)、
+  `shaders/{tile_finalize,terrain_draw,tile_clamp_args}.wgsl`
 
-## 手順
+## 経緯: 第1回計測での「崩壊」と、その根本原因の特定
 
-### 1. 既存 native bin の Metal 実行確認(構造検証)
+第1回の計測(初版ノート)では、`zoom-roundtrip` フェーズのフレーム493〜495付近で
+**1フレーム 9.2s → 17.1s → 5.0s** という致命的遅延が起き、直後に wgpu-core の
+「We timed out while waiting on the last successful submission to complete!」で落ちた。
+3回の独立実行すべてで同じフレーム位置に再現し、`caffeinate -dimsu` 下でも再現したため
+スリープ・省電力は棄却済みだった。当時の手がかりは `generated=0 visible=4 needed=16` のみで、
+「未常駐タイルのフォールバック描画がストライド1で全域を描いて頂点数が爆発している」
+「ズーム戻り工程でタイル生成キューが止まっている」という2つの仮説を立てていた。
 
-```sh
-cd renderer_research/proto
-cargo build --release --bin offscreen_render --bin fullmap_render
-target/release/offscreen_render   # 800x600, 単一タイル
-renderer_wgpu 配下から: ../target/release/fullmap_render   # 1600x900, 全図
+今回、安全弁を先に入れたうえで実際の indirect draw 引数を読み戻し、**根本原因を確定した。
+2つの仮説はどちらも外れており、真因はもっと単純かつ全フレームに存在していた。**
+
+### 確定した根本原因: indirect draw 引数のフィールド食い違い
+
+`tile_finalize.wgsl` は描画引数バッファをこう宣言していた:
+
+```wgsl
+struct RenderArgs {
+  total_vertices: atomic<u32>,
+  cliff_vertices: atomic<u32>,
+  water_vertices: atomic<u32>,
+  instance_count: atomic<u32>,
+};
 ```
 
-両方とも `Backends::VULKAN` のままでは macOS に Vulkan アダプタが無く `adapter` で panic した
-(このマシンには MoltenVK 等の Vulkan 層が入っていない)。`Backends::METAL` に変更後は即座に成功した。
+一方 `draw_indirect` が読むワイヤ表現は `(vertex_count, instance_count, first_vertex, first_instance)`。
+つまり **`cliff_vertices` が instance_count に、`water_vertices` が first_vertex に、
+そのまま流し込まれていた**。崖エッジ1本につき `atomicAdd(&args.cliff_vertices, 6u)` するので、
+崖の多いタイルほど instance_count が数万に膨れる。
 
-### 2. 新規 Layer-B ベンチ (`layer_b_bench.rs`)
+### 証拠(LAYER_B_ARG_TRACE=1 で全タイルの要求引数を読み戻し)
 
-`web/bench/camera_replay.mjs` と同じ4フェーズ(static 120f → max-speed-pan 120f → full-map 120f →
-zoom-roundtrip 90f-in+90f-out)を、`renderer_wgpu/src/lib.rs` の `CanvasRenderer`(タイルキャッシュ・
-LRU・indirect draw)と同じアルゴリズムでオフスクリーン 1600×900 に再生する native バイナリ。
-GPU タイムスタンプクエリ(`Features::TIMESTAMP_QUERY`)対応、CPU/GPU 時間を分離計測、
-`bench/results/layer-b-<unix-ts>-runN.json` に Layer-A と同形式の JSON を出力する。
-
-terraform(地形編集連打)はプロトタイプスコープ外(仕様書「プロトタイプ(縦切り)スコープ」参照)のため
-未実装・T8はnull/対象外として記録。
-
-```sh
-cargo build --release --bin layer_b_bench
-target/release/layer_b_bench bench/results/layer-b-<ts>-run1.json
 ```
-(run2, run3 も同様に3回実行し、外れ値ポリシーに従い中央値runを採用)
+OVER-CAP DRAW: frame=1 tile=(lod=0,x=-1,z=-1) requested vertex_count=422460 instance_count=29244
+  first_vertex=0 first_instance=1 -> clamped to vertex_count=422460 instance_count=1 (cap 2000000);
+  total vertex invocations would have been 12354420240
+OVER-CAP DRAW: frame=1 tile=(lod=0,x=-1,z=0)  requested vertex_count=425448 instance_count=32232
+  first_vertex=0 first_instance=1 -> ... would have been 13713039936
+```
 
-## 結果: 重大な発見 — ズームアウト中の実行時間崩壊(再現性あり)
+- **フレーム1**から、可視4タイルすべてが 1draw あたり **123〜137億頂点** を要求していた。
+  4タイル合計でおよそ **500億頂点/フレーム**。観測した最大要求 instance_count は 61,350
+- フレーム493は「そこで何かが壊れた地点」ではなく、**非同期に積み上がったGPUバックログを
+  CPUがついに待たされ始めた地点**にすぎない。CPU側の計測(`cpu_ms`)は submit までしか測って
+  いないため、GPUが数百フレーム分遅れていても崩壊直前まで sub-ms に見えていた
+- 崩壊フレームのトレース(修正後・クランプ有効時に再取得):
+  `frame=493 phase=zoom-roundtrip ppc=22.99 lod=0 visible=4 resident_visible=4 needed=16 generated=0
+   resident_total=29` — **可視4タイルはすべて常駐済み**
 
-10,000フレームを素朴に(540フレーム/サイクル×19サイクル)回す当初案は **実行不能** だった。
+### 旧仮説の棄却
 
-`static`・`max-speed-pan`・`full-map` の3フェーズは常に高速(cpu 中央値 0.2〜0.3ms)だが、
-`zoom-roundtrip` フェーズのズームアウト側(cycle内フレーム 361→540、フレームインデックスで
-おおよそ 490 前後)に入ると、**1フレームあたり 16.5〜65 秒**という致命的な遅延が発生し、
-**一度発生すると回復しない**(観測した限り、以後ずっと同程度の遅さが続く)。3回の独立実行すべてで
-フレームインデックス 492〜494 前後という、ほぼ同一の地点で発生した(同一シード・同一カメラ経路
-なので再現性は高い)。
+- **「未常駐タイルのフォールバック描画が細かいストライドで描いている」→ 棄却**。
+  そもそもフォールバック描画パスは存在しない。`lib.rs`/`layer_b_bench.rs` とも
+  `if let Some(tile) = tiles.get(&key)` で未常駐タイルは単にスキップする。
+  頂点数の爆発は stride ではなく instance_count 側で起きていた
+- **「ズーム戻りで生成キューが止まっている(generated=0)」→ 棄却**。
+  `generated=0` はキューの停止ではなく **キャッシュが温まっていただけ**。同フレームの
+  `resident_visible=4`(可視4枚すべて常駐)・`resident_total=29` が示すとおり、
+  必要なタイルは全部そろっていた。`needed=16` は prefetch_border=1 の 4×4 集合で、
+  可視2×2に対する正常値
+- **「QuerySet resolve+map_async が初回だけ約60秒」→ 同一原因だった**。
+  `device.poll(Maintain::Wait)` は本当にGPUの完了を待っていただけで、60秒は
+  wgpu-core の submission 待ちタイムアウト。修正後の flush は **58〜158ms**
+  (128フレーム分のGPU work を実際に流し切る時間)で、GPUタイムスタンプは正常に機能する。
+  環境固有の不具合ではなかったため、CPU計測フォールバックへの降格も発生しなくなった
 
-素朴に19サイクル分(必要な最終判定 T3/T5 のためには不要な繰り返し)回すと、この崩壊状態のまま
-数時間かかると試算された(1フレーム約16.5秒 × 数千フレーム)。研究時間予算内での完走が不可能なため、
-以下の対応を行った:
+## 修正内容
 
-1. **スコープ縮小**: ズームラウンドトリップを含む「フルサイクル」(540フレーム)は **2回のみ** 再生。
-   崩壊は初回発生時点ですでに致命的な大きさで再現しているため、19回繰り返しても新しい情報は得られない。
-   残りのフレーム数(≥10,000達成のため)は、同じスクリプトの高速な接頭辞(static→pan→full-map、
-   ズームなし)を繰り返すことで充足した。`layer_b_bench.rs` 内の `FULL_CYCLES=2` と `fast_cycle`
-   がこれに対応する。
-2. **安全弁**: 1フレームが 5000ms を3回連続で超えたら、以後の残りフレームを打ち切り、その旨を
-   結果JSONの `anomalies` 配列に記録する(silent に隠さず、崩壊の証拠として残す)。
-3. **タイムスタンプクエリの適応的無効化**: 別の問題として、`QuerySet` の resolve → `map_async` →
-   `device.poll(Maintain::Wait)` 自体が、実行内容に関わらず最初のバッチ(128フレーム分)で
-   常に約60秒スタックすることが判明した(pass-scoped / encoder-level 双方の `write_timestamp` で
-   再現、tile生成をフレームのエンコーダから分離しても解消せず)。初回flushの所要時間を計測し、
-   2000ms を超えたら以後の実行で GPU タイムスタンプ計測を無効化してCPU計測のみにフォールバックする
-   処理を実装した(`timestamp_supported` を実行中に降格、`timestampQueryDegradedDuringRun` として記録)。
+1. **描画セーフガード(恒久不変条件)** — `shaders/tile_clamp_args.wgsl`
+   タイル生成直後に1回だけ走る計算パス。要求された引数を診断領域(word 8..11)にそのまま記録し、
+   `vertex_count` を `MAX_DRAW_VERTICES`(2,000,000)に、`instance_count` を1にクランプしてから
+   でなければ `draw_indirect` に渡らないようにした。1タイルが正当に出しうる最大頂点数は
+   `256×256×6 + 6×130,560 + 6×65,536 = 1,569,792` なので、2,000,000 は余裕を残しつつ
+   エンコード不整合を確実に捕まえる。`LAYER_B_ARG_TRACE=1` でCPU側に読み戻し、
+   上限超過をパラメータ付きでログ(debug ビルドでは `debug_assert`)
+2. **根本修正** — `RenderArgs` をワイヤ表現に合わせて並べ替え(48バイト化)。
+   word 0..3 が draw quad、word 4..5 が `cliff_vertices`/`water_vertices`、word 8..11 が診断領域。
+   `terrain_draw.wgsl` の頂点範囲分割も同じレイアウトに追随。wasm 側 `CanvasRenderer` にも
+   同じ修正とクランプパスを適用
+3. **ベンチの安全弁** — 単一フレームが2000msを超えた時点で即中断し `anomalies` に記録
+   (旧: 5000ms×3連続)
+4. **スコープ縮小の撤廃** — 旧版はズーム脚を2サイクルしか回さず残りを高速プレフィクスで
+   埋めていた(`FULL_CYCLES=2` + `fast_cycle`)。修正後は **540フレームの完全サイクルのみ**で
+   10,260フレームを回す
+5. **描画結果の退行検出** — 最終フレームの非背景ピクセル数を結果JSONに出力。
+   `instance_count=0` のような「何も描かれない」退行を検出できる
+6. **T7の計測対象の是正** — プリフェッチ境界タイルまで計測開始点にしていたため、
+   「まだ見えていない・数百フレーム後に視界へ入るタイル」がサンプルに混ざり p99 が
+   528フレームに膨らんでいた。可視集合に入った未常駐タイルのみを対象にした
 
-**この崩壊自体が Layer-B の最重要な結果である。** 缶詰にして隠さず、T3 と T5 の FAIL として下で
-報告する。原因(wgpu 24.0.5 / Metal 固有のリソースプール枯渇か、コマンドバッファ管理の問題か、
-本ベンチ特有のタイル生成パターンに起因するものか)はこの研究予算内では特定しきれなかった
-(下記「未検証事項」参照)。
+## 計測結果(修正後、3実行・完全スクリプト)
 
-## 計測結果(3実行、中央値run = run2)
+3実行とも **10,260フレーム完走・ヒッチ0件・打ち切り0件**。ばらつきは極小。
 
-3回の実行はいずれもフレームインデックス492〜494で崩壊・打ち切りとなり、非常に近い結果だった
-(static/pan/full-mapフェーズの p99 が最も低い run2 を「外乱が少ない中央値run」として採用)。
+| 実行 | 完走 | ヒッチ | static p99 | pan p99 | full-map p99 | zoom p99 |
+|---|---|---|---|---|---|---|
+| run1(採用・中央値) | 10260 | 0 | 1.774ms | 1.216ms | 3.427ms | 3.208ms |
+| run2 | 10260 | 0 | 1.682ms | 1.276ms | 3.384ms | 3.396ms |
+| run3 | 10260 | 0 | 1.734ms | 1.176ms | 3.496ms | 3.339ms |
 
-| 実行 | 完走フレーム数(目標10,080) | static p99 | pan p99 | full-map p99 | zoom-roundtrip 内ヒッチ数 |
-|---|---|---|---|---|---|
-| run1 | 494 | 0.370ms | 0.895ms | 0.934ms | 3/134 |
-| run2(採用) | 492 | 0.311ms | 0.828ms | 0.714ms | 3/132 |
-| run3 | 492 | 1.525ms | 1.698ms | 0.643ms | 3/132 |
+採用 run1 (`bench/results/layer-b-final-1786172315-run1.json`) の詳細
+(`totalMs` = CPU + GPUタイムスタンプ実測):
 
-run2 (`bench/results/layer-b-1786140557-run2.json`) の詳細:
-
-- adapter: `Apple M4` / backend `Metal` / deviceType `IntegratedGpu`
-- タイムスタンプクエリ: 対応検出はされたが(`timestampQuerySupported` はfalseに降格済み表示。
-  実行開始時は true だったが最初のflushが60002msかかったため `timestampQueryDegradedDuringRun: true`
-  として以後CPU計測のみにフォールバック)
-- static (120フレーム): CPU中央値 0.190ms / p99 0.311ms / max 5.811ms、ヒッチ0
-- max-speed-pan (120フレーム): CPU中央値 0.278ms / p99 0.828ms / max 2.181ms、ヒッチ0
-- full-map (120フレーム, LOD5, drawCalls中央値9): CPU中央値 0.227ms / p99 0.714ms / max 3.551ms、ヒッチ0
-- zoom-roundtrip (132フレームで打ち切り): CPU中央値 0.195ms(崩壊前の大半のフレームは高速)だが
-  p99 16922.8ms・max 20970.8ms、ヒッチ(>16.6ms)3件。この3件が数十秒級で、通常のヒッチとは
-  桁が3〜4桁違う致命的事象
-- 常駐タイル: 崩壊時点で29枚(約7.66MB相当のサンプルバッファのみの概算、cliff/water等の補助
-  バッファは含まず)
-- T7(新規タイル可視化遅延): サンプル15件、中央値0フレーム、p99 187フレーム(≈42ms、中央値フレーム
-  時間換算)。ほとんどのタイルは同一フレーム内で即時生成されるが、崩壊直前のフレームで生成が滞留した
-  タイルがp99を押し上げている
+- 環境: `Apple M4` / `Metal` / `IntegratedGpu`、`timestampQuerySupported: true`、
+  `timestampQueryDegradedDuringRun: false`
+- 構成: 540フレーム×19サイクル = 10,260フレーム、`zoomLegScopeNote: "none: every frame comes
+  from the complete 540-frame cycle including both zoom legs"`、`anomalies: []`
+- static (2280f, LOD0, draws 4): cpu median 0.049ms / gpu median 0.571ms /
+  **total median 0.627ms・p99 1.775ms・max 9.279ms**、ヒッチ0
+- max-speed-pan (2280f, LOD0, draws 2): cpu median 0.038ms / gpu median 0.302ms /
+  **total median 0.349ms・p99 1.216ms・max 2.578ms**、ヒッチ0
+- full-map (2280f, LOD5, draws 9): cpu median 0.039ms / gpu median 1.764ms /
+  **total median 1.830ms・p99 3.427ms・max 4.851ms**、ヒッチ0
+- zoom-roundtrip (3420f, LOD0, draws 4): cpu median 0.047ms / gpu median 0.577ms /
+  **total median 0.636ms・p99 3.208ms・max 7.867ms**、ヒッチ0
+- 描画セーフガード: `overCapDraws: 0`、`finalFrameNonBackgroundPixels: 469442`
+  (最終フレームは全図フェーズ。地形が実際に描かれていることを確認)
+- 常駐タイル: 45枚 / 上限384枚、サンプルバッファ概算 11,888,820 バイト
+- T7: サンプル13件、median 0フレーム / p99 0フレーム(可視タイルは常に同一フレーム内で生成完了)
 
 ### 実GPU上での正しい描画の確認(既存native bin)
 
@@ -122,107 +147,74 @@ offscreen_render (800x600, Metal): {"adapter":"Apple M4","backend":"Metal","nonB
 fullmap_render  (1600x900, Metal): {"adapter":"Apple M4","backend":"Metal","lod":5,"drawCalls":9,"nonBackgroundPixels":640000,"bbox":[1,50,1598,849],"elapsedMs":13.796}
 ```
 
-`fullmap_render` の非背景ピクセル数 640,000 は期待される投影菱形(1600×800、面積640,000px)と一致し、
-bbox `[1,50]-[1598,849]` はマップ境界での部分タイルが正しく切り詰められていることを示す
-(PNG化して目視確認済み、非黒・地形ノイズが可視)。両方とも Layer-A ノートに記載の VM/software raster
-結果と整合する構造で、実GPU(Metal)でも正しい画像が出力されることを確認した。
+`fullmap_render` の非背景ピクセル数 640,000 は期待される投影菱形(1600×800)と一致。
+なおこの2つは `terrain_draw_surface.wgsl` + `draw_indexed` の別経路であり、今回の
+indirect 経路のバグの影響を受けていなかった(だからこそ第1回計測時に「描画は正しい」と
+判断でき、原因の切り分けが遅れた)。
 
-## Tゲート判定(run2 採用)
+## Tゲート判定(run1 採用、10,260フレーム完走)
 
-崩壊により全体としては 10,000フレームを完走できていないため、`totalFramesTargeted: 10080` に対し
-`framesActuallyCompleted: 492` である点に注意。T1/T2/T4/T6/T7 は崩壊前の健全なフレームから、
-T3/T5 は崩壊そのものを根拠に判定する。
+| # | 項目 | プロトタイプ判定 | 実測 | 判定 | 厳格判定 | 判定 |
+|---|---|---|---|---|---|---|
+| T1 | 静止時フレーム時間 | (T4が代替) | median 0.627ms / p99 1.775ms | **PASS** | median≤2ms & p99≤4ms | **PASS** |
+| T2 | 最大速度パン中 | (T3に統合) | median 0.349ms / p99 1.216ms | **PASS** | median≤4ms & p99≤8.3ms | **PASS** |
+| T3 | ヒッチ(>16.6ms)0件 | 0件必須 | **0件 / 10,260フレーム** | **PASS** | 10000フレーム中0件 | **PASS** |
+| T4 | 全図ズームアウト p99≤16.6ms | 必須 | median 1.830ms / p99 3.427ms | **PASS** | median≤4ms & p99≤8.3ms | **PASS** |
+| T5 | ズーム往復 ヒッチ0 | T3と同じ | ズーム脚 0件 / 3,420フレーム | **PASS** | 同左 | **PASS** |
+| T6 | 初期表示 | ≤1000ms | 9.278ms | **PASS** | ≤300ms | **PASS** |
+| T7 | 新規タイル可視化遅延 | 参考計測 | median 0f / p99 0f (n=13) | **PASS** | p99≤50ms(≤3フレーム) | **PASS** |
+| T8 | 地形編集の反映 | 対象外(プロトタイプスコープ外) | 未計測 | null | 対象外 | null |
 
-| # | 項目 | プロトタイプ判定 | 実測 | 判定 | 厳格判定 | 実測 | 判定 |
-|---|---|---|---|---|---|---|---|
-| T1 | 静止時フレーム時間 | (別途ゲートなし、T4が代替) | median 0.190ms / p99 0.311ms | - | median≤2ms & p99≤4ms | 同上 | **PASS**(参考) |
-| T2 | 最大速度パン中 | (T3のヒッチ0に統合) | median 0.278ms / p99 0.828ms | **T3経由でFAIL** | median≤4ms & p99≤8.3ms | 同上 | PASS(参考、ただしT3全体がFAIL) |
-| T3 | ヒッチ(>16.6ms)0件 | 0件必須 | 3件(zoom-roundtrip中、16.9秒〜21秒級) | **FAIL** | 10000フレーム中0件 | 3件/492フレーム完走 | **FAIL** |
-| T4 | 全図ズームアウト p99≤16.6ms | 必須 | p99 0.714ms | **PASS** | median≤4ms & p99≤8.3ms | 同上 | PASS(参考) |
-| T5 | ズーム往復 ヒッチ0 | T3と同じ | zoom-roundtripフェーズ内3件 | **FAIL** | 同左 | 同上 | **FAIL** |
-| T6 | 初期表示 | ≤1000ms | 5.811ms | **PASS** | ≤300ms | 同上 | PASS(参考) |
-| T7 | 新規タイル可視化遅延 | 参考計測 | 中央値0f / p99 187f(≈42ms) | 参考記録 | ≤50ms(≤3フレーム) | p99 187フレームは超過だが崩壊直前の異常値混入の影響大、崩壊除く定常値は中央値0フレーム | 参考(崩壊の影響で厳密判定は保留) |
-| T8 | 地形編集の反映 | 対象外(プロトタイプスコープ外) | 未計測 | null | 対象外 | 未計測 | null |
-
-**プロトタイプ段階の合否まとめ: (a) T3 ヒッチ0 → 不合格 / (b) T4 全図p99≤16.6ms → 合格 /
-(c) T6 初期表示≤1s → 合格。** 3項目中1項目(T3、連動してT5)が不合格のため、仕様書の
-「層Bのいずれかが未達の間はthree.js置き換えを行わない」規定により、**このプロトタイプは
-layer-B昇格基準を満たさない。**
+**プロトタイプ段階の合否まとめ: (a) T3 ヒッチ0 → 合格 / (b) T4 全図p99≤16.6ms → 合格 /
+(c) T6 初期表示≤1s → 合格。3項目すべて合格。**
+さらに **本実装向けの厳格値 T1/T2/T4/T5/T6/T7 もすべて合格**した(T8のみプロトタイプ
+スコープ外で未判定)。
 
 ## 結論
 
-- 仮説(「CPU側は軽量なので実GPUでもT1/T2/T4/T6は容易に満たす」)は **部分的に採択**:
-  健全に動作しているフレームでは実際に極めて軽量(サブミリ秒)だった。
-- しかし「T3/T5がプロトタイプでも成立するか」という主眼の問いには **明確に否定的な結果**が出た。
-  深いズームアウト・LODチャーン下で、このMac(wgpu 24.0.5 / Metal)上で数十秒級の致命的フレームが
-  発生し、しかも回復しない。これはT3のヒッチ0要件に対する重大な違反であり、
-  **layer-B(実GPU)昇格の可否判定としてはFAILと明記する**(数値を調整して隠さない)。
-- 副次的な発見として、GPUタイムスタンプクエリ(`QuerySet` resolve + `map_async` +
-  `device.poll(Wait)`)自体も、内容に関わらず初回で約60秒スタックする別の問題が再現した。
-  これも同一環境(wgpu 24.0.5 / Metal / macOS 26.5.2)固有の可能性が高い。
+- 当初の仮説(「CPU側は軽量なので実GPUでもT1/T2/T4/T6は容易に満たす」)は **採択**。
+  CPU側は全フェーズで median 0.05ms 未満、GPU側も全図(LOD5, 9draw)で median 1.8ms
+- 主眼だった「T3/T5がプロトタイプでも成立するか」も **成立**。10,260フレームで
+  16.6ms超のフレームは1件も出ていない
+- 第1回計測でFAILとしていた T3/T5 は、**ハードウェアやwgpu/Metalの問題ではなく
+  プロトタイプ自身の描画引数エンコードのバグ**だった。60秒スタックも同一原因の別症状。
+  「環境固有の未解明問題」と結論づけずに引数を実測したことで確定できた
+- 教訓: indirect draw は引数バッファのワイヤ表現が唯一の契約であり、WGSL側の
+  struct フィールド名は何の保証にもならない。今回入れた頂点数クランプは、
+  この種の不整合を「OSごと巻き込むハング」ではなく「ログ1行」に変えるための
+  恒久的な安全弁として残す
 
 ## 未検証事項 / 次の一手
 
-- **根本原因の切り分け未完了**: ズームアウト崩壊が (a) wgpu 24.0.5 の Metal backend 固有のバグ
-  (コマンドバッファプールやステージングベルトの枯渇等)か、(b) 本ベンチのタイル生成・破棄パターン
-  (LODが変わるたびにキャッシュミスが連鎖する経路)に起因する実装上の問題か、(c) macOS 26.5.2 
-  (比較的新しいOSバージョン)特有の問題か、切り分けられていない。次の一手候補:
-  - wgpu を最新版(0.24系のパッチ、または0.2x系の他バージョン)に上げて再現するか確認
-  - `Instruments` (Metal System Trace) で崩壊発生時にGPU/CPU側で何が起きているか直接観測
-  - タイル生成をやめて描画のみ(既存タイルの再利用のみ)でズームだけ回し、タイル生成が原因か切り分け
-  - Chrome(BrowserWebGPU)で同じズーム経路を回し、ブラウザ側でも崩壊が起きるか確認
-    (今回は時間予算の都合で未実施、下記参照)
-- **GPUタイムスタンプクエリの60秒スタックも未解明**。`wgpu::Features::TIMESTAMP_QUERY` のみ
-  (encoder側`TIMESTAMP_QUERY_INSIDE_ENCODERS`は不使用)でも発生することは確認済みなので、
-  encoder-levelとpass-scopedの差ではない。
-- **ブラウザ実GPU計測は未実施**(タスクのオプション項目)。上記の崩壊調査を優先したため
-  時間予算内で着手できなかった。非表示タブでrAFが止まる問題を踏まえても、可視セッションでの
-  Chrome BrowserWebGPU計測は本崩壊がネイティブMetal固有かどうかを切り分ける上で価値が高く、
-  次の一手として推奨する。
+- **T8(地形編集連打)は未計測**。プロトタイプスコープ外のため意図的に未実装
+- **ブラウザ実GPU計測は未実施**。今回の修正は wasm 側 `CanvasRenderer` にも同じ形で
+  入っているが、Chrome BrowserWebGPU 上での実測はまだ行っていない。ネイティブMetalで
+  全ゲート合格したので、次はブラウザ側で同じスクリプトを回して確認するのが妥当
+- **本実装(three.js置き換え)側への移植時の注意**: `tile_clamp_args.wgsl` のクランプパスと
+  `MAX_DRAW_VERTICES` 不変条件は必ず一緒に移植すること
 
 ## 再現手順
 
 ```sh
 cd renderer_research/proto
-cargo build --release --bin layer_b_bench --bin offscreen_render --bin fullmap_render
-target/release/layer_b_bench bench/results/layer-b-$(date +%s)-run1.json
-# stderr に "ABORT: ..." が出れば崩壊を再現。frame_index=490前後を確認。
+cargo build --release --bin layer_b_bench
+caffeinate -dimsu ./target/release/layer_b_bench bench/results/layer-b-$(date +%s)-run1.json
+# 3回実行し中央値runを採用。anomalies が空・全フェーズ hitchesOver16_6ms=0 が期待値。
+
+# 描画引数のトレース(頂点数爆発の再確認・回帰検出用)
+LAYER_B_ARG_TRACE=1 LAYER_B_TRACE_FROM=1 LAYER_B_TRACE_TO=600 \
+  ./target/release/layer_b_bench bench/results/trace.json
+# "OVER-CAP DRAW:" が1行でも出れば引数エンコードが壊れている。
 ```
+
+環境変数: `LAYER_B_TARGET_FRAMES`(既定10000)、`LAYER_B_FORCE_NO_TS`(GPUタイムスタンプ無効化)、
+`LAYER_B_ARG_TRACE` / `LAYER_B_TRACE_FROM` / `LAYER_B_TRACE_TO`。
 
 ## 使用ファイル
 
-- `renderer_research/proto/renderer_wgpu/src/bin/layer_b_bench.rs`(新規、本ノートの主対象)
-- `renderer_research/proto/renderer_wgpu/src/bin/offscreen_render.rs`,
-  `renderer_research/proto/renderer_wgpu/src/bin/fullmap_render.rs`
-  (`Backends::VULKAN`→`Backends::METAL`のみ変更、Mac実行のため)
-- 結果JSON: `renderer_research/proto/bench/results/layer-b-1786140446-run1.json`,
-  `layer-b-1786140557-run2.json`(中央値run、採用), `layer-b-1786140680-run3.json`
-  (`.gitignore`で除外、ローカルに保持。再現手順で再生成可能)
-
-## 追記: スリープ原因説の検証(棄却)
-
-ユーザーから「Macがスリープしていた可能性」の指摘を受け、`caffeinate -dimsu` 配下で再実行した。
-結果: **同一フレーム(493〜495、zoom-roundtrip工程)で同一の崩壊が再現**(9,211ms →
-17,124ms → 5,004ms、直後に wgpu-core 24.0.5 の
-「We timed out while waiting on the last successful submission to complete!」パニック)。
-スリープ・省電力は原因ではない。
-
-### 追加の手がかり(原因仮説の絞り込み)
-
-- 崩壊フレームは `generated=0 visible=4 needed=16`: ズーム往復の戻り(引き→寄せ)で
-  LOD0 タイル16枚が必要だが4枚しか常駐しておらず、新規生成も走っていない状態
-- 健全時の zoom-roundtrip 中央値は 0.198ms。突然2〜4桁跳ねる、かつ CPU計測値として
-  記録されている(=submit後の待ちがCPU時間に乗っている)
-- 仮説: **未常駐タイルのフォールバック描画パスが、粗い親タイル(または全域)を
-  ストライド1の頂点グリッドで描いてしまい、indirect draw の頂点数が数億に爆発**、
-  GPUが1フレームに十数秒かかる(Metalのcommand buffer timeoutとも整合)。
-  llvmpipe(VM)ではソフトラスタの別特性で顕在化しなかった可能性
-- 独立に観測した「QuerySet resolve+map_async が初回60秒」も、同じ submission timeout
-  系の症状かは未切り分け
-
-### 次の一手(レンダラーセッションへの引き継ぎ)
-
-1. 崩壊フレームの indirect draw 引数(render_args の base_vertices)をログし、頂点数爆発を確認
-2. フォールバック/LOD選択で「必要タイル未常駐時は親LODの該当領域だけを描く(ストライドを
-   親LODに合わせる)」ことを保証。頂点数の上限アサーション(例: 1draw ≤ 200万頂点)を追加
-3. ズーム戻り工程でタイル生成が0になっている点(生成キューの停止?)も要調査
+- `renderer_research/proto/renderer_wgpu/src/bin/layer_b_bench.rs`
+- `renderer_research/proto/renderer_wgpu/src/lib.rs`(wasm `CanvasRenderer`)
+- `renderer_research/proto/renderer_wgpu/shaders/tile_clamp_args.wgsl`(新規)、
+  `tile_finalize.wgsl`、`terrain_draw.wgsl`
+- 結果JSON: `bench/results/layer-b-final-1786172315-run{1,2,3}.json`
+  (`.gitignore` で除外。数値は本ノートに転記済み。再現手順で再生成可能)
