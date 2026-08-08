@@ -25,6 +25,13 @@ interface Props {
   viewRadiusCells: number;
   /** P8b: 地下ビュー中は樹木を暗く半透明にする(render/palette.tsのDIMMED_MATERIALS)。 */
   dimmed?: boolean;
+  /**
+   * R3: trueのとき、樹木の候補セル列挙(visibleChunkRange)そのものを行わず何も描かない
+   * (render/farView.tsのfarViewStageForRatioが'hidden'を返した場合。WebGPU全図
+   * ズームアウトで可視半径がマップ全体に迫るとチャンク数が爆発するため、GameScene側で
+   * 事前に見積もって止める)。
+   */
+  hidden?: boolean;
 }
 
 // 草地セルに樹木を置く確率。上げすぎると森で埋まって線路が見づらくなる。
@@ -42,16 +49,18 @@ const TOWN_TILE_MARGIN = 1;
  * 数百本規模になるのでマテリアルごとにジオメトリをマージして3ドローコールに収める。
  */
 export const Scenery: React.FC<Props> = ({
-  field, railMap, townTiles, range = 45, cameraTargetCell, viewRadiusCells, dimmed = false,
+  field, railMap, townTiles, range = 45, cameraTargetCell, viewRadiusCells, dimmed = false, hidden = false,
 }) => {
   const MATERIALS = materialsFor(dimmed);
   // P4: 全セル(-range..range)を毎回走査するのではなく、TerrainBlocksと同じ
   // 可視チャンク集合(render/terrainChunks.ts)だけを候補にする。木の配置自体は
   // セル座標のハッシュ(hash01)だけで決まる純粋な関数なので、可視チャンクの
   // 組み合わせが変わっても同じセルには常に同じ木が生える(チャンク非依存の決定性)。
+  // R3: hiddenのときはvisibleChunkRange自体を呼ばない(配列生成コストと後段の全走査を
+  // 両方避ける。GameScene側がrender/farView.tsの見積もりで事前に決めている)。
   const visibleChunks = useMemo(
-    () => visibleChunkRange(cameraTargetCell, viewRadiusCells, range, 1),
-    [cameraTargetCell.x, cameraTargetCell.z, viewRadiusCells, range],
+    () => (hidden ? [] : visibleChunkRange(cameraTargetCell, viewRadiusCells, range, 1)),
+    [cameraTargetCell.x, cameraTargetCell.z, viewRadiusCells, range, hidden],
   );
 
   const candidates = useMemo(() => {

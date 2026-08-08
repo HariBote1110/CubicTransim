@@ -2,6 +2,12 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import type { ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, OrthographicCamera } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
+import {
+  FAR_VIEW_CHUNK_BUDGET, FAR_VIEW_RAIL_CELL_BUDGET, budgetRatio, estimateVisibleChunkCount,
+  farViewStageForRatio,
+} from '../render/farView';
+import { minZoomForFullMap, orthographicNearFarForHalfExtent } from '../render/webgpuCamera';
+import { TownMarkers } from './TownMarkers';
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 
@@ -117,7 +123,15 @@ interface ChunkView {
 const CameraChunkTracker: React.FC<{
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   onChange: (view: ChunkView) => void;
-}> = ({ controlsRef, onChange }) => {
+  /**
+   * R3: 可視半径(セル数)の上限。カメラの見え方の逆投影は理論上どこまでも大きくなり得るが、
+   * マップ自体の半径(halfExtent)より広い可視半径を追跡しても意味が無い上、WebGPUモードで
+   * 全図ズームアウトした際にこの値が下流(Scenery等のチャンク列挙見積もり)へそのまま渡ると
+   * 過大評価の温床になる。ここで一度クランプしておくことで、下流のガード(render/farView.ts)
+   * が現実的な値だけを扱えばよくなる。省略時はクランプしない(既存の呼び出し互換)。
+   */
+  maxViewRadiusCells?: number;
+}> = ({ controlsRef, onChange, maxViewRadiusCells }) => {
   const { camera } = useThree();
   const lastRunRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,12 +159,13 @@ const CameraChunkTracker: React.FC<{
     }
     if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return;
 
+    const rawRadius = Math.ceil(Math.max(maxX - minX, maxZ - minZ) / 2);
     onChange({
       targetCell: { x: Math.round((minX + maxX) / 2), z: Math.round((minZ + maxZ) / 2) },
-      viewRadiusCells: Math.ceil(Math.max(maxX - minX, maxZ - minZ) / 2),
+      viewRadiusCells: maxViewRadiusCells !== undefined ? Math.min(rawRadius, maxViewRadiusCells) : rawRadius,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera, onChange]);
+  }, [camera, onChange, maxViewRadiusCells]);
 
   useEffect(() => {
     // 初期表示ぶんは即座に計算する。
@@ -242,6 +257,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // 近い半径)にしておき、CameraChunkTrackerが初回描画後すぐに実測値へ更新する。
   const [chunkView, setChunkView] = useState<ChunkView>({ targetCell: { x: 0, z: 0 }, viewRadiusCells: 24 });
   const orbitControlsRef = useRef<OrbitControlsImpl | null>(null);
+  // R3: ビューポートのCSSピクセルサイズ(minZoom計算に使う。DPR非依存、webgpuCamera.ts参照)。
+  const { size: viewportSize } = useThree();
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
   // dragStartPos の実体はこの ref に持つ。handlePointerUp が読むのは常にこちら。
@@ -300,6 +317,34 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // P8b: 地下ビュー(地平・高架を暗く半透明にし、選択中の地下レベルだけ通常輝度で描く)。
   // buildLevelが負のときに入る(GameUIのArrowUp/Downで地下側へ切り替えると連動する)。
   const undergroundView = isUndergroundView(buildLevel);
+
+  // R3: WebGPUモードのみ、全図ズームアウトを解禁するためminZoomをマップ全体が画面に
+  // 収まる値まで下げる(render/webgpuCamera.tsのminZoomForFullMap、renderer_wgpuの
+  // full_map_min_ppcと同じ式)。従来モードは既存の固定値のまま(3D three.jsチャンク
+  // 描画が全図規模だと重すぎるため、そもそも解禁しない)。
+  // 巨大マップ(halfExtent=8192)ではminZoomForFullMapが1よりずっと小さい値(0.05前後)に
+  // なるのが正しい(全図を収めるには広く引く必要があるため)。floorは「0や負値にならない」
+  // ための最低限の安全弁に留め、1のような大きな値でクランプしてしまわないようにする。
+  const minZoom = webGpuLayer
+    ? Math.max(0.001, minZoomForFullMap(halfExtent, viewportSize.width, viewportSize.height))
+    : 20;
+
+  // R3: 遠景(全図ズームアウト)でのオーバーレイの扱い。WebGPUモードのときだけ、可視半径
+  // (chunkView.viewRadiusCells)からチャンク列挙予算に対する近さを求め、3段階
+  // (normal/dimmed/hidden)にマップする(render/farView.ts参照)。従来モードはズーム上限が
+  // 変わらず可視半径が元々小さいままなので常にnormal。
+  const farViewStage = webGpuLayer
+    ? farViewStageForRatio(budgetRatio(estimateVisibleChunkCount(chunkView.viewRadiusCells), FAR_VIEW_CHUNK_BUDGET))
+    : 'normal';
+  const farViewHidden = farViewStage === 'hidden';
+  const farViewDimmed = farViewStage === 'dimmed';
+
+  // R3: TownMarkers(遠景の町ドット、下記)はカメラのtarget位置に関係なくマップ全域の点を
+  // 一括で描くため、target から離れた点ほど視線方向への深度が大きくなり、元々
+  // 小さいマップ用に決め打ちしていたnear/far(-50/200)ではマップの一部がクリップされて
+  // 消えてしまう(render/webgpuCamera.tsのorthographicNearFarForHalfExtent参照)。
+  // halfExtentに応じて広げておく(小さいマップでは実質ノーコスト)。
+  const { near: cameraNear, far: cameraFar } = orthographicNearFarForHalfExtent(halfExtent);
 
   // 建設プレビューの内容をUI(コスト・可否の表示)へ流す。
   React.useEffect(() => {
@@ -546,13 +591,17 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // (TerrainBlocks/Sceneryと同じchunkViewを再利用)。TownTileCache.subTilesForTownsは
   // クエリした町だけを遅延生成するため、マップ全体の町数に関わらず可視町ぶんのコストで済む。
   const TOWN_VISIBLE_MARGIN_CELLS = 32; // 1チャンク(TERRAIN_CHUNK_SIZE)ぶんの先読み
+  // R3: 遠景(farViewHidden)では、ほぼ全町が「可視」になり得るため、この可視町抽出も
+  // 詳細サブタイル生成(subTilesForTowns、1町あたり数十〜数百メッシュ)も行わない。
+  // 遠景では代わりにTownMarkers(全townsを1インスタンスメッシュで描く安価な代替表現)を使う。
   const visibleTowns = useMemo(() => {
+    if (farViewHidden) return [];
     const x0 = chunkView.targetCell.x - chunkView.viewRadiusCells - TOWN_VISIBLE_MARGIN_CELLS;
     const x1 = chunkView.targetCell.x + chunkView.viewRadiusCells + TOWN_VISIBLE_MARGIN_CELLS;
     const z0 = chunkView.targetCell.z - chunkView.viewRadiusCells - TOWN_VISIBLE_MARGIN_CELLS;
     const z1 = chunkView.targetCell.z + chunkView.viewRadiusCells + TOWN_VISIBLE_MARGIN_CELLS;
     return towns.filter(t => townIntersectsCellRange(t, x0, x1, z0, z1));
-  }, [towns, chunkView]);
+  }, [towns, chunkView, farViewHidden]);
   const visibleTownSubTiles = useMemo(
     () => townTiles.subTilesForTowns(visibleTowns.map(t => t.id)),
     [townTiles, visibleTowns]
@@ -574,7 +623,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <ambientLight intensity={0.2} />
       <SunLight />
       <OrthographicCamera
-        makeDefault position={[20, 20, 20]} zoom={40} near={-50} far={200}
+        makeDefault position={[20, 20, 20]} zoom={40} near={cameraNear} far={cameraFar}
         ref={(cam) => { if (cam) (window as any).__camera = cam; }}
       />
       <OrbitControls
@@ -582,11 +631,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
         makeDefault
         enableRotate={false}
         enableZoom={true}
-        minZoom={20}
+        minZoom={minZoom}
         maxZoom={100}
         mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }}
       />
-      <CameraChunkTracker controlsRef={orbitControlsRef} onChange={setChunkView} />
+      <CameraChunkTracker controlsRef={orbitControlsRef} onChange={setChunkView} maxViewRadiusCells={halfExtent} />
 
       {/* 建設プレビュー。高架のrail(buildLevel>=1)は坂になるセルと高架のままのセルを色分けする。 */}
       {previewPath.map((pos, i) => {
@@ -652,6 +701,9 @@ export const GameScene: React.FC<GameSceneProps> = ({
         dimmed={undergroundView}
       />
       )}
+      {/* R3: 遠景(farViewHidden)では樹木そのものを列挙しない(render/farView.ts参照、
+          hidden propが立つとvisibleChunkRangeを呼ばない)。dimmed段階では既存の
+          DIMMED_MATERIALS機構を再利用して唐突に消えないフェード感を出す。 */}
       <Scenery
         field={field}
         railMap={railMap}
@@ -659,9 +711,15 @@ export const GameScene: React.FC<GameSceneProps> = ({
         range={halfExtent}
         cameraTargetCell={chunkView.targetCell}
         viewRadiusCells={chunkView.viewRadiusCells}
-        dimmed={undergroundView}
+        dimmed={undergroundView || farViewDimmed}
+        hidden={farViewHidden}
       />
-      <TrackNetwork railMap={railMap} field={field} undergroundView={undergroundView} selectedLevel={buildLevel} />
+      {/* R3: レール・列車は player-built でスパースなため遠景でも基本は表示し続けるが、
+          極端に巨大なrailMapに対する保険としてFAR_VIEW_RAIL_CELL_BUDGETを超える場合だけ
+          遠景で描画を止める。 */}
+      {!(farViewHidden && railMap.size > FAR_VIEW_RAIL_CELL_BUDGET) && (
+        <TrackNetwork railMap={railMap} field={field} undergroundView={undergroundView} selectedLevel={buildLevel} />
+      )}
 
       {Array.from(railMap.entries()).map(([key, data]) => {
         const { x, z } = fromKey(key);
@@ -827,9 +885,18 @@ export const GameScene: React.FC<GameSceneProps> = ({
         );
       })}
 
-      <TownBlocks towns={visibleTowns} townSubTiles={visibleTownSubTiles} field={field} dimmed={undergroundView} />
+      {/* R3: 遠景(farViewHidden)ではTownBlocks(1町ごとの詳細な家・道路メッシュ)の代わりに
+          TownMarkers(町1つにつきインスタンス1個の安価なドット表現)を出す。R4で町タイルの
+          wgpu移管が進むまでの繋ぎ(progress/renderer-integration-plan.md参照)。 */}
+      {farViewHidden ? (
+        <TownMarkers towns={towns} field={field} />
+      ) : (
+        <TownBlocks towns={visibleTowns} townSubTiles={visibleTownSubTiles} field={field} dimmed={undergroundView || farViewDimmed} />
+      )}
 
-      {Array.from(stations.values()).map(station => {
+      {/* R3: 遠景(farViewHidden)では駅舎・ラベル(HtmlのDOMオーバーレイ)を出さない。
+          全図縮尺では判読できない上、駅数が多いマップではDOM要素の量が無視できなくなる。 */}
+      {!farViewHidden && Array.from(stations.values()).map(station => {
         const orderIndices: number[] = [];
         if (selectedTrain) {
           selectedTrain.schedule.forEach((stId, index) => {

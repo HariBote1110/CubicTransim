@@ -420,6 +420,8 @@ export const GameUI: React.FC<GameUIProps> = ({
             <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.6 }}>
               WebGPU実験版は地形だけを新しいレンダラー(Rust + wgpu)で描きます。
               地形編集(盛土/切土)の結果も反映されますが、地形に影はまだ落ちません。
+              全図が画面に収まるまでズームアウトでき、遠景では木・町の建物・駅名などは
+              間引かれて町は簡易な色付きマーカーになります(ズームインすれば元通りです)。
               非対応の環境では自動で従来に戻ります。
             </div>
             {rendererNote && (

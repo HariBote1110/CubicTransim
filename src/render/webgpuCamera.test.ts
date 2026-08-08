@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 
 import {
-  groundCentreFromTarget, pixelsPerWorldUnit, projectToScreenPx,
+  groundCentreFromTarget, pixelsPerWorldUnit, projectToScreenPx, minZoomForFullMap, ISO_X, ISO_Y,
+  orthographicNearFarForHalfExtent,
 } from './webgpuCamera';
 
 // GameScene と同じカメラ設定(OrthographicCamera position=(20,20,20)・up=+Y、
@@ -109,5 +110,109 @@ describe('webgpuCamera: three.js の直交カメラと同じ画面座標を与�
     const p = projectToScreenPx({ x: centre.centreX, y: 0, z: centre.centreZ }, state);
     expect(p.sx).toBeCloseTo(0, 9);
     expect(p.sy).toBeCloseTo(0, 9);
+  });
+});
+
+describe('minZoomForFullMap: 全図がビューポートに収まる最小zoomを求める(R3)', () => {
+  it('横長ビューポートでは横方向が制約になる(sx幅=4*half*ISO_X*zoom)', () => {
+    const halfExtent = 45;
+    const width = 1600;
+    const height = 900;
+    const zoom = minZoomForFullMap(halfExtent, width, height);
+    // その zoom でダイヤモンドの外接矩形のどちらかの辺がビューポートにちょうど収まる。
+    const mapWidthPx = 4 * halfExtent * ISO_X * zoom;
+    const mapHeightPx = 4 * halfExtent * ISO_Y * zoom;
+    // 制約が効いている軸(zoomを決めたほう)はぴったり収まり(比=1)、他方の軸は
+    // ぴったり以下(比<=1)になる。
+    expect(Math.max(mapWidthPx / width, mapHeightPx / height)).toBeCloseTo(1, 9);
+    expect(mapWidthPx).toBeLessThanOrEqual(width + 1e-6);
+    expect(mapHeightPx).toBeLessThanOrEqual(height + 1e-6);
+  });
+
+  it('DPRに依存しない(cssピクセルの幅・高さだけで決まる)', () => {
+    const halfExtent = 512;
+    const a = minZoomForFullMap(halfExtent, 1280, 800);
+    const b = minZoomForFullMap(halfExtent, 1280, 800);
+    expect(a).toBe(b);
+  });
+
+  it('halfExtentが大きいほどminZoomは小さくなる(より広く引く必要がある)', () => {
+    const width = 1280;
+    const height = 800;
+    const small = minZoomForFullMap(45, width, height);
+    const huge = minZoomForFullMap(8192, width, height);
+    expect(huge).toBeLessThan(small);
+  });
+
+  it('halfExtent<1(縮退マップ)は1として扱う', () => {
+    expect(minZoomForFullMap(0, 1000, 1000)).toBeCloseTo(minZoomForFullMap(1, 1000, 1000), 9);
+  });
+
+  it('renderer_wgpuのfull_map_min_ppcと同じ式(dprを乗じるとppcの下限に一致する)', () => {
+    // lib.rs: full_map_min_ppc(width_px, height_px, half) = min(width_px/(4*half*ISO_X), height_px/(4*half*ISO_Y))
+    const halfExtent = 2048;
+    const dpr = 2;
+    const cssWidth = 1440;
+    const cssHeight = 900;
+    const zoom = minZoomForFullMap(halfExtent, cssWidth, cssHeight);
+    const ppc = pixelsPerWorldUnit(zoom, dpr);
+    const widthPx = cssWidth * dpr;
+    const heightPx = cssHeight * dpr;
+    const expectedPpc = Math.min(widthPx / (4 * halfExtent * ISO_X), heightPx / (4 * halfExtent * ISO_Y));
+    expect(ppc).toBeCloseTo(expectedPpc, 9);
+  });
+});
+
+describe('orthographicNearFarForHalfExtent: マップ全域の点がnear/farでクリップされない(R3)', () => {
+  // GameScene.tsxと同じカメラ配置(position=target+(20,20,20)、up=+Y、target注視)。
+  const makeCamera = (target: { x: number; y: number; z: number }, near: number, far: number) => {
+    const camera = new THREE.OrthographicCamera(-1000, 1000, 1000, -1000, near, far);
+    camera.position.set(target.x + 20, target.y + 20, target.z + 20);
+    camera.lookAt(target.x, target.y, target.z);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+    return camera;
+  };
+
+  // three.jsのprojectはNDC z を [-1,1] へ落とす(near/farの外に出るとその範囲を外れる)。
+  const isWithinFrustumDepth = (camera: THREE.OrthographicCamera, p: { x: number; y: number; z: number }) => {
+    const ndc = new THREE.Vector3(p.x, p.y, p.z).project(camera);
+    return ndc.z >= -1 && ndc.z <= 1;
+  };
+
+  it('小さいマップ(halfExtent=45)は元の(-50,200)のままでも全域が視錐台に収まる', () => {
+    const halfExtent = 45;
+    const { near, far } = orthographicNearFarForHalfExtent(halfExtent);
+    const camera = makeCamera({ x: 0, y: 0, z: 0 }, near, far);
+    const corners = [
+      { x: -halfExtent, y: 0, z: -halfExtent },
+      { x: halfExtent, y: 0, z: halfExtent },
+      { x: -halfExtent, y: 0, z: halfExtent },
+      { x: halfExtent, y: 0, z: -halfExtent },
+    ];
+    for (const p of corners) expect(isWithinFrustumDepth(camera, p)).toBe(true);
+  });
+
+  it('16385マップ(halfExtent=8192)で、targetが対角の一方の端にあっても、もう一方の端の町までクリップされない', () => {
+    const halfExtent = 8192;
+    const { near, far } = orthographicNearFarForHalfExtent(halfExtent);
+    // 最悪ケース: targetがマップの隅、点がその対角の隅。
+    const target = { x: -halfExtent, y: 0, z: -halfExtent };
+    const farCorner = { x: halfExtent, y: 0, z: halfExtent };
+    const camera = makeCamera(target, near, far);
+    expect(isWithinFrustumDepth(camera, farCorner)).toBe(true);
+    // target自身、原点、他の対角隅も収まる。
+    expect(isWithinFrustumDepth(camera, target)).toBe(true);
+    expect(isWithinFrustumDepth(camera, { x: 0, y: 0, z: 0 })).toBe(true);
+    expect(isWithinFrustumDepth(camera, { x: halfExtent, y: 0, z: -halfExtent })).toBe(true);
+  });
+
+  it('元のnear/farを広げる方向にしか変えない(marginは非負)', () => {
+    const { near, far } = orthographicNearFarForHalfExtent(0, -50, 200);
+    expect(near).toBe(-50);
+    expect(far).toBe(200);
+    const wide = orthographicNearFarForHalfExtent(1000, -50, 200);
+    expect(wide.near).toBeLessThanOrEqual(-50);
+    expect(wide.far).toBeGreaterThanOrEqual(200);
   });
 });

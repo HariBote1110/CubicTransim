@@ -211,3 +211,122 @@ CLAUDE.mdの手動tick方針に倣い rAF 経由の計測は使わなかった)�
   A3ゲートの実測値をVM側でも取ること。
 - LOD>0のスナップは「見た目上消えない」ことを目的とした近似であり、遠景での編集の
   正確な位置一致は契約に含めていない(LOD一貫性規則の節を参照)。
+
+## R3実装メモ (0.4.0-Alpha-3a)
+
+### ズーム範囲の解禁
+
+- `renderer/renderer_wgpu/src/lib.rs` は既に `full_map_min_ppc`/`set_camera`/`zoom_by` で
+  ppc(pixels per cell)の下限を自前でクランプしており、全図ズームアウトそのものは
+  R1時点から対応済みだった(Rust側の変更は今回不要)。残っていたのは本体(three.js)側の
+  `OrbitControls.minZoom` が従来値(20)に固定されていたこと。
+- `src/render/webgpuCamera.ts` に `minZoomForFullMap(halfExtent, viewportWidthCssPx,
+  viewportHeightCssPx)` を追加した。導出は `full_map_min_ppc` と同じ式(ISO_X/ISO_Y)だが、
+  `ppc = zoom * dpr` なので dpr は式から相殺して消える
+  (`zoom_min = (width_px/dpr)/(4*half*ISO_X) = cssWidth/(4*half*ISO_X)`)。そのためDPRを
+  引数に取らず、r3fの`useThree().size`(CSSピクセル)をそのまま渡せる。
+- `GameScene.tsx` は `webGpuLayer` が渡されているとき(WebGPUモード)だけ
+  `minZoom = minZoomForFullMap(halfExtent, viewportSize.width, viewportSize.height)` を
+  `OrbitControls` へ渡す。従来モードは `minZoom=20` のまま(3D three.jsのチャンク描画が
+  全図規模では重すぎるため、そもそも解禁しない)。zoom-inの上限(`maxZoom=100`)は変更なし。
+- **実装ミスと修正**: 最初 `Math.max(1, minZoomForFullMap(...))` という安全弁を入れたが、
+  16385マップでの理論値(≈0.054)が1未満なので、この安全弁がクランプ元凶になり
+  `minZoom` が常に1に固定されてズームアウトが解禁されない不具合を作った(ブラウザ実機検証で
+  発覚)。フロアは`0.001`程度に下げ、実際の計算値を尊重するよう修正した。単体テストだけでは
+  検出できない類のバグだったので、ブラウザでの実機ズーム確認を省略しないこと。
+
+### カメラのnear/far(遠景コンテンツのクリップ問題)
+
+- 遠景の町ドット(下記TownMarkers)を実装した際、全図表示で町の一部しか描かれない
+  不具合が実機検証で見つかった。原因は `OrthographicCamera` の `near=-50, far=200` が
+  小さいマップ(halfExtent≈45)向けの決め打ち値で、`position=target+(20,20,20)` という
+  固定オフセットに対する視錐台の奥行きしか確保していなかったこと。TerrainBlocks/
+  Scenery/TrackNetwork等はカメラのtarget付近だけを描く(チャンク化)ため元々問題化しな
+  かったが、TownMarkersはtargetに関係なくマップ全域の点を一括で描くため、target から
+  離れた町ほど視線方向(1,1,1)/√3への深度が大きくなり、視錐台の外に出てクリップされていた。
+- `src/render/webgpuCamera.ts` に `orthographicNearFarForHalfExtent(halfExtent, baseNear,
+  baseFar)` を追加。マップの対角(-halfExtent..halfExtentの正方形)を動く点の深度の
+  振れ幅は最大 `4*halfExtent/√3` なので、その分だけbaseNear/baseFarの両側へ広げる。
+  `GameScene.tsx` の `<OrthographicCamera>` の `near`/`far` に常時(モード問わず)適用した
+  (小さいマップでは余分な余白がつくだけで実害がない、drei の `OrthographicCamera` は
+  レンダー毎に `updateProjectionMatrix()` を呼ぶため値の変更が確実に反映される)。
+  `webgpuCamera.test.ts` に実際の `THREE.OrthographicCamera` で対角の最悪ケース点を
+  `project()` してNDC z が[-1,1]に収まることを確認するテストを追加した。
+
+### 遠景オーバーレイの扱い(render/farView.ts)
+
+- 可視チャンク列挙(`visibleChunkRange`)そのものが、全図ズームアウトで可視半径が
+  マップ全体に迫るとチャンク数を二乗で膨張させ、配列生成だけでヒッチする(TerrainBlocksは
+  WebGPUモードで常にアンマウントされるため対象外だが、Scenery(樹木)は同じ仕組みを使う)。
+  `src/render/farView.ts` に `estimateVisibleChunkCount(viewRadiusCells)` (配列を作らず
+  チャンク数の上限を見積もる純粋関数)を用意し、`FAR_VIEW_CHUNK_BUDGET=400`(≈20×20チャンク)
+  に対する比率を3段階(`normal`/`dimmed`/`hidden`)にマップする
+  (`FAR_VIEW_DIM_START_RATIO=0.6`、`FAR_VIEW_HIDE_RATIO=1.0`)。
+- `dimmed` 段階は連続的なopacity補間を実装せず、既存の `materialsFor(dimmed)`
+  (`DIMMED_MATERIALS`、地下ビューで使っているのと同じ仕組み)をそのまま再利用した。
+  「唐突に消えない」フェード感を、新しいレンダリングパスを増やさずに得られる
+  (design memo「keep it simple」に沿う)。
+- `GameScene.tsx` が `chunkView.viewRadiusCells` から一度だけ `farViewStage` を計算し、
+  各コンポーネントへ配る(コンポーネントごとに同じ計算を重複させない):
+  - `Scenery`: `hidden` propを追加。trueのとき `visibleChunkRange` 自体を呼ばない
+    (useMemoの中で空配列を返すだけにして、hooksの呼び出し順は変えない)。dimmedは
+    `dimmed || farViewDimmed` を渡す。
+  - `TownBlocks`(詳細な家・道路メッシュ)と `TownMarkers`(下記、遠景ドット)を
+    `farViewHidden` で排他に出し分ける。`visibleTowns`/`visibleTownSubTiles`(subTilesForTowns
+    は1町あたり数十〜数百メッシュを生成する)の計算自体も `farViewHidden` のときは
+    実行しない(hidden時にレンダーだけ止めても計算コストは残ってしまうため)。
+  - `TrackNetwork`・`DynamicTrain`: player-builtでスパースなため基本は表示継続。
+    `railMap.size > FAR_VIEW_RAIL_CELL_BUDGET(200,000)` かつ `farViewHidden` のときだけ
+    描画を止める保険(実際にこの規模に達するのは考えにくいが、仕様上の「予算」を
+    明文化する意味で入れた)。
+  - 駅舎・`StationLabel`(HtmlのDOMオーバーレイ): `farViewHidden` で丸ごと非表示。
+    全図縮尺では判読できない上、駅数が多いマップでDOM要素が積み上がるのを避ける。
+  - `TerrainBlocks` はWebGPUモードで常にアンマウント済みなので対象外。
+
+### 遠景の町マーカー(TownMarkers、R4までの繋ぎ)
+
+- `src/components/TownMarkers.tsx` を新設。`farViewHidden` のときだけ `TownBlocks` の
+  代わりに描く。町1つにつき頂点1個(色付きの点、人口ティアで4色に色分け)の
+  `THREE.Points` 1つで全町(最大1万規模)を描き、頂点バッファは `towns`/`field` が
+  変わったときだけ作り直す(毎フレームではない)。
+- **InstancedMesh(箱)ではなくPointsを採用した理由**: 最初はBoxGeometryの
+  InstancedMeshで実装したが、全図ズームアウト時の`pixelsPerCell`(≈0.05〜0.1px/セル)
+  ではワールド単位のジオメトリはサイズに関わらずサブピクセルに潰れて実質見えなくなる
+  ことがブラウザ実機検証で判明した。`PointsMaterial({sizeAttenuation:false})` は
+  カメラ距離・zoomに関係なく指定ピクセル数(`MARKER_PIXEL_SIZE=8`)で描くため、
+  マップがどれだけ大きくズームアウトされていても町のドットが見える。
+- R4で町タイル(TownBlocks)そのものをwgpu側へ移管する計画があり、その際は
+  TownMarkersも(あるいはwgpu側の同等表現に)置き換わる想定。それまでの間に合わせ。
+
+### CameraChunkTrackerの可視半径クランプ
+
+- `CameraChunkTracker` に `maxViewRadiusCells` propを追加し、`GameScene` から
+  `halfExtent` を渡した。可視半径はマップの半径を超えて意味を持たないため、
+  逆投影の結果をそこでクランプする。下流(`farViewStageForRatio`用の見積もり)は
+  純粋な算術のみでO(1)なのでクランプが無くても実害はほぼ無いが、
+  「可視半径はマップより大きくなり得ない」という不変条件を明示する防御層として入れた。
+
+### 実機検証(Chrome、port 5175、WebGPUモード)
+
+- 極大(16385×16385、halfExtent=8192)マップ: `minZoom≈0.0538`まで zoomOut すると
+  マップ全体のダイヤモンドが画面に収まり、`__webgpuStats` は
+  `drawCalls:9, residentTiles:25, generatedTiles:0, lod:5` (地形は9ドローコールのまま)。
+  町(5051件)のドットがマップ全域に色分け表示され、樹木・駅ラベル・詳細な町建物は
+  出ない(farViewHidden)。zoom=25まで戻すと樹木が通常通り再表示される。その状態で
+  線路をドラッグ敷設し、`railMap`に7セル追加・課金(¥800)されることを確認(操作性に
+  影響なし)。
+- 従来(classic)モードに切り替えると `minZoom` は 20 に戻る(変更なし)ことを確認。
+- 小(91×91、halfExtent=45)マップをWebGPUモードで全図ズームアウト
+  (`minZoom≈9.80`)すると、チャンク数予算を超えないため `farViewStage` は
+  `normal` のままで、樹木・詳細な町(建物・ラベル)がズームアウト後も表示され続ける
+  ことを確認(遠景ポリシーがマップ規模に応じて自然にスケールする)。
+
+### 既知の制約・次フェーズへの持ち越し
+
+- `dimmed` 段階の閾値(`FAR_VIEW_DIM_START_RATIO=0.6`)・`FAR_VIEW_CHUNK_BUDGET=400`は
+  実機でのヒッチ計測(GPU/CPUタイミング)による調整ではなく設計上の概算値。より大きい
+  マップ・低スペック環境での体感チューニングは今後の課題。
+- `TownMarkers`の座標・人口ティアはR3独自の簡易実装で、R4で町タイルがwgpu側へ
+  移管される際に再設計される想定(progress冒頭のフェーズ表参照)。
+- `FAR_VIEW_RAIL_CELL_BUDGET`(200,000)は実測ではなく安全側の概算値。実際に
+  巨大なrailMapで層AベンチのようなCPU/GPUタイミング計測は行っていない。
