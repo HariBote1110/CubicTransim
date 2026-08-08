@@ -65,7 +65,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand,
       halfExtent, cornerDiffs
     );
-    expect(saveData.version).toBe(15);
+    expect(saveData.version).toBe(16);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -191,5 +191,30 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const restored = deserialiseWorld(raw);
     expect(restored).not.toBeNull();
     expect(restored!.townDensity).toBe('normal');
+  });
+
+  it('terrainProfileがJSON経由で往復する', () => {
+    const saveData = serialiseWorld(
+      new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map(), 'normal', 'mountain'
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.terrainProfile).toBe('mountain');
+  });
+
+  it('terrainProfileを省略したセーブ(v15)はnormal地形として読み込む', () => {
+    const saveData = serialiseWorld(
+      new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const raw = JSON.parse(JSON.stringify(saveData));
+    delete raw.terrainProfile;
+    raw.version = 15;
+    const restored = deserialiseWorld(raw);
+    expect(restored).not.toBeNull();
+    expect(restored!.terrainProfile).toBe('normal');
   });
 });
