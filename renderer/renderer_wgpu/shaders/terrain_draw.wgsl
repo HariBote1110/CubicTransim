@@ -16,13 +16,27 @@ fn cell_h(x:u32,z:u32)->f32{
  let g=tile.grid_size;
  return min(min(sample_h(x,z),sample_h(x+1u,z)),min(sample_h(x,z+1u),sample_h(x+1u,z+1u)));
 }
+// 本体(three.js)の直交カメラと同じ真等角(true isometric)投影。
+// GameScene のカメラは position=(20,20,20)・target=(tx,ty,tz)・up=+Y の
+// OrthographicCamera なので、視線基底は
+//   X_cam = (1,0,-1)/sqrt(2)、Y_cam = (-1,2,-1)/sqrt(6)
+// となり、画面座標(中心からのピクセル)は
+//   sx = (x-z)/sqrt(2) * ppc、sy(下向き) = (x+z-2y)/sqrt(6) * ppc
+// で表せる。ppc は「ワールド1単位あたりの物理ピクセル数」= three.js の zoom × DPR。
+// 高さ項は JS 側で height_scale = ppc * 2/sqrt(6) * OVERPASS_HEIGHT として渡す
+// (この shader の y は段数=level 単位のまま)。
+const ISO_X:f32=0.70710678; // 1/sqrt(2)
+const ISO_Y:f32=0.40824829; // 1/sqrt(6)
+
 fn project(wx:f32,wz:f32,y:f32)->vec4<f32>{
  let rx=wx-camera.center_x; let rz=wz-camera.center_z;
- let sx=(rx-rz)*camera.pixels_per_cell*0.5;
- let sy=(rx+rz)*camera.pixels_per_cell*0.25-y*camera.height_scale;
+ let sx=(rx-rz)*camera.pixels_per_cell*ISO_X;
+ let sy=(rx+rz)*camera.pixels_per_cell*ISO_Y-y*camera.height_scale;
  let cx=sx/max(camera.viewport_w*0.5,1.0); let cy=-sy/max(camera.viewport_h*0.5,1.0);
- let diag=(wx+wz+camera.half_extent*2.0)/max(camera.half_extent*4.0,1.0);
- return vec4<f32>(cx,cy,clamp(0.86-diag*0.6-y*0.002,0.0,1.0),1.0);
+ // 奥行きは視線方向(1,1,1)/sqrt(3)への射影の単調関数で足りる(手前ほど小さい値)。
+ // マップ全域([-half,half]^2)が 0..1 に収まるよう正規化する。
+ let inv_span=1.0/max(camera.half_extent*4.0+64.0,1.0);
+ return vec4<f32>(cx,cy,clamp(0.5-(wx+wz+y)*inv_span,0.0,1.0),1.0);
 }
 struct Out{@builtin(position)position:vec4<f32>,@location(0)color:vec3<f32>};
 

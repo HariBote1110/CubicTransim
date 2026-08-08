@@ -710,6 +710,9 @@ export const useGameLogic = () => {
     townTileIndex,
     newGame,
     field,
+    // 地形のシード。WebGPUレンダラー(renderer/)は同じ seed + halfExtent から
+    // 地形を自前で生成するため、描画側にもそのまま渡す。
+    worldSeed,
     baseField,
     editedField,
     cornerDiffs,

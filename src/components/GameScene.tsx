@@ -30,6 +30,7 @@ import { rectCells, type CornerDiffs } from '../sim/terrainOverlay';
 import type { TownTileCache } from '../sim/townTiles';
 import { townIntersectsCellRange } from '../sim/townTiles';
 import { TerrainBlocks } from './TerrainBlocks';
+import { WebGpuCameraSync, type WebGpuLayerRef } from './WebGpuTerrainLayer';
 import { createGroundTexture } from '../render/groundTexture';
 import {
   computePortalHeadwall, buildHeadwallOutline, buildArchOutline, type Point2D,
@@ -193,6 +194,12 @@ interface GameSceneProps {
   halfExtent: number;
   /** 地形編集の疎な差分(useGameLogicのcornerDiffs)。TerrainBlocksのチャンクキャッシュ無効化に使う。 */
   cornerDiffs?: CornerDiffs;
+  /**
+   * WebGPUモード(二層合成)のとき、下層キャンバスのコントローラ。渡されている間は
+   * 地形を下層(wgpu)が描くため、TerrainBlocksをアンマウントし、地面プレーンの
+   * 色出力も止める(ポインタ判定用にメッシュ自体は残す)。
+   */
+  webGpuLayer?: WebGpuLayerRef;
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
   // ★変更: 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜MAX_ELEVATED_LEVEL)。
@@ -227,7 +234,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, townTiles, field, halfExtent, cornerDiffs, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, townTiles, field, halfExtent, cornerDiffs, webGpuLayer, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -622,6 +629,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
           直交カメラの見え方のずれで高い地形の頂上をクリックしても手前のセルが選ばれて
           しまうため。ハンドラ内でstopPropagationし、背後の地面プレーンのハンドラが
           プレーン上の(ずれた)e.pointで二重に発火しないようにする。 */}
+      {webGpuLayer && <WebGpuCameraSync layerRef={webGpuLayer} controlsRef={orbitControlsRef} />}
+
+      {/* WebGPUモードでは地形は下層(wgpu)が描くので、three.js側の地形メッシュは出さない。 */}
+      {!webGpuLayer && (
       <TerrainBlocks
         field={field}
         halfExtent={halfExtent}
@@ -634,6 +645,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         onPointerUp={(e) => { e.stopPropagation(); handlePointerUp(e); }}
         dimmed={undergroundView}
       />
+      )}
       <Scenery
         field={field}
         railMap={railMap}
@@ -895,9 +907,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
             colorWrite/depthWriteの影響を受けず、ピッキングは効いたままになる)。
             ここは共有インスタンスではなく地面プレーン専用の1つだけのメッシュなので、
             クローンではなくprops切替で済ませる。 */}
+        {/* WebGPUモードでは地表(平地の草地)も下層のwgpuが描くため、このプレーンは
+            地下ビューと同じ扱いで色出力だけを止める(ポインタ判定は残る)。 */}
         <meshStandardMaterial
           map={groundTexture} color="#ffffff" roughness={1}
-          colorWrite={!undergroundView}
+          colorWrite={!undergroundView && !webGpuLayer}
           depthWrite={!undergroundView} depthTest={!undergroundView}
         />
       </mesh>

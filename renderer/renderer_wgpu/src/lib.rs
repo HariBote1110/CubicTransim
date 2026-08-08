@@ -61,13 +61,24 @@ mod wasm {
         out[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
     }
 
+    /// 真等角投影の画面座標係数(shaders/terrain_draw.wgsl の ISO_X / ISO_Y と同一)。
+    /// three.js 側の OrthographicCamera(position=(20,20,20), up=+Y)から導いた値。
+    pub(crate) const ISO_X: f64 = std::f64::consts::FRAC_1_SQRT_2; // 1/sqrt(2)
+    pub(crate) const ISO_Y: f64 = 0.408_248_290_463_863_0; // 1/sqrt(6)
+    /// 高さ項の係数(2/sqrt(6))。y は段数なので、ワールド高さ(=段数×height_per_level)へ
+    /// 直してから掛ける。
+    pub(crate) const ISO_H: f64 = 0.816_496_580_927_726_0;
+    /// 拡大の上限(物理ピクセル/ワールド単位)。three.js 側の maxZoom(100)× DPR(<=2)を
+    /// 十分に上回る値にしておく。
+    const MAX_PIXELS_PER_CELL: f64 = 4096.0;
+
     fn full_map_min_ppc(width: u32, height: u32, half_extent: i32) -> f64 {
         let half = (half_extent.max(1)) as f64;
-        // screen_x = (x-z)*ppc*0.5 -> full map width = 2*half*ppc
-        // screen_y = (x+z)*ppc*0.25 -> full map height = half*ppc
-        (width as f64 / (2.0 * half))
-            .min(height as f64 / half)
-            .max(0.0001)
+        // screen_x = (x-z)*ppc*ISO_X -> full map width  = 4*half*ppc*ISO_X
+        // screen_y = (x+z)*ppc*ISO_Y -> full map height = 4*half*ppc*ISO_Y
+        (width as f64 / (4.0 * half * ISO_X))
+            .min(height as f64 / (4.0 * half * ISO_Y))
+            .max(0.000_01)
     }
 
     struct GpuTile {
@@ -137,6 +148,8 @@ mod wasm {
         center_x: f64,
         center_z: f64,
         pixels_per_cell: f64,
+        /// 段数1あたりのワールド高さ(本体の OVERPASS_HEIGHT)。set_camera で更新する。
+        height_per_level: f64,
 
         adapter_name: String,
         adapter_backend: String,
@@ -359,6 +372,7 @@ mod wasm {
                 center_x: 0.0,
                 center_z: 0.0,
                 pixels_per_cell: 3.0,
+                height_per_level: 1.0,
                 adapter_name: info.name,
                 adapter_backend: format!("{:?}", info.backend),
             })
@@ -377,28 +391,49 @@ mod wasm {
             self.depth_view = depth_view;
         }
 
+        /// カメラを本体(three.js)側の直交カメラに合わせる。
+        ///
+        /// - `center_x` / `center_z`: 画面中心に来る地表(y=0)の点。OrbitControls の
+        ///   target が (tx,ty,tz) のとき、等角投影では (tx-ty, tz-ty) がその点になる
+        ///   (JS 側 `render/webgpuCamera.ts` の `groundCentreFromTarget` が計算する)。
+        /// - `pixels_per_cell`: ワールド1単位あたりの物理ピクセル数(= three.js の zoom × DPR)。
+        /// - `height_per_level`: 段数1あたりのワールド高さ(本体の OVERPASS_HEIGHT)。
+        ///   省略時は 1.0(プロトタイプの単独ページ用)。
         #[wasm_bindgen(js_name = setCamera)]
-        pub fn set_camera(&mut self, center_x: f64, center_z: f64, pixels_per_cell: f64) {
+        pub fn set_camera(
+            &mut self,
+            center_x: f64,
+            center_z: f64,
+            pixels_per_cell: f64,
+            height_per_level: Option<f64>,
+        ) {
             let next_x = center_x.clamp(-(self.half_extent as f64), self.half_extent as f64);
             let next_z = center_z.clamp(-(self.half_extent as f64), self.half_extent as f64);
             let min_ppc = full_map_min_ppc(self.config.width, self.config.height, self.half_extent);
-            let next_ppc = pixels_per_cell.clamp(min_ppc, 100.0);
+            let next_ppc = pixels_per_cell.clamp(min_ppc, MAX_PIXELS_PER_CELL);
+            let next_height = height_per_level.unwrap_or(1.0);
             if self.center_x != next_x
                 || self.center_z != next_z
                 || self.pixels_per_cell != next_ppc
+                || self.height_per_level != next_height
             {
                 self.center_x = next_x;
                 self.center_z = next_z;
                 self.pixels_per_cell = next_ppc;
+                self.height_per_level = next_height;
                 self.camera_revision = self.camera_revision.wrapping_add(1);
             }
         }
 
         #[wasm_bindgen(js_name = panPixels)]
         pub fn pan_pixels(&mut self, screen_dx: f64, screen_dy: f64) {
-            let inv = 1.0 / self.pixels_per_cell.max(0.0001);
-            let world_x = screen_dx * inv + 2.0 * screen_dy * inv;
-            let world_z = 2.0 * screen_dy * inv - screen_dx * inv;
+            // 等角投影の逆変換(y=0 平面上):
+            //   dsx = (dwx-dwz)*ppc*ISO_X, dsy = (dwx+dwz)*ppc*ISO_Y
+            let ppc = self.pixels_per_cell.max(0.0001);
+            let diff = screen_dx / (ppc * ISO_X);
+            let sum = screen_dy / (ppc * ISO_Y);
+            let world_x = 0.5 * (sum + diff);
+            let world_z = 0.5 * (sum - diff);
             let next_x = (self.center_x - world_x)
                 .clamp(-(self.half_extent as f64), self.half_extent as f64);
             let next_z = (self.center_z - world_z)
@@ -413,7 +448,7 @@ mod wasm {
         #[wasm_bindgen(js_name = zoomBy)]
         pub fn zoom_by(&mut self, factor: f64) {
             let min_ppc = full_map_min_ppc(self.config.width, self.config.height, self.half_extent);
-            let next_ppc = (self.pixels_per_cell * factor).clamp(min_ppc, 100.0);
+            let next_ppc = (self.pixels_per_cell * factor).clamp(min_ppc, MAX_PIXELS_PER_CELL);
             if self.pixels_per_cell != next_ppc {
                 self.pixels_per_cell = next_ppc;
                 self.camera_revision = self.camera_revision.wrapping_add(1);
@@ -494,7 +529,11 @@ mod wasm {
             put_f32(&mut camera_bytes, 0, self.center_x as f32);
             put_f32(&mut camera_bytes, 4, self.center_z as f32);
             put_f32(&mut camera_bytes, 8, self.pixels_per_cell as f32);
-            put_f32(&mut camera_bytes, 12, self.pixels_per_cell as f32 * 0.25);
+            put_f32(
+                &mut camera_bytes,
+                12,
+                (self.pixels_per_cell * ISO_H * self.height_per_level) as f32,
+            );
             put_f32(&mut camera_bytes, 16, width);
             put_f32(&mut camera_bytes, 20, height);
             put_f32(&mut camera_bytes, 24, self.half_extent as f32);

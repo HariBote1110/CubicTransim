@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGameLogic } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
@@ -8,6 +8,9 @@ import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import { T, button as themeButton } from './ui/theme';
+import { loadRendererMode, saveRendererMode, type RendererMode } from './ui/rendererPreference';
+import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
+import type { WebGpuTerrainLayerController } from './render/webgpuLayer';
 
 // ★追加(P5): 新規ゲーム開始時のマップサイズ選択肢。halfExtentはsim/persistence.tsの
 // v15セーブに含まれる値で、マップは-halfExtent..halfExtentのセル(一辺 2*halfExtent+1)。
@@ -42,6 +45,24 @@ export default function App() {
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
 
+  // レンダラー選択(従来 three.js / WebGPU実験版)。localStorage に永続化する。
+  // WebGPUが使えない環境ではWebGpuTerrainLayerがonUnavailableで理由を返すので、
+  // 従来へ自動フォールバックし、設定パネルにその理由を出す。
+  const [rendererMode, setRendererMode] = useState<RendererMode>(loadRendererMode);
+  const [rendererNote, setRendererNote] = useState<string | null>(null);
+  const webGpuLayerRef = useRef<WebGpuTerrainLayerController | null>(null);
+  const handleRendererUnavailable = useCallback((message: string) => {
+    setRendererNote(message);
+    setRendererMode('classic');
+    saveRendererMode('classic');
+  }, []);
+  const changeRendererMode = useCallback((mode: RendererMode) => {
+    setRendererNote(null);
+    setRendererMode(mode);
+    saveRendererMode(mode);
+  }, []);
+  const webGpuActive = rendererMode === 'webgpu';
+
   // GameScene側のuseEffect依存に入るため参照を固定し、内容が変わらないときは
   // stateを更新しない(毎フレームの再レンダリングを避ける)。
   const handlePreviewChange = useCallback((path: { x: number; z: number }[]) => {
@@ -54,7 +75,7 @@ export default function App() {
   }, []);
 
   const {
-    railMap, stations, trains, towns, townTileIndex, newGame, field, halfExtent, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
+    railMap, stations, trains, towns, townTileIndex, newGame, field, worldSeed, halfExtent, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
@@ -75,7 +96,18 @@ export default function App() {
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#cfe3ef', position: 'relative', overflow: 'hidden' }}>
-      <Canvas shadows>
+      {webGpuActive && (
+        <WebGpuTerrainLayer
+          key={`${worldSeed}:${halfExtent}`}
+          seed={worldSeed}
+          halfExtent={halfExtent}
+          layerRef={webGpuLayerRef}
+          onUnavailable={handleRendererUnavailable}
+        />
+      )}
+
+      {/* 上層は常に three.js。WebGPUモードでは背景を透過させ、下層の地形を透かす。 */}
+      <Canvas shadows gl={{ alpha: true }} style={{ position: 'absolute', inset: 0 }}>
         <GameScene
           railMap={railMap}
           stations={stations}
@@ -85,6 +117,7 @@ export default function App() {
           field={field}
           halfExtent={halfExtent}
           cornerDiffs={cornerDiffs}
+          webGpuLayer={webGpuActive ? webGpuLayerRef : undefined}
           world={worldRef}
           buildMode={buildMode}
           buildLevel={buildLevel}
@@ -150,6 +183,9 @@ export default function App() {
         stopLocation={stopLocation}
         onSetStopLocation={setStopLocation}
         previewPath={previewPath}
+        rendererMode={rendererMode}
+        onSetRendererMode={changeRendererMode}
+        rendererNote={rendererNote}
         groups={groups}
         onCreateGroup={createGroup}
         onAssignGroup={assignTrainToGroup}

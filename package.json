@@ -1,12 +1,13 @@
 {
   "name": "cubictransim",
   "private": true,
-  "version": "0.3.0-Alpha-43a",
+  "version": "0.4.0-Alpha-1a",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:renderer": "wasm-pack build renderer/renderer_wgpu --release --target web --out-dir ../../public/renderer --out-name quarterview_renderer_wgpu",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

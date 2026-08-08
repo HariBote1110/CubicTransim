@@ -7,6 +7,7 @@ OpenTTD・A列車で行こう系を目指すインフラ整備ゲームのプロ
 - `npm run dev` — 開発サーバ (port 5173)
 - `npm run test` — Vitest（純粋ロジックのテスト）
 - `npm run build` — tsc -b && vite build（型検査込み。コミット前に必ず通すこと）
+- `npm run build:renderer` — Rust製WebGPUレンダラー（`renderer/`）を wasm-pack --release でビルドし `public/renderer/` へ出力する。設定パネルの「WebGPU実験版」を使うときだけ必要（成果物はコミットしない。未ビルドなら実行時に従来レンダラーへ自動フォールバック）
 
 ## アーキテクチャ
 
