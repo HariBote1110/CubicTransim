@@ -268,3 +268,167 @@ wgpu 側は layerClass が3つ(surface/underground/translucent)しかなく、th
 - DepotBlock/SignalBlock/坑口/水上橋の寸法は classic 側 JSX と複製したままなので、
   R4d で classic 側を削除する際にこれらのハードコードされた数値をどちらか一方
   (wgpu 側)に一本化すること
+
+## R4c 実装メモ(0.4.0-Alpha-6a)
+
+### 移管した範囲
+
+列車(インスタンス描画)・列車クリック選択(スクリーン空間判定)・駅名/町名/選択列車
+ツールチップ(DOM オーバーレイ)・建設プレビュー/列車ドラッグ配置ゴースト(メッシュ
+チャンク)を WebGPU モードへ移管した。加えて progress/train-model-format.md 準拠の
+glb インポータ+バリデータのツールチェーンを新設した。classic(three.js)モードは
+無変更。
+
+### 1. 列車のインスタンス描画
+
+- `src/render/trainInstanceMath.ts`: `DynamicTrain.tsx` に private だった
+  `carGroupPosition`/`RAIL_SUPPORT_OFFSET` を抽出し、classic/WebGPU 両方の描画
+  パスが同じ計算を共有する(レール=列車の整合を保つ設計方針どおり)。
+  `headingToYawPitch` は `mesh_instanced.wgsl` の頂点変換(ピッチ→ヨーの順に回転)
+  を逆算した式(`yaw=atan2(hx,hz)`, `pitch=atan2(-hy,hypot(hx,hz))`)で、
+  three.js の `lookAt` と同じ向きになることをテストで検証した(回転式をJSで
+  再現してheadingへ一致するか確認する round-trip テスト)。
+- `src/render/trainMeshBuilder.ts`: `TrainCar.tsx` のプリミティブ構成(台車・床下
+  機器・車体・窓帯・ラインカラー帯・屋根・クーラー・前面)を複製し、位置+頂点色
+  (陰影焼き込み+tint重み)の静的メッシュとして1回だけ焼き込む。ラインカラー帯だけ
+  alpha=255(路線色でtint)、他はalpha=0。**逸脱**: three.js版は前照灯/尾灯を
+  variant(front/rear)ごとに片方だけ生やしていたが、こちらは car_head 1種を
+  180°回転してtail流用する都合上、前後どちらの妻面にも前照灯(+Z)・尾灯(-Z)を
+  同時に持たせた(train-model-format.md の「180°回転流用で丁度良くなる」という
+  想定を先取りした形。将来 glb モデルを納品する際もこの前提で作ればよい)。
+  選択マーカー(逆三角錐)・経路ドット(八面体)は白ベース全面tint(alpha=255)で
+  作り、tint色をそのまま最終色にできるようにした。
+- `src/components/WebGpuTrains.tsx`: 起動時(コントローラ生成/差し替え検知)に
+  head/mid/選択マーカー/経路ドットの4メッシュを`registerInstancedMesh`、
+  毎フレーム`InstanceBuffer`(伸長可能な使い回しFloat32Array)へ書き込んで
+  `setInstances`。tunnel非表示・ドラッグ持ち上げ・先頭/最後尾判定(最後尾は
+  yaw+πでhead流用)を再現した。
+  **既知の視覚差(地下ビューの非選択レベル)**: wgpu のインスタンスAPIは
+  flags bit0 でしか描画クラスを分けられず(surface/underground の2値、メッシュ
+  チャンクのtranslucentクラスに相当するものが無い)、three.js版の「非選択の
+  地下レベルを半透明で暗く見せる」表現ができない。そのため非選択地下レベルの
+  車両は描画そのものをスキップする近似にした(WebGpuTrackNetwork等の3クラス
+  近似とは異なる簡略化)。
+  **既知の簡略化(ドラッグ中の向き)**: three.js版はドラッグ中も直前の回転を
+  保持するが、インスタンスは毎フレーム作り直すため常にyaw=0(常に+Z向き)で
+  描く。ドラッグは短時間の操作で見た目の影響は小さいと判断した。
+
+### 2. 列車クリック選択(スクリーン空間ピッキング)
+
+- `src/render/trainPicking.ts`: `pickTrainAtScreenPoint(candidates, cursor,
+  camera, radius)` — `projectToScreenPx`で先頭車を投影し、半径内で最も近い候補を
+  選ぶ純粋関数(GPU往復なし、T13方針の先取り)。
+- `GameScene.tsx`の`handleClick`(`buildMode==='none'`)に`pickTrainInWebGpuMode`を
+  追加。地面プレーンのクリック位置(`clientX/clientY`をcanvas矩形とDPRで物理
+  ピクセルへ変換)と、`carPositions(...,1,...)`で求めた各列車の先頭車位置を
+  照合する。three.js側のpickingはR4dまでGameSceneが握ったままなので、
+  webGpuLayerモードの間だけこの経路を使う(mission指示どおり「簡単なスクリーン
+  空間AABB判定」として実装、閾値半径22物理px)。
+
+### 3. DOM ラベルオーバーレイ
+
+- `src/render/labelOverlay.ts`: `worldToOverlayPx(world, camera, dpr)` —
+  `projectToScreenPx`の物理ピクセル出力をCSSピクセルへ戻し、コンテナ左上原点の
+  座標に変換する純粋関数。`isOnScreen`で画面外判定(マージ80px)。
+- `src/components/LabelOverlay.tsx`: Canvasの**外側**(App.tsx)に置く素の
+  `<div position:absolute>`。rAFループで各項目のrefへ直接`style.transform`を
+  書き込み、位置更新のたびにReactの再レンダーを起こさない(中身=contentが
+  変わったときだけ通常のReact再レンダーで追従する設計)。
+- `App.tsx`: `webgpuCameraStateRef`(`WebGpuCameraSync`が毎フレーム書き込む)を
+  `GameScene`へ渡し、`GameScene`は自前で持っていたローカルrefの代わりにこれを
+  使う(列車クリック判定とLabelOverlayが同じフレームのカメラ状態を共有する)。
+  駅の待ち人数・選択列車の速度/状態は`worldRef.current`を0.5秒間隔でポーリング
+  して`labelItems`を再構築する(StationLabel/DynamicTrainのHtml版と同じ更新
+  頻度、r3fのuseFrameには乗せない)。
+  **既知の簡略化**: 駅ラベルのY座標は`computeStationHousePlacement`の
+  `labelY`(高架駅で上屋にめり込まないよう調整済み)を使わず固定値1.35にした
+  (App.tsxはCanvas外にあり、駅ごとの配置計算をここで再実行するコストを避けた)。
+  停車順バッジ(選択列車の運行表に含まれる駅への①②表示)も同様に省略した。
+  どちらも見た目の主要な情報(駅名・待ち人数・列車速度)には影響しない。
+- `GameScene.tsx`: `webGpuLayer`のとき`<StationLabel>`(drei Html)を出さない、
+  `<TownLabels>`の明示呼び出しをやめる(`TownBlocks`内部のTownLabelsは
+  classicのみ経由するので二重表示にならない)。
+
+### 4. 建設プレビュー・列車ドラッグ配置ゴースト
+
+- `src/components/WebGpuBuildPreview.tsx`: 半透明ボックス(alpha=0.45×255)を
+  メッシュチャンク(`MESH_LAYER_CLASS.translucent`)として描く。`cells`
+  (建設プレビュー)と`dragCell`(列車ドラッグ配置ゴースト)それぞれに固定の
+  チャンクidを1つずつ割り当て、内容の署名文字列(座標+色の連結)が変わった
+  フレームだけ`uploadMeshChunk`し直す(`useMeshChunkFeeder`は複数キーの差分
+  管理が主目的で今回は単一チャンクなので使わず、直接呼び出しにした)。
+- **意図的な簡略化**: classicの地平レールプレビュー(`buildMode==='rail'
+  &&buildLevel===0`)は`RailBlock`(バラスト・枕木・レールの実ジオメトリ)を
+  出すが、wgpu版は他のケースと同じ半透明ボックスに統一した。GameScene.tsx
+  自身がこの分岐を「確定前プレビューはシンプルに」と位置づけていた
+  (既存コメント「design memo『keep it simple』」)ことを踏まえた判断。
+- `GameScene.tsx`: `previewPath`から`previewGhostCells`(色・高さ計算はclassicの
+  JSX分岐と同じロジック)を`useMemo`で構築し、`webGpuLayer`のときは
+  classicの`<mesh>`オーバーレイ(建設プレビュー・列車ドラッグゴーストの両方)を
+  出さずに`<WebGpuBuildPreview>`だけをマウントする。
+
+### 5. glb インポータ+バリデータ
+
+- `renderer/tools/glbLib.mjs`: 依存なしの最小glTF2.0バイナリパーサ(Node向け、
+  Bufferベース)。JSON/BINチャンク分離・アクセサ読み出し(componentType別・
+  bufferView.byteStride対応)・ノード変換(matrix優先、無ければTRSから合成)・
+  ノード配下(子孫含む)の三角形数/AABB/モーフ使用の集計。
+- `renderer/tools/validate_train_glb.mjs`: train-model-format.md 準拠のCLI検査
+  (`node renderer/tools/validate_train_glb.mjs <path>`)。glb解析可否/必須ノード
+  (car_head, car_mid)存在/三角形数上限(本体500・lod1系80)/寸法制約(全長Z<=0.92・
+  全幅X<=0.50・全高Y<=0.60)/y<0ジオメトリなし/テクスチャ・スキン・アニメーション
+  不使用をチェックし、項目ごとにPASS/FAILを出力する(exit code 0/1)。
+- `src/render/trainModelLoader.ts`: ブラウザ実行時ローダ。`glbLib.mjs`と同種の
+  パーサをArrayBuffer/DataView(ブラウザ環境)向けに独立実装した(Node Bufferには
+  依存できないため)。`public/models/trains/<id>.glb`をfetchし、`car_head`/
+  `car_mid`ノードを平坦化した三角形スープへ`bakedMesh.ts`の陰影焼き込みで変換
+  する。マテリアル名`line_colour`の面はalpha=255(tint重み)、他はalpha=0。
+  取得失敗・解析失敗・必須ノード欠如は`null`を返し、呼び出し側
+  (`WebGpuTrains.tsx`)が`trainMeshBuilder.ts`のプレースホルダへフォールバック
+  する。`TRAIN_MODEL_REGISTRY`(車種id→glbモデルid)は現時点で空(実モデル
+  未納品のため、登録するだけで自動的に使われる設計)。
+- テストは`renderer/tools/glbTestFixtures.mjs`でメモリ上に合成glbを組み立てて
+  検証する(実ファイル不要)。`vitest.config.ts`の`include`に
+  `renderer/tools/**/*.test.mjs`を追加した。
+
+### ブラウザ検証
+
+- WebGPUモードでデバッグシナリオ(坂・高架・往復列車)を読み込み、`__dbgStep`で
+  進めた列車が線路に沿って正しい位置・向き(カーブ含む)・路線色帯で描画される
+  ことをスクリーンショットで確認。列車クリック選択(スクリーン空間判定)で
+  選択マーカー(頭上の逆三角錐)・経路プレビュードット(黄色)・DOMツールチップ
+  (id・速度・状態)が表示されることを確認した。
+- 駅名ラベル(A駅/B駅、待ち人数表示)がDOMオーバーレイで正しく追従することを
+  確認。
+- 線路(rail)ツールでドラッグして建設プレビュー(半透明ボックス、コスト表示)が
+  wgpuメッシュチャンク経由で正しく表示されることを確認した。
+- classicモードへ切り替えて同じデバッグシナリオを読み込み、駅ラベル(drei Html)
+  が従来通り表示されることを確認(無変更であることの確認)。
+- **セッション中に踏んだハマりどころ**: ブラウザ自動操作ツールの`computer`
+  クリック座標は「スクリーンショットのピクセル空間」(本セッションでは
+  800×450、実ビューポート1280×720なので**実CSS座標の1/1.6**)であり、
+  ボタンなど`ref`経由のクリックは要素の実CSS座標を自動計算するため両者の
+  座標系が異なる。これに気づかず生CSS座標をそのまま渡して列車選択・線路敷設の
+  クリックが1/1.6だけズレて外れ続けた(結果的に「新規ゲーム開始モーダルが
+  閉じない」ように見えた誤診断も発生した)。実際のモーダルクローズ処理
+  ([`App.tsx`](../src/App.tsx)の`setShowStartupOptions(false)`)自体には
+  問題が無く、原因はクリック座標の誤りだった。今後このツールで列車・地面の
+  精密クリックを行う際は、`window.__camera`/`__orbitControls`とworld座標から
+  `webgpuCamera.ts`と同じ投影式でCSS座標を計算し、**さらに1.6で割った値**を
+  `computer`のcoordinateへ渡すこと(CLAUDE.mdの「クリック座標は screenshot の
+  1/2」という既存の記述はツール・セッションによって比率が異なりうるので、
+  実際にはその場で`document.querySelector('canvas').getBoundingClientRect()`
+  と`Screenshot size`の比を確認するのが確実)。
+
+### 未着手・今後の課題(R4d への申し送り)
+
+- 地下ビュー中の列車(選択レベル以外)の減光表現(現状は非表示で近似)を、
+  インスタンスAPIへ3クラス目(translucent相当)を追加するなどして改善する余地
+  がある(rustのInstance側API拡張が必要なため、今回は見送った)。
+- 駅ラベルの高さ(labelY)・停車順バッジをLabelOverlayでも再現する場合は、
+  `computeStationHousePlacement`の結果をApp.tsxまで引き回す配線が要る。
+- glbモデル納品後、`TRAIN_MODEL_REGISTRY`への登録と実物での見た目確認
+  (陰影・tint・LOD1切り替え)が必要。
+- 建設プレビューの地平レールケース(RailBlock実形状)をwgpu側でも再現したい
+  場合は`buildCellTrackParts`(railGeometry.ts)を1セル分だけ呼び出す形になる
+  (現状は意図的にボックスへ簡略化)。

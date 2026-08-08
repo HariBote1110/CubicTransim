@@ -13,6 +13,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 
 import { DynamicTrain } from './DynamicTrain';
 import { WebGpuTrains } from './WebGpuTrains';
+import { WebGpuBuildPreview, type PreviewGhostCell } from './WebGpuBuildPreview';
 import { pickTrainAtScreenPoint, type TrainScreenCandidate } from '../render/trainPicking';
 import { carGroupPosition } from '../render/trainInstanceMath';
 import type { WebGpuCameraState } from '../render/webgpuCamera';
@@ -685,6 +686,37 @@ export const GameScene: React.FC<GameSceneProps> = ({
     return map;
   }, [stations, railMap, field, undergroundView, farViewHidden]);
 
+  // R4c: WebGPUモードの建設プレビュー(WebGpuBuildPreview向け)。classicのJSXブロックと
+  // 同じ色・高さ計算を行うが、地平レール(buildMode==='rail'&&buildLevel===0)は
+  // RailBlockの実レール形状の代わりに他ケースと同じ半透明ボックスへ簡略化する
+  // (components/WebGpuBuildPreview.tsx のコメント参照)。
+  const previewGhostCells: PreviewGhostCell[] = useMemo(() => previewPath.map((pos, i) => {
+    if (buildMode === 'rail' && buildLevel === 0) {
+      return { x: pos.x, y: 0.2 + field.cellHeightAt(pos.x, pos.z) * OVERPASS_HEIGHT, z: pos.z, colour: '#3ab6ff' };
+    }
+    const role = elevatedPreviewPlan?.roles[i];
+    const colour = buildMode === 'rail' && buildLevel > 0
+      ? (role?.kind === 'ramp' ? T.warning : T.bridge)
+      : buildMode === 'rail' && buildLevel < 0
+      ? (role?.kind === 'ramp' ? T.warning : T.accent)
+      : getPreviewColor();
+    const y = buildMode === 'rail' && buildLevel !== 0
+      ? 0.2 + (role?.kind === 'ramp' ? role.base : buildLevel) * OVERPASS_HEIGHT
+      : buildMode === 'station' && buildLevel !== 0
+      ? 0.2 + buildLevel * OVERPASS_HEIGHT
+      : (terrainEditActive || buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
+      ? 0.2 + field.cellHeightAt(pos.x, pos.z) * OVERPASS_HEIGHT
+      : 0.2;
+    return { x: pos.x, y, z: pos.z, colour };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [previewPath, buildMode, buildLevel, elevatedPreviewPlan, field, terrainEditActive]);
+
+  // R4c: 列車ドラッグ配置中のゴースト(WebGpuBuildPreview向け)。classicのdraggingTrainId
+  // ブロックと同じ色・位置計算。
+  const webgpuDragGhost: PreviewGhostCell | null = (draggingTrainId && cursorPos)
+    ? { x: cursorPos.x, y: 0.2, z: cursorPos.z, colour: canDropTrainHere ? '#3ddc6f' : REMOVE_COLOUR }
+    : null;
+
   return (
     <>
       <hemisphereLight args={['#dcefff', '#75825a', 0.55]} />
@@ -705,8 +737,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
       />
       <CameraChunkTracker controlsRef={orbitControlsRef} onChange={setChunkView} maxViewRadiusCells={halfExtent} />
 
+      {/* R4c: WebGPUモードでは建設プレビュー・列車ドラッグゴーストをwgpuメッシュチャンク
+          (WebGpuBuildPreview)で描く。classicは従来通りthree.jsの<mesh>オーバーレイのまま。 */}
+      {webGpuLayer && (
+        <WebGpuBuildPreview layerRef={webGpuLayer} cells={previewGhostCells} dragCell={webgpuDragGhost} />
+      )}
+
       {/* 建設プレビュー。高架のrail(buildLevel>=1)は坂になるセルと高架のままのセルを色分けする。 */}
-      {previewPath.map((pos, i) => {
+      {!webGpuLayer && previewPath.map((pos, i) => {
         if (buildMode === 'rail' && buildLevel === 0) {
           // 地平の線路プレビュー(P7c): incline/tunnelでの低い側/高い側の描き分けまでは
           // 建設可否確定前のプレビューでは行わず、セルの代表標高(cellHeightAt)へ
@@ -1102,8 +1140,9 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
       <SimulationDriver world={world} onSimEvent={onSimEvent} speed={simSpeed} />
 
-      {/* 列車ドラッグ中の置き先プレビュー(置ける=緑、置けない=赤。建設プレビューと同じ表現) */}
-      {draggingTrainId && cursorPos && (
+      {/* 列車ドラッグ中の置き先プレビュー(置ける=緑、置けない=赤。建設プレビューと同じ表現)。
+          R4c: WebGPUモードはWebGpuBuildPreview(dragCell)が同じ見た目を描くので、ここでは出さない。 */}
+      {!webGpuLayer && draggingTrainId && cursorPos && (
         <mesh position={[cursorPos.x, 0.2, cursorPos.z]} raycast={() => null}>
           <boxGeometry args={[0.92, 0.4, 0.92]} />
           <meshBasicMaterial
