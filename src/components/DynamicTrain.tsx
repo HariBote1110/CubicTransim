@@ -10,6 +10,7 @@ import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
 import { TrainCar, type CarVariant } from './TrainCar';
 import { PALETTE } from '../render/palette';
 import { isLevelDimmed, shouldRenderLevel, SURFACE_RENDER_ORDER, UNDERGROUND_RENDER_ORDER } from '../render/viewMode';
+import { carGroupPosition } from '../render/trainInstanceMath';
 
 interface DynamicTrainProps {
   data: TrainData;
@@ -44,19 +45,8 @@ const DRAG_LIFT_Y = 1.1;
 // 先頭車はrenderPos.yを、2両目以降はcarPositionsが返すy(編成一律の近似値)を使う。
 // JSXの初期position(useFrameが一度も走る前)は地平の既定値0.5にしておく。
 const INITIAL_CAR_Y = 0.5;
-// 台車の車輪面から車両groupの原点までの高さ。坂で車体を傾けるとき、単に原点を
-// 線路中心の真上に置くと車輪が線路から浮くため、車体のローカル上方向へ補正する。
-const RAIL_SUPPORT_OFFSET = 0.37;
-
-const carGroupPosition = (pos: { x: number; y: number; z: number }, heading: { x: number; y: number; z: number }) => {
-  // world上方向を車両の進行方向に直交する平面へ射影したものが、車体のローカル+Yになる。
-  const upY = Math.sqrt(Math.max(0, 1 - heading.y * heading.y));
-  return {
-    x: pos.x - heading.x * heading.y * RAIL_SUPPORT_OFFSET,
-    y: pos.y + (upY - 1) * RAIL_SUPPORT_OFFSET,
-    z: pos.z - heading.z * heading.y * RAIL_SUPPORT_OFFSET,
-  };
-};
+// carGroupPosition/RAIL_SUPPORT_OFFSET は R4c で render/trainInstanceMath.ts へ抽出した
+// (wgpu版WebGpuTrains.tsxと同じ計算を共有し、classic/WebGPUで列車の位置がずれないようにする)。
 
 export const DynamicTrain: React.FC<DynamicTrainProps> = ({
   data, railMap, terrainField, elevatedTunnelIndex, runtimes, type, isSelected, lineColour: groupColour, onClick,
