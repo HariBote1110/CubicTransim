@@ -72,3 +72,75 @@ renderer/ に触れたフェーズは **層A(VM)・層B(Mac)両ゲート必須**
   CLAUDE.md の検証手順を更新すること
 - 電車モデルの正式フォーマットは progress/train-model-format.md。R4c 完了までは
   現行プレースホルダ形状を TS でインスタンス用メッシュとして生成して使う
+
+## R4a 実装メモ(0.4.0-Alpha-4a)
+
+### 追加した wasm API(`CanvasRenderer`)
+
+```
+uploadMeshChunk(id: u32, layerClass: u32, aabb: &[f32;6],
+                positions: &[f32], colours: &[u32], indices: &[u32])
+removeMeshChunk(id: u32)
+registerInstancedMesh(meshId: u32, positions: &[f32], colours: &[u32], indices: &[u32])
+setInstances(meshId: u32, data: &[f32])
+```
+
+- `layerClass`: 0=地表(dim uniform で減光、深度 LessEqual+書き込み) /
+  1=地下(深度 Always・深度書き込み無し。`dim==1.0`(=地下ビューでない)のとき
+  CPU 側で丸ごと描画を省く) / 2=半透明(αブレンド・深度書き込み無し・最後に描く。
+  αは頂点色のA)
+- 頂点は `位置 f32x3 + 頂点色 unorm8x4` の stride 16。インデックスは u32
+- `aabb` は `[minX,minY,minZ,maxX,maxY,maxZ]`(y はワールド単位)。毎フレーム
+  等角投影の閉形式で画面矩形へ落としてビューポートと判定する(`projection::aabb_visible`)
+- インスタンスは **10 f32 = 40 バイト固定 stride**:
+  `[x, y, z, yaw, pitch, tintR, tintG, tintB, flags, 予約]`。
+  `flags` bit0 で地下クラス。パイプライン状態はドロー単位でしか変えられないので、
+  クラス振り分けは `setInstances` 時に CPU 側で2本のバッファへ分ける
+- インスタンスの **tint 規約**: 頂点色のアルファを「路線色を掛ける重み」として使う
+  (a=255 → `頂点色 × tint`、a=0 → 頂点色そのまま、中間は線形補間)。
+  メッシュチャンクの半透明クラスとはアルファの意味が違う点に注意
+
+描画順は 地形 → 地表チャンク → 地表インスタンス → 地下チャンク → 地下インスタンス →
+半透明チャンク。深度バッファは既存の Depth32Float を共有する。
+`render()` の統計JSONに `meshChunks` / `meshDrawCalls` / `instancedMeshes` /
+`instancedDrawCalls` を追加した(`drawCalls` は従来どおり地形タイルのみ)。
+
+### 計画からの逸脱・補足
+
+- **投影式の共有**: メッシュの y はワールド単位だが、地形シェーダの `project()` は
+  y が段数単位。深度式を完全一致させるため、シェーダ内で
+  `y_levels = y_world * ppc * ISO_H / height_scale` と戻してから同じ式に入れている。
+  これをやらないと地表に置いた木が地形に食われる
+- **陰影の焼き込み**(`src/render/bakedMesh.ts`): 面の外積をそのまま法線に使い、
+  `AMBIENT 0.2 + HEMI 0.28×(0.5+0.5·ny) + SUN 0.55×max(0, n·L)` を頂点色へ掛ける。
+  光方向は GameScene の SunLight(position=[-30,34,14])の正規化。色は three.js と
+  同じく16進のsRGB値をそのまま使う(wgpu 地形も PALETTE の値をそのまま書いている)
+- **バケット統合**: 頂点色を持つのでマテリアル別にメッシュを分ける必要が無く、
+  樹木3バケット・町7バケットをそれぞれ1チャンク=1ドローに畳んだ
+- **チャンク単位**: 樹木は可視チャンク(32セル)ごと、町は町1つごと。
+  `useMeshChunkFeeder`(1フレーム最大6チャンク構築)が可視集合との差分で載せ替える
+- **地下ビューの減光**は wgpu の dim uniform が地形ごと担当するため、焼き込み側の
+  減光係数は遠景フェード(farView の 'dimmed' 段階)専用にした
+- **ネイティブ検証バイナリ** `mesh_shader_check` を追加。5本のパイプラインを実デバイスで
+  組み、1x1読み戻しで「地表のdim減光・地下クラスがdimを無視すること・インスタンスtint」を
+  検証する(ブラウザ不要。Mac/Metal で全項目 pass)
+- **ブラウザ検証で見つけた不具合**: `WebGpuTerrainLayer` は seed/halfExtent をキーに
+  マウントし直されるため、新規ワールド生成・セーブ読込のたびに `CanvasRenderer` が
+  別インスタンスになる。フィーダはコントローラの同一性を監視して台帳を作り直す必要がある
+
+### ゲート結果
+
+- **層B(Mac / Apple M4 / Metal、3回計測)**: T1〜T7 のプロトタイプ閾値は3回とも全pass。
+  中央値run(worst-phase p99基準)では strict も全pass。
+  T1 median 0.620/0.630/0.635 ms・p99 3.768/4.028/3.274 ms、T2 median 0.336〜0.352 ms、
+  T3 hitch 0/10260(3回とも)、T4 median 2.05〜2.21 ms・p99 6.99〜8.90 ms、
+  T5 zoom hitch 0、T6 firstFrame 6.7〜11.4 ms。新パイプラインは空シーンでは
+  ドロー0本のため、地形ベンチへの影響は無い
+- **層A(VM / llvmpipe)**: `node bench/run-layer-a.mjs --browser-exact --check-ts-migration`
+  を実施(結果は下記の実行ログ参照)
+
+### 次フェーズ(R4b)への申し送り
+
+- レール網・駅・車庫・信号は同じ `useMeshChunkFeeder` に載せられる。地下レイヤーは
+  `MESH_LAYER_CLASS.underground`、ホーム扉ガラス・建設プレビューは `translucent`
+- 町名ラベル・駅ラベルはまだ drei `<Html>` のまま(R4c で DOM オーバーレイへ)
