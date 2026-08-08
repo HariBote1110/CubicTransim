@@ -36,7 +36,42 @@ interface CanvasRendererHandle {
   setCornerOverrideChunk(chunkX: number, chunkZ: number, entries: Uint32Array): void;
   /** 地下ビュー減光係数(1.0=通常、0.0=真っ黒)。GameScene の isLevelDimmed と同調させる。 */
   setDim(factor: number): void;
+  /**
+   * R4a: ジオラマ物(樹木・町など)のメッシュチャンクを1つ登録する(同じidは置き換え)。
+   * layerClass は 0=地表 / 1=地下 / 2=半透明(render/bakedMesh.ts で焼き込んだ頂点色を渡す)。
+   *
+   * 以下の R4a API は R3 以前の wasm 成果物には無いため optional にしてある
+   * (未ビルドの古い public/renderer/ でも地形だけは描けるようにするため)。
+   */
+  uploadMeshChunk?(
+    id: number, layerClass: number, aabb: Float32Array,
+    positions: Float32Array, colours: Uint32Array, indices: Uint32Array,
+  ): void;
+  /** R4a: メッシュチャンクを外す。 */
+  removeMeshChunk?(id: number): void;
+  /** R4a: インスタンス描画のプロトタイプメッシュを登録する(R4cの列車で使う)。 */
+  registerInstancedMesh?(
+    meshId: number, positions: Float32Array, colours: Uint32Array, indices: Uint32Array,
+  ): void;
+  /** R4a: 登録済みメッシュのインスタンス配列を差し替える(1件 = MESH_INSTANCE_STRIDE 個のf32)。 */
+  setInstances?(meshId: number, data: Float32Array): void;
 }
+
+/**
+ * インスタンス1件あたりの f32 個数。wasm 側 `meshes::INSTANCE_STRIDE_FLOATS` と同じ値。
+ * 並びは [x, y, z, yaw, pitch, tintR, tintG, tintB, flags, 予約]。
+ */
+export const MESH_INSTANCE_STRIDE = 10;
+
+/** インスタンスの flags: 地下クラスとして描く(深度Always・地下ビュー限定)。 */
+export const MESH_INSTANCE_FLAG_UNDERGROUND = 1;
+
+/** メッシュチャンクの描画クラス(wasm 側 `meshes::LayerClass` と同じ数値)。 */
+export const MESH_LAYER_CLASS = {
+  surface: 0,
+  underground: 1,
+  translucent: 2,
+} as const;
 
 interface RendererModule {
   default: () => Promise<unknown>;
@@ -130,6 +165,39 @@ export class WebGpuTerrainLayerController {
   /** 地下ビュー減光係数を wgpu 側へ同期する(setCamera とは独立、頻度も少ないため毎フレーム呼んでよい)。 */
   setDim(factor: number): void {
     this.renderer.setDim(factor);
+  }
+
+  /**
+   * R4a: 焼き込み済みのメッシュチャンク(render/bakedMesh.ts の bakeGeometries の出力)を
+   * wgpu へ載せる。旧い wasm 成果物(R3以前のビルド)で API が無い場合は何もしない
+   * ——地形だけが描かれ、ジオラマ物が出ないだけで動作は継続する。
+   */
+  uploadMeshChunk(
+    id: number,
+    layerClass: number,
+    chunk: { positions: Float32Array; colours: Uint32Array; indices: Uint32Array; aabb: Float32Array },
+  ): void {
+    this.renderer.uploadMeshChunk?.(
+      id, layerClass, chunk.aabb, chunk.positions, chunk.colours, chunk.indices,
+    );
+  }
+
+  /** R4a: メッシュチャンクを外す。 */
+  removeMeshChunk(id: number): void {
+    this.renderer.removeMeshChunk?.(id);
+  }
+
+  /** R4a: インスタンス描画のプロトタイプメッシュを登録する(R4cの列車で使う)。 */
+  registerInstancedMesh(
+    meshId: number,
+    mesh: { positions: Float32Array; colours: Uint32Array; indices: Uint32Array },
+  ): void {
+    this.renderer.registerInstancedMesh?.(meshId, mesh.positions, mesh.colours, mesh.indices);
+  }
+
+  /** R4a: 登録済みメッシュのインスタンス配列を差し替える。 */
+  setInstances(meshId: number, data: Float32Array): void {
+    this.renderer.setInstances?.(meshId, data);
   }
 
   /** 1フレーム描く。戻り値は wasm 側の統計JSON(失敗時は null)。 */
