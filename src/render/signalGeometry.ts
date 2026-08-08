@@ -1,7 +1,7 @@
 // R4b: 信号機のジオメトリ生成を components/SignalBlock.tsx から抽出した純粋関数。
 // 形状・寸法は SignalBlock.tsx のJSXと同じ(小さな固定形状の複製。depotGeometry.tsと
 // 同じ理由でこの形にしている)。
-import * as THREE from 'three';
+import * as THREE from './geom';
 import { PALETTE } from './palette';
 import { SIGNAL_COLOUR } from '../types';
 import { getVectorFromDir } from '../utils';

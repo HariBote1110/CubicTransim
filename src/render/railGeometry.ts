@@ -5,7 +5,7 @@
 // 「レールをどこにどう敷くか」のロジックが二重化しない(progress/r4-threejs-retirement-plan.md
 // のR4b方針: 配置ロジックは1箇所に集約する)。
 
-import * as THREE from 'three';
+import * as THREE from './geom';
 import type { CellData } from '../types';
 import type { TerrainField } from '../sim/terrainField';
 import { DIR, fromKey, getOppositeDir } from '../utils';

@@ -5,7 +5,7 @@
 // 生成する。可視チャンクの組み合わせが変わっても同じセルには常に同じ木が生える
 // (チャンク非依存の決定性)。
 
-import * as THREE from 'three';
+import * as THREE from './geom';
 import type { CellData } from '../types';
 import type { TownTileIndex } from '../sim/townTiles';
 import { toKey } from '../utils';

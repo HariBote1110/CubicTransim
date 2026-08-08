@@ -2,7 +2,7 @@
 // GameScene.tsx の坑口JSXから抽出した純粋関数。寸法・断面計算は既存の
 // render/tunnelPortalGeometry.ts(純粋な幾何計算)をそのまま使い、ここでは
 // THREE.ExtrudeGeometry/BoxGeometry へ実体化してワールド配置するところまでを担う。
-import * as THREE from 'three';
+import * as THREE from './geom';
 import type { TerrainField } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import {

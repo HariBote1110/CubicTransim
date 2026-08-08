@@ -17,7 +17,7 @@
 // (three.js版TrainCarはvariantごとに片方だけ生やしていたのに対する意図的な簡略化。
 // progress/r4-threejs-retirement-plan.md のR4c実装メモに記載)。
 
-import * as THREE from 'three';
+import * as THREE from './geom';
 import { PALETTE } from './palette';
 import { bakeGeometries, type BakedMeshChunk } from './bakedMesh';
 

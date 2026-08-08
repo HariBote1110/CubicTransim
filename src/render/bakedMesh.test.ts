@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import * as THREE from 'three';
+import { BoxGeometry } from './geom/primitives';
 import {
   SUN_DIRECTION, AMBIENT_TERM, HEMISPHERE_TERM, SUN_TERM,
   lambertFactor, packRgba, parseColourHex, bakeFlatShaded, bakeGeometries,
@@ -85,8 +85,8 @@ describe('bakeFlatShaded', () => {
 
 describe('bakeGeometries', () => {
   it('複数バケットを1つのメッシュチャンクへ連結し、AABBを返す', () => {
-    const a = new THREE.BoxGeometry(1, 1, 1);
-    const b = new THREE.BoxGeometry(1, 1, 1).translate(4, 2, 0);
+    const a = new BoxGeometry(1, 1, 1);
+    const b = new BoxGeometry(1, 1, 1).translate(4, 2, 0);
     const baked = bakeGeometries([
       { geometry: a, colour: '#ff0000' },
       { geometry: b, colour: '#00ff00' },

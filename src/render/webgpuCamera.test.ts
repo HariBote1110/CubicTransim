@@ -1,37 +1,82 @@
 import { describe, expect, it } from 'vitest';
-import * as THREE from 'three';
 
 import {
   groundCentreFromTarget, pixelsPerWorldUnit, projectToScreenPx, minZoomForFullMap, ISO_X, ISO_Y,
   orthographicNearFarForHalfExtent,
 } from './webgpuCamera';
 
+// R4e: three.js を撤去したので、テストのオラクル(検証用の独立実装)として
+// three.js の OrthographicCamera.lookAt + Vector3.project と同じ行列演算を素のベクトル計算で
+// 再現する(Matrix4.lookAt/makeOrthographicの標準的な右手系の式。GameSceneと同じカメラ配置
+// position=target+(20,20,20)・up=+Y・enableRotate=falseを前提にする)。
+
+interface Vec3 { x: number; y: number; z: number }
+
+const sub = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+const cross = (a: Vec3, b: Vec3): Vec3 => ({
+  x: a.y * b.z - a.z * b.y,
+  y: a.z * b.x - a.x * b.z,
+  z: a.x * b.y - a.y * b.x,
+});
+const dot = (a: Vec3, b: Vec3): number => a.x * b.x + a.y * b.y + a.z * b.z;
+const normalise = (v: Vec3): Vec3 => {
+  const len = Math.hypot(v.x, v.y, v.z) || 1;
+  return { x: v.x / len, y: v.y / len, z: v.z / len };
+};
+
+interface RefCamera {
+  position: Vec3;
+  right: Vec3;
+  camUp: Vec3;
+  backward: Vec3; // three.js のカメラローカル+Z軸(=注視方向の逆)
+  zoom: number;
+  width: number;
+  height: number;
+  near: number;
+  far: number;
+}
+
 // GameScene と同じカメラ設定(OrthographicCamera position=(20,20,20)・up=+Y、
 // OrbitControls は enableRotate=false なので target からの相対位置は常に (20,20,20))。
-const makeThreeCamera = (
-  target: { x: number; y: number; z: number },
+// 基底の導出は render/webgpuCamera.ts 冒頭のコメントと同じ(Z_cam=(1,1,1)/√3等)。
+const makeRefCamera = (
+  target: Vec3,
   zoom: number,
   width: number,
   height: number,
-) => {
-  const camera = new THREE.OrthographicCamera(-width / 2, width / 2, height / 2, -height / 2, -50, 200);
-  camera.zoom = zoom;
-  camera.position.set(target.x + 20, target.y + 20, target.z + 20);
-  camera.lookAt(target.x, target.y, target.z);
-  camera.updateProjectionMatrix();
-  camera.updateMatrixWorld(true);
-  return camera;
+  near = -50,
+  far = 200,
+): RefCamera => {
+  const position: Vec3 = { x: target.x + 20, y: target.y + 20, z: target.z + 20 };
+  const worldUp: Vec3 = { x: 0, y: 1, z: 0 };
+  // three.js Matrix4.lookAt(eye, target, up): z = normalize(eye-target), x = normalize(cross(up,z)), y = cross(z,x)
+  const backward = normalise(sub(position, target));
+  const right = normalise(cross(worldUp, backward));
+  const camUp = cross(backward, right);
+  return { position, right, camUp, backward, zoom, width, height, near, far };
 };
 
-/** three.js のカメラで実際に投影し、画面中心を原点とするCSSピクセル座標を返す(sy下向き)。 */
+/** 参照カメラで実際に投影し、画面中心を原点とするCSSピクセル座標を返す(sy下向き)。 */
 const threeScreenPx = (
-  camera: THREE.OrthographicCamera,
-  world: { x: number; y: number; z: number },
+  camera: RefCamera,
+  world: Vec3,
   width: number,
   height: number,
 ) => {
-  const ndc = new THREE.Vector3(world.x, world.y, world.z).project(camera);
-  return { sx: (ndc.x * width) / 2, sy: (-ndc.y * height) / 2 };
+  const rel = sub(world, camera.position);
+  const xView = dot(rel, camera.right);
+  const yView = dot(rel, camera.camUp);
+  const xNdc = (2 * camera.zoom * xView) / camera.width;
+  const yNdc = (2 * camera.zoom * yView) / camera.height;
+  return { sx: (xNdc * width) / 2, sy: (-yNdc * height) / 2 };
+};
+
+/** three.js の makeOrthographic + project と同じ z_ndc(視錐台深度の内外判定用)。 */
+const projectDepth = (camera: RefCamera, world: Vec3): number => {
+  const rel = sub(world, camera.position);
+  const zView = dot(rel, camera.backward);
+  const { near, far } = camera;
+  return (-2 / (far - near)) * zView - (far + near) / (far - near);
 };
 
 describe('webgpuCamera: three.js の直交カメラと同じ画面座標を与える', () => {
@@ -41,7 +86,7 @@ describe('webgpuCamera: three.js の直交カメラと同じ画面座標を与�
   it('注視点が原点・DPR=1 のとき、任意の点で three.js の投影と一致する', () => {
     const target = { x: 0, y: 0, z: 0 };
     const zoom = 40;
-    const camera = makeThreeCamera(target, zoom, width, height);
+    const camera = makeRefCamera(target, zoom, width, height);
     const state = {
       ...groundCentreFromTarget(target),
       pixelsPerUnit: pixelsPerWorldUnit(zoom, 1),
@@ -65,7 +110,7 @@ describe('webgpuCamera: three.js の直交カメラと同じ画面座標を与�
   it('パンで target.y がずれても(=OrbitControlsのスクリーン空間パン)一致する', () => {
     const target = { x: 12.5, y: 3.25, z: -8.75 };
     const zoom = 73;
-    const camera = makeThreeCamera(target, zoom, width, height);
+    const camera = makeRefCamera(target, zoom, width, height);
     const state = {
       ...groundCentreFromTarget(target),
       pixelsPerUnit: pixelsPerWorldUnit(zoom, 1),
@@ -165,19 +210,13 @@ describe('minZoomForFullMap: 全図がビューポートに収まる最小zoom�
 
 describe('orthographicNearFarForHalfExtent: マップ全域の点がnear/farでクリップされない(R3)', () => {
   // GameScene.tsxと同じカメラ配置(position=target+(20,20,20)、up=+Y、target注視)。
-  const makeCamera = (target: { x: number; y: number; z: number }, near: number, far: number) => {
-    const camera = new THREE.OrthographicCamera(-1000, 1000, 1000, -1000, near, far);
-    camera.position.set(target.x + 20, target.y + 20, target.z + 20);
-    camera.lookAt(target.x, target.y, target.z);
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld(true);
-    return camera;
-  };
+  const makeCamera = (target: Vec3, near: number, far: number): RefCamera =>
+    makeRefCamera(target, 1, 2000, 2000, near, far);
 
   // three.jsのprojectはNDC z を [-1,1] へ落とす(near/farの外に出るとその範囲を外れる)。
-  const isWithinFrustumDepth = (camera: THREE.OrthographicCamera, p: { x: number; y: number; z: number }) => {
-    const ndc = new THREE.Vector3(p.x, p.y, p.z).project(camera);
-    return ndc.z >= -1 && ndc.z <= 1;
+  const isWithinFrustumDepth = (camera: RefCamera, p: Vec3) => {
+    const z = projectDepth(camera, p);
+    return z >= -1 && z <= 1;
   };
 
   it('小さいマップ(halfExtent=45)は元の(-50,200)のままでも全域が視錐台に収まる', () => {

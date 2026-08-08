@@ -10,7 +10,7 @@
 // 呼んでも十分安い(インスタンス配列は町数ぶんで、町/地形が変わらない限り再送しない)。
 
 import React, { useRef } from 'react';
-import * as THREE from 'three';
+import * as THREE from '../render/geom';
 import type { TownData } from '../types';
 import type { TerrainField } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';

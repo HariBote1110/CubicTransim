@@ -5,7 +5,7 @@
 // 道路は幅0.5の帯になり、1タイル幅の線路より明確に細く、家は道路沿いに並ぶ小さな建物になる。
 // 家の大きさ・高さ・色はサブタイル座標のハッシュから決定的に散らす。
 
-import * as THREE from 'three';
+import * as THREE from './geom';
 import type { TownData } from '../types';
 import { fromKey } from '../utils';
 import type { TownSubTileIndex } from '../sim/townTiles';

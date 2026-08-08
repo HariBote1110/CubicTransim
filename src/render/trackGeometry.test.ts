@@ -139,10 +139,10 @@ describe('buildRampTrackParts: 空中に架かる坂(base>=1)のバラスト', (
 });
 
 describe('buildRampAbutmentPart: 合成互換のための属性', () => {
-  it('生成するくさびはuv属性を持つ(BoxGeometry製の橋台とマージできるように)', () => {
+  it('生成するくさびはposition属性を持つ(BoxGeometry製の橋台とマージできるように、非indexed)', () => {
     const geo = buildRampAbutmentPart(DIR.E, 0, 0, 0.5, 0)!;
-    expect(geo.getAttribute('uv')).toBeDefined();
-    expect(geo.getAttribute('uv').count).toBe(geo.getAttribute('position').count);
+    expect(geo.getAttribute('position')).toBeDefined();
+    expect(geo.index).toBeNull();
   });
 });
 
@@ -182,9 +182,9 @@ describe('buildUndergroundOpeningPart: 掘割ランプの地表開口(P8b)', () 
   it('有効な方向ではpit(床)とwallA/wallB(擁壁)の3つのジオメトリを生成する', () => {
     const parts = buildUndergroundOpeningPart(DIR.N, 3, 5);
     expect(parts).not.toBeNull();
-    expect(parts!.pit.attributes.position.count).toBeGreaterThan(0);
-    expect(parts!.wallA.attributes.position.count).toBeGreaterThan(0);
-    expect(parts!.wallB.attributes.position.count).toBeGreaterThan(0);
+    expect(parts!.pit.getAttribute('position')!.count).toBeGreaterThan(0);
+    expect(parts!.wallA.getAttribute('position')!.count).toBeGreaterThan(0);
+    expect(parts!.wallB.getAttribute('position')!.count).toBeGreaterThan(0);
   });
 
   it('セル位置(x,z)を変えるとジオメトリの重心もそのぶん移動する(バウンディングボックス中心で確認)', () => {

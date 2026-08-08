@@ -16,7 +16,7 @@
 // 敷く。境界点は隣接セルと必ず共有される点(2セルの中心の中点)なので、
 // 曲線にしてもセル間で線路が途切れない。分岐(3方向以上)と行き止まり(1方向)は
 // 従来どおり中心からの直線の腕で描く。
-import * as THREE from 'three';
+import * as THREE from './geom';
 import { DIR, getOppositeDir, getVectorFromDir } from '../utils';
 import { angleFromVector } from './palette';
 import { mergeAndDispose } from './mergeGeometry';
@@ -383,15 +383,12 @@ function makeCurvedWedgeGeometry(length: number, width: number, heights: number[
   const hw = width / 2;
   const hl = length / 2;
   const n = heights.length - 1;
-  const maxH = Math.max(...heights, 1e-6);
 
   const positions: number[] = [];
-  const uvs: number[] = [];
-  // uvはBox系ジオメトリ(position/normal/uv)と同じ配列でマージできるようにするための
-  // 平面投影(単色マテリアルなので見た目には使われない)。
+  // render/geom/ のキットはposition以外を保持しない(bakedMesh.tsが三角形ごとに
+  // flat shading用の法線を計算し直すため、normal/uvは最終的な見た目に寄与しない)。
   const pushVertex = (v: number[]) => {
     positions.push(...v);
-    uvs.push((v[2] + hl) / length, v[1] / maxH);
   };
   const push = (a: number[], b: number[], c: number[]) => {
     pushVertex(a);
@@ -439,11 +436,7 @@ function makeCurvedWedgeGeometry(length: number, width: number, heights: number[
     push(highBL, highTR, highTL);
   }
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  geo.computeVertexNormals();
-  return geo;
+  return new THREE.BufferGeometry(new Float32Array(positions), null);
 }
 
 /**

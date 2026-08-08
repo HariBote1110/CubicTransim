@@ -2,7 +2,7 @@
 // 形状・寸法は DepotBlock.tsx のJSXと同じ(そちらが見た目の一次情報源。数値は複製だが、
 // 車庫は9メッシュの小さな固定形状で、退役予定(R4d)のclassicパスと共有する価値より
 // 現時点でのJSX破壊リスクのほうが大きいため、意図的にこの形で複製している)。
-import * as THREE from 'three';
+import * as THREE from './geom';
 import { PALETTE } from './palette';
 import type { ShadedGeometryEntry } from './stationGeometry';
 

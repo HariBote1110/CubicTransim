@@ -9,7 +9,7 @@
 // 係数を掛けるだけにする(wgpu 側の地形シェーダ terrain_draw.wgsl も PALETTE の
 // 16進値をそのまま書き込んでおり、両者の見た目が揃う)。
 
-import * as THREE from 'three';
+import * as THREE from './geom';
 
 /** SunLight(GameScene.tsx)の position を正規化した光の向き。 */
 export const SUN_DIRECTION: readonly [number, number, number] = (() => {

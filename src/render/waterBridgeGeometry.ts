@@ -1,6 +1,6 @@
 // R4b: 水上橋(data.bridgeを持つ線路セルの桁+橋脚)のジオメトリ生成を
 // GameScene.tsx のインラインJSXから抽出した純粋関数。
-import * as THREE from 'three';
+import * as THREE from './geom';
 import type { CellData } from '../types';
 import { fromKey } from '../utils';
 import type { ShadedGeometryEntry } from './stationGeometry';

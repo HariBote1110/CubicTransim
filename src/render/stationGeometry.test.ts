@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import * as THREE from 'three';
 import { DIR } from '../utils';
 import {
   buildPlatformSideGeometries, buildStationCellGeometries, buildStationHouseGeometries,
@@ -44,8 +43,13 @@ describe('buildStationCellGeometries', () => {
     const moved = buildStationCellGeometries([5, 1, -3], DIR.N | DIR.S, 'none', false);
     origin[0].geometry.computeBoundingBox();
     moved[0].geometry.computeBoundingBox();
-    const oc = origin[0].geometry.boundingBox!.getCenter(new THREE.Vector3());
-    const mc = moved[0].geometry.boundingBox!.getCenter(new THREE.Vector3());
+    const centreOf = (box: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } }) => ({
+      x: (box.min.x + box.max.x) / 2,
+      y: (box.min.y + box.max.y) / 2,
+      z: (box.min.z + box.max.z) / 2,
+    });
+    const oc = centreOf(origin[0].geometry.boundingBox!);
+    const mc = centreOf(moved[0].geometry.boundingBox!);
     expect(mc.x - oc.x).toBeCloseTo(5, 5);
     expect(mc.y - oc.y).toBeCloseTo(1, 5);
     expect(mc.z - oc.z).toBeCloseTo(-3, 5);

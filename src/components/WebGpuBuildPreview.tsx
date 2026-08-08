@@ -13,7 +13,7 @@
 // 見た目の差は色付きボックスの有無程度に留まる。
 
 import React, { useRef } from 'react';
-import * as THREE from 'three';
+import * as THREE from '../render/geom';
 import { FRAME_ORDER } from '../render/frameLoop';
 import { useFrameLoop } from '../hooks/useFrameLoop';
 import { bakeGeometries, type BakedMeshChunk } from '../render/bakedMesh';

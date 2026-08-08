@@ -2,7 +2,7 @@
 //
 // R4b で components/StationBlock.tsx(three.js JSX)から抽出し、R4d で three.js 側を
 // 退役させたのに伴い、寸法定数の一次情報源もこのファイルへ移した。
-import * as THREE from 'three';
+import * as THREE from './geom';
 import type { PlatformDoorType } from '../types';
 import { angleFromVector, PALETTE } from './palette';
 import { BOUNDARY_OFFSETS } from './trackGeometry';
