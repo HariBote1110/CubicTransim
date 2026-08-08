@@ -583,7 +583,9 @@ mod wasm {
             let cpu_ms = js_sys::Date::now() - cpu_started;
             let lod = self.visible.first().map(|t| t.lod).unwrap_or(0);
             Ok(format!(
-                "{{\"cpuMs\":{cpu_ms:.3},\"drawCalls\":{},\"visibleTiles\":{},\"generatedTiles\":{generated},\"paramUpdates\":{param_updates},\"residentTiles\":{},\"tileGpuBytes\":{},\"lod\":{lod},\"centerX\":{:.3},\"centerZ\":{:.3},\"pixelsPerCell\":{:.5}}}",
+                "{{\"cpuMs\":{cpu_ms:.3},\"cfgW\":{},\"cfgH\":{},\"heightScale\":{:.3},\"halfExtent\":{},\"drawCalls\":{},\"visibleTiles\":{},\"generatedTiles\":{generated},\"paramUpdates\":{param_updates},\"residentTiles\":{},\"tileGpuBytes\":{},\"lod\":{lod},\"centerX\":{:.3},\"centerZ\":{:.3},\"pixelsPerCell\":{:.5}}}",
+                self.config.width, self.config.height,
+                self.pixels_per_cell * ISO_H * self.height_per_level, self.half_extent,
                 self.visible.len(), self.visible.len(), self.tiles.len(), self.tiles.len() as u64 * TILE_BYTES,
                 self.center_x, self.center_z, self.pixels_per_cell,
             ))

@@ -48,7 +48,9 @@ export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, lay
       .then(controller => {
         if (disposed) return;
         layerRef.current = controller;
+        // 検証用のデバッグフック(CLAUDE.mdのブラウザ検証手順で使う)。
         (window as any).__webgpuLayer = controller;
+        (window as any).__webgpuParams = { seed, halfExtent };
       })
       .catch((error: unknown) => {
         if (disposed) return;
