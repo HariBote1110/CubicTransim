@@ -6,6 +6,41 @@ pub const MOUNTAIN_HEIGHT_THRESHOLD: u8 = 1;
 const NOISE_OCTAVES: [(i32, u32); 4] = [(40, 8), (20, 4), (10, 2), (5, 1)];
 const FIXED_ONE: u64 = 1u64 << 32;
 const WATER_NUM_MAX: u64 = 9 * (FIXED_ONE / 4); // 0.15 * (15 * 2^32) = 9 * 2^30
+
+/// Upper bound on |ΔN| between adjacent corners (see src/sim/canonicalNoise.ts for the
+/// construction argument): each octave is a u32 lattice hash interpolated with a smoothstep
+/// whose maximum slope is 1.5/wave, so |ΔN| <= (2^32-1) * 1.5 * (8/40+4/20+2/10+1/5)
+/// = (2^32-1) * 1.2 < 1.2 * 2^32, plus at most 64 for the integer rounding. A profile whose
+/// threshold spacing is >= this bound cannot produce an adjacent corner step of 2 or more.
+pub const ADJACENT_NUM_BOUND: u64 = 5_153_960_820;
+
+/// Terrain profile chosen at new-game time. Only the height threshold table changes;
+/// the hashes, octaves and composite numerator N are identical for every profile, so the
+/// canonical byte-exactness corpus (TS / Rust / WGSL) stays valid across profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TerrainProfile {
+    /// Wide plains, hills are rare.
+    Flat,
+    /// Historic default (the canonical document's table).
+    #[default]
+    Normal,
+    /// Much more land raised, denser relief (spacing compressed close to ADJACENT_NUM_BOUND).
+    Mountain,
+}
+
+const HEIGHT_THRESHOLDS_FLAT: [u64; 10] = [
+    43_486_543_872,
+    51_286_543_872,
+    59_086_543_872,
+    66_886_543_872,
+    74_686_543_872,
+    82_486_543_872,
+    90_286_543_872,
+    98_086_543_872,
+    105_886_543_872,
+    113_686_543_872,
+];
+
 const HEIGHT_THRESHOLDS: [u64; 10] = [
     35_433_480_192,
     41_290_253_778,
@@ -18,6 +53,69 @@ const HEIGHT_THRESHOLDS: [u64; 10] = [
     82_287_668_876,
     88_144_442_462,
 ];
+
+const HEIGHT_THRESHOLDS_MOUNTAIN: [u64; 10] = [
+    28_991_029_248,
+    34_191_029_248,
+    39_391_029_248,
+    44_591_029_248,
+    49_791_029_248,
+    54_991_029_248,
+    60_191_029_248,
+    65_391_029_248,
+    70_591_029_248,
+    75_791_029_248,
+];
+
+impl TerrainProfile {
+    pub const ALL: [TerrainProfile; 3] = [
+        TerrainProfile::Flat,
+        TerrainProfile::Normal,
+        TerrainProfile::Mountain,
+    ];
+
+    pub const fn thresholds(self) -> [u64; 10] {
+        match self {
+            TerrainProfile::Flat => HEIGHT_THRESHOLDS_FLAT,
+            TerrainProfile::Normal => HEIGHT_THRESHOLDS,
+            TerrainProfile::Mountain => HEIGHT_THRESHOLDS_MOUNTAIN,
+        }
+    }
+
+    /// Stable index used by the params uniform and the CLI/JS boundary. Unknown values map to Normal.
+    pub const fn from_index(index: u32) -> Self {
+        match index {
+            0 => TerrainProfile::Flat,
+            2 => TerrainProfile::Mountain,
+            _ => TerrainProfile::Normal,
+        }
+    }
+
+    pub const fn index(self) -> u32 {
+        match self {
+            TerrainProfile::Flat => 0,
+            TerrainProfile::Normal => 1,
+            TerrainProfile::Mountain => 2,
+        }
+    }
+
+    /// Parses the TypeScript-side profile name. Unknown names fall back to Normal.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "flat" => TerrainProfile::Flat,
+            "mountain" => TerrainProfile::Mountain,
+            _ => TerrainProfile::Normal,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            TerrainProfile::Flat => "flat",
+            TerrainProfile::Normal => "normal",
+            TerrainProfile::Mountain => "mountain",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerrainKind {
@@ -42,10 +140,20 @@ impl FixedNoiseNum {
 pub struct TerrainField {
     seed: u32,
     half_extent: i32,
+    profile: TerrainProfile,
 }
 
 impl TerrainField {
-    pub const fn new(seed: u32, half_extent: i32) -> Self { Self { seed, half_extent } }
+    /// Historic default profile (Normal).
+    pub const fn new(seed: u32, half_extent: i32) -> Self {
+        Self { seed, half_extent, profile: TerrainProfile::Normal }
+    }
+
+    pub const fn with_profile(seed: u32, half_extent: i32, profile: TerrainProfile) -> Self {
+        Self { seed, half_extent, profile }
+    }
+
+    pub const fn profile(&self) -> TerrainProfile { self.profile }
 
     #[inline]
     fn in_range(&self, v: i32) -> bool { v >= -self.half_extent && v <= self.half_extent }
@@ -56,7 +164,7 @@ impl TerrainField {
         let noise_num = composite_noise_fixed(self.seed, x, z).as_u64();
         if noise_num < WATER_NUM_MAX { return 0; }
         let mut h = 0u8;
-        for (i, threshold) in HEIGHT_THRESHOLDS.iter().enumerate() {
+        for (i, threshold) in self.profile.thresholds().iter().enumerate() {
             if noise_num >= *threshold { h = (i + 1) as u8; } else { break; }
         }
         h.min(TERRAIN_HEIGHT_MAX)
@@ -207,5 +315,70 @@ mod tests {
     fn canonical_thresholds_are_monotonic() {
         for pair in HEIGHT_THRESHOLDS.windows(2) { assert!(pair[0] < pair[1]); }
         assert!(WATER_NUM_MAX < HEIGHT_THRESHOLDS[0]);
+    }
+
+    #[test]
+    fn every_profile_table_is_monotonic_and_respects_the_lipschitz_bound() {
+        for profile in TerrainProfile::ALL {
+            let table = profile.thresholds();
+            for pair in table.windows(2) {
+                assert!(pair[0] < pair[1], "{profile:?} not monotonic");
+                assert!(
+                    pair[1] - pair[0] >= ADJACENT_NUM_BOUND,
+                    "{profile:?} spacing {} < bound {ADJACENT_NUM_BOUND}",
+                    pair[1] - pair[0]
+                );
+            }
+            // Water can never sit on a raised corner.
+            assert!(WATER_NUM_MAX < table[0], "{profile:?} h1 threshold below water");
+        }
+    }
+
+    #[test]
+    fn profiles_are_ordered_flat_le_normal_le_mountain() {
+        let flat = TerrainField::with_profile(0x5eed_cafe, 8192, TerrainProfile::Flat);
+        let normal = TerrainField::with_profile(0x5eed_cafe, 8192, TerrainProfile::Normal);
+        let mountain = TerrainField::with_profile(0x5eed_cafe, 8192, TerrainProfile::Mountain);
+        let mut raised = [0usize; 3];
+        for i in 0..50_000i32 {
+            let x = ((i.wrapping_mul(3571)) & 0x3fff) - 8192;
+            let z = ((i.wrapping_mul(2371)) & 0x3fff) - 8192;
+            let (f, n, m) = (
+                flat.corner_height_at(x, z),
+                normal.corner_height_at(x, z),
+                mountain.corner_height_at(x, z),
+            );
+            assert!(f <= n && n <= m, "profile order broken at ({x},{z}): {f} {n} {m}");
+            if f > 0 { raised[0] += 1; }
+            if n > 0 { raised[1] += 1; }
+            if m > 0 { raised[2] += 1; }
+        }
+        assert!(raised[0] < raised[1] && raised[1] < raised[2], "raised counts: {raised:?}");
+    }
+
+    #[test]
+    fn adjacent_corner_delta_never_exceeds_one_for_every_profile() {
+        for profile in TerrainProfile::ALL {
+            let field = TerrainField::with_profile(0x5eed_cafe, 8192, profile);
+            for i in 0..250_000i32 {
+                let x = ((i.wrapping_mul(3571)) & 0x3fff) - 8192;
+                let z = ((i.wrapping_mul(2371)) & 0x3fff) - 8192;
+                let h = field.corner_height_at(x, z) as i16;
+                let hx = field.corner_height_at(x + 1, z) as i16;
+                let hz = field.corner_height_at(x, z + 1) as i16;
+                assert!((h - hx).abs() <= 1, "{profile:?} x delta > 1 at ({x},{z})");
+                assert!((h - hz).abs() <= 1, "{profile:?} z delta > 1 at ({x},{z})");
+            }
+        }
+    }
+
+    #[test]
+    fn profile_names_and_indices_round_trip() {
+        for profile in TerrainProfile::ALL {
+            assert_eq!(TerrainProfile::from_index(profile.index()), profile);
+            assert_eq!(TerrainProfile::from_name(profile.name()), profile);
+        }
+        assert_eq!(TerrainProfile::from_index(99), TerrainProfile::Normal);
+        assert_eq!(TerrainProfile::from_name("nonsense"), TerrainProfile::Normal);
     }
 }
