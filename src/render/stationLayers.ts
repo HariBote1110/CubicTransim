@@ -3,9 +3,11 @@
 // データモデル上は「upperを持ち、かつupper.stationIdがあるセル」が高架駅セルで、
 // stationId無しのupperは単なる橋桁(駅ではない)。この判定はsim層(construction.ts等)
 // と同じ定義を描画側でも使い回す(progress/cross-elevated-station-data-model.md参照)。
-import type { CellData, Level } from '../types';
-import { fromKey } from '../utils';
+import type { CellData, Level, StationData } from '../types';
+import { fromKey, toKey } from '../utils';
+import type { TerrainField } from '../sim/terrainField';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
+import { trackAngleFromConnections } from './stationGeometry';
 
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
 // P8b: 地下の駅ホーム集計用(-1〜-MAX_ELEVATED_LEVEL)。
@@ -98,6 +100,54 @@ export function computeStationEndKeys(cells: StationLayerCell[]): Set<string> {
  * (実際にその座標にupper.stationIdがあるかは呼び出し側でrailMapを見て確認すること)。
  * カメラ角度に依存する近似なので完全ではないが、実用上はこれで十分な精度になる。
  */
+export interface StationHousePlacement {
+  position: readonly [number, number, number];
+  angle: number;
+  labelY: number;
+}
+
+/**
+ * 駅舎(1駅につき1つ)の配置(位置・向き・ラベルY)を求める。GameScene.tsxの
+ * 駅舎JSXブロックから抽出した純粋関数(three.js/wgpu両方の駅舎描画が同じ配置を使う)。
+ * 通常表示中に隠すべき完全地下駅(houseIsUnderground)はnullを返す。
+ */
+export function computeStationHousePlacement(
+  station: StationData,
+  railMap: Map<string, CellData>,
+  field: TerrainField,
+  undergroundView: boolean,
+): StationHousePlacement | null {
+  const ownGroundCells = station.cells.filter(c => !c.layer);
+  const elevatedLevels = station.cells.map(c => c.layer).filter((l): l is Exclude<typeof l, 0 | undefined> => !!l);
+  const hasElevatedCells = elevatedLevels.some(l => l > 0);
+  const hasUndergroundCells = elevatedLevels.some(l => l < 0);
+  const houseIsElevated = ownGroundCells.length === 0;
+  const houseLevel = houseIsElevated
+    ? (hasElevatedCells
+      ? Math.min(...elevatedLevels.filter(l => l > 0))
+      : Math.max(...elevatedLevels.filter(l => l < 0)))
+    : 1;
+  const cellsForHouse = houseIsElevated
+    ? station.cells.filter(c => c.layer === houseLevel)
+    : ownGroundCells;
+  const centreCell = cellsForHouse[Math.floor(cellsForHouse.length / 2)] ?? station.center;
+  const centreConnections = houseIsElevated
+    ? railMap.get(toKey(centreCell.x, centreCell.z))?.uppers?.[houseLevel as Level]?.connections
+    : railMap.get(toKey(centreCell.x, centreCell.z))?.connections;
+  const angle = trackAngleFromConnections(centreConnections);
+  const houseY = houseIsElevated
+    ? houseLevel * OVERPASS_HEIGHT
+    : field.cellHeightAt(centreCell.x, centreCell.z) * OVERPASS_HEIGHT;
+  const labelY = hasElevatedCells
+    ? 1.35 + Math.max(...elevatedLevels) * OVERPASS_HEIGHT
+    : 1.35 + houseY;
+  const houseIsUnderground = houseIsElevated && houseLevel < 0;
+  if (houseIsUnderground && hasUndergroundCells && !ownGroundCells.length && !hasElevatedCells && !undergroundView) {
+    return null;
+  }
+  return { position: [centreCell.x, houseY, centreCell.z], angle, labelY };
+}
+
 export function elevatedCellCandidateFromGroundClick(
   pos: { x: number; z: number },
   height: number = OVERPASS_HEIGHT

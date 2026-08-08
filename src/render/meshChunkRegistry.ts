@@ -21,6 +21,7 @@ export const MESH_CHUNK_NAMESPACE = {
   stationUndergroundBright: 0x4100_0000,
   stationUndergroundDim: 0x4200_0000,
   stationGlass: 0x4300_0000,
+  stationHouse: 0x4400_0000,
   depot: 0x5000_0000,
   signal: 0x6000_0000,
   signalMarker: 0x6100_0000,

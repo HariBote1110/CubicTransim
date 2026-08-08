@@ -1,5 +1,5 @@
 # progress インデックス
-- [r4-threejs-retirement-plan.md](r4-threejs-retirement-plan.md) — R4: three.js全面退役計画。ジオメトリ生成はTSに残しwgpuへメッシュチャンク+列車インスタンスの2パイプラインを新設、陰影は頂点色焼き込み、ピッキング閉形式化、R4a〜R4dのフェーズ分割。**R4a実装済み**(2パイプライン+TSブリッジ+樹木・町の移管、API仕様と両ゲート結果は実装メモ)
+- [r4-threejs-retirement-plan.md](r4-threejs-retirement-plan.md) — R4: three.js全面退役計画。ジオメトリ生成はTSに残しwgpuへメッシュチャンク+列車インスタンスの2パイプラインを新設、陰影は頂点色焼き込み、ピッキング閉形式化、R4a〜R4dのフェーズ分割。**R4a・R4b実装済み**(R4a: 2パイプライン+TSブリッジ+樹木・町の移管。R4b: レール網・駅・車庫・信号・トンネル坑口・水上橋をwgpuメッシュチャンクへ移管、地下ビュー明暗は3レイヤークラスでの近似。配置ロジックの共有方針・keying・既知の視覚差はR4b実装メモ参照)
 - [train-model-format.md](train-model-format.md) — 列車3Dモデルの制作仕様(外部エージェント向け・自己完結)。glb形式、座標系(+Z前方・y=0=レール上面)、寸法制約、ノード命名(car_head/car_mid)、line_colourマジックマテリアル、バリデータ
 - [renderer-integration-plan.md](renderer-integration-plan.md) — WebGPUレンダラー本体統合の計画。二層合成(wgpu地形+three.js動的物)から漸進置換、R1〜R4
 - [canonical-terrain-noise-integer.md](canonical-terrain-noise-integer.md) — 地形ノイズの正準整数定義(WASMレンダラー側で確定・5シード5000万点一致)。本体TSはこの定義へ移行必須、1000件のテストベクタ付き

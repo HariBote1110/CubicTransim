@@ -18,7 +18,7 @@ import { TrackNetwork } from './TrackNetwork';
 import { DepotBlock } from './DepotBlock';
 import { SignalBlock } from './SignalBlock';
 import { StationLabel } from './StationLabel';
-import { StationBlock, StationHouse, trackAngleFromConnections } from './StationBlock';
+import { StationBlock, StationHouse } from './StationBlock';
 import { TownBlocks, TownLabels } from './TownBlocks';
 import { Scenery } from './Scenery';
 import { WebGpuScenery } from './WebGpuScenery';
@@ -27,7 +27,7 @@ import { WebGpuTrackNetwork } from './WebGpuTrackNetwork';
 import { WebGpuStations } from './WebGpuStations';
 import { WebGpuTrackExtras } from './WebGpuTrackExtras';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData, Level } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData } from '../types';
 import { findGroup } from '../sim/groups';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
@@ -52,7 +52,7 @@ import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
 import {
   groundStationCells, elevatedStationCells, undergroundStationCells, computeStationEndKeys,
-  elevatedCellCandidateFromGroundClick,
+  elevatedCellCandidateFromGroundClick, computeStationHousePlacement, type StationHousePlacement,
 } from '../render/stationLayers';
 
 const REMOVE_COLOUR = '#ff3b47';
@@ -624,6 +624,18 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const elevatedEndKeys = useMemo(() => computeStationEndKeys(elevatedCells), [elevatedCells]);
   const undergroundEndKeys = useMemo(() => computeStationEndKeys(undergroundCells), [undergroundCells]);
 
+  // R4b: 駅舎の配置(位置・向き・ラベルY)。three.js(StationHouse直接呼び出し)と
+  // WebGPU(WebGpuStations)の両方が同じcomputeStationHousePlacementを使う一次情報源。
+  const housePlacements = useMemo(() => {
+    const map = new Map<string, StationHousePlacement>();
+    if (farViewHidden) return map;
+    for (const station of stations.values()) {
+      const placement = computeStationHousePlacement(station, railMap, field, undergroundView);
+      if (placement) map.set(station.id, placement);
+    }
+    return map;
+  }, [stations, railMap, field, undergroundView, farViewHidden]);
+
   return (
     <>
       <hemisphereLight args={['#dcefff', '#75825a', 0.55]} />
@@ -773,6 +785,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
             undergroundEndKeys={undergroundEndKeys}
             stations={stations}
             field={field}
+            housePlacements={housePlacements}
             undergroundView={undergroundView}
             selectedLevel={buildLevel}
           />
@@ -981,51 +994,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
           });
         }
         // 駅舎・ラベルは1駅につき1つだけ出す(立体交差の十字駅でも二重にならないように)。
-        // 地平セルがあればそちらを優先して駅舎を置き、無ければ最も低い高架レベルの位置に置く。
-        const ownGroundCells = station.cells.filter(c => !c.layer);
-        // P8b: layerは正(高架)・負(地下)どちらも入り得る(Level型)。ここでの
-        // 「一番低いレベル」判定は駅舎を地表に近い側へ置くためのものなので、
-        // 高架と地下を区別せず、そのまま数値順(=地表に近い順ではなく生の昇順)で扱う。
-        const elevatedLevels = station.cells.map(c => c.layer).filter((l): l is Exclude<typeof l, 0 | undefined> => !!l);
-        const hasElevatedCells = elevatedLevels.some(l => l > 0);
-        const hasUndergroundCells = elevatedLevels.some(l => l < 0);
-        const houseIsElevated = ownGroundCells.length === 0;
-        // 駅舎を置くレベル(地平セルが無いときのみ使う)。複数レベルにまたがる駅では、
-        // 高架があればその最も低いレベル、無ければ地下の最も浅い(0に近い)レベルに置く
-        // (見た目上、地平に近い側のほうが自然なため)。
-        const houseLevel = houseIsElevated
-          ? (hasElevatedCells
-            ? Math.min(...elevatedLevels.filter(l => l > 0))
-            : Math.max(...elevatedLevels.filter(l => l < 0)))
-          : 1;
-        const cellsForHouse = houseIsElevated
-          ? station.cells.filter(c => c.layer === houseLevel)
-          : ownGroundCells;
-        const centreCell = cellsForHouse[Math.floor(cellsForHouse.length / 2)] ?? station.center;
-        const centreConnections = houseIsElevated
-          ? railMap.get(toKey(centreCell.x, centreCell.z))?.uppers?.[houseLevel as Level]?.connections
-          : railMap.get(toKey(centreCell.x, centreCell.z))?.connections;
-        const angle = trackAngleFromConnections(centreConnections);
-        // 地平の駅舎(P7c)はセルの地形標高ぶん持ち上げる(駅は常にflatセルなので
-        // cellHeightAtで単一の標高が求まる)。
-        const houseY = houseIsElevated
-          ? houseLevel * OVERPASS_HEIGHT
-          : field.cellHeightAt(centreCell.x, centreCell.z) * OVERPASS_HEIGHT;
-        // 高架ホームを含む駅は、ラベルが高架の上屋にめり込まないよう、最も高いレベルに
-        // 合わせてさらに高い位置に出す。
-        const labelY = hasElevatedCells
-          ? 1.35 + Math.max(...elevatedLevels) * OVERPASS_HEIGHT
-          : 1.35 + houseY;
-        // P8b: 駅舎が地下(houseIsElevated && houseLevel<0)のときは、地表の駅(地平/高架)を
-        // 持たない完全地下駅にかぎり、通常表示では隠す(地下ビュー中だけ出す)。
-        const houseIsUnderground = houseIsElevated && houseLevel < 0;
-        if (houseIsUnderground && hasUndergroundCells && !ownGroundCells.length && !hasElevatedCells && !undergroundView) {
-          return null;
-        }
+        // 配置計算はrender/stationLayers.tsのcomputeStationHousePlacementへ集約し、
+        // three.js(StationHouse)とWebGPU(WebGpuStations)の両方が同じ配置を使う。
+        const placement = computeStationHousePlacement(station, railMap, field, undergroundView);
+        if (!placement) return null;
         return (
           <group key={station.id}>
-            <StationHouse position={[centreCell.x, houseY, centreCell.z]} angle={angle} />
-            <StationLabel station={station} orderIndices={orderIndices} world={world} labelY={labelY} />
+            {!webGpuLayer && <StationHouse position={placement.position} angle={placement.angle} />}
+            <StationLabel station={station} orderIndices={orderIndices} world={world} labelY={placement.labelY} />
           </group>
         );
       })}

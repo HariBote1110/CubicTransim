@@ -154,3 +154,117 @@ setInstances(meshId: u32, data: &[f32])
 - レール網・駅・車庫・信号は同じ `useMeshChunkFeeder` に載せられる。地下レイヤーは
   `MESH_LAYER_CLASS.underground`、ホーム扉ガラス・建設プレビューは `translucent`
 - 町名ラベル・駅ラベルはまだ drei `<Html>` のまま(R4c で DOM オーバーレイへ)
+
+## R4b 実装メモ(0.4.0-Alpha-5a)
+
+### 移管した範囲
+
+TrackNetwork(レール網・高架桁/橋脚/橋台・掘割開口)・StationBlock(ホーム・駅舎)・
+DepotBlock・SignalBlock・トンネル坑口(GameScene 内 JSX + tunnelPortalGeometry.ts)・
+水上橋(GameScene 内インライン JSX)のすべてを WebGPU モードで wgpu メッシュチャンクへ
+移管した。classic(three.js)モードは無変更(見た目・挙動とも従来どおり)。
+
+### 配置ロジックの一次情報源(重複させない設計)
+
+R4a の方針どおり「ジオメトリ生成は1箇所、描画先(three.js JSX / wgpu 焼き込み)だけ
+分ける」を徹底した:
+
+- `src/render/railGeometry.ts` の `buildRailNetworkGeometry()` — 旧 `TrackNetwork.tsx`
+  の `useMemo` 本体をそのまま抽出した純粋関数。`TrackNetwork.tsx`(three.js)と
+  `WebGpuTrackNetwork.tsx`(wgpu)の両方がこれを呼ぶ
+- `src/render/stationGeometry.ts` の `buildPlatformSideGeometries`/
+  `buildStationCellGeometries`/`buildStationHouseGeometries` — ホーム・駅舎の形状を
+  ワールド座標の `THREE.BufferGeometry` として生成する。寸法定数(`PLATFORM_HEIGHT`等)は
+  `components/StationBlock.tsx` から export し、そちらを一次情報源として import する
+  (数値の二重管理を避ける)。駅舎の配置計算(地平/高架/地下のどのセルに置くか、
+  向き、隠すかどうか)は `src/render/stationLayers.ts` の
+  `computeStationHousePlacement()` へ抽出し、`GameScene.tsx` の classic 分岐
+  (`<StationHouse>` 呼び出し)と `WebGpuStations.tsx` の両方がこれを共有する
+- `src/render/depotGeometry.ts` / `signalGeometry.ts` / `tunnelPortalMeshGeometry.ts` /
+  `waterBridgeGeometry.ts` — DepotBlock/SignalBlock/坑口/水上橋は形状が小さく
+  固定的なため、寸法は各 JSX(classic 側、退役予定)からそのまま複製した。
+  R4d で classic 側ごと削除されるため、これ以上の共有化コストは掛けていない
+  (progress メモに明記して判断根拠を残す)
+
+### バケット・キーイング方針
+
+- **レール網**: `railMap` 全体を1回で計算し、`surface`(常時)/
+  `undergroundBright`(選択中の地下レベル)/`undergroundDim`(非選択の地下レベル)の
+  3キーだけを扱う。3つとも独立した `useMeshChunkFeeder` インスタンス
+  (= 独立した `MeshChunkRegistry`)にした。理由: layerClass が異なるチャンクは
+  1つのフィーダで混在できない(chunk id 空間はフィーダごとに閉じているため、
+  同じ namespace を複数フィーダで共有すると id が衝突する — 実装中に発見し、
+  信号の地面マーカー用フィーダで同じ問題を踏んだため `signalMarker` 名前空間を
+  追加して回避した)
+- **駅**: 駅idごとに `surface`/`glass`/`undergroundBright`/`undergroundDim`/`house`の
+  最大5チャンク。ガラス(ホームドア)は全レベル合算で1チャンクにまとめ、
+  alpha=0.55×255固定(下記「既知の視覚差」参照)
+- **車庫・信号・坑口・水上橋**: `railMap`/`tunnelPortalList` 全体を1チャンクずつに
+  まとめた(`WebGpuTrackExtras.tsx`)。個体数は player-built でスパースなため、
+  セルごとに分割する必要がない
+- **id 名前空間**: `render/meshChunkRegistry.ts` の `MESH_CHUNK_NAMESPACE` に
+  `railSurface`/`railUndergroundBright`/`railUndergroundDim`/`station`/
+  `stationGlass`/`stationHouse`/`stationUndergroundBright`/`stationUndergroundDim`/
+  `depot`/`signal`/`signalMarker`/`tunnelPortal`/`waterBridge` を追加
+  (先頭ビットで 0x0100_0000 刻みに区切り、衝突を防ぐ)
+
+### 地下ビューの明暗(3クラスでの近似)
+
+wgpu 側は layerClass が3つ(surface/underground/translucent)しかなく、three.js の
+「地表全体を dim uniform で一括暗化」+「地下は選択レベルのみ通常輝度、それ以外は
+`DIMMED_MATERIALS`(opacity 0.3、ガラスのみ 0.14)」という2階層の明暗をそのままは
+表現できない。以下の近似で対応した(plan の想定どおり):
+
+- **地表(level>=0)**: レベルに関わらず layerClass=surface のまま。理由は
+  three.js 側の `isLevelDimmed(level>=0, undergroundView, selectedLevel)` が
+  「selectedLevel は地下ビュー中つねに負」なので、level>=0 のコンテンツは
+  地下ビュー中は**必ず** dimmed=true になる。つまり地表は「地下ビューかどうか」
+  だけで一律に暗くなり、レベルごとの個別判定は元から不要だった。wgpu の
+  dim uniform(地形と共通)がこれを過不足なく再現する
+- **地下(level<0)**: 選択中のレベルは layerClass=underground(深度無視・不透明)、
+  非選択レベルは layerClass=translucent に alpha≈0.3×255(≈76)を焼き込んで
+  `DIMMED_MATERIALS` の opacity 0.3 を近似した
+- **既知の視覚差**: 駅のガラス(ホームドア)は3レベル分(surface/underground
+  bright/dim)を1チャンクに合算しているため、three.js のように「非選択地下では
+  ガラスだけ opacity 0.14 まで下げる」区別をしていない。すべて alpha=0.55 固定。
+  影響は小さい(ガラス自体が細い面積)ため、v1 はこの近似で確定した
+
+### 発見した実装上の注意点
+
+- **メッシュチャンクの id 名前空間はフィーダ単位**: `useMeshChunkFeeder` は
+  呼び出しごとに独立した `MeshChunkRegistry`(`useRef` で保持)を持つため、
+  同じ `namespace` を2つのフィーダ呼び出しで使うと、両方が `base+0` から
+  id を払い出して衝突する。1つのコンポーネント内で複数の
+  `useMeshChunkFeeder` を呼ぶ場合は、必ず異なる namespace を渡すこと
+- **座標変換のクリック検証Tips(このセッションで再確認)**: ブラウザの
+  `computer` ツールの click/hover 座標は、`window.__camera`(THREE.OrthographicCamera)
+  の `position.clone().project(camera)` で得た CSS ピクセル座標を **1.6 で割った値**
+  (`getBoundingClientRect()` の CSS 幅 1280 に対しスクリーンショットは 800、
+  1280/800=1.6)。zoom を変更した直後は必ずこの換算をやり直すこと
+  (本セッションでは zoom を 90 に変えた後に古い換算を使い回して2回クリックを外した)
+
+### ブラウザ検証
+
+- WebGPU モードで地平の線路(直線+橋)・駅(ホーム床/側壁/点字ブロック/上屋/柱+駅舎)・
+  信号(支柱/灯器/矢羽根)・水上橋(桁+橋脚)を実際に建設し、スクリーンショットで
+  classic モードと並べて配色・配置が一致することを確認した
+- 地下ビュー(建設レベルを「地下1」に切替)で地表(周囲の地形・線路・駅舎すべて)が
+  一括で暗くなること(dim uniform)を確認。地下セグメント自体(uppers[-1])が
+  `railMap` に正しく登録されること(rampの自動接続込み)を `__debugWorld` で確認
+- classic ⇄ WebGPU のレンダラー切替を複数回往復し、クラッシュ・空白化がないことを確認
+  (切替直後に一度「Rendered more hooks than during the previous render」系のエラーが
+  コンソールに残っていたが、これは実装中の Vite HMR(コード編集を同一セッションの
+  ブラウザに反映)由来のスナップショットで、ページを再読み込みした新規セッションでは
+  同じ操作を繰り返しても再発しなかった。実装バグではなく開発中の HMR アーティファクト
+  と判断した)
+- `npm run test`: 829件全て green(既存の16Kマップ性能ガード2件はこのセッションの
+  マシン負荷変動でのみ間欠的に落ちる既知のフレーク。`src/sim/**` は今回未変更)
+- `npm run build`: 型検査込みで green。`renderer/` は今回変更していないため、
+  層A/層Bゲートの実施は不要(タスク条件どおり)
+
+### 次フェーズ(R4c)への申し送り
+
+- 列車(インスタンス描画)・建設プレビュー・カーソル・DOM ラベルオーバーレイが残課題
+- DepotBlock/SignalBlock/坑口/水上橋の寸法は classic 側 JSX と複製したままなので、
+  R4d で classic 側を削除する際にこれらのハードコードされた数値をどちらか一方
+  (wgpu 側)に一本化すること

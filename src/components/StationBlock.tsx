@@ -139,7 +139,7 @@ export const StationBlock: React.FC<Props> = ({
 };
 
 /** 駅の中心に置く小さな駅舎(1駅につき1つ)。 */
-export const StationHouse: React.FC<{ position: [number, number, number]; angle: number }> = ({
+export const StationHouse: React.FC<{ position: readonly [number, number, number]; angle: number }> = ({
   position, angle,
 }) => (
   <group position={position} rotation={[0, angle, 0]}>

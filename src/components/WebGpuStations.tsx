@@ -20,7 +20,10 @@ import type { StationData } from '../types';
 import type { StationLayerCell } from '../render/stationLayers';
 import type { TerrainField } from '../sim/terrainField';
 import { bakeGeometries, type BakedMeshChunk } from '../render/bakedMesh';
-import { buildStationCellGeometries, type ShadedGeometryEntry } from '../render/stationGeometry';
+import {
+  buildStationCellGeometries, buildStationHouseGeometries, type ShadedGeometryEntry,
+} from '../render/stationGeometry';
+import type { StationHousePlacement } from '../render/stationLayers';
 import { MESH_CHUNK_NAMESPACE } from '../render/meshChunkRegistry';
 import { MESH_LAYER_CLASS } from '../render/webgpuLayer';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
@@ -37,6 +40,8 @@ interface Props {
   undergroundEndKeys: Set<string>;
   stations: Map<string, StationData>;
   field: TerrainField;
+  /** 駅id→駅舎の配置(render/stationLayers.tsのcomputeStationHousePlacement、nullは非表示)。 */
+  housePlacements: Map<string, StationHousePlacement>;
   undergroundView?: boolean;
   selectedLevel?: number;
 }
@@ -53,7 +58,7 @@ interface CellEntry {
 export const WebGpuStations: React.FC<Props> = ({
   layerRef, groundCells, elevatedCells, undergroundCells,
   stationEndKeys, elevatedEndKeys, undergroundEndKeys,
-  stations, field, undergroundView = false, selectedLevel = 0,
+  stations, field, housePlacements, undergroundView = false, selectedLevel = 0,
 }) => {
   // 駅idごとにセルをグループ化する(surface=地平+高架、underground=地下)。
   const grouping = useMemo(() => {
@@ -130,11 +135,26 @@ export const WebGpuStations: React.FC<Props> = ({
     return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour, options })));
   }, [grouping, cellGeometries, selectedLevel]);
 
+  const houseKeys = useMemo(() => [...housePlacements.keys()], [housePlacements]);
+  const buildHouseChunk = useCallback((stationId: string): BakedMeshChunk | null => {
+    const placement = housePlacements.get(stationId);
+    if (!placement) return null;
+    const entries = buildStationHouseGeometries(placement.position, placement.angle);
+    return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour })));
+  }, [housePlacements]);
+
   useMeshChunkFeeder({
     layerRef,
     namespace: MESH_CHUNK_NAMESPACE.station,
     desiredKeys: surfaceKeys,
     buildChunk: buildSurfaceChunk,
+    layerClass: MESH_LAYER_CLASS.surface,
+  });
+  useMeshChunkFeeder({
+    layerRef,
+    namespace: MESH_CHUNK_NAMESPACE.stationHouse,
+    desiredKeys: houseKeys,
+    buildChunk: buildHouseChunk,
     layerClass: MESH_LAYER_CLASS.surface,
   });
   useMeshChunkFeeder({
