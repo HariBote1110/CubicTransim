@@ -40,7 +40,9 @@ try {
     if(!adapter) throw new Error('No Browser WebGPU adapter');
     const device=await adapter.requestDevice();
     const uncaptured=[];
+    let deviceLost=null;
     device.addEventListener('uncapturederror',e=>uncaptured.push(String(e.error?.message??e.error)));
+    device.lost.then(info=>{ deviceLost=`${info.reason}: ${info.message}`; });
 
     const module=device.createShaderModule({code:tileGenerateWgsl(),label:'terrain-tile-browser-check'});
     const pipeline=device.createComputePipeline({layout:'auto',compute:{module,entryPoint:'main'}});
@@ -63,6 +65,12 @@ try {
       cases.push({caseIndex,stride,originX,originZ});
     }
 
+    // No corner overrides in this proto check (override_count stays 0 in every params
+    // buffer below), but tile_generate.wgsl@binding(2) still requires a bound storage
+    // buffer to pass validation — an empty one is enough. See native edit_check.rs /
+    // tile_check.rs, which bind an equivalent zero-length placeholder.
+    const overridesBuffer=device.createBuffer({size:8,usage:GPUBufferUsage.STORAGE});
+
     const bindGroups=[];
     const paramBuffers=[];
     for(const c of cases){
@@ -75,6 +83,7 @@ try {
       bindGroups.push(device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
         {binding:0,resource:{buffer:params}},
         {binding:1,resource:{buffer:output,offset:c.caseIndex*segmentBytes,size:TILE_BYTES}},
+        {binding:2,resource:{buffer:overridesBuffer}},
       ]}));
     }
 
@@ -114,13 +123,13 @@ try {
     await device.queue.onSubmittedWorkDone();
     return {
       kind:'browser-webgpu-noise-check',backend:'BrowserWebGpu',cases:CASES,points:CASES*POINTS,mismatches,first,
-      elapsedMs:performance.now()-started,uncaptured,adapterInfo:adapter.info??{},
+      elapsedMs:performance.now()-started,uncaptured,deviceLost,adapterInfo:adapter.info??{},
       storageAlignment,segmentBytes,totalBufferMiB:totalBytes/1048576,
     };
   }, requestedCases);
 
   console.log(JSON.stringify({...result,consoleLines}));
-  if(result.mismatches!==0||result.uncaptured.length!==0) process.exitCode=1;
+  if(result.mismatches!==0||result.uncaptured.length!==0||result.deviceLost) process.exitCode=1;
 } finally {
   if(browser) await browser.close();
   await new Promise(resolve=>server.close(resolve));
