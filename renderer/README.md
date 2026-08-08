@@ -1,20 +1,28 @@
-# Quarter-view Rust + WebGPU prototype
+# Quarter-view Rust + WebGPU renderer
 
-This directory is an isolated vertical-slice prototype for the quarter-view renderer. It deliberately does not modify the production sim layer or replace the existing three.js renderer yet.
+This Cargo workspace holds the promoted quarter-view renderer (research prototype -> product code,
+see `progress/renderer-integration-plan.md`). Phase R1 mounts it under the existing three.js canvas
+as the terrain layer of a two-layer composite; three.js still draws rails, trains, towns and scenery.
 
 ## Layout
 
 - `terrain_core/` — dependency-free Rust reference implementation of `src/sim/terrainField.ts`, clipmap/LOD selection, CPU regression benches.
 - `renderer_wgpu/` — wgpu compute + vertex-pulling renderer, native Layer-A validators, WASM/browser renderer.
 - `web/` — standalone Vite page with pan/zoom/HUD and Playwright BrowserWebGPU smoke/readback checks.
-- `bench/` — unified Layer-A harness and generated result JSONs.
-- `../notes/prototype-findings.md` — important findings and known limitations.
+- `bench/` — unified Layer-A harness and generated result JSONs (permanent regression gate).
+- `../renderer_research/notes/` — research findings and known limitations.
 
-The Cargo workspace root is this directory (`renderer_research/proto/Cargo.toml`).
+The Cargo workspace root is this directory (`renderer/Cargo.toml`).
+
+## Game build integration
+
+`npm run build:renderer` (repo root) runs `wasm-pack build --release --target web` and writes the
+module into `public/renderer/`, which Vite serves in dev and copies into `dist/` on build. The game
+lazily imports it only when the WebGPU renderer is selected, so `npm run build` never needs Rust.
 
 ## One-command Layer-A run
 
-From `renderer_research/proto/`:
+From `renderer/`:
 
 ```sh
 node bench/run-layer-a.mjs

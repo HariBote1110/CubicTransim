@@ -102,7 +102,7 @@ JSON に記録して外乱を追跡可能にする。
 **目的: 「GPU ノイズ地形 + クリップマップ LOD + パン/ズーム」だけを最短で成立させ、
 16K 全図ズームの体験と性能を実証する。** 以下だけを作る:
 
-1. Rust + wgpu + wasm-bindgen のワークスペース(`renderer_research/proto/`。
+1. Rust + wgpu + wasm-bindgen のワークスペース(`renderer/`。
    *_research 配下 = 使い捨て前提、mainstream への昇格は別途 TDD で)
 2. WGSL に terrainField の値ノイズを移植(検証: wasm 側から N 点サンプリングして
    TS 実装と一致することを確認するハーネス。プロトタイプ段階では「目視で同じ地形」+
@@ -129,7 +129,7 @@ JSON に記録して外乱を追跡可能にする。
   浮動小数の丸めだけ TS(f64)と WGSL(f32)で差が出る可能性がある → 整数段数への量子化点で
   一致を取る設計にする(cornerHeightAt の返り値レベルで比較)
 - 開発ループ: `wasm-pack build` + 素の Vite ページ(ゲーム本体とは独立の
-  renderer_research/proto/web/)。ゲームへの統合はプロトタイプ合格後の次フェーズ
+  renderer/web/)。ゲームへの統合はプロトタイプ合格後の次フェーズ
 
 ## 昇格判定(プロトタイプ→本実装に進む条件)
 

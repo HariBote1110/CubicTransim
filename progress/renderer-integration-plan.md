@@ -7,7 +7,7 @@
 「wgpu が地形(最重量部)を描き、three.js が透過キャンバスで上に動的物を描く」二層構成で
 まず価値(全図ズームアウト)を出し、その後 three.js 側の担当物を段階的に wgpu へ移す。
 
-1. **昇格**: renderer_research/proto の crate 群を `renderer/`(リポジトリ直下、Cargoワークスペース)へ
+1. **昇格**: renderer/ の crate 群を `renderer/`(リポジトリ直下、Cargoワークスペース)へ
    移動・整理する(research からの昇格。ベンチ(layer_a/layer_b ハーネス)も一緒に移し、
    回帰ゲートとして維持)。wasm-pack ビルドを npm scripts に統合(`npm run build:renderer`)
 2. **二層合成**: ゲーム画面は「下層 = wgpu キャンバス(地形・水面)/上層 = three.js キャンバス

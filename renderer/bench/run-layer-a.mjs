@@ -5,11 +5,11 @@ import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const proto = path.resolve(here, '..');
-const repoRoot = path.resolve(proto, '../..');
-const terrain = path.join(proto, 'terrain_core');
-const renderer = path.join(proto, 'renderer_wgpu');
-const web = path.join(proto, 'web');
+const rendererRoot = path.resolve(here, '..');
+const repoRoot = path.resolve(rendererRoot, '..');
+const terrain = path.join(rendererRoot, 'terrain_core');
+const renderer = path.join(rendererRoot, 'renderer_wgpu');
+const web = path.join(rendererRoot, 'web');
 const resultsDir = path.join(here, 'results');
 const args = new Set(process.argv.slice(2));
 const skipBuild = args.has('--skip-build');
@@ -46,7 +46,7 @@ function parseLastJson(text) {
 }
 
 const terrainEnv = { TMPDIR: path.join(terrain, '.tmp') };
-const workspaceEnv = { TMPDIR: path.join(proto, '.tmp'), CARGO_HOME: path.join(renderer, '.cargo-home') };
+const workspaceEnv = { TMPDIR: path.join(rendererRoot, '.tmp'), CARGO_HOME: path.join(renderer, '.cargo-home') };
 const rendererEnv = { TMPDIR: path.join(renderer, '.tmp'), CARGO_HOME: path.join(renderer, '.cargo-home') };
 const chromeLib = path.join(web, '.chrome-libs/usr/lib/x86_64-linux-gnu');
 const chromeLib2 = path.join(web, '.chrome-libs/usr/lib');
@@ -58,9 +58,9 @@ const browserEnv = {
 const startedAt = new Date().toISOString();
 const build = {};
 if (!skipBuild) {
-  build.workspaceTests = run('cargo', ['test', '--workspace', '--release', '--lib', '--bins'], proto, workspaceEnv).status === 0;
-  build.nativeBins = run('cargo', ['build', '--workspace', '--release', '--bins'], proto, workspaceEnv).status === 0;
-  build.productionTsVsRust1M = checkTsMigration ? run('npx', ['vitest', 'run', '--config', 'renderer_research/proto/vitest.direct.config.ts'], repoRoot).status === 0 : null;
+  build.workspaceTests = run('cargo', ['test', '--workspace', '--release', '--lib', '--bins'], rendererRoot, workspaceEnv).status === 0;
+  build.nativeBins = run('cargo', ['build', '--workspace', '--release', '--bins'], rendererRoot, workspaceEnv).status === 0;
+  build.productionTsVsRust1M = checkTsMigration ? run('npx', ['vitest', 'run', '--config', 'renderer/vitest.direct.config.ts'], repoRoot).status === 0 : null;
 
   const rustc = run('rustup', ['which', '--toolchain', 'stable', 'rustc'], renderer).stdout.trim();
   const wasmEnv = {
@@ -73,18 +73,18 @@ if (!skipBuild) {
 
 const frameRuns = [];
 for (let i = 0; i < 3; i++) {
-  frameRuns.push(parseLastJson(run(path.join(proto, 'target/release/frame_bench'), [], terrain, terrainEnv).stdout));
+  frameRuns.push(parseLastJson(run(path.join(rendererRoot, 'target/release/frame_bench'), [], terrain, terrainEnv).stdout));
 }
 const sortedFrames = [...frameRuns].sort((a, b) => a.medianMs - b.medianMs);
 const selectedFrame = sortedFrames[Math.floor(sortedFrames.length / 2)];
 
 const noise = parseLastJson(run(
-  path.join(proto, 'target/release/noise-check'),
+  path.join(rendererRoot, 'target/release/noise-check'),
   ['305419896', '10000000', '8192'], renderer, rendererEnv,
 ).stdout);
 const strictNoiseSeeds = [0, 1, 0x12345678, 0xdeadbeef, 0xffffffff];
 const multiSeedNoise = strictNoiseSeeds.map(seed => {
-  const r = spawnSync(path.join(proto, 'target/release/noise-check'), [String(seed >>> 0), '10000000', '8192'], {
+  const r = spawnSync(path.join(rendererRoot, 'target/release/noise-check'), [String(seed >>> 0), '10000000', '8192'], {
     cwd: renderer,
     env: rendererEnv,
     encoding: 'utf8',
@@ -92,9 +92,9 @@ const multiSeedNoise = strictNoiseSeeds.map(seed => {
   return parseLastJson(r.stdout);
 });
 const multiSeedNoisePass = multiSeedNoise.every(item => item.mismatches === 0);
-const tile = parseLastJson(run(path.join(proto, 'target/release/tile_check'), [], renderer, rendererEnv).stdout);
-const offscreen = parseLastJson(run(path.join(proto, 'target/release/offscreen_render'), [], renderer, rendererEnv).stdout);
-const fullmap = parseLastJson(run(path.join(proto, 'target/release/fullmap_render'), [], renderer, rendererEnv).stdout);
+const tile = parseLastJson(run(path.join(rendererRoot, 'target/release/tile_check'), [], renderer, rendererEnv).stdout);
+const offscreen = parseLastJson(run(path.join(rendererRoot, 'target/release/offscreen_render'), [], renderer, rendererEnv).stdout);
+const fullmap = parseLastJson(run(path.join(rendererRoot, 'target/release/fullmap_render'), [], renderer, rendererEnv).stdout);
 
 const smokeRun = run('node', ['bench/smoke.mjs'], web, browserEnv, true);
 const browserSmoke = smokeRun.status === 0 ? parseLastJson(smokeRun.stdout) : {

@@ -4,12 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { createTerrainField } from '../../../src/sim/terrainField';
+import { createTerrainField } from '../../src/sim/terrainField';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PROTO = path.resolve(HERE, '..');
-const DUMP_BIN = path.join(PROTO, 'target', 'release', 'dump');
-const TMP = path.join(PROTO, '.tmp', 'direct-terrain-field');
+const RENDERER_ROOT = path.resolve(HERE, '..');
+const DUMP_BIN = path.join(RENDERER_ROOT, 'target', 'release', 'dump');
+const TMP = path.join(RENDERER_ROOT, '.tmp', 'direct-terrain-field');
 
 const SEED = 0x1234_5678;
 const HALF_EXTENT = 8192;
