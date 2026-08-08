@@ -30,6 +30,25 @@ fn cell_h(x:u32,z:u32)->f32{
 // (この shader の y は段数=level 単位のまま)。
 const ISO_X:f32=0.70710678; // 1/sqrt(2)
 const ISO_Y:f32=0.40824829; // 1/sqrt(6)
+const ISO_H:f32=0.81649658; // 2/sqrt(6) (mesh_draw.wgsl と同じ、段数→ワールド高さの逆変換用)
+
+// R4b: 斜面陰影。src/render/bakedMesh.ts の SUN_DIRECTION/AMBIENT_TERM/HEMISPHERE_TERM/
+// SUN_TERM と同じ光(SunLight position=[-30,34,14]を正規化)・同じ式を使い、ジオラマ物の
+// 焼き込み陰影と見た目を揃える。ここは頂点色に焼き込めない(地形は1頂点=複数セル共有)ので
+// フラグメント側でスクリーン空間微分から面法線を求めて都度計算する。
+const SUN_DIR:vec3<f32>=vec3<f32>(-0.6321746, 0.7164646, 0.2950148);
+const SHADE_AMBIENT:f32=0.2;
+const SHADE_HEMI:f32=0.28;
+const SHADE_SUN:f32=0.55;
+// 水平面(n=(0,1,0))での上式の値。これで割ることで平坦な地面の明るさを既存パレットと
+// 完全一致させる(平坦地は from now on も見た目を変えない、という要件のため)。
+const SHADE_FLAT_NORM:f32=0.8740555;
+
+// 段数(level)単位の高さをワールド単位へ戻す。height_scale = ppc*ISO_H*height_per_level
+// (mesh_draw.wgsl の world_y_to_levels の逆)なので height_per_level = height_scale/(ppc*ISO_H)。
+fn levels_to_world_y(y_levels:f32)->f32{
+ return y_levels*camera.height_scale/max(camera.pixels_per_cell*ISO_H,1e-6);
+}
 
 fn project(wx:f32,wz:f32,y:f32)->vec4<f32>{
  let rx=wx-camera.center_x; let rz=wz-camera.center_z;
@@ -41,7 +60,9 @@ fn project(wx:f32,wz:f32,y:f32)->vec4<f32>{
  let inv_span=1.0/max(camera.half_extent*4.0+64.0,1.0);
  return vec4<f32>(cx,cy,clamp(0.5-(wx+wz+y)*inv_span,0.0,1.0),1.0);
 }
-struct Out{@builtin(position)position:vec4<f32>,@location(0)color:vec3<f32>,@location(1)dim:f32};
+// world_pos: フラグメント側で dpdx/dpdy から面法線を復元するための補間対象(ワールド座標)。
+// shade: 1.0=斜面陰影を適用、0.0=適用しない(水面は常に平坦に見せたいのでオフ)。
+struct Out{@builtin(position)position:vec4<f32>,@location(0)color:vec3<f32>,@location(1)dim:f32,@location(2)world_pos:vec3<f32>,@location(3)shade:f32};
 
 fn terrain_vertex(v:u32)->Out{
  let cell=v/6u; let corner=v%6u; let cells=tile.grid_size-1u; let x=cell/cells; let z=cell%cells;
@@ -54,7 +75,9 @@ fn terrain_vertex(v:u32)->Out{
  var o:Out; o.position=project(wx,wz,rh);
  var color=vec3<f32>(0.604,0.722,0.435);
  if(h>=1.0){color=vec3<f32>(0.529,0.663,0.373);} if(h>=8.0){color=vec3<f32>(0.910,0.902,0.875);}
- if(isw){color=vec3<f32>(0.851,0.812,0.659);} o.color=color; o.dim=camera.dim; return o;
+ if(isw){color=vec3<f32>(0.851,0.812,0.659);} o.color=color; o.dim=camera.dim;
+ o.world_pos=vec3<f32>(wx,levels_to_world_y(rh),wz); o.shade=select(1.0,0.0,isw);
+ return o;
 }
 
 fn cliff_vertex(v:u32)->Out{
@@ -69,14 +92,18 @@ fn cliff_vertex(v:u32)->Out{
  if(zedge){wx0=x0;wz0=z1;wx1=x1;wz1=z1;}
  var wx=wx0; var wz=wz0; var y=lo;
  if(vi==1u){wx=wx1;wz=wz1;} else if(vi==2u){wx=wx1;wz=wz1;y=hi;} else if(vi==3u){wx=wx0;wz=wz0;} else if(vi==4u){wx=wx1;wz=wz1;y=hi;} else if(vi==5u){wx=wx0;wz=wz0;y=hi;}
- var o:Out; o.position=project(wx,wz,y); o.color=select(vec3<f32>(0.435,0.416,0.369),vec3<f32>(0.549,0.525,0.467),hi-lo>=2.0); if(hi>=8.0){o.color=vec3<f32>(0.62,0.61,0.58);} o.dim=camera.dim; return o;
+ var o:Out; o.position=project(wx,wz,y); o.color=select(vec3<f32>(0.435,0.416,0.369),vec3<f32>(0.549,0.525,0.467),hi-lo>=2.0); if(hi>=8.0){o.color=vec3<f32>(0.62,0.61,0.58);} o.dim=camera.dim;
+ o.world_pos=vec3<f32>(wx,levels_to_world_y(y),wz); o.shade=1.0;
+ return o;
 }
 
 fn water_vertex(v:u32)->Out{
  let id=water_cells[v/6u]; let cells=tile.grid_size-1u; let x=id/cells; let z=id%cells;
  let cx=f32(tile.origin_x+i32(x)*tile.stride); let cz=f32(tile.origin_z+i32(z)*tile.stride); let hx=0.47*f32(tile.stride);
  var ox=-hx;var oz=-hx; if(v%6u==1u){ox=hx;}else if(v%6u==2u){ox=hx;oz=hx;}else if(v%6u==4u){ox=hx;oz=hx;}else if(v%6u==5u){oz=hx;}
- var o:Out; o.position=project(cx+ox,cz+oz,-0.055); o.color=vec3<f32>(0.290,0.624,0.831); o.dim=camera.dim; return o;
+ var o:Out; o.position=project(cx+ox,cz+oz,-0.055); o.color=vec3<f32>(0.290,0.624,0.831); o.dim=camera.dim;
+ o.world_pos=vec3<f32>(cx+ox,levels_to_world_y(-0.055),cz+oz); o.shade=0.0; // 水面は平坦のまま(陰影オフ)
+ return o;
 }
 
 @vertex fn vs_main(@builtin(vertex_index) v:u32)->Out{
@@ -84,6 +111,26 @@ fn water_vertex(v:u32)->Out{
  if(v<base){return terrain_vertex(v);} if(v<base+cliffs){return cliff_vertex(v-base);} return water_vertex(v-base-cliffs);
 }
 @fragment fn fs_main(in:Out)->@location(0)vec4<f32>{
+ // dpdx/dpdyは「非uniformな制御フロー(=フラグメントごとに分岐する if)の中で呼ぶな」という
+ // WGSL の規則がある(2x2クアッド内で隣接フラグメントの実行が食い違うと差分が壊れるため)。
+ // in.shade はフラグメントごとに変わる値なので、if(in.shade>0.5){ dpdx(...) } のように分岐の
+ // 内側に置くと Naga/Tint(Chrome の WGSL 検証器)が CreateShaderModule を reject する
+ // (Metalネイティブの wgpu バックエンドはこの規則を強制せず素通りしたため、cargo test/
+ // shader_check では気づけなかった。実ブラウザで初めて black canvas として顕在化した)。
+ // 対策: dpdx/dpdyは分岐の外側で常に計算し、使うかどうかだけを shade で select する。
+ //
+ // 等角投影(orthographic, w=1)なので dpdx/dpdy はスクリーン隣接フラグメント間のワールド
+ // 座標差そのもの。三角形内は平面なのでこれで面法線が厳密に求まる(=フラットシェーディング。
+ // 頂点色ブレンドではなくフラグメント単位で効くのでセル境界の稜線がくっきり出る)。
+ let dx=dpdx(in.world_pos); let dy=dpdy(in.world_pos);
+ let raw_n=cross(dx,dy); let nlen=length(raw_n);
+ var n=vec3<f32>(0.0,1.0,0.0);
+ if(nlen>1e-8){n=raw_n/nlen;}
+ if(n.y<0.0){n=-n;} // 常に上向き半球に畳む(巻き順次第で符号が反転するため)
+ let sun=max(0.0,dot(n,SUN_DIR));
+ let hemi=0.5+0.5*n.y;
+ let shaded=(SHADE_AMBIENT+SHADE_HEMI*hemi+SHADE_SUN*sun)/SHADE_FLAT_NORM;
+ let shade_factor=select(1.0,shaded,in.shade>0.5);
  let alpha=select(1.0,0.85,in.color.r>0.25&&in.color.b>0.6);
- return vec4<f32>(in.color*in.dim,alpha);
+ return vec4<f32>(in.color*shade_factor*in.dim,alpha);
 }

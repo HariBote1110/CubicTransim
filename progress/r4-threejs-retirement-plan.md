@@ -765,3 +765,81 @@ mismatch 0、A4 browser-exact(BrowserWebGPU読み戻し・`src/sim/terrainField.
 
 - 無し(見た目・寸法・配置は意図的にthree.js版と同一になるよう作った。差分は「表現手段が
   変わっただけ」に留める設計方針を貫いた)
+
+## 9. R4f: 地形斜面の陰影(0.5.0-Alpha-3a)
+
+「斜面が超わかりづらい」というフィードバックへの対応。wgpu地形(`terrain_draw.wgsl`)は
+フラットシェーディングで、傾斜面(段差セル間のcliff面)も地表と同じパレット色で塗って
+いたため、崖の縁でしか高低差が読めなかった。三.js版が持っていた指向性ライト(SunLight)
+による陰影付けを、wgpuのフラグメントシェーダに焼き直した。
+
+### 方式
+
+- terrain_vertex/cliff_vertex/water_vertexで`world_pos`(ワールド座標。yは段数ではなく
+  `levels_to_world_y()`でワールド単位へ変換したもの)と`shade`(1.0=陰影を適用/0.0=しない)
+  をvaryingとして追加
+- フラグメント側で`dpdx(in.world_pos)`と`dpdy(in.world_pos)`の外積から面法線を復元する
+  (このシェーダの投影は真等角(orthographic, w=1)なので、スクリーン隣接フラグメント間の
+  座標差がそのまま平面の傾きになる。三角形内は平面なので厳密に一致する)
+- 明るさ係数は`src/render/bakedMesh.ts`のジオラマ物(樹木・町・レールなど)の焼き込み陰影と
+  同じ式・同じ光源(`SunLight position=[-30,34,14]`を正規化、AMBIENT 0.2 + HEMI
+  0.28×(0.5+0.5×n.y) + SUN 0.55×max(0,dot(n,L)))を使う。地形とジオラマ物の陰影の付き方が
+  揃う
+- **正規化**: 上式を水平面(n=(0,1,0))で評価した値(≈0.8740555。厳密値は光源ベクトルの
+  正規化から計算)で割ることで、平坦地の明るさ係数を必ず1.0にする。既存パレット色は
+  一切変更していない(flat top面は式の上でも従来と完全に同じ色になる)
+- 水面(water_vertex)は`shade=0.0`固定で常に平坦なまま(波面ではなく単一の傾いていない
+  クアッドなので陰影を付ける意味がなく、水色のトーンを保つほうが自然)。崖面
+  (cliff_vertex)は`shade=1.0`で地形と同じ陰影を適用(崖ごとに元々パレット色が高さで
+  変わる仕様はそのまま維持、そこへ向き依存の明暗が重なる)
+- 地下ビュー減光`camera.dim`は従来どおり最終段で乗算するだけ(`color*shade_factor*dim`)
+  なので、陰影の追加とは独立して機能する(dimは全頂点関数で`o.dim=camera.dim`のまま無変更)
+
+### ハマった点: dpdx/dpdyを非uniform分岐の中で呼ぶとChromeでシェーダが死ぬ
+
+最初の実装は`if(in.shade>0.5){ let dx=dpdx(...); ... }`のように、水面をスキップする
+分岐の内側でdpdx/dpdyを呼んでいた。Metalネイティブのwgpuバックエンド(`cargo test`/
+`shader_check`/層A・層Bの初回ゲート)はこれを素通りしたが、実ブラウザ(Chrome、Naga/Tint
+のWGSL検証器)は「dpdx/dpdyはuniform制御フローの外でしか呼べない」というWGSL仕様上の
+制約を厳密にチェックしており、`in.shade`はフラグメントごとに変わる値なので
+`CreateShaderModule`がreject、パイプライン全体が無効になって地形キャンバスが真っ黒に
+なった(ブラウザ実機でのみ再現し、全ゲート・全cargoテストは無警告で通っていた)。
+対策はdpdx/dpdyを分岐の外側で常に計算し、使う/使わないだけを`select()`で切り替えること。
+**この種の「derivative組み込み関数を条件分岐の中で呼ばない」制約は今後もwgslを書くとき
+常に意識すること**(ネイティブバックエンドのテストだけでは検出できない)。
+
+### ゲート結果
+
+`npm run test`: 930件green。`npm run build`: green。`npm run build:renderer`: green。
+`cargo test --release --lib --bins`(renderer_wgpu): 全green。`shader_check`:
+`terrain-draw: ok`。
+
+**層B(Mac / Apple M4 / Metal、3回計測、`layer_b_bench`)**: T1〜T7 のstrict閾値すべて
+3回とも全pass。
+run1: T1 median 0.652ms/p99 1.356ms、T4 median 2.437ms/p99 3.063ms、T3/T5 hitch 0/10260。
+run2: T1 median 0.655ms/p99 1.219ms、T4 median 2.444ms/p99 3.089ms、T3/T5 hitch 0/10260。
+run3: T1 median 0.654ms/p99 1.219ms、T4 median 2.443ms/p99 3.102ms、T3/T5 hitch 0/10260。
+R4e時点の数値帯(T1 median≈0.6ms、T4 median≈2ms)と同等で、フラグメント側の追加計算による
+可視の性能回帰は無い。
+
+**層A(VM / llvmpipe / Vulkan、`node renderer/bench/run-layer-a.mjs --browser-exact
+--check-ts-migration`)**: build全項目true。判定対象ゲート全pass(`pass:null`は層B専用)。
+A4 browser-exact(BrowserWebGPU読み戻し含む)mismatch 0、A8決定性true、cameraReplay ok。
+このシェーダ変更はdraw/fragmentパスのみでcompute側(ノイズ・タイル生成)は無変更のため、
+A4/A8のノイズ・高さ読み戻し系ゲートに影響しないことを確認した(実際に全pass)。
+
+### ブラウザ実機確認(WebGPU、dev port 5175)
+
+`window.__webgpuCamera`を直接操作してカメラ位置・ズームを固定し、中マップ(257×257)を
+生成して丘陵地の崖面を複数の向きから確認した。段差セル間の崖面が、向きに応じて明確に
+異なる明るさ(側面ごとに濃淡が付く)で描かれるようになり、以前は崖の縁でしか判別できな
+かった起伏がひと目でわかるようになった。平坦地の色は変更前後で同一(正規化により
+flat top面の明るさ係数が常に1.0になる設計どおり)。地下ビュー減光(`setDim`)は
+陰影計算のあとに独立して乗算されるため、以前と同じように機能する。ジオラマ物(樹木)は
+崖のすぐ脇でも浮き・めり込みなく設置されており、z-fightingの変化も見られなかった。
+
+シェーダをこの方式に変更した直後にVite開発サーバを再読み込みしただけでは、既知の
+HMRアーティファクト(`npm run build:renderer`直後の依存関係変更でVite側の事前バンドルが
+古いまま残る。「WebGPUレンダラーが未ビルドです」の404+Reactフックエラーとして現れる。
+R4d/R4eの実装メモにも同種の記録あり)が再発した。このときはページ再読み込みだけでは
+直らず、devサーバ自体の再起動(`preview_stop`→`preview_start`)が必要だった。
