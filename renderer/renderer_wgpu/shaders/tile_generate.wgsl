@@ -1,4 +1,4 @@
-struct TileParams { seed:u32, half_extent:i32, origin_x:i32, origin_z:i32, stride:i32, grid_size:u32, _pad0:u32, _pad1:u32 };
+struct TileParams { seed:u32, half_extent:i32, origin_x:i32, origin_z:i32, stride:i32, grid_size:u32, override_count:u32, _pad1:u32 };
 
 struct U64 { hi: u32, lo: u32 };
 
@@ -125,6 +125,24 @@ fn corner_height_at(seed: u32, half_extent: i32, x: i32, z: i32) -> u32 {
 
 @group(0) @binding(0) var<uniform> params:TileParams;
 @group(0) @binding(1) var<storage,read_write> heights:array<u32>;
+// R2: 疎な地形編集オーバーレイ。build_tile_overrides(Rust側)が local_index 昇順で
+// ソート済みの [local_index0, height0, local_index1, height1, ...] を詰める。
+// local_index はこのシェーダのスレッド添字 i (=lx*grid_size+lz) と同じ規約。
+@group(0) @binding(2) var<storage,read> overrides:array<u32>;
+
+// 二分探索: このコーナー(local_index=i)を上書きする編集があれば height を返す
+// (createEditedTerrainField の「override ?? base」と同じ意味論)。無ければ -1。
+fn override_height(local_index:u32)->i32{
+ var lo=0u; var hi=params.override_count;
+ loop{
+  if(lo>=hi){break;}
+  let mid=(lo+hi)/2u;
+  let idx=overrides[mid*2u];
+  if(idx==local_index){return i32(overrides[mid*2u+1u]);}
+  if(idx<local_index){lo=mid+1u;}else{hi=mid;}
+ }
+ return -1;
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid:vec3<u32>){
@@ -132,6 +150,8 @@ fn main(@builtin(global_invocation_id) gid:vec3<u32>){
  let lx=i/params.grid_size; let lz=i%params.grid_size;
  let x=params.origin_x+i32(lx)*params.stride; let z=params.origin_z+i32(lz)*params.stride;
  if(x < -params.half_extent || x > params.half_extent || z < -params.half_extent || z > params.half_extent){heights[i]=0u;return;}
- let n=composite_num(params.seed,x,z); let water=u64_cmp(n,U64(2u,1073741824u))<0; let h=select(height_from_num(n),0u,water);
+ let n=composite_num(params.seed,x,z); let water=u64_cmp(n,U64(2u,1073741824u))<0; var h=select(height_from_num(n),0u,water);
+ let ov=override_height(i);
+ if(ov>=0){h=u32(ov);}
  heights[i]=h | (select(0u,1u,water)<<8u);
 }

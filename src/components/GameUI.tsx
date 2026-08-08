@@ -419,7 +419,7 @@ export const GameUI: React.FC<GameUIProps> = ({
             </div>
             <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.6 }}>
               WebGPU実験版は地形だけを新しいレンダラー(Rust + wgpu)で描きます。
-              現時点では地形編集(盛土/切土)の結果が反映されず、地形に影も落ちません。
+              地形編集(盛土/切土)の結果も反映されますが、地形に影はまだ落ちません。
               非対応の環境では自動で従来に戻ります。
             </div>
             {rendererNote && (

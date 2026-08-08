@@ -30,7 +30,7 @@ import { rectCells, type CornerDiffs } from '../sim/terrainOverlay';
 import type { TownTileCache } from '../sim/townTiles';
 import { townIntersectsCellRange } from '../sim/townTiles';
 import { TerrainBlocks } from './TerrainBlocks';
-import { WebGpuCameraSync, type WebGpuLayerRef } from './WebGpuTerrainLayer';
+import { WebGpuCameraSync, WEBGPU_UNDERGROUND_DIM_FACTOR, type WebGpuLayerRef } from './WebGpuTerrainLayer';
 import { createGroundTexture } from '../render/groundTexture';
 import {
   computePortalHeadwall, buildHeadwallOutline, buildArchOutline, type Point2D,
@@ -629,7 +629,13 @@ export const GameScene: React.FC<GameSceneProps> = ({
           直交カメラの見え方のずれで高い地形の頂上をクリックしても手前のセルが選ばれて
           しまうため。ハンドラ内でstopPropagationし、背後の地面プレーンのハンドラが
           プレーン上の(ずれた)e.pointで二重に発火しないようにする。 */}
-      {webGpuLayer && <WebGpuCameraSync layerRef={webGpuLayer} controlsRef={orbitControlsRef} />}
+      {webGpuLayer && (
+        <WebGpuCameraSync
+          layerRef={webGpuLayer}
+          controlsRef={orbitControlsRef}
+          dim={isLevelDimmed(0, undergroundView, buildLevel) ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
+        />
+      )}
 
       {/* WebGPUモードでは地形は下層(wgpu)が描くので、three.js側の地形メッシュは出さない。 */}
       {!webGpuLayer && (

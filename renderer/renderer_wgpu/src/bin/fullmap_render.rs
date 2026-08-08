@@ -86,6 +86,16 @@ fn main() {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let tile_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -242,6 +252,11 @@ fn main() {
     );
     let lod = keys.first().map(|k| k.lod).unwrap_or(0);
 
+    let overrides_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("tile-overrides"),
+        contents: &[0u8; 8],
+        usage: wgpu::BufferUsages::STORAGE,
+    });
     let mut tiles = Vec::with_capacity(keys.len());
     for key in &keys {
         let stride = 1i32 << key.lod;
@@ -278,6 +293,10 @@ fn main() {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: samples.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: overrides_buf.as_entire_binding(),
                 },
             ],
         });

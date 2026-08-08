@@ -101,6 +101,7 @@ export default function App() {
           key={`${worldSeed}:${halfExtent}`}
           seed={worldSeed}
           halfExtent={halfExtent}
+          cornerDiffs={cornerDiffs}
           layerRef={webGpuLayerRef}
           onUnavailable={handleRendererUnavailable}
         />

@@ -93,6 +93,7 @@ const multiSeedNoise = strictNoiseSeeds.map(seed => {
 });
 const multiSeedNoisePass = multiSeedNoise.every(item => item.mismatches === 0);
 const tile = parseLastJson(run(path.join(rendererRoot, 'target/release/tile_check'), [], renderer, rendererEnv).stdout);
+const editOverlay = parseLastJson(run(path.join(rendererRoot, 'target/release/edit_check'), [], renderer, rendererEnv).stdout);
 const offscreen = parseLastJson(run(path.join(rendererRoot, 'target/release/offscreen_render'), [], renderer, rendererEnv).stdout);
 const fullmap = parseLastJson(run(path.join(rendererRoot, 'target/release/fullmap_render'), [], renderer, rendererEnv).stdout);
 
@@ -140,6 +141,7 @@ const a8 = selectedFrame.deterministic === true;
 const strict = {
   A1: { pass: selectedFrame.medianMs <= 1 && selectedFrame.p99Ms <= 2, target: 'median <=1 ms, p99 <=2 ms', measurement: { medianMs: selectedFrame.medianMs, p99Ms: selectedFrame.p99Ms } },
   A2: { pass: tile.cpuIssueMedianMs <= 0.15, target: '<=0.15 ms/tile', measurement: tile.cpuIssueMedianMs },
+  A3: { pass: editOverlay.mismatches === 0 && editOverlay.cpuDiffMedianMs <= 1, target: '0 edit-overlay mismatches + CPU diff apply <=1ms median', measurement: { mismatches: editOverlay.mismatches, cpuDiffMedianMs: editOverlay.cpuDiffMedianMs, cpuDiffP99Ms: editOverlay.cpuDiffP99Ms } },
   A5: { pass: heapBytes == null ? null : heapBytes <= 96 * 1024 * 1024, targetBytes: 96 * 1024 * 1024, measuredBytes: heapBytes },
   A6: { pass: wasmGzipBytes <= 1 * 1024 * 1024, targetBytes: 1 * 1024 * 1024, measuredBytes: wasmGzipBytes },
   A7: { pass: selectedFrame.hitchesOver16_6ms === 0, target: '0 frames >16.6 ms / 10,000' },
@@ -180,7 +182,11 @@ const report = {
     strict,
     A1_proto_cpu_path: { pass: a1Proto, target: 'median <=2 ms, p99 <=4 ms', measurement: selectedFrame, caveat: 'prototype LOD/culling/command skeleton, not final full A1 workload' },
     A2_tile_issue: { pass: a2, target: '<=0.3 ms/tile CPU issue', measurement: tile },
-    A3_overlay_update: { pass: null, status: 'not-in-prototype-scope' },
+    A3_overlay_update: {
+      pass: editOverlay.mismatches === 0 && editOverlay.cpuDiffMedianMs <= 1,
+      target: '0 edit-overlay mismatches (LOD0 exact) + CPU diff apply <=1ms median',
+      measurement: editOverlay,
+    },
     A4_production_ts_vs_rust_1m: { pass: build.productionTsVsRust1M, target: 'production src/sim/terrainField.ts vs Rust, 1,000,000 heights byte-for-byte', status: checkTsMigration ? undefined : 'pending main-TS integer migration owned by caller' },
     A4_noise_exact_native_10m: { pass: a4Native, target: '10,000,000 points, 0 mismatches', measurement: noise },
     A4_noise_exact_multiseed_50m: { pass: multiSeedNoisePass, target: '5 seeds x 10,000,000 points, 0 mismatches', measurement: multiSeedNoise },

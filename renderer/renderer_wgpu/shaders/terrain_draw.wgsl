@@ -1,5 +1,8 @@
 struct TileParams { origin_x:i32, origin_z:i32, stride:i32, grid_size:u32 };
-struct CameraParams { center_x:f32, center_z:f32, pixels_per_cell:f32, height_scale:f32, viewport_w:f32, viewport_h:f32, half_extent:f32, _pad:f32 };
+// dim: 地下ビュー減光係数(1.0=通常、0.0=真っ黒)。R2で setDim から書き込む。
+// three.js側のDIMMED_MATERIALS(opacity~0.3相当)と見た目を揃えるため、色を直接
+// 乗算で暗くする(このパイプラインは blend:None の不透明描画なのでアルファ合成は使えない)。
+struct CameraParams { center_x:f32, center_z:f32, pixels_per_cell:f32, height_scale:f32, viewport_w:f32, viewport_h:f32, half_extent:f32, dim:f32 };
 // Mirrors tile_finalize.wgsl's RenderArgs: words 0..3 are the draw_indirect quad,
 // words 4..5 are the per-class counts this shader splits the vertex range with.
 struct RenderArgs { vertex_count:u32, instance_count:u32, first_vertex:u32, first_instance:u32, cliff_vertices:u32, water_vertices:u32, _pad0:u32, _pad1:u32 };
@@ -38,7 +41,7 @@ fn project(wx:f32,wz:f32,y:f32)->vec4<f32>{
  let inv_span=1.0/max(camera.half_extent*4.0+64.0,1.0);
  return vec4<f32>(cx,cy,clamp(0.5-(wx+wz+y)*inv_span,0.0,1.0),1.0);
 }
-struct Out{@builtin(position)position:vec4<f32>,@location(0)color:vec3<f32>};
+struct Out{@builtin(position)position:vec4<f32>,@location(0)color:vec3<f32>,@location(1)dim:f32};
 
 fn terrain_vertex(v:u32)->Out{
  let cell=v/6u; let corner=v%6u; let cells=tile.grid_size-1u; let x=cell/cells; let z=cell%cells;
@@ -51,7 +54,7 @@ fn terrain_vertex(v:u32)->Out{
  var o:Out; o.position=project(wx,wz,rh);
  var color=vec3<f32>(0.604,0.722,0.435);
  if(h>=1.0){color=vec3<f32>(0.529,0.663,0.373);} if(h>=8.0){color=vec3<f32>(0.910,0.902,0.875);}
- if(isw){color=vec3<f32>(0.851,0.812,0.659);} o.color=color; return o;
+ if(isw){color=vec3<f32>(0.851,0.812,0.659);} o.color=color; o.dim=camera.dim; return o;
 }
 
 fn cliff_vertex(v:u32)->Out{
@@ -66,14 +69,14 @@ fn cliff_vertex(v:u32)->Out{
  if(zedge){wx0=x0;wz0=z1;wx1=x1;wz1=z1;}
  var wx=wx0; var wz=wz0; var y=lo;
  if(vi==1u){wx=wx1;wz=wz1;} else if(vi==2u){wx=wx1;wz=wz1;y=hi;} else if(vi==3u){wx=wx0;wz=wz0;} else if(vi==4u){wx=wx1;wz=wz1;y=hi;} else if(vi==5u){wx=wx0;wz=wz0;y=hi;}
- var o:Out; o.position=project(wx,wz,y); o.color=select(vec3<f32>(0.435,0.416,0.369),vec3<f32>(0.549,0.525,0.467),hi-lo>=2.0); if(hi>=8.0){o.color=vec3<f32>(0.62,0.61,0.58);} return o;
+ var o:Out; o.position=project(wx,wz,y); o.color=select(vec3<f32>(0.435,0.416,0.369),vec3<f32>(0.549,0.525,0.467),hi-lo>=2.0); if(hi>=8.0){o.color=vec3<f32>(0.62,0.61,0.58);} o.dim=camera.dim; return o;
 }
 
 fn water_vertex(v:u32)->Out{
  let id=water_cells[v/6u]; let cells=tile.grid_size-1u; let x=id/cells; let z=id%cells;
  let cx=f32(tile.origin_x+i32(x)*tile.stride); let cz=f32(tile.origin_z+i32(z)*tile.stride); let hx=0.47*f32(tile.stride);
  var ox=-hx;var oz=-hx; if(v%6u==1u){ox=hx;}else if(v%6u==2u){ox=hx;oz=hx;}else if(v%6u==4u){ox=hx;oz=hx;}else if(v%6u==5u){oz=hx;}
- var o:Out; o.position=project(cx+ox,cz+oz,-0.055); o.color=vec3<f32>(0.290,0.624,0.831); return o;
+ var o:Out; o.position=project(cx+ox,cz+oz,-0.055); o.color=vec3<f32>(0.290,0.624,0.831); o.dim=camera.dim; return o;
 }
 
 @vertex fn vs_main(@builtin(vertex_index) v:u32)->Out{
@@ -82,5 +85,5 @@ fn water_vertex(v:u32)->Out{
 }
 @fragment fn fs_main(in:Out)->@location(0)vec4<f32>{
  let alpha=select(1.0,0.85,in.color.r>0.25&&in.color.b>0.6);
- return vec4<f32>(in.color,alpha);
+ return vec4<f32>(in.color*in.dim,alpha);
 }

@@ -137,6 +137,7 @@ struct GpuTile {
     _water_cells: wgpu::Buffer,
     render_args: wgpu::Buffer,
     _render_counts: wgpu::Buffer,
+    _overrides: wgpu::Buffer,
     draw_bind_group: wgpu::BindGroup,
     last_used: u64,
     /// Indirect draw quad as *requested* by tile_finalize, before the safety clamp:
@@ -299,6 +300,7 @@ fn main() {
         entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
         ],
     });
     let tile_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-layout"), bind_group_layouts: &[&tile_bgl], push_constant_ranges: &[] });
@@ -415,7 +417,8 @@ fn main() {
         push_u32(&mut params, 0);
         push_u32(&mut params, 0);
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-params"), contents: &params, usage: wgpu::BufferUsages::UNIFORM });
-        let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-compute-bg"), layout: &tile_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }] });
+        let overrides_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-overrides"), contents: &[0u8; 8], usage: wgpu::BufferUsages::STORAGE });
+        let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-compute-bg"), layout: &tile_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: overrides_buf.as_entire_binding() }] });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile-generate"), timestamp_writes: None });
             pass.set_pipeline(&tile_pipeline);
@@ -458,7 +461,7 @@ fn main() {
         let tile_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("draw-params"), contents: &tile_bytes, usage: wgpu::BufferUsages::UNIFORM });
         let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw-bg"), layout: &draw_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: tile_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() }, wgpu::BindGroupEntry { binding: 4, resource: render_counts.as_entire_binding() }] });
         queue.submit(Some(encoder.finish()));
-        GpuTile { _samples: samples, _tile_params: tile_params, _cliff_edges: cliff_edges, _water_cells: water_cells, render_args, _render_counts: render_counts, draw_bind_group, last_used: frame_index, requested_args: None }
+        GpuTile { _samples: samples, _tile_params: tile_params, _cliff_edges: cliff_edges, _water_cells: water_cells, render_args, _render_counts: render_counts, _overrides: overrides_buf, draw_bind_group, last_used: frame_index, requested_args: None }
     };
 
     // Argument tracing (LAYER_B_ARG_TRACE=1): read every newly created tile's requested
@@ -662,6 +665,7 @@ fn main() {
             put_f32(&mut camera_bytes, 16, WIDTH as f32);
             put_f32(&mut camera_bytes, 20, HEIGHT as f32);
             put_f32(&mut camera_bytes, 24, HALF_EXTENT as f32);
+            put_f32(&mut camera_bytes, 28, 1.0); // dim: 通常表示(地下ビュー減光なし)
             queue.write_buffer(&camera_buffer, 0, &camera_bytes);
 
             {

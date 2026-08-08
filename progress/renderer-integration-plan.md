@@ -109,3 +109,105 @@ sy(下向き) = (x + z - 2y) / √6 * ppc      ppc = zoom × DPR (物理px/ワ�
 - 地形編集モードのピッキングは、WebGPUモードでは TerrainBlocks が無いぶん地面プレーン
   (y=0)頼りになり、丘の上での精度が落ちる。
 - レンダラー選択は localStorage(`cubictransim.rendererMode`)。セーブデータには入れない。
+
+## R2実装メモ (0.4.0-Alpha-2a)
+
+### GPU側オーバーライド構造
+
+`renderer/renderer_wgpu/src/lib.rs` に target非依存の `edits` モジュールを追加した(wasm・
+ネイティブ検証バイナリの両方から使う)。
+
+- `OverrideChunks = HashMap<(i32,i32), HashMap<u32,u8>>`。terrainOverlay.ts の
+  `CornerDiffs`(`Map<string, Map<number,number>>`)と同じ2段構成をそのままミラーする
+  (chunkKey=(cx,cz)、localIndex=`lx*OVERLAY_CHUNK_SIZE+lz`)。JS→wasm 転送は
+  `setCornerOverrideChunk(chunkX, chunkZ, entries: Uint32Array)` の1本のみ。
+  `entries` が空ならチャンク全体を削除する(基底復帰、TS側の削除規則と同じ)。
+- タイル生成時(`create_gpu_tile`)に、そのタイルが実際にサンプルする範囲へ重なる
+  オーバーライドだけを `build_tile_overrides` で local_index 昇順のソート済み配列
+  `[local_index0,height0,local_index1,height1,...]` へ変換し、専用のストレージバッファ
+  (`tile_bgl` binding=2、read-only storage)へ載せる。`tile_generate.wgsl` は自分の
+  local_index(`i=lx*grid_size+lz`)をこの配列に対して**二分探索**し、ヒットしたら
+  ベース地形の代わりにその高さを使う(`override ?? base`、createEditedTerrainField と
+  同じ意味論)。1タイルあたりの上限は `MAX_TILE_OVERRIDES=16384`(現実的な編集規模に対し
+  十分な余裕。二分探索なので上限を大きく取ってもシェーダコストはほぼ変わらない)。
+- 転送は「変更のあったチャンクだけ」(overlayChunkRefsと同じ参照比較トリック、
+  `WebGpuTerrainLayer.tsx` の `pushChangedChunks`)。wasm側は受け取ったチャンクを
+  `invalidate_chunk` で該当しうる常駐タイル(全LOD、スナップ許容込み)だけキャッシュから
+  外し、次の `render()` 呼び出しで(通常フレームの visible/needed 選択に載れば)
+  即座に再生成する。
+
+### LOD一貫性規則
+
+- **LOD0(stride=1)は厳密一致のみ**採用する(`Math.round`+完全一致という
+  createEditedTerrainField の契約そのもの)。edit_check の「0 mismatches」判定はこの
+  LOD0の一致だけを正しさの契約として課す。
+- **LOD>0(stride>1)は最も近い格子点(世界座標で±stride/2以内)へスナップ**して適用する。
+  スナップしないと、粗いLODが編集コーナーをそもそもサンプルせず、遠景ズームで編集地形が
+  「消える」ため。複数の編集コーナーが同じ粗いサンプル点へスナップする場合は距離が最も
+  近いものを採用し、同距離なら x→z 昇順で決定的にタイブレークする(HashMapの走査順に
+  依存しない。A8: 同一シード・同一カメラ経路での出力バイト一致に必要)。
+  `renderer/renderer_wgpu/src/lib.rs` の `edits::tests`(5件)がこの規則を固定している。
+
+### A3(地形編集差分の反映コスト・正しさ)
+
+ネイティブバイナリ `renderer/renderer_wgpu/src/bin/edit_check.rs` を追加し、
+`run-layer-a.mjs` の `A3` / `A3_overlay_update` ゲートへ配線した(既存の
+tile_check/noise-check と同じ Vulkan バックエンド前提、層AのVMで走る)。
+
+- 正しさ: 5タイル×300コーナーのランダム編集(xorshift32、決定的)を CPU リファレンス
+  (`override ?? base`)と GPU 経路(build_tile_overrides→二分探索)の両方に適用し、
+  影響ウィンドウ(257×257 コーナー)全点を比較。開発機(Apple M4、Metal backend で
+  一時的に検証、Vulkanが無い開発機のため)で実測: **5タイル・330,245点・不一致0件**。
+- CPU側コスト: `set_corner_override_chunk` 相当(HashMap構築+`build_tile_overrides`)を
+  1万回計測。実測値(Apple M4): **中央値 0.0075ms / p99 0.0104ms**(目標 ≤1ms を大幅に
+  下回る)。
+- 層AのVM(Vulkan software rasterizer)での実行は本セッションでは未実施(このMac開発機に
+  Vulkanローダが無いため noise-check/tile_check と同様に走らない、既知の環境制約)。
+  CI/層A環境では他の check バイナリと同じ手順(`cargo build --release --bin edit_check`→
+  実行)でそのまま動く設計にしてある。
+
+### T8(地形編集の反映フレーム数)
+
+ブラウザ(port 5175、WebGPUモード)で `window.__webgpuLayer.syncAndRender` を直接
+同期呼び出しする方法で実測した(非表示タブでは rAF が止まる制約があるため、
+CLAUDE.mdの手動tick方針に倣い rAF 経由の計測は使わなかった)。
+
+- 定常状態から `pushCornerOverrideChunk` を呼んだ**直後の次の `render()` 呼び出し1回で
+  `generatedTiles:1`(対象タイルの再生成)を確認**。実測 `elapsedMs≈0.4ms`。
+  実際のゲームは `syncAndRender` を毎フレーム(useFrameから)1回だけ呼ぶので、
+  これは**編集を適用したフレームの次に描く1フレームで反映される**ことを意味する
+  (目標 ≤1フレームを満たす。非同期compute化はしていないため、同期GPU経路のまま
+  規定値を満たせている)。
+
+### 地下ビュー減光の同調
+
+- `terrain_draw.wgsl` の `CameraParams` 末尾の未使用 `_pad` フィールドを `dim:f32` として
+  再利用した(バイト長・バインディング形状は不変なので、他の check バイナリの camera_bgl
+  定義には影響しない。dimを実際に使う lib.rs / layer_b_bench.rs のみ書き込み値を
+  `1.0`(通常表示)に更新)。`dim` は頂点シェーダで `Out.dim` として運び、
+  フラグメントシェーダで `color*dim` として乗算する(このパイプラインは
+  `blend:None` の不透明描画のため、three.js の DIMMED_MATERIALS のようなアルファ合成では
+  なく色の直接減光で見た目を揃える)。
+- wasm API `setDim(factor)` を追加。`WebGpuCameraSync`(`WebGpuTerrainLayer.tsx`)が
+  毎フレーム `isLevelDimmed(0, undergroundView, buildLevel) ? 0.3 : 1` を渡す
+  (`WEBGPU_UNDERGROUND_DIM_FACTOR=0.3`、three.js DIMMED_MATERIALS の
+  `opacity:0.3` に合わせてスクリーンショット比較で選定)。
+- ブラウザ実機で確認: 建設レベルを「地下1」へ切り替えると、wgpu地形が three.js の
+  地下ビュー演出と同時に暗く落ちることを確認した(GameScene側のisLevelDimmed呼び出しと
+  同じフレームで setDim が呼ばれるため、両層は同調して切り替わる)。
+
+### 設定パネルの文言更新
+
+「地形編集(盛土/切土)の結果が反映されない」という R1 時点の記述を削除し、
+「地形編集の結果も反映されるが、地形に影はまだ落ちない」に更新した(`GameUI.tsx`)。
+
+### 既知の制約・次フェーズへの持ち越し
+
+- `MAX_TILE_OVERRIDES=16384` を超える極端な編集(1タイルの1/4以上のコーナーを
+  1回で編集するような操作)は、local_index昇順で先頭から採用されるため一部が
+  反映されない可能性がある(現実的な操作では到達しない上限だが、無制限ではない)。
+- edit_check の層A(Vulkan VM)実行は本セッションでは未検証(開発機にVulkanローダが
+  無いため)。次回層A環境が使える時に `node renderer/bench/run-layer-a.mjs` を通し、
+  A3ゲートの実測値をVM側でも取ること。
+- LOD>0のスナップは「見た目上消えない」ことを目的とした近似であり、遠景での編集の
+  正確な位置一致は契約に含めていない(LOD一貫性規則の節を参照)。

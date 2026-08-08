@@ -28,6 +28,14 @@ interface CanvasRendererHandle {
   setCamera(centreX: number, centreZ: number, pixelsPerUnit: number, heightPerLevel?: number): void;
   render(): string;
   adapterInfo(): string;
+  /**
+   * terrainOverlay.ts の CornerDiffs の1チャンク分を丸ごと置き換える(R2)。
+   * entries は `[localIndex0, height0, localIndex1, height1, ...]` のフラット配列。
+   * 空配列はチャンク全体の削除(基底へ復帰)を意味する。
+   */
+  setCornerOverrideChunk(chunkX: number, chunkZ: number, entries: Uint32Array): void;
+  /** 地下ビュー減光係数(1.0=通常、0.0=真っ黒)。GameScene の isLevelDimmed と同調させる。 */
+  setDim(factor: number): void;
 }
 
 interface RendererModule {
@@ -102,6 +110,26 @@ export class WebGpuTerrainLayerController {
 
   adapterInfo(): string {
     return this.renderer.adapterInfo();
+  }
+
+  /**
+   * terrainOverlay.ts の CornerDiffs 1チャンク分を wasm 側へ転送する。
+   * `chunk` が空(またはサイズ0)なら基底復帰(チャンク削除)として送る。
+   */
+  pushCornerOverrideChunk(chunkKey: string, chunk: ReadonlyMap<number, number>): void {
+    const [chunkX, chunkZ] = chunkKey.split(',').map(Number);
+    const flat = new Uint32Array(chunk.size * 2);
+    let i = 0;
+    for (const [localIndex, height] of chunk) {
+      flat[i++] = localIndex;
+      flat[i++] = height;
+    }
+    this.renderer.setCornerOverrideChunk(chunkX, chunkZ, flat);
+  }
+
+  /** 地下ビュー減光係数を wgpu 側へ同期する(setCamera とは独立、頻度も少ないため毎フレーム呼んでよい)。 */
+  setDim(factor: number): void {
+    this.renderer.setDim(factor);
   }
 
   /** 1フレーム描く。戻り値は wasm 側の統計JSON(失敗時は null)。 */
