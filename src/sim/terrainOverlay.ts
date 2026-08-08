@@ -388,3 +388,34 @@ export function deserialiseCornerDiffs(data: SerialisedCornerDiffs): CornerDiffs
   }
   return diffs;
 }
+
+/**
+ * TerrainField のコーナー標高を、マップ全域ぶんの CornerDiffs として書き出す(R4d)。
+ *
+ * 用途: デバッグシナリオが「シードから導けない手組みの地形」(useGameLogic の
+ * debugFieldOverride)を使うと、シード+halfExtent しか知らない wgpu レンダラーが
+ * 別の地形を描いてしまい、線路や駅が丘に埋もれて見えなくなる。three.js 退役後は
+ * それが唯一の描画経路になるため、上書きfieldをオーバーレイ差分へ焼き直して
+ * wasm 側へ転送できるようにする。
+ *
+ * 制約: オーバーレイはコーナー標高だけを表現するので、`cellCornerHeights` を
+ * 直接実装して4隅を不揃いにするタイプの擬似field(山岳トンネルのシナリオの尾根)は
+ * 再現できない。その場合は cornerHeightAt の値(=平坦)が使われる。
+ */
+export function cornerDiffsFromField(field: TerrainField, halfExtent: number): CornerDiffs {
+  const diffs: CornerDiffs = new Map();
+  for (let z = -halfExtent; z <= halfExtent + 1; z++) {
+    for (let x = -halfExtent; x <= halfExtent + 1; x++) {
+      const cx = chunkCoordOf(x);
+      const cz = chunkCoordOf(z);
+      const key = chunkKeyOf(cx, cz);
+      let chunk = diffs.get(key);
+      if (!chunk) {
+        chunk = new Map();
+        diffs.set(key, chunk);
+      }
+      chunk.set(localIndexOf(x, z, cx, cz), field.cornerHeightAt(x, z));
+    }
+  }
+  return diffs;
+}

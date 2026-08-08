@@ -3,6 +3,7 @@ import { createTerrainField, fieldFromMaps, MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_H
 import type { TerrainField } from './terrainField';
 import {
   applyCornerEdit,
+  cornerDiffsFromField,
   buildEditBlockers,
   createEditedTerrainField,
   deserialiseCornerDiffs,
@@ -439,5 +440,26 @@ describe('createEditedTerrainField batch corner grid (P9a)', () => {
     const grid = field.waterCornerGridFor!(0, 0, 32, 32);
     const baseGrid = base.waterCornerGridFor!(0, 0, 32, 32);
     expect(Array.from(grid)).toEqual(Array.from(baseGrid));
+  });
+});
+
+describe('cornerDiffsFromField', () => {
+  it('reproduces the source field through createEditedTerrainField', () => {
+    const source = createTerrainField(4242, 6);
+    const diffs = cornerDiffsFromField(source, 6);
+    const rebuilt = createEditedTerrainField(createTerrainField(1, 6), diffs);
+    for (let z = -6; z <= 6; z++) {
+      for (let x = -6; x <= 6; x++) {
+        expect(rebuilt.cornerHeightAt(x, z)).toBe(source.cornerHeightAt(x, z));
+      }
+    }
+  });
+
+  it('covers the corner ring one past the last cell on both axes', () => {
+    const source = createTerrainField(7, 3);
+    const diffs = cornerDiffsFromField(source, 3);
+    const rebuilt = createEditedTerrainField(createTerrainField(99, 3), diffs);
+    expect(rebuilt.cornerHeightAt(4, 4)).toBe(source.cornerHeightAt(4, 4));
+    expect(rebuilt.cornerHeightAt(-3, -3)).toBe(source.cornerHeightAt(-3, -3));
   });
 });

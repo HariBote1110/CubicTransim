@@ -58,12 +58,21 @@ export function useMeshChunkFeeder({
   const buildRef = useRef(buildChunk);
   const versionRef = useRef(version);
   const appliedVersionRef = useRef(version);
+  /** 中身を作り直すべきキー(既に載っているが内容が古くなったもの)。 */
+  const staleRef = useRef(new Set<string>());
   // 「載せ替えるべき変更がある」フラグ。立っていないフレームでは何もしない。
   const dirtyRef = useRef(true);
 
   useEffect(() => {
     desiredRef.current = desiredKeys;
-    buildRef.current = buildChunk;
+    // R4d: buildChunk の同一性が変わった = 焼き込みの入力(railMap・地形・町など)が
+    // 変わったということなので、既に載っているチャンクも作り直す必要がある。
+    // これを見ていなかったため、キーが変わらないチャンク(例: レール網の 'surface')は
+    // 初回に載せた内容のまま更新されず、建設しても線路が現れない不具合になっていた。
+    if (buildRef.current !== buildChunk) {
+      buildRef.current = buildChunk;
+      staleRef.current = new Set(desiredKeys);
+    }
     versionRef.current = version;
     dirtyRef.current = true;
   }, [desiredKeys, buildChunk, version]);
@@ -89,6 +98,7 @@ export function useMeshChunkFeeder({
     if (lastControllerRef.current !== controller) {
       lastControllerRef.current = controller;
       registryRef.current = new MeshChunkRegistry(namespace);
+      staleRef.current = new Set();
       dirtyRef.current = true;
     }
     const registry = registryRef.current!;
@@ -96,6 +106,7 @@ export function useMeshChunkFeeder({
 
     if (appliedVersionRef.current !== versionRef.current) {
       for (const id of registry.clear()) controller.removeMeshChunk(id);
+      staleRef.current = new Set();
       appliedVersionRef.current = versionRef.current;
     }
 
@@ -104,19 +115,24 @@ export function useMeshChunkFeeder({
 
     let budget = budgetPerFrame;
     let remaining = false;
+    const stale = staleRef.current;
     for (const key of desired) {
-      if (registry.has(key)) continue;
+      const isNew = !registry.has(key);
+      if (!isNew && !stale.has(key)) continue;
       if (budget <= 0) {
         remaining = true;
         break;
       }
       budget -= 1;
+      stale.delete(key);
       // 中身が空のチャンク(木が1本も生えないチャンクなど)でも id は確保しておく。
       // そうしないと毎フレーム同じチャンクを作り直そうとしてしまう。
       const id = registry.acquire(key);
       const chunk = buildRef.current(key);
       if (chunk) controller.uploadMeshChunk(id, layerClass, chunk);
+      // 内容が空になった既存チャンクは、古い中身が残らないよう外す。
+      else if (!isNew) controller.removeMeshChunk(id);
     }
-    dirtyRef.current = remaining;
+    dirtyRef.current = remaining || stale.size > 0;
   });
 }

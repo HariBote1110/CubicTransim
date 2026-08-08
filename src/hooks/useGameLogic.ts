@@ -19,7 +19,7 @@ import {
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT } from '../sim/terrainField';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
-import { createEditedTerrainField, applyCornerEdit, buildEditBlockers } from '../sim/terrainOverlay';
+import { createEditedTerrainField, applyCornerEdit, buildEditBlockers, cornerDiffsFromField } from '../sim/terrainOverlay';
 
 // 編成の最小・最大両数
 const MIN_CARS = 1;
@@ -655,7 +655,13 @@ export const useGameLogic = () => {
       setCornerDiffs(new Map());
       setDebugFieldOverride(null);
     } else {
-      setDebugFieldOverride(scenario.field ?? fieldFromMaps(new Map(), new Map(), halfExtent));
+      const overrideField = scenario.field ?? fieldFromMaps(new Map(), new Map(), halfExtent);
+      setDebugFieldOverride(overrideField);
+      // R4d: wgpu レンダラーは (seed, halfExtent) からしか地形を作れないため、手組みの
+      // 上書きfieldをそのまま使うと「TS側は平地・描画側はランダムな丘」になり、線路や駅が
+      // 丘に埋もれて見えなくなる。全域ぶんのコーナー標高をオーバーレイ差分として転送し、
+      // 描画側の地形を上書きfieldへ揃える(sim/terrainOverlay.ts の cornerDiffsFromField)。
+      setCornerDiffs(cornerDiffsFromField(overrideField, halfExtent));
     }
     setTowns(scenario.towns ?? []);
     setGroups(scenario.groups ?? []);

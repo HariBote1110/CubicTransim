@@ -135,6 +135,15 @@ export const WebGpuStations: React.FC<Props> = ({
     return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour, options })));
   }, [grouping, cellGeometries, selectedLevel]);
 
+  // useMeshChunkFeeder は buildChunk の同一性で「内容が変わったか」を判断するため、
+  // インラインのアロー関数を渡してはいけない(毎レンダー別関数=毎レンダー全再構築になる)。
+  const buildUndergroundBright = useCallback(
+    (id: string) => buildUndergroundChunk(id, true), [buildUndergroundChunk],
+  );
+  const buildUndergroundDim = useCallback(
+    (id: string) => buildUndergroundChunk(id, false), [buildUndergroundChunk],
+  );
+
   const houseKeys = useMemo(() => [...housePlacements.keys()], [housePlacements]);
   const buildHouseChunk = useCallback((stationId: string): BakedMeshChunk | null => {
     const placement = housePlacements.get(stationId);
@@ -168,14 +177,14 @@ export const WebGpuStations: React.FC<Props> = ({
     layerRef,
     namespace: MESH_CHUNK_NAMESPACE.stationUndergroundBright,
     desiredKeys: brightKeys,
-    buildChunk: (id: string) => buildUndergroundChunk(id, true),
+    buildChunk: buildUndergroundBright,
     layerClass: MESH_LAYER_CLASS.underground,
   });
   useMeshChunkFeeder({
     layerRef,
     namespace: MESH_CHUNK_NAMESPACE.stationUndergroundDim,
     desiredKeys: dimKeys,
-    buildChunk: (id: string) => buildUndergroundChunk(id, false),
+    buildChunk: buildUndergroundDim,
     layerClass: MESH_LAYER_CLASS.translucent,
   });
 
