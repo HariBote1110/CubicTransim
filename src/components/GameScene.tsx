@@ -23,7 +23,7 @@ import { DepotBlock } from './DepotBlock';
 import { SignalBlock } from './SignalBlock';
 import { StationLabel } from './StationLabel';
 import { StationBlock, StationHouse } from './StationBlock';
-import { TownBlocks, TownLabels } from './TownBlocks';
+import { TownBlocks } from './TownBlocks';
 import { Scenery } from './Scenery';
 import { WebGpuScenery } from './WebGpuScenery';
 import { WebGpuTownBlocks } from './WebGpuTownBlocks';
@@ -225,6 +225,9 @@ interface GameSceneProps {
    * 色出力も止める(ポインタ判定用にメッシュ自体は残す)。
    */
   webGpuLayer?: WebGpuLayerRef;
+  /** R4c: WebGpuCameraSyncが毎フレーム書き込む最新カメラ状態の置き場(App.tsxが保持)。
+   *  Canvasの外側にあるLabelOverlayがここから読む。webGpuLayer未使用時はundefined。 */
+  webGpuCameraStateRef?: React.MutableRefObject<WebGpuCameraState | null>;
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
   // ★変更: 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜MAX_ELEVATED_LEVEL)。
@@ -259,7 +262,7 @@ interface GameSceneProps {
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
-  railMap, stations, trains, towns, townTiles, field, halfExtent, cornerDiffs, webGpuLayer, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
+  railMap, stations, trains, towns, townTiles, field, halfExtent, cornerDiffs, webGpuLayer, webGpuCameraStateRef, world, buildMode, buildLevel, selectedTrainId, isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -270,8 +273,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
   // R3: ビューポートのCSSピクセルサイズ(minZoom計算に使う。DPR非依存、webgpuCamera.ts参照)。
   const { size: viewportSize, gl: webglRenderer } = useThree();
   // R4c: WebGpuCameraSyncが毎フレーム書き込む最新カメラ状態。列車の画面空間クリック判定
-  // (webGpuLayerモードのみ)・DOMラベルオーバーレイが読む。
-  const webgpuCameraStateRef = useRef<WebGpuCameraState | null>(null);
+  // (webGpuLayerモードのみ)に使う。App.tsxから渡されたref(LabelOverlayとも共有)を使い、
+  // classicモード等で渡されていない場合はローカルのダミーrefにフォールバックする。
+  const localCameraStateRef = useRef<WebGpuCameraState | null>(null);
+  const webgpuCameraStateRef = webGpuCameraStateRef ?? localCameraStateRef;
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
   // dragStartPos の実体はこの ref に持つ。handlePointerUp が読むのは常にこちら。
@@ -1013,18 +1018,16 @@ export const GameScene: React.FC<GameSceneProps> = ({
       {farViewHidden ? (
         <TownMarkers towns={towns} field={field} />
       ) : webGpuLayer ? (
-        // R4a: 家・道路はwgpuのメッシュチャンク(町1つ=1チャンク)。町名ラベルだけは
-        // R4cでDOMオーバーレイへ移すまで three.js 側(drei Html)に残す。
-        <>
-          <WebGpuTownBlocks
-            layerRef={webGpuLayer}
-            towns={visibleTowns}
-            townTiles={townTiles}
-            field={field}
-            dimMultiplier={farViewDimmed ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
-          />
-          <TownLabels towns={visibleTowns} field={field} />
-        </>
+        // R4a: 家・道路はwgpuのメッシュチャンク(町1つ=1チャンク)。町名ラベルはR4cで
+        // App.tsxのLabelOverlay(Canvas外のDOMオーバーレイ)へ移したので、ここでは
+        // drei <Html>版のTownLabelsを出さない(二重表示防止)。
+        <WebGpuTownBlocks
+          layerRef={webGpuLayer}
+          towns={visibleTowns}
+          townTiles={townTiles}
+          field={field}
+          dimMultiplier={farViewDimmed ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
+        />
       ) : (
         <TownBlocks towns={visibleTowns} townSubTiles={visibleTownSubTiles} field={field} dimmed={undergroundView || farViewDimmed} />
       )}
@@ -1046,7 +1049,9 @@ export const GameScene: React.FC<GameSceneProps> = ({
         return (
           <group key={station.id}>
             {!webGpuLayer && <StationHouse position={placement.position} angle={placement.angle} />}
-            <StationLabel station={station} orderIndices={orderIndices} world={world} labelY={placement.labelY} />
+            {/* R4c: 駅名ラベルはWebGPUモードではApp.tsxのLabelOverlay(DOMオーバーレイ)が
+                担う(二重表示防止)。classicモードは従来通りdrei <Html>版を使う。 */}
+            {!webGpuLayer && <StationLabel station={station} orderIndices={orderIndices} world={world} labelY={placement.labelY} />}
           </group>
         );
       })}

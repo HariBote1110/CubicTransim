@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGameLogic } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
@@ -11,6 +11,10 @@ import { T, button as themeButton } from './ui/theme';
 import { loadRendererMode, saveRendererMode, type RendererMode } from './ui/rendererPreference';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
 import type { WebGpuTerrainLayerController } from './render/webgpuLayer';
+import type { WebGpuCameraState } from './render/webgpuCamera';
+import { LabelOverlay, type LabelOverlayItem } from './components/LabelOverlay';
+import { OVERPASS_HEIGHT } from './sim/trackPath';
+import { formatPopulation } from './render/townGeometry';
 
 // ★追加(P5): 新規ゲーム開始時のマップサイズ選択肢。halfExtentはsim/persistence.tsの
 // v15セーブに含まれる値で、マップは-halfExtent..halfExtentのセル(一辺 2*halfExtent+1)。
@@ -62,6 +66,18 @@ export default function App() {
     saveRendererMode(mode);
   }, []);
   const webGpuActive = rendererMode === 'webgpu';
+  // R4c: WebGpuCameraSync(GameScene内)が毎フレーム書き込む最新カメラ状態。
+  // Canvasの外側にあるLabelOverlay(DOMラベル)がここから読む。
+  const webgpuCameraStateRef = useRef<WebGpuCameraState | null>(null);
+  // R4c: 駅の待ち人数・選択列車の速度/状態はsim層(worldRef)を直接ポーリングして
+  // ラベル内容へ反映する(r3fのuseFrameに乗せずに済むよう、DynamicTrain/StationLabelと
+  // 同程度の低頻度(0.5秒)でだけ再計算する)。
+  const [labelTick, setLabelTick] = useState(0);
+  useEffect(() => {
+    if (!webGpuActive) return;
+    const id = window.setInterval(() => setLabelTick(t => t + 1), 500);
+    return () => window.clearInterval(id);
+  }, [webGpuActive]);
 
   // GameScene側のuseEffect依存に入るため参照を固定し、内容が変わらないときは
   // stateを更新しない(毎フレームの再レンダリングを避ける)。
@@ -94,6 +110,84 @@ export default function App() {
     renameGroup, clearGroupSchedule, deleteGroup,
   } = useGameLogic();
 
+  // R4c: WebGPUモードのDOMラベルオーバーレイの中身(駅名・町名・選択列車ツールチップ)。
+  // labelTickで0.5秒ごとに再計算し、worldRef.current(sim層)から待ち人数・列車速度を
+  // 直接読む(StationLabel/DynamicTrainのHtml版と同じ更新頻度)。位置の高頻度更新は
+  // LabelOverlay側のrAFループが担う(このuseMemoはDOM操作の対象=中身の再構築のみ)。
+  const labelItems: LabelOverlayItem[] = webGpuActive ? (() => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+    labelTick;
+    const items: LabelOverlayItem[] = [];
+    const world = worldRef.current;
+    for (const station of stations.values()) {
+      const waiting = Math.floor(world?.waiting.get(station.id) ?? 0);
+      const door = station.platformDoors === 'standard' ? '半' : station.platformDoors === 'fullscreen' ? '全' : null;
+      items.push({
+        key: `station-${station.id}`,
+        world: { x: station.center.x, y: 1.35, z: station.center.z },
+        content: (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: T.ink, color: T.text,
+            border: `1px solid ${T.line}`, borderRadius: T.radiusPill,
+            padding: '3px 9px', fontSize: 11, fontWeight: 600,
+            boxShadow: T.shadowSm, backdropFilter: T.blur, whiteSpace: 'nowrap',
+          }}>
+            {station.name}
+            {door && (
+              <span style={{
+                fontSize: 9, fontWeight: 700, color: T.accent,
+                border: `1px solid ${T.accent}`, borderRadius: 3, padding: '0 3px', lineHeight: '12px',
+              }}>
+                {door}
+              </span>
+            )}
+            <span style={{ color: T.textMuted, fontVariantNumeric: 'tabular-nums' }}>{waiting}人</span>
+          </div>
+        ),
+      });
+    }
+    for (const town of towns) {
+      items.push({
+        key: `town-${town.id}`,
+        world: { x: town.centre.x, y: 2.6 + field.cellHeightAt(town.centre.x, town.centre.z) * OVERPASS_HEIGHT, z: town.centre.z },
+        content: (
+          <div style={{
+            background: 'rgba(24,30,38,0.62)', color: '#f2f5f8', padding: '2px 7px',
+            borderRadius: '999px', fontSize: '10px', whiteSpace: 'nowrap',
+            backdropFilter: 'blur(3px)', border: '1px solid rgba(255,255,255,0.14)',
+          }}>
+            <span style={{ fontWeight: 700, marginRight: 5 }}>{town.name}</span>
+            {formatPopulation(town.population)}
+          </div>
+        ),
+      });
+    }
+    if (selectedTrainId) {
+      const runtime = world?.runtimes.get(selectedTrainId);
+      const train = trains.find(t => t.id === selectedTrainId);
+      if (runtime && train && train.status !== 'stored') {
+        items.push({
+          key: `train-${selectedTrainId}`,
+          world: { x: runtime.renderPos.x, y: runtime.renderPos.y + 1.1, z: runtime.renderPos.z },
+          content: (
+            <div style={{
+              background: 'rgba(17,22,28,0.86)', color: '#f4f7fa', padding: '5px 9px',
+              borderRadius: '7px', fontSize: '11px', textAlign: 'center', width: 200,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              border: '1px solid rgba(255,255,255,0.18)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            }}>
+              <div style={{ fontWeight: 700 }}>{train.id}</div>
+              <div style={{ color: '#8fe3a5', fontWeight: 'bold' }}>{Math.round(runtime.speedKmh)} km/h</div>
+              <div style={{ color: '#b9c3cc' }}>{runtime.debugStatus}</div>
+            </div>
+          ),
+        });
+      }
+    }
+    return items;
+  })() : [];
+
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#cfe3ef', position: 'relative', overflow: 'hidden' }}>
       {webGpuActive && (
@@ -119,6 +213,7 @@ export default function App() {
           halfExtent={halfExtent}
           cornerDiffs={cornerDiffs}
           webGpuLayer={webGpuActive ? webGpuLayerRef : undefined}
+          webGpuCameraStateRef={webGpuActive ? webgpuCameraStateRef : undefined}
           world={worldRef}
           buildMode={buildMode}
           buildLevel={buildLevel}
@@ -144,6 +239,10 @@ export default function App() {
           onRelocateTrain={relocateTrainAt}
         />
       </Canvas>
+
+      {/* R4c: WebGPUモードのDOMラベルオーバーレイ(駅名・町名・選択列車ツールチップ)。
+          classicモードはGameScene内のdrei <Html>のまま(StationLabel/TownLabels/DynamicTrain)。 */}
+      {webGpuActive && <LabelOverlay cameraStateRef={webgpuCameraStateRef} items={labelItems} />}
 
       <GameUI
         buildMode={buildMode}
