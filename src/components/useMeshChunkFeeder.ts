@@ -11,12 +11,13 @@
 // - `version` が変わると全チャンクを作り直す(遠景フェードの段階が変わったときなど)
 // - コントローラ(wasm)の生成は非同期なので、useFrame の中で毎回 null チェックする
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 
 import type { BakedMeshChunk } from '../render/bakedMesh';
 import { MeshChunkRegistry } from '../render/meshChunkRegistry';
 import { MESH_LAYER_CLASS } from '../render/webgpuLayer';
+import type { WebGpuTerrainLayerController } from '../render/webgpuLayer';
 import type { WebGpuLayerRef } from './WebGpuTerrainLayer';
 
 /** 1フレームで新規構築・アップロードするチャンクの上限。 */
@@ -48,6 +49,8 @@ export function useMeshChunkFeeder({
 }: FeederOptions): void {
   const registryRef = useRef<MeshChunkRegistry | null>(null);
   if (registryRef.current === null) registryRef.current = new MeshChunkRegistry(namespace);
+  /** 最後に載せた相手のレンダラー(差し替わったら台帳を作り直す)。 */
+  const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
 
   // useFrame から読む最新の入力(再レンダーのたびに差し替える)。
   const desiredRef = useRef(desiredKeys);
@@ -64,19 +67,31 @@ export function useMeshChunkFeeder({
     dirtyRef.current = true;
   }, [desiredKeys, buildChunk, version]);
 
-  const removeAll = useCallback(() => {
+  // アンマウント時だけ、載せてあるチャンクをすべて外す。
+  // (依存に関数を置くと、その関数の同一性が変わるたびにクリーンアップが走って
+  //  全チャンクが消える。ここは必ず layerRef だけに依存させること)
+  useEffect(() => () => {
     const controller = layerRef.current;
     const ids = registryRef.current!.clear();
     if (!controller) return;
     for (const id of ids) controller.removeMeshChunk(id);
   }, [layerRef]);
 
-  useEffect(() => removeAll, [removeAll]);
-
   useFrame(() => {
     const controller = layerRef.current;
+    if (!controller) return;
+
+    // 新しいレンダラーに差し替わった場合(新規ワールド生成・セーブ読込で
+    // WebGpuTerrainLayer が seed/halfExtent をキーに作り直される)、台帳が指す
+    // チャンクidは破棄済みのレンダラーのものなので、丸ごと捨てて載せ直す
+    // (旧レンダラーへ removeMeshChunk を呼ぶ必要は無い)。
+    if (lastControllerRef.current !== controller) {
+      lastControllerRef.current = controller;
+      registryRef.current = new MeshChunkRegistry(namespace);
+      dirtyRef.current = true;
+    }
     const registry = registryRef.current!;
-    if (!controller || !dirtyRef.current) return;
+    if (!dirtyRef.current) return;
 
     if (appliedVersionRef.current !== versionRef.current) {
       for (const id of registry.clear()) controller.removeMeshChunk(id);
