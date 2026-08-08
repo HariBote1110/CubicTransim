@@ -198,3 +198,31 @@ target/release/layer_b_bench bench/results/layer-b-$(date +%s)-run1.json
 - 結果JSON: `renderer_research/proto/bench/results/layer-b-1786140446-run1.json`,
   `layer-b-1786140557-run2.json`(中央値run、採用), `layer-b-1786140680-run3.json`
   (`.gitignore`で除外、ローカルに保持。再現手順で再生成可能)
+
+## 追記: スリープ原因説の検証(棄却)
+
+ユーザーから「Macがスリープしていた可能性」の指摘を受け、`caffeinate -dimsu` 配下で再実行した。
+結果: **同一フレーム(493〜495、zoom-roundtrip工程)で同一の崩壊が再現**(9,211ms →
+17,124ms → 5,004ms、直後に wgpu-core 24.0.5 の
+「We timed out while waiting on the last successful submission to complete!」パニック)。
+スリープ・省電力は原因ではない。
+
+### 追加の手がかり(原因仮説の絞り込み)
+
+- 崩壊フレームは `generated=0 visible=4 needed=16`: ズーム往復の戻り(引き→寄せ)で
+  LOD0 タイル16枚が必要だが4枚しか常駐しておらず、新規生成も走っていない状態
+- 健全時の zoom-roundtrip 中央値は 0.198ms。突然2〜4桁跳ねる、かつ CPU計測値として
+  記録されている(=submit後の待ちがCPU時間に乗っている)
+- 仮説: **未常駐タイルのフォールバック描画パスが、粗い親タイル(または全域)を
+  ストライド1の頂点グリッドで描いてしまい、indirect draw の頂点数が数億に爆発**、
+  GPUが1フレームに十数秒かかる(Metalのcommand buffer timeoutとも整合)。
+  llvmpipe(VM)ではソフトラスタの別特性で顕在化しなかった可能性
+- 独立に観測した「QuerySet resolve+map_async が初回60秒」も、同じ submission timeout
+  系の症状かは未切り分け
+
+### 次の一手(レンダラーセッションへの引き継ぎ)
+
+1. 崩壊フレームの indirect draw 引数(render_args の base_vertices)をログし、頂点数爆発を確認
+2. フォールバック/LOD選択で「必要タイル未常駐時は親LODの該当領域だけを描く(ストライドを
+   親LODに合わせる)」ことを保証。頂点数の上限アサーション(例: 1draw ≤ 200万頂点)を追加
+3. ズーム戻り工程でタイル生成が0になっている点(生成キューの停止?)も要調査
