@@ -1,4 +1,4 @@
-use quarterview_terrain_core::TerrainField;
+use quarterview_terrain_core::{TerrainField, TerrainProfile};
 use std::sync::mpsc;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
@@ -41,6 +41,11 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_000_000);
     let half_extent: i32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(8192);
+    // 第4引数: 地形プロファイル名("flat"/"normal"/"mountain")。省略時は normal。
+    let profile = args
+        .next()
+        .map(|v| TerrainProfile::from_name(&v))
+        .unwrap_or_default();
 
     if count == 0 || count > u32::MAX as usize {
         eprintln!("count must be in 1..=u32::MAX");
@@ -48,7 +53,7 @@ fn main() {
     }
 
     let positions = sample_positions(count, half_extent);
-    let field = TerrainField::new(seed, half_extent);
+    let field = TerrainField::with_profile(seed, half_extent, profile);
     let expected: Vec<u8> = positions
         .iter()
         .map(|&(x, z)| field.corner_height_at(x, z))
@@ -135,11 +140,15 @@ fn main() {
         cache: None,
     });
 
-    let mut params_bytes = Vec::with_capacity(16);
+    let mut params_bytes = Vec::with_capacity(96);
     push_u32(&mut params_bytes, seed);
     push_i32(&mut params_bytes, half_extent);
     push_u32(&mut params_bytes, count as u32);
     push_u32(&mut params_bytes, 0);
+    // プロファイル別の標高しきい値(hi,lo × 10)。terrain_noise.wgsl は分岐を持たない。
+    for word in profile.threshold_words() {
+        push_u32(&mut params_bytes, word);
+    }
     let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("params"),
         contents: &params_bytes,
@@ -235,7 +244,8 @@ fn main() {
     readback.unmap();
 
     println!(
-        "{{\"seed\":{seed},\"count\":{count},\"halfExtent\":{half_extent},\"mismatches\":{mismatch_count},\"elapsedMs\":{:.3},\"adapter\":{:?},\"backend\":\"{:?}\"}}",
+        "{{\"seed\":{seed},\"count\":{count},\"halfExtent\":{half_extent},\"profile\":\"{}\",\"mismatches\":{mismatch_count},\"elapsedMs\":{:.3},\"adapter\":{:?},\"backend\":\"{:?}\"}}",
+        profile.name(),
         elapsed.as_secs_f64() * 1000.0,
         info.name,
         info.backend

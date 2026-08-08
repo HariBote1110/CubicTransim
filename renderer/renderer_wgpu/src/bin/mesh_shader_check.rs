@@ -60,7 +60,11 @@ fn read_centre_pixel(
 ) -> [u8; 4] {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("mesh-check-target"),
-        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -71,7 +75,11 @@ fn read_centre_pixel(
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("mesh-check-depth"),
-        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -128,7 +136,11 @@ fn read_centre_pixel(
                 rows_per_image: Some(SIZE),
             },
         },
-        wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
     );
     queue.submit(Some(encoder.finish()));
 
@@ -141,7 +153,12 @@ fn read_centre_pixel(
     let row = (SIZE / 2) as usize;
     let col = (SIZE / 2) as usize;
     let offset = row * 256 + col * 4;
-    let pixel = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+    let pixel = [
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ];
     drop(data);
     readback.unmap();
     pixel
@@ -178,15 +195,26 @@ fn main() {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera-bg"),
             layout: &pipelines.camera_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
         })
     };
-    let class_bgs = [LayerClass::Surface, LayerClass::Underground, LayerClass::Translucent].map(|c| {
+    let class_bgs = [
+        LayerClass::Surface,
+        LayerClass::Underground,
+        LayerClass::Translucent,
+    ]
+    .map(|c| {
         let buffer = class_buffer(&device, c);
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("class-bg"),
             layout: &pipelines.class_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
         })
     });
 
@@ -267,15 +295,25 @@ fn main() {
 
     let near = |a: u8, b: u8| (a as i32 - b as i32).abs() <= 2;
     let checks = [
-        ("surfaceUndimmed", surface_full[0] == 255 && surface_full[1] == 0),
-        ("surfaceDimmed", near(surface_dimmed[0], 77) && surface_dimmed[1] == 0),
+        (
+            "surfaceUndimmed",
+            surface_full[0] == 255 && surface_full[1] == 0,
+        ),
+        (
+            "surfaceDimmed",
+            near(surface_dimmed[0], 77) && surface_dimmed[1] == 0,
+        ),
         ("undergroundIgnoresDim", underground_dimmed[0] == 255),
         (
             "instancedTint",
             instanced_tinted[0] == 0 && instanced_tinted[1] == 255 && instanced_tinted[2] == 0,
         ),
     ];
-    let failures: Vec<&str> = checks.iter().filter(|(_, ok)| !ok).map(|(n, _)| *n).collect();
+    let failures: Vec<&str> = checks
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(n, _)| *n)
+        .collect();
     let info = adapter.get_info();
     println!(
         "{{\"ok\":{},\"adapter\":{:?},\"backend\":\"{:?}\",\"pipelines\":5,\"failures\":{:?},\"pixels\":{{\"surfaceUndimmed\":{:?},\"surfaceDimmed\":{:?},\"undergroundDimmed\":{:?},\"instancedTinted\":{:?}}}}}",

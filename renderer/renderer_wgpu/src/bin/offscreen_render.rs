@@ -108,7 +108,9 @@ fn main() {
 
     let draw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("terrain-draw"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/terrain_draw_surface.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../shaders/terrain_draw_surface.wgsl").into(),
+        ),
     });
     let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("draw-bgl"),

@@ -25,10 +25,12 @@
 //! CPU timing is used for the frame-time gates (noted in the output).
 
 use quarterview_renderer_wgpu::{
-    MAX_DRAW_VERTICES, RENDER_ARGS_TOTAL_BYTES, RENDER_COUNTS_BYTES, TERRAIN_DRAW_WGSL, TILE_CLAMP_ARGS_WGSL,
-    TILE_FINALIZE_WGSL, TILE_GENERATE_WGSL,
+    MAX_DRAW_VERTICES, RENDER_ARGS_TOTAL_BYTES, RENDER_COUNTS_BYTES, TERRAIN_DRAW_WGSL,
+    TILE_CLAMP_ARGS_WGSL, TILE_FINALIZE_WGSL, TILE_GENERATE_WGSL,
 };
-use quarterview_terrain_core::clipmap::{select_tiles_into, tile_cell_span, TileKey, ViewRequest, TILE_SAMPLES};
+use quarterview_terrain_core::clipmap::{
+    select_tiles_into, tile_cell_span, TileKey, ViewRequest, TILE_SAMPLES,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
@@ -58,7 +60,22 @@ const SEED: u32 = 0x1234_5678;
 /// Batching keeps the render loop free-running like a real application and still
 /// gives every frame's individual GPU duration once the batch is resolved.
 const TS_BATCH: usize = 128;
-const HIST_EDGES: [f64; 14] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.6, 33.0, 50.0, f64::INFINITY];
+const HIST_EDGES: [f64; 14] = [
+    0.0,
+    1.0,
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    8.0,
+    10.0,
+    12.0,
+    16.6,
+    33.0,
+    50.0,
+    f64::INFINITY,
+];
 
 fn push_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
@@ -78,7 +95,9 @@ fn put_f32(out: &mut [u8], offset: usize, v: f32) {
 
 fn full_map_min_ppc(width: u32, height: u32, half_extent: i32) -> f64 {
     let half = (half_extent.max(1)) as f64;
-    (width as f64 / (2.0 * half)).min(height as f64 / half).max(0.0001)
+    (width as f64 / (2.0 * half))
+        .min(height as f64 / half)
+        .max(0.0001)
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
@@ -91,7 +110,11 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 
 fn histogram(values: &[f64]) -> Vec<serde_json_lite::Bin> {
     let mut bins: Vec<serde_json_lite::Bin> = (0..HIST_EDGES.len() - 1)
-        .map(|i| serde_json_lite::Bin { min_ms: HIST_EDGES[i], max_ms: HIST_EDGES[i + 1], count: 0 })
+        .map(|i| serde_json_lite::Bin {
+            min_ms: HIST_EDGES[i],
+            max_ms: HIST_EDGES[i + 1],
+            count: 0,
+        })
         .collect();
     for &v in values {
         let mut placed = false;
@@ -126,7 +149,10 @@ mod serde_json_lite {
                 } else {
                     "null".to_string()
                 };
-                format!("{{\"minMs\":{:.2},\"maxMs\":{},\"count\":{}}}", b.min_ms, max, b.count)
+                format!(
+                    "{{\"minMs\":{:.2},\"maxMs\":{},\"count\":{}}}",
+                    b.min_ms, max, b.count
+                )
             })
             .collect();
         format!("[{}]", parts.join(","))
@@ -157,8 +183,9 @@ fn read_render_args(
     staging: &wgpu::Buffer,
     render_args: &wgpu::Buffer,
 ) -> [u32; 12] {
-    let mut encoder = device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("args-trace") });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("args-trace"),
+    });
     encoder.copy_buffer_to_buffer(render_args, 0, staging, 0, RENDER_ARGS_TOTAL_BYTES);
     queue.submit(Some(encoder.finish()));
     let slice = staging.slice(..);
@@ -193,7 +220,13 @@ fn sysctl_or(cmd: &str, args: &[&str], fallback: &str) -> String {
         .args(args)
         .output()
         .ok()
-        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| fallback.to_string())
@@ -219,22 +252,36 @@ fn flush_batch(
     }
     let flush_started = Instant::now();
     let byte_len = (count * 16) as u64;
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ts-flush") });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("ts-flush"),
+    });
     encoder.resolve_query_set(query_set, 0..(count as u32 * 2), query_resolve, 0);
     encoder.copy_buffer_to_buffer(query_resolve, 0, query_readback, 0, byte_len);
     queue.submit(Some(encoder.finish()));
-    eprintln!("  flush: submitted resolve at {:.1}ms", flush_started.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "  flush: submitted resolve at {:.1}ms",
+        flush_started.elapsed().as_secs_f64() * 1000.0
+    );
 
     let slice = query_readback.slice(0..byte_len);
     let (tx, rx) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| {
         tx.send(r).ok();
     });
-    eprintln!("  flush: map_async issued at {:.1}ms", flush_started.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "  flush: map_async issued at {:.1}ms",
+        flush_started.elapsed().as_secs_f64() * 1000.0
+    );
     device.poll(wgpu::Maintain::Wait);
-    eprintln!("  flush: poll(Wait) returned at {:.1}ms", flush_started.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "  flush: poll(Wait) returned at {:.1}ms",
+        flush_started.elapsed().as_secs_f64() * 1000.0
+    );
     rx.recv().unwrap().unwrap();
-    eprintln!("  flush: rx.recv() returned at {:.1}ms", flush_started.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "  flush: rx.recv() returned at {:.1}ms",
+        flush_started.elapsed().as_secs_f64() * 1000.0
+    );
     let data = slice.get_mapped_range();
     for i in 0..count {
         let base = i * 16;
@@ -249,7 +296,10 @@ fn flush_batch(
 
 fn main() {
     let out_path = std::env::args().nth(1).unwrap_or_else(|| {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         format!("../bench/results/layer-b-{ts}.json")
     });
 
@@ -272,7 +322,8 @@ fn main() {
     // been handed billions of vertices per frame by a mis-encoded indirect quad, and 60s is
     // wgpu-core's submission-wait timeout. With the encoding fixed, flushes take 60-160ms.
     let timestamp_features = wgpu::Features::TIMESTAMP_QUERY;
-    let mut timestamp_supported = adapter.features().contains(timestamp_features) && std::env::var("LAYER_B_FORCE_NO_TS").is_err();
+    let mut timestamp_supported = adapter.features().contains(timestamp_features)
+        && std::env::var("LAYER_B_FORCE_NO_TS").is_err();
     // Set once if the adaptive fallback below (a pathologically slow first flush) turns
     // timestamp measurement off mid-run; recorded in the output JSON either way.
     let mut timestamp_degraded = false;
@@ -301,90 +352,364 @@ fn main() {
     let tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("tile-bgl"),
         entries: &[
-            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
-    let tile_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-layout"), bind_group_layouts: &[&tile_bgl], push_constant_ranges: &[] });
-    let tile_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-pipeline"), layout: Some(&tile_layout), module: &tile_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+    let tile_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("tile-layout"),
+        bind_group_layouts: &[&tile_bgl],
+        push_constant_ranges: &[],
+    });
+    let tile_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("tile-pipeline"),
+        layout: Some(&tile_layout),
+        module: &tile_shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
 
-    let draw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("terrain-draw"), source: wgpu::ShaderSource::Wgsl(TERRAIN_DRAW_WGSL.into()) });
+    let draw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("terrain-draw"),
+        source: wgpu::ShaderSource::Wgsl(TERRAIN_DRAW_WGSL.into()),
+    });
     let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("draw-bgl"),
         entries: &[
-            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
-    let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("camera-bgl"), entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
-    let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("draw-layout"), bind_group_layouts: &[&draw_bgl, &camera_bgl], push_constant_ranges: &[] });
+    let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("camera-bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("draw-layout"),
+        bind_group_layouts: &[&draw_bgl, &camera_bgl],
+        push_constant_ranges: &[],
+    });
 
-    let finalize_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tile-finalize"), source: wgpu::ShaderSource::Wgsl(TILE_FINALIZE_WGSL.into()) });
+    let finalize_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("tile-finalize"),
+        source: wgpu::ShaderSource::Wgsl(TILE_FINALIZE_WGSL.into()),
+    });
     let finalize_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("tile-finalize-bgl"),
         entries: &[
-            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
-    let finalize_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-finalize-layout"), bind_group_layouts: &[&finalize_bgl], push_constant_ranges: &[] });
-    let finalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-finalize-pipeline"), layout: Some(&finalize_layout), module: &finalize_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+    let finalize_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("tile-finalize-layout"),
+        bind_group_layouts: &[&finalize_bgl],
+        push_constant_ranges: &[],
+    });
+    let finalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("tile-finalize-pipeline"),
+        layout: Some(&finalize_layout),
+        module: &finalize_shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
 
     // Draw-safety guard (see shaders/tile_clamp_args.wgsl): records the requested
     // indirect arguments and clamps them before any draw can consume them.
-    let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tile-clamp-args"), source: wgpu::ShaderSource::Wgsl(TILE_CLAMP_ARGS_WGSL.into()) });
+    let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("tile-clamp-args"),
+        source: wgpu::ShaderSource::Wgsl(TILE_CLAMP_ARGS_WGSL.into()),
+    });
     let clamp_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("tile-clamp-args-bgl"),
         entries: &[
-            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
-    let clamp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-clamp-args-layout"), bind_group_layouts: &[&clamp_bgl], push_constant_ranges: &[] });
-    let clamp_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-clamp-args-pipeline"), layout: Some(&clamp_layout), module: &clamp_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+    let clamp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("tile-clamp-args-layout"),
+        bind_group_layouts: &[&clamp_bgl],
+        push_constant_ranges: &[],
+    });
+    let clamp_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("tile-clamp-args-pipeline"),
+        layout: Some(&clamp_layout),
+        module: &clamp_shader,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
     let mut clamp_params_bytes = [0u8; 16];
     put_u32(&mut clamp_params_bytes, 0, MAX_DRAW_VERTICES);
-    let clamp_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-clamp-args-params"), contents: &clamp_params_bytes, usage: wgpu::BufferUsages::UNIFORM });
+    let clamp_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("tile-clamp-args-params"),
+        contents: &clamp_params_bytes,
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
 
     let draw_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("terrain-draw-pipeline"),
         layout: Some(&draw_layout),
-        vertex: wgpu::VertexState { module: &draw_shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+        vertex: wgpu::VertexState {
+            module: &draw_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
         fragment: Some(wgpu::FragmentState {
             module: &draw_shader,
             entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
             compilation_options: Default::default(),
         }),
-        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::LessEqual, stencil: Default::default(), bias: Default::default() }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
         multisample: Default::default(),
         multiview: None,
         cache: None,
     });
 
-    let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("camera-params"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-    let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("camera-bg"), layout: &camera_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() }] });
+    let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("camera-params"),
+        size: 32,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("camera-bg"),
+        layout: &camera_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: camera_buffer.as_entire_binding(),
+        }],
+    });
 
     // Offscreen render targets (no surface/present - headless).
-    let color = device.create_texture(&wgpu::TextureDescriptor { label: Some("color"), size: wgpu::Extent3d { width: WIDTH, height: HEIGHT, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+    let color = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("color"),
+        size: wgpu::Extent3d {
+            width: WIDTH,
+            height: HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
     let color_view = color.create_view(&Default::default());
-    let depth = device.create_texture(&wgpu::TextureDescriptor { label: Some("depth"), size: wgpu::Extent3d { width: WIDTH, height: HEIGHT, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Depth32Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[] });
+    let depth = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth"),
+        size: wgpu::Extent3d {
+            width: WIDTH,
+            height: HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
     let depth_view = depth.create_view(&Default::default());
 
     // Timestamp query plumbing: one query set sized for a whole batch of frames (2
     // timestamps/frame), resolved and read back once per TS_BATCH frames instead of
     // every frame. See the TS_BATCH doc comment for why per-frame readback is wrong.
-    let query_set = timestamp_supported.then(|| device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("frame-timestamps"), ty: wgpu::QueryType::Timestamp, count: (TS_BATCH * 2) as u32 }));
-    let query_resolve = timestamp_supported.then(|| device.create_buffer(&wgpu::BufferDescriptor { label: Some("ts-resolve"), size: (TS_BATCH * 16) as u64, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }));
-    let query_readback = timestamp_supported.then(|| device.create_buffer(&wgpu::BufferDescriptor { label: Some("ts-readback"), size: (TS_BATCH * 16) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false }));
+    let query_set = timestamp_supported.then(|| {
+        device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("frame-timestamps"),
+            ty: wgpu::QueryType::Timestamp,
+            count: (TS_BATCH * 2) as u32,
+        })
+    });
+    let query_resolve = timestamp_supported.then(|| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ts-resolve"),
+            size: (TS_BATCH * 16) as u64,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        })
+    });
+    let query_readback = timestamp_supported.then(|| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ts-readback"),
+            size: (TS_BATCH * 16) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    });
     let mut batch_local = 0usize; // frames written into the current (unresolved) query batch
     let mut batch_start_stats_idx = 0usize; // index into `stats` where the current batch begins
 
@@ -404,77 +729,251 @@ fn main() {
     // Tile generation gets its own command buffer, submitted immediately, rather than
     // being appended to the frame's draw encoder, so a cache-miss burst never delays the
     // frame's own render pass.
-    let create_gpu_tile = |device: &wgpu::Device, queue: &wgpu::Queue, key: TileKey, frame_index: u64| -> GpuTile {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tile-gen") });
-        let origin_x = key.x * tile_cell_span(key.lod);
-        let origin_z = key.z * tile_cell_span(key.lod);
-        let stride = 1i32 << key.lod;
-        let samples = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile-samples"), size: TILE_BYTES, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
-        let mut params = Vec::with_capacity(32);
-        push_u32(&mut params, SEED);
-        push_i32(&mut params, HALF_EXTENT);
-        push_i32(&mut params, origin_x);
-        push_i32(&mut params, origin_z);
-        push_i32(&mut params, stride);
-        push_u32(&mut params, GRID);
-        push_u32(&mut params, 0);
-        push_u32(&mut params, 0);
-        let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-params"), contents: &params, usage: wgpu::BufferUsages::UNIFORM });
-        let overrides_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-overrides"), contents: &[0u8; 8], usage: wgpu::BufferUsages::STORAGE });
-        let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-compute-bg"), layout: &tile_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: overrides_buf.as_entire_binding() }] });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile-generate"), timestamp_writes: None });
-            pass.set_pipeline(&tile_pipeline);
-            pass.set_bind_group(0, &compute_bg, &[]);
-            pass.dispatch_workgroups((GRID * GRID + 255) / 256, 1, 1);
-        }
-        let mut finalize_params_bytes = [0u8; 16];
-        put_u32(&mut finalize_params_bytes, 0, GRID);
-        let finalize_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-finalize-params"), contents: &finalize_params_bytes, usage: wgpu::BufferUsages::UNIFORM });
-        let cliff_edges = device.create_buffer(&wgpu::BufferDescriptor { label: Some("cliff-edges"), size: (MAX_CLIFF_EDGES * 4) as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
-        let water_cells = device.create_buffer(&wgpu::BufferDescriptor { label: Some("water-cells"), size: (MAX_WATER_CELLS * 4) as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
-        let base_vertices = INDEX_COUNT_PER_TILE;
-        // words: [vertex_count, instance_count, first_vertex, first_instance,
-        //         cliff_vertices, water_vertices, pad, pad, diagnostics x4]
-        let render_args_bytes = [base_vertices, 1u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
-        let render_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("render-indirect-args"), contents: bytemuck::cast_slice(&render_args_bytes), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC });
-        let finalize_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-finalize-bg"), layout: &finalize_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: finalize_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() }, wgpu::BindGroupEntry { binding: 4, resource: render_args.as_entire_binding() }] });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile-finalize"), timestamp_writes: None });
-            pass.set_pipeline(&finalize_pipeline);
-            pass.set_bind_group(0, &finalize_bg, &[]);
-            pass.dispatch_workgroups(((GRID - 1) * (GRID - 1) + 255) / 256, 1, 1);
-        }
-        // Clamp first (words 0..3), then snapshot words 0..7 for the vertex shader: the
-        // clamp only rewrites the draw quad and the diagnostics region, never the counts.
-        {
-            let clamp_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("tile-clamp-args-bg"), layout: &clamp_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: clamp_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: render_args.as_entire_binding() }] });
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile-clamp-args"), timestamp_writes: None });
-            pass.set_pipeline(&clamp_pipeline);
-            pass.set_bind_group(0, &clamp_bg, &[]);
-            pass.dispatch_workgroups(1, 1, 1);
-        }
-        let render_counts = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render-counts"), size: RENDER_COUNTS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_COUNTS_BYTES);
-        let mut tile_bytes = [0u8; 16];
-        put_i32(&mut tile_bytes, 0, origin_x);
-        put_i32(&mut tile_bytes, 4, origin_z);
-        put_i32(&mut tile_bytes, 8, stride);
-        put_u32(&mut tile_bytes, 12, GRID);
-        let tile_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("draw-params"), contents: &tile_bytes, usage: wgpu::BufferUsages::UNIFORM });
-        let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("draw-bg"), layout: &draw_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: tile_params.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() }, wgpu::BindGroupEntry { binding: 4, resource: render_counts.as_entire_binding() }] });
-        queue.submit(Some(encoder.finish()));
-        GpuTile { _samples: samples, _tile_params: tile_params, _cliff_edges: cliff_edges, _water_cells: water_cells, render_args, _render_counts: render_counts, _overrides: overrides_buf, draw_bind_group, last_used: frame_index, requested_args: None }
-    };
+    let create_gpu_tile =
+        |device: &wgpu::Device, queue: &wgpu::Queue, key: TileKey, frame_index: u64| -> GpuTile {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tile-gen"),
+            });
+            let origin_x = key.x * tile_cell_span(key.lod);
+            let origin_z = key.z * tile_cell_span(key.lod);
+            let stride = 1i32 << key.lod;
+            let samples = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("tile-samples"),
+                size: TILE_BYTES,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            let mut params = Vec::with_capacity(32);
+            push_u32(&mut params, SEED);
+            push_i32(&mut params, HALF_EXTENT);
+            push_i32(&mut params, origin_x);
+            push_i32(&mut params, origin_z);
+            push_i32(&mut params, stride);
+            push_u32(&mut params, GRID);
+            push_u32(&mut params, 0);
+            push_u32(&mut params, 0);
+            let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("tile-params"),
+                contents: &params,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let overrides_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("tile-overrides"),
+                contents: &[0u8; 8],
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("tile-compute-bg"),
+                layout: &tile_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: samples.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: overrides_buf.as_entire_binding(),
+                    },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("tile-generate"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&tile_pipeline);
+                pass.set_bind_group(0, &compute_bg, &[]);
+                pass.dispatch_workgroups((GRID * GRID + 255) / 256, 1, 1);
+            }
+            let mut finalize_params_bytes = [0u8; 16];
+            put_u32(&mut finalize_params_bytes, 0, GRID);
+            let finalize_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("tile-finalize-params"),
+                contents: &finalize_params_bytes,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let cliff_edges = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cliff-edges"),
+                size: (MAX_CLIFF_EDGES * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            let water_cells = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("water-cells"),
+                size: (MAX_WATER_CELLS * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            let base_vertices = INDEX_COUNT_PER_TILE;
+            // words: [vertex_count, instance_count, first_vertex, first_instance,
+            //         cliff_vertices, water_vertices, pad, pad, diagnostics x4]
+            let render_args_bytes = [
+                base_vertices,
+                1u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+            ];
+            let render_args = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("render-indirect-args"),
+                contents: bytemuck::cast_slice(&render_args_bytes),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::INDIRECT
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+            });
+            let finalize_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("tile-finalize-bg"),
+                layout: &finalize_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: finalize_params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: samples.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: cliff_edges.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: water_cells.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: render_args.as_entire_binding(),
+                    },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("tile-finalize"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&finalize_pipeline);
+                pass.set_bind_group(0, &finalize_bg, &[]);
+                pass.dispatch_workgroups(((GRID - 1) * (GRID - 1) + 255) / 256, 1, 1);
+            }
+            // Clamp first (words 0..3), then snapshot words 0..7 for the vertex shader: the
+            // clamp only rewrites the draw quad and the diagnostics region, never the counts.
+            {
+                let clamp_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("tile-clamp-args-bg"),
+                    layout: &clamp_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: clamp_params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: render_args.as_entire_binding(),
+                        },
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("tile-clamp-args"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&clamp_pipeline);
+                pass.set_bind_group(0, &clamp_bg, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            let render_counts = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("render-counts"),
+                size: RENDER_COUNTS_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_COUNTS_BYTES);
+            let mut tile_bytes = [0u8; 16];
+            put_i32(&mut tile_bytes, 0, origin_x);
+            put_i32(&mut tile_bytes, 4, origin_z);
+            put_i32(&mut tile_bytes, 8, stride);
+            put_u32(&mut tile_bytes, 12, GRID);
+            let tile_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("draw-params"),
+                contents: &tile_bytes,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("draw-bg"),
+                layout: &draw_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: tile_params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: samples.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: cliff_edges.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: water_cells.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: render_counts.as_entire_binding(),
+                    },
+                ],
+            });
+            queue.submit(Some(encoder.finish()));
+            GpuTile {
+                _samples: samples,
+                _tile_params: tile_params,
+                _cliff_edges: cliff_edges,
+                _water_cells: water_cells,
+                render_args,
+                _render_counts: render_counts,
+                _overrides: overrides_buf,
+                draw_bind_group,
+                last_used: frame_index,
+                requested_args: None,
+            }
+        };
 
     // Argument tracing (LAYER_B_ARG_TRACE=1): read every newly created tile's requested
     // indirect quad back to the CPU so an over-cap draw can be reported with its exact
     // parameters, and per-frame LOD/residency/draw-arg state can be logged for the frames
     // named by LAYER_B_TRACE_FROM/LAYER_B_TRACE_TO.
-    let arg_trace = std::env::var("LAYER_B_ARG_TRACE").map(|v| v == "1").unwrap_or(false);
-    let trace_from: u64 = std::env::var("LAYER_B_TRACE_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
-    let trace_to: u64 = std::env::var("LAYER_B_TRACE_TO").ok().and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
-    let args_staging = arg_trace.then(|| device.create_buffer(&wgpu::BufferDescriptor { label: Some("args-trace-staging"), size: RENDER_ARGS_TOTAL_BYTES, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false }));
+    let arg_trace = std::env::var("LAYER_B_ARG_TRACE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let trace_from: u64 = std::env::var("LAYER_B_TRACE_FROM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(u64::MAX);
+    let trace_to: u64 = std::env::var("LAYER_B_TRACE_TO")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(u64::MAX);
+    let args_staging = arg_trace.then(|| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("args-trace-staging"),
+            size: RENDER_ARGS_TOTAL_BYTES,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    });
     let mut over_cap_draws = 0usize;
     let mut max_requested_vertices = 0u32;
     let mut max_requested_instances = 0u32;
@@ -493,28 +992,55 @@ fn main() {
     let fit_ppc = min_ppc;
     let mut cycle: Vec<Step> = Vec::with_capacity(540);
     // Phase 1: static, 120 frames (camera_replay.mjs runPhase(..., 120)).
-    cycle.push(Step { phase: "static", action: Action::SetCamera(0.0, 0.0, 100.0) });
+    cycle.push(Step {
+        phase: "static",
+        action: Action::SetCamera(0.0, 0.0, 100.0),
+    });
     for _ in 0..119 {
-        cycle.push(Step { phase: "static", action: Action::None });
+        cycle.push(Step {
+            phase: "static",
+            action: Action::None,
+        });
     }
     // Phase 2: max-speed pan, 120 frames.
-    cycle.push(Step { phase: "max-speed-pan", action: Action::SetCamera(0.0, 0.0, 100.0) });
+    cycle.push(Step {
+        phase: "max-speed-pan",
+        action: Action::SetCamera(0.0, 0.0, 100.0),
+    });
     for _ in 0..119 {
-        cycle.push(Step { phase: "max-speed-pan", action: Action::Pan(180.0, 90.0) });
+        cycle.push(Step {
+            phase: "max-speed-pan",
+            action: Action::Pan(180.0, 90.0),
+        });
     }
     // Phase 3: full-map, 120 frames.
-    cycle.push(Step { phase: "full-map", action: Action::SetCamera(0.0, 0.0, fit_ppc) });
+    cycle.push(Step {
+        phase: "full-map",
+        action: Action::SetCamera(0.0, 0.0, fit_ppc),
+    });
     for _ in 0..119 {
-        cycle.push(Step { phase: "full-map", action: Action::None });
+        cycle.push(Step {
+            phase: "full-map",
+            action: Action::None,
+        });
     }
     // Phase 4: zoom round-trip, 90 in + 90 out = 180 frames. The zoom factor itself is
     // applied by index range below (this vector only marks phase/reset points).
-    cycle.push(Step { phase: "zoom-roundtrip", action: Action::SetCamera(0.0, 0.0, 100.0) });
+    cycle.push(Step {
+        phase: "zoom-roundtrip",
+        action: Action::SetCamera(0.0, 0.0, 100.0),
+    });
     for _ in 0..179 {
-        cycle.push(Step { phase: "zoom-roundtrip", action: Action::None });
+        cycle.push(Step {
+            phase: "zoom-roundtrip",
+            action: Action::None,
+        });
     }
     let cycle_len = cycle.len();
-    assert_eq!(cycle_len, 540, "camera cycle should mirror camera_replay.mjs frame counts");
+    assert_eq!(
+        cycle_len, 540,
+        "camera cycle should mirror camera_replay.mjs frame counts"
+    );
     let zoom_leg_start = 360usize; // index of the zoom-roundtrip SetCamera step within the cycle
 
     // The zoom round-trip leg used to be replayed only twice, because a mis-encoded
@@ -522,7 +1048,10 @@ fn main() {
     // renderer_research/notes/layer-b-mac-2026-08-08.md). With that fault fixed the full
     // protocol runs as specified: every frame of the >=10,000 frame target comes from the
     // complete 540-frame cycle, zoom legs included. No scope reduction remains.
-    let target_frames: usize = std::env::var("LAYER_B_TARGET_FRAMES").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let target_frames: usize = std::env::var("LAYER_B_TARGET_FRAMES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10_000);
     let full_cycles = (target_frames + cycle_len - 1) / cycle_len;
     let total_frames = full_cycles * cycle_len;
 
@@ -540,266 +1069,330 @@ fn main() {
     let schedule: Vec<(&Vec<Step>, usize)> = vec![(&cycle, full_cycles)];
     'schedule: for (cycle_ref, repeats) in schedule {
         for _cyc in 0..repeats {
-        for (i, step) in cycle_ref.iter().enumerate() {
-            // Zoom leg: frames 480..570 within a cycle are the 90-in/90-out zoom.
-            match step.action {
-                Action::SetCamera(x, z, ppc) => {
-                    center_x = x.clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
-                    center_z = z.clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
-                    pixels_per_cell = ppc.clamp(min_ppc, 100.0);
-                }
-                Action::Pan(dx, dy) => {
-                    let inv = 1.0 / pixels_per_cell.max(0.0001);
-                    let world_x = dx * inv + 2.0 * dy * inv;
-                    let world_z = 2.0 * dy * inv - dx * inv;
-                    center_x = (center_x - world_x).clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
-                    center_z = (center_z - world_z).clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
-                }
-                Action::None => {
-                    if step.phase == "zoom-roundtrip" {
-                        // local index within the zoom leg: 0 is the reset frame (already
-                        // handled by SetCamera above and never reaches here), 1..=90 zoom in,
-                        // 91..=180 zoom out - matches camera_replay.mjs's 90-in/90-out split.
-                        let local = i - zoom_leg_start; // 1..=179
-                        let factor = if local <= 90 { (0.035f64).exp() } else { (-0.035f64).exp() };
-                        pixels_per_cell = (pixels_per_cell * factor).clamp(min_ppc, 100.0);
+            for (i, step) in cycle_ref.iter().enumerate() {
+                // Zoom leg: frames 480..570 within a cycle are the 90-in/90-out zoom.
+                match step.action {
+                    Action::SetCamera(x, z, ppc) => {
+                        center_x = x.clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
+                        center_z = z.clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
+                        pixels_per_cell = ppc.clamp(min_ppc, 100.0);
+                    }
+                    Action::Pan(dx, dy) => {
+                        let inv = 1.0 / pixels_per_cell.max(0.0001);
+                        let world_x = dx * inv + 2.0 * dy * inv;
+                        let world_z = 2.0 * dy * inv - dx * inv;
+                        center_x =
+                            (center_x - world_x).clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
+                        center_z =
+                            (center_z - world_z).clamp(-(HALF_EXTENT as f64), HALF_EXTENT as f64);
+                    }
+                    Action::None => {
+                        if step.phase == "zoom-roundtrip" {
+                            // local index within the zoom leg: 0 is the reset frame (already
+                            // handled by SetCamera above and never reaches here), 1..=90 zoom in,
+                            // 91..=180 zoom out - matches camera_replay.mjs's 90-in/90-out split.
+                            let local = i - zoom_leg_start; // 1..=179
+                            let factor = if local <= 90 {
+                                (0.035f64).exp()
+                            } else {
+                                (-0.035f64).exp()
+                            };
+                            pixels_per_cell = (pixels_per_cell * factor).clamp(min_ppc, 100.0);
+                        }
                     }
                 }
-            }
 
-            frame_index += 1;
-            let cpu_started = Instant::now();
+                frame_index += 1;
+                let cpu_started = Instant::now();
 
-            let projected_span = (WIDTH as f64 + HEIGHT as f64 * 2.0) / pixels_per_cell;
-            let base_view = ViewRequest { center_x, center_z, span_x_cells: projected_span, span_z_cells: projected_span, pixels_per_cell, half_extent: HALF_EXTENT, prefetch_border: 0 };
-            select_tiles_into(base_view, &mut visible);
-            let mut prefetch_view = base_view;
-            prefetch_view.prefetch_border = 1;
-            select_tiles_into(prefetch_view, &mut needed);
+                let projected_span = (WIDTH as f64 + HEIGHT as f64 * 2.0) / pixels_per_cell;
+                let base_view = ViewRequest {
+                    center_x,
+                    center_z,
+                    span_x_cells: projected_span,
+                    span_z_cells: projected_span,
+                    pixels_per_cell,
+                    half_extent: HALF_EXTENT,
+                    prefetch_border: 0,
+                };
+                select_tiles_into(base_view, &mut visible);
+                let mut prefetch_view = base_view;
+                prefetch_view.prefetch_border = 1;
+                select_tiles_into(prefetch_view, &mut needed);
 
-            // T7 measures how long a tile the user can actually SEE stays missing, so
-            // only the visible set starts the clock. Counting prefetch-border tiles too
-            // would charge the metric for tiles that are merely queued and may not enter
-            // the view for hundreds of frames.
-            for &key in visible.iter() {
-                if !tiles.contains_key(&key) {
-                    first_seen.entry(key).or_insert(frame_index);
+                // T7 measures how long a tile the user can actually SEE stays missing, so
+                // only the visible set starts the clock. Counting prefetch-border tiles too
+                // would charge the metric for tiles that are merely queued and may not enter
+                // the view for hundreds of frames.
+                for &key in visible.iter() {
+                    if !tiles.contains_key(&key) {
+                        first_seen.entry(key).or_insert(frame_index);
+                    }
                 }
-            }
 
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("frame"),
+                });
 
-            let mut generated = 0usize;
-            let mut created_keys: Vec<TileKey> = Vec::new();
-            for i in 0..visible.len() {
-                let key = visible[i];
-                if !tiles.contains_key(&key) {
+                let mut generated = 0usize;
+                let mut created_keys: Vec<TileKey> = Vec::new();
+                for i in 0..visible.len() {
+                    let key = visible[i];
+                    if !tiles.contains_key(&key) {
+                        if generated >= MAX_NEW_TILES_PER_FRAME {
+                            break;
+                        }
+                        let tile = create_gpu_tile(&device, &queue, key, frame_index);
+                        tiles.insert(key, tile);
+                        created_keys.push(key);
+                        generated += 1;
+                    }
+                    if let Some(t) = tiles.get_mut(&key) {
+                        t.last_used = frame_index;
+                    }
+                }
+                for i in 0..needed.len() {
                     if generated >= MAX_NEW_TILES_PER_FRAME {
                         break;
                     }
-                    let tile = create_gpu_tile(&device, &queue, key, frame_index);
-                    tiles.insert(key, tile);
-                    created_keys.push(key);
-                    generated += 1;
+                    let key = needed[i];
+                    if !tiles.contains_key(&key) {
+                        let tile = create_gpu_tile(&device, &queue, key, frame_index);
+                        tiles.insert(key, tile);
+                        created_keys.push(key);
+                        generated += 1;
+                    }
+                    if let Some(t) = tiles.get_mut(&key) {
+                        t.last_used = frame_index;
+                    }
                 }
-                if let Some(t) = tiles.get_mut(&key) {
-                    t.last_used = frame_index;
-                }
-            }
-            for i in 0..needed.len() {
-                if generated >= MAX_NEW_TILES_PER_FRAME {
-                    break;
-                }
-                let key = needed[i];
-                if !tiles.contains_key(&key) {
-                    let tile = create_gpu_tile(&device, &queue, key, frame_index);
-                    tiles.insert(key, tile);
-                    created_keys.push(key);
-                    generated += 1;
-                }
-                if let Some(t) = tiles.get_mut(&key) {
-                    t.last_used = frame_index;
-                }
-            }
-            if arg_trace {
-                let staging = args_staging.as_ref().unwrap();
-                for key in &created_keys {
-                    let words = {
-                        let tile = tiles.get(key).unwrap();
-                        read_render_args(&device, &queue, staging, &tile.render_args)
-                    };
-                    let requested = [words[8], words[9], words[10], words[11]];
-                    max_requested_vertices = max_requested_vertices.max(requested[0]);
-                    max_requested_instances = max_requested_instances.max(requested[1]);
-                    if requested[0] > MAX_DRAW_VERTICES || requested[1] > 1 {
-                        over_cap_draws += 1;
-                        eprintln!(
+                if arg_trace {
+                    let staging = args_staging.as_ref().unwrap();
+                    for key in &created_keys {
+                        let words = {
+                            let tile = tiles.get(key).unwrap();
+                            read_render_args(&device, &queue, staging, &tile.render_args)
+                        };
+                        let requested = [words[8], words[9], words[10], words[11]];
+                        max_requested_vertices = max_requested_vertices.max(requested[0]);
+                        max_requested_instances = max_requested_instances.max(requested[1]);
+                        if requested[0] > MAX_DRAW_VERTICES || requested[1] > 1 {
+                            over_cap_draws += 1;
+                            eprintln!(
                             "OVER-CAP DRAW: frame={frame_index} tile=(lod={},x={},z={}) requested vertex_count={} instance_count={} first_vertex={} first_instance={} -> clamped to vertex_count={} instance_count={} (cap {MAX_DRAW_VERTICES}); total vertex invocations would have been {}",
                             key.lod, key.x, key.z, requested[0], requested[1], requested[2], requested[3],
                             words[0], words[1],
                             requested[0] as u64 * requested[1].max(1) as u64,
                         );
-                    }
-                    debug_assert!(
-                        requested[0] <= MAX_DRAW_VERTICES && requested[1] <= 1,
-                        "indirect draw args exceed the per-draw cap: {requested:?}"
-                    );
-                    if let Some(tile) = tiles.get_mut(key) {
-                        tile.requested_args = Some(requested);
-                    }
-                }
-            }
-            for &key in visible.iter() {
-                if tiles.contains_key(&key) {
-                    if let Some(seen) = first_seen.remove(&key) {
-                        tile_latency_frames.push((frame_index - seen) as f64);
-                    }
-                }
-            }
-            // A tile that left the view before it was ever generated never produced a
-            // visible gap, so it must not contribute a latency sample later on.
-            first_seen.retain(|k, _| visible.contains(k));
-
-            let mut camera_bytes = [0u8; 32];
-            put_f32(&mut camera_bytes, 0, center_x as f32);
-            put_f32(&mut camera_bytes, 4, center_z as f32);
-            put_f32(&mut camera_bytes, 8, pixels_per_cell as f32);
-            put_f32(&mut camera_bytes, 12, pixels_per_cell as f32 * 0.25);
-            put_f32(&mut camera_bytes, 16, WIDTH as f32);
-            put_f32(&mut camera_bytes, 20, HEIGHT as f32);
-            put_f32(&mut camera_bytes, 24, HALF_EXTENT as f32);
-            put_f32(&mut camera_bytes, 28, 1.0); // dim: 通常表示(地下ビュー減光なし)
-            queue.write_buffer(&camera_buffer, 0, &camera_bytes);
-
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("terrain-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &color_view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.604, g: 0.722, b: 0.435, a: 1.0 }), store: wgpu::StoreOp::Store } })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &depth_view, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
-                    timestamp_writes: query_set.as_ref().map(|qs| wgpu::RenderPassTimestampWrites {
-                        query_set: qs,
-                        beginning_of_pass_write_index: Some((batch_local * 2) as u32),
-                        end_of_pass_write_index: Some((batch_local * 2 + 1) as u32),
-                    }),
-                    occlusion_query_set: None,
-                });
-                pass.set_pipeline(&draw_pipeline);
-                pass.set_bind_group(1, &camera_bind_group, &[]);
-                for &key in &visible {
-                    if let Some(tile) = tiles.get(&key) {
-                        pass.set_bind_group(0, &tile.draw_bind_group, &[]);
-                        pass.draw_indirect(&tile.render_args, 0);
-                    }
-                }
-            }
-
-            // cpu_ms intentionally stops at submit(): it measures culling/LOD-select/
-            // instance-build/command-recording only, matching the spec's A1/T1 CPU-time
-            // definition (present/GPU-wait excluded). No blocking call happens here -
-            // the render loop stays free-running frame to frame.
-            let cpu_ms = cpu_started.elapsed().as_secs_f64() * 1000.0;
-            if cpu_ms > 2.0 {
-                eprintln!("slow-frame: frame_index={frame_index} phase={} cpu_ms={cpu_ms:.2} generated={generated} visible={} needed={}", step.phase, visible.len(), needed.len());
-            }
-            let submit_started = Instant::now();
-            queue.submit(Some(encoder.finish()));
-            let submit_ms = submit_started.elapsed().as_secs_f64() * 1000.0;
-            if submit_ms > 2.0 {
-                eprintln!("slow-submit: frame_index={frame_index} submit_ms={submit_ms:.2}");
-            }
-            // Non-blocking poll every frame: without this, destroyed wgpu::Buffer objects
-            // (evicted tiles, per-tile scratch buffers) are never reclaimed and buffer
-            // allocation itself eventually stalls for many seconds under memory pressure
-            // (reproduced: cpu_ms blew up to ~16s per frame around frame 500 with no
-            // polling at all). Maintain::Poll does not block on GPU completion.
-            device.poll(wgpu::Maintain::Poll);
-
-            if tiles.len() > MAX_RESIDENT_TILES {
-                let remove_count = tiles.len() - MAX_RESIDENT_TILES;
-                let mut ages: Vec<(TileKey, u64)> = tiles.iter().map(|(&k, v)| (k, v.last_used)).collect();
-                ages.sort_unstable_by_key(|(_, age)| *age);
-                for (key, _) in ages.into_iter().take(remove_count) {
-                    tiles.remove(&key);
-                }
-            }
-
-            if frame_index >= trace_from && frame_index <= trace_to {
-                let resident_visible = visible.iter().filter(|k| tiles.contains_key(k)).count();
-                let mut draw_args_desc = String::new();
-                for key in visible.iter() {
-                    if let Some(tile) = tiles.get(key) {
-                        match tile.requested_args {
-                            Some(a) => draw_args_desc.push_str(&format!(" [lod{} {},{} v={} i={} fv={} fi={}]", key.lod, key.x, key.z, a[0], a[1], a[2], a[3])),
-                            None => draw_args_desc.push_str(&format!(" [lod{} {},{} args=untraced]", key.lod, key.x, key.z)),
                         }
-                    } else {
-                        draw_args_desc.push_str(&format!(" [lod{} {},{} NOT-RESIDENT]", key.lod, key.x, key.z));
+                        debug_assert!(
+                            requested[0] <= MAX_DRAW_VERTICES && requested[1] <= 1,
+                            "indirect draw args exceed the per-draw cap: {requested:?}"
+                        );
+                        if let Some(tile) = tiles.get_mut(key) {
+                            tile.requested_args = Some(requested);
+                        }
                     }
                 }
-                eprintln!(
+                for &key in visible.iter() {
+                    if tiles.contains_key(&key) {
+                        if let Some(seen) = first_seen.remove(&key) {
+                            tile_latency_frames.push((frame_index - seen) as f64);
+                        }
+                    }
+                }
+                // A tile that left the view before it was ever generated never produced a
+                // visible gap, so it must not contribute a latency sample later on.
+                first_seen.retain(|k, _| visible.contains(k));
+
+                let mut camera_bytes = [0u8; 32];
+                put_f32(&mut camera_bytes, 0, center_x as f32);
+                put_f32(&mut camera_bytes, 4, center_z as f32);
+                put_f32(&mut camera_bytes, 8, pixels_per_cell as f32);
+                put_f32(&mut camera_bytes, 12, pixels_per_cell as f32 * 0.25);
+                put_f32(&mut camera_bytes, 16, WIDTH as f32);
+                put_f32(&mut camera_bytes, 20, HEIGHT as f32);
+                put_f32(&mut camera_bytes, 24, HALF_EXTENT as f32);
+                put_f32(&mut camera_bytes, 28, 1.0); // dim: 通常表示(地下ビュー減光なし)
+                queue.write_buffer(&camera_buffer, 0, &camera_bytes);
+
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("terrain-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &color_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.604,
+                                    g: 0.722,
+                                    b: 0.435,
+                                    a: 1.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: query_set.as_ref().map(|qs| {
+                            wgpu::RenderPassTimestampWrites {
+                                query_set: qs,
+                                beginning_of_pass_write_index: Some((batch_local * 2) as u32),
+                                end_of_pass_write_index: Some((batch_local * 2 + 1) as u32),
+                            }
+                        }),
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(&draw_pipeline);
+                    pass.set_bind_group(1, &camera_bind_group, &[]);
+                    for &key in &visible {
+                        if let Some(tile) = tiles.get(&key) {
+                            pass.set_bind_group(0, &tile.draw_bind_group, &[]);
+                            pass.draw_indirect(&tile.render_args, 0);
+                        }
+                    }
+                }
+
+                // cpu_ms intentionally stops at submit(): it measures culling/LOD-select/
+                // instance-build/command-recording only, matching the spec's A1/T1 CPU-time
+                // definition (present/GPU-wait excluded). No blocking call happens here -
+                // the render loop stays free-running frame to frame.
+                let cpu_ms = cpu_started.elapsed().as_secs_f64() * 1000.0;
+                if cpu_ms > 2.0 {
+                    eprintln!("slow-frame: frame_index={frame_index} phase={} cpu_ms={cpu_ms:.2} generated={generated} visible={} needed={}", step.phase, visible.len(), needed.len());
+                }
+                let submit_started = Instant::now();
+                queue.submit(Some(encoder.finish()));
+                let submit_ms = submit_started.elapsed().as_secs_f64() * 1000.0;
+                if submit_ms > 2.0 {
+                    eprintln!("slow-submit: frame_index={frame_index} submit_ms={submit_ms:.2}");
+                }
+                // Non-blocking poll every frame: without this, destroyed wgpu::Buffer objects
+                // (evicted tiles, per-tile scratch buffers) are never reclaimed and buffer
+                // allocation itself eventually stalls for many seconds under memory pressure
+                // (reproduced: cpu_ms blew up to ~16s per frame around frame 500 with no
+                // polling at all). Maintain::Poll does not block on GPU completion.
+                device.poll(wgpu::Maintain::Poll);
+
+                if tiles.len() > MAX_RESIDENT_TILES {
+                    let remove_count = tiles.len() - MAX_RESIDENT_TILES;
+                    let mut ages: Vec<(TileKey, u64)> =
+                        tiles.iter().map(|(&k, v)| (k, v.last_used)).collect();
+                    ages.sort_unstable_by_key(|(_, age)| *age);
+                    for (key, _) in ages.into_iter().take(remove_count) {
+                        tiles.remove(&key);
+                    }
+                }
+
+                if frame_index >= trace_from && frame_index <= trace_to {
+                    let resident_visible = visible.iter().filter(|k| tiles.contains_key(k)).count();
+                    let mut draw_args_desc = String::new();
+                    for key in visible.iter() {
+                        if let Some(tile) = tiles.get(key) {
+                            match tile.requested_args {
+                                Some(a) => draw_args_desc.push_str(&format!(
+                                    " [lod{} {},{} v={} i={} fv={} fi={}]",
+                                    key.lod, key.x, key.z, a[0], a[1], a[2], a[3]
+                                )),
+                                None => draw_args_desc.push_str(&format!(
+                                    " [lod{} {},{} args=untraced]",
+                                    key.lod, key.x, key.z
+                                )),
+                            }
+                        } else {
+                            draw_args_desc.push_str(&format!(
+                                " [lod{} {},{} NOT-RESIDENT]",
+                                key.lod, key.x, key.z
+                            ));
+                        }
+                    }
+                    eprintln!(
                     "trace: frame={frame_index} phase={} ppc={pixels_per_cell:.4} lod={} visible={} resident_visible={resident_visible} needed={} generated={generated} resident_total={} cpu_ms={cpu_ms:.3} submit_ms={submit_ms:.3} draws:{draw_args_desc}",
                     step.phase,
                     visible.first().map(|t| t.lod).unwrap_or(0),
                     visible.len(), needed.len(), tiles.len(),
                 );
-            }
+                }
 
-            let lod = visible.first().map(|t| t.lod).unwrap_or(0);
-            // gpu_ms is patched in once its batch is resolved/read back (see flush_batch
-            // calls below); until then it is None and excluded from totals.
-            stats.push(FrameStats { phase: step.phase, cpu_ms, gpu_ms: None, draw_calls: visible.len(), generated_tiles: generated, resident_tiles: tiles.len(), lod });
+                let lod = visible.first().map(|t| t.lod).unwrap_or(0);
+                // gpu_ms is patched in once its batch is resolved/read back (see flush_batch
+                // calls below); until then it is None and excluded from totals.
+                stats.push(FrameStats {
+                    phase: step.phase,
+                    cpu_ms,
+                    gpu_ms: None,
+                    draw_calls: visible.len(),
+                    generated_tiles: generated,
+                    resident_tiles: tiles.len(),
+                    lod,
+                });
 
-            if cpu_ms + submit_ms > ABORT_MS_THRESHOLD {
-                let msg = format!(
+                if cpu_ms + submit_ms > ABORT_MS_THRESHOLD {
+                    let msg = format!(
                     "ABORT: frame_index={frame_index} took {:.0}ms (cpu {cpu_ms:.0}ms + submit {submit_ms:.0}ms) > {ABORT_MS_THRESHOLD}ms budget (phase={}) - stopping the run immediately. {} of the targeted {total_frames} frames were completed.",
                     cpu_ms + submit_ms, step.phase, stats.len()
                 );
-                eprintln!("{msg}");
-                anomalies.push(msg);
-                break 'schedule;
-            }
+                    eprintln!("{msg}");
+                    anomalies.push(msg);
+                    break 'schedule;
+                }
 
-            if timestamp_supported {
-                batch_local += 1;
-                if batch_local == TS_BATCH {
-                    let flush_wall_started = Instant::now();
-                    flush_batch(
-                        &device,
-                        &queue,
-                        query_set.as_ref().unwrap(),
-                        query_resolve.as_ref().unwrap(),
-                        query_readback.as_ref().unwrap(),
-                        batch_local,
-                        timestamp_period_ns,
-                        &mut stats,
-                        batch_start_stats_idx,
-                    );
-                    let flush_wall_ms = flush_wall_started.elapsed().as_secs_f64() * 1000.0;
-                    batch_start_stats_idx = stats.len();
-                    batch_local = 0;
-                    let batch_generated: usize = stats[batch_start_stats_idx.saturating_sub(TS_BATCH).min(stats.len())..].iter().map(|s| s.generated_tiles).sum::<usize>();
-                    eprintln!(
+                if timestamp_supported {
+                    batch_local += 1;
+                    if batch_local == TS_BATCH {
+                        let flush_wall_started = Instant::now();
+                        flush_batch(
+                            &device,
+                            &queue,
+                            query_set.as_ref().unwrap(),
+                            query_resolve.as_ref().unwrap(),
+                            query_readback.as_ref().unwrap(),
+                            batch_local,
+                            timestamp_period_ns,
+                            &mut stats,
+                            batch_start_stats_idx,
+                        );
+                        let flush_wall_ms = flush_wall_started.elapsed().as_secs_f64() * 1000.0;
+                        batch_start_stats_idx = stats.len();
+                        batch_local = 0;
+                        let batch_generated: usize = stats[batch_start_stats_idx
+                            .saturating_sub(TS_BATCH)
+                            .min(stats.len())..]
+                            .iter()
+                            .map(|s| s.generated_tiles)
+                            .sum::<usize>();
+                        eprintln!(
                         "progress: {}/{} frames, {:.1}s elapsed, resident_tiles={}, phase={}, generated_in_batch~={}, flush_ms={flush_wall_ms:.0}",
                         stats.len(), total_frames, progress_started.elapsed().as_secs_f64(), tiles.len(), stats.last().map(|s| s.phase).unwrap_or("?"), batch_generated
                     );
-                    // Adaptive fallback kept as a guard: if a single flush ever takes an
-                    // unreasonable amount of wall time again, stop paying that cost every
-                    // TS_BATCH frames and fall back to CPU-only timing (gpu_ms stays None
-                    // from here on) rather than letting the run take tens of minutes just
-                    // from query readback. It no longer trips in normal operation.
-                    if flush_wall_ms > 2000.0 {
-                        eprintln!("timestamp-query readback took {flush_wall_ms:.0}ms (>2000ms threshold) - disabling further GPU timestamp measurement for the rest of this run");
-                        timestamp_degraded = true;
-                        timestamp_supported = false;
+                        // Adaptive fallback kept as a guard: if a single flush ever takes an
+                        // unreasonable amount of wall time again, stop paying that cost every
+                        // TS_BATCH frames and fall back to CPU-only timing (gpu_ms stays None
+                        // from here on) rather than letting the run take tens of minutes just
+                        // from query readback. It no longer trips in normal operation.
+                        if flush_wall_ms > 2000.0 {
+                            eprintln!("timestamp-query readback took {flush_wall_ms:.0}ms (>2000ms threshold) - disabling further GPU timestamp measurement for the rest of this run");
+                            timestamp_degraded = true;
+                            timestamp_supported = false;
+                        }
                     }
+                } else if frame_index % 500 == 0 {
+                    eprintln!(
+                        "progress: {}/{} frames, {:.1}s elapsed, resident_tiles={}, phase={}",
+                        stats.len(),
+                        total_frames,
+                        progress_started.elapsed().as_secs_f64(),
+                        tiles.len(),
+                        step.phase
+                    );
                 }
-            } else if frame_index % 500 == 0 {
-                eprintln!(
-                    "progress: {}/{} frames, {:.1}s elapsed, resident_tiles={}, phase={}",
-                    stats.len(), total_frames, progress_started.elapsed().as_secs_f64(), tiles.len(), step.phase
-                );
             }
-        }
         }
     }
 
@@ -825,12 +1418,35 @@ fn main() {
     // show up here as 0.
     let final_non_background_pixels = {
         let row_bytes = (WIDTH * 4) as u64; // 6400, already a multiple of 256
-        let readback = device.create_buffer(&wgpu::BufferDescriptor { label: Some("final-frame-readback"), size: row_bytes * HEIGHT as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("final-frame-copy") });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("final-frame-readback"),
+            size: row_bytes * HEIGHT as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("final-frame-copy"),
+        });
         encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &color, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyBufferInfo { buffer: &readback, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes as u32), rows_per_image: Some(HEIGHT) } },
-            wgpu::Extent3d { width: WIDTH, height: HEIGHT, depth_or_array_layers: 1 },
+            wgpu::TexelCopyTextureInfo {
+                texture: &color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row_bytes as u32),
+                    rows_per_image: Some(HEIGHT),
+                },
+            },
+            wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit(Some(encoder.finish()));
         let slice = readback.slice(..);
@@ -843,7 +1459,10 @@ fn main() {
         let data = slice.get_mapped_range();
         // Clear colour 0.604/0.722/0.435 in Rgba8Unorm.
         let clear = [154u8, 184u8, 111u8];
-        let count = data.chunks_exact(4).filter(|p| p[0] != clear[0] || p[1] != clear[1] || p[2] != clear[2]).count();
+        let count = data
+            .chunks_exact(4)
+            .filter(|p| p[0] != clear[0] || p[1] != clear[1] || p[2] != clear[2])
+            .count();
         drop(data);
         readback.unmap();
         count
@@ -857,7 +1476,10 @@ fn main() {
         let rows: Vec<&FrameStats> = stats.iter().filter(|s| s.phase == name).collect();
         let mut cpu: Vec<f64> = rows.iter().map(|r| r.cpu_ms).collect();
         let mut gpu: Vec<f64> = rows.iter().filter_map(|r| r.gpu_ms).collect();
-        let mut total: Vec<f64> = rows.iter().map(|r| r.cpu_ms + r.gpu_ms.unwrap_or(0.0)).collect();
+        let mut total: Vec<f64> = rows
+            .iter()
+            .map(|r| r.cpu_ms + r.gpu_ms.unwrap_or(0.0))
+            .collect();
         cpu.sort_by(|a, b| a.partial_cmp(b).unwrap());
         gpu.sort_by(|a, b| a.partial_cmp(b).unwrap());
         total.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -883,7 +1505,11 @@ fn main() {
     let total_hitches = all_total.iter().filter(|&&v| v > 16.6).count();
 
     let get_phase = |name: &str| -> (f64, f64) {
-        let mut v: Vec<f64> = stats.iter().filter(|s| s.phase == name).map(|s| s.cpu_ms + s.gpu_ms.unwrap_or(0.0)).collect();
+        let mut v: Vec<f64> = stats
+            .iter()
+            .filter(|s| s.phase == name)
+            .map(|s| s.cpu_ms + s.gpu_ms.unwrap_or(0.0))
+            .collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         (percentile(&v, 0.5), percentile(&v, 0.99))
     };
@@ -899,7 +1525,13 @@ fn main() {
     let t7_median_ms = t7_median_frames * median_frame_ms;
     let t7_p99_ms = t7_p99_frames * median_frame_ms;
 
-    let gate = |id: &str, prototype_desc: &str, prototype_pass: bool, strict_desc: &str, strict_pass: bool, actual: String| -> String {
+    let gate = |id: &str,
+                prototype_desc: &str,
+                prototype_pass: bool,
+                strict_desc: &str,
+                strict_pass: bool,
+                actual: String|
+     -> String {
         format!("{{\"gate\":\"{id}\",\"prototype\":{{\"threshold\":\"{prototype_desc}\",\"pass\":{prototype_pass}}},\"strict\":{{\"threshold\":\"{strict_desc}\",\"pass\":{strict_pass}}},\"actual\":\"{actual}\"}}")
     };
 
@@ -931,9 +1563,19 @@ fn main() {
 
     let cpu_brand = sysctl_or("sysctl", &["-n", "machdep.cpu.brand_string"], "unknown");
     let os_version = sysctl_or("sw_vers", &["-productVersion"], "unknown");
-    let started_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
 
-    let anomalies_json = format!("[{}]", anomalies.iter().map(|a| format!("{:?}", a)).collect::<Vec<_>>().join(","));
+    let anomalies_json = format!(
+        "[{}]",
+        anomalies
+            .iter()
+            .map(|a| format!("{:?}", a))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     let json = format!(
         "{{\"kind\":\"layer-b-bench\",\"startedAtUnix\":{started_at},\"environment\":{{\"host\":\"macOS (Apple Silicon)\",\"osVersion\":\"{os_version}\",\"cpu\":\"{cpu_brand}\",\"adapterName\":{:?},\"adapterBackend\":\"{:?}\",\"adapterDeviceType\":\"{:?}\",\"timestampQuerySupported\":{timestamp_supported},\"timestampQueryDegradedDuringRun\":{timestamp_degraded},\"timestampPeriodNs\":{timestamp_period_ns:.4}}},\"config\":{{\"width\":{WIDTH},\"height\":{HEIGHT},\"halfExtent\":{HALF_EXTENT},\"seed\":\"0x{SEED:08x}\",\"framesPerFullCycle\":{cycle_len},\"fullCycles\":{full_cycles},\"totalFramesTargeted\":{total_frames},\"framesActuallyCompleted\":{},\"zoomLegScopeNote\":\"none: every frame comes from the complete 540-frame cycle including both zoom legs\",\"terraform\":\"skipped-not-in-prototype-scope\"}},\"anomalies\":{anomalies_json},\"drawSafety\":{{\"argTraceEnabled\":{arg_trace},\"maxDrawVerticesCap\":{MAX_DRAW_VERTICES},\"overCapDraws\":{over_cap_draws},\"maxRequestedVertexCount\":{max_requested_vertices},\"maxRequestedInstanceCount\":{max_requested_instances},\"finalFrameNonBackgroundPixels\":{final_non_background_pixels}}},\"phases\":[{}],\"tileLatency\":{{\"sampleCount\":{},\"medianFrames\":{t7_median_frames:.2},\"p99Frames\":{t7_p99_frames:.2},\"medianMs\":{t7_median_ms:.3},\"p99Ms\":{t7_p99_ms:.3}}},\"memory\":{{\"residentTilesFinal\":{final_resident},\"estimatedTileSampleBytesFinal\":{final_bytes},\"maxResidentTilesConfigured\":{MAX_RESIDENT_TILES}}},\"gates\":[{}]}}",
         info.name, info.backend, info.device_type,

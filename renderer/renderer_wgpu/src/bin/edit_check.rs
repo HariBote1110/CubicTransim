@@ -51,7 +51,12 @@ impl Rng {
 /// 1回の盛土/切土ストロークを模した、矩形+段差1以下の疑似的な編集を1件生成する。
 /// 実際の applyCornerEdit の伝播アルゴリズムそのものは移植しない(TS側でユニットテスト済み)。
 /// ここではオーバーライドの「疎な分布」を再現できれば十分。
-fn random_edit_batch(rng: &mut Rng, origin_x: i32, origin_z: i32, count: usize) -> Vec<(i32, i32, u8)> {
+fn random_edit_batch(
+    rng: &mut Rng,
+    origin_x: i32,
+    origin_z: i32,
+    count: usize,
+) -> Vec<(i32, i32, u8)> {
     let mut out = Vec::with_capacity(count);
     let cx = origin_x + rng.range(-40, 40);
     let cz = origin_z + rng.range(-40, 40);
@@ -72,7 +77,10 @@ fn apply_batch(overrides: &mut OverrideChunks, batch: &[(i32, i32, u8)]) {
         let lx = x.rem_euclid(CHUNK) as u32;
         let lz = z.rem_euclid(CHUNK) as u32;
         let local_index = lx * CHUNK as u32 + lz;
-        overrides.entry((cx, cz)).or_default().insert(local_index, h);
+        overrides
+            .entry((cx, cz))
+            .or_default()
+            .insert(local_index, h);
     }
 }
 
@@ -185,7 +193,13 @@ fn main() {
 
     // 5つのタイル(すべて stride=1/LOD0。LOD一貫性規則の「厳密一致」契約はここでのみ検証する)
     // へ、それぞれ異なるランダム編集集合を適用して比較する。
-    let cases: [(i32, i32); 5] = [(-128, -128), (0, 0), (4096, -2048), (-8192, 0), (8000, 8000)];
+    let cases: [(i32, i32); 5] = [
+        (-128, -128),
+        (0, 0),
+        (4096, -2048),
+        (-8192, 0),
+        (8000, 8000),
+    ];
     let mut rng = Rng(0x1234_5678);
     let mut total_mismatches = 0usize;
     let mut total_points = 0usize;

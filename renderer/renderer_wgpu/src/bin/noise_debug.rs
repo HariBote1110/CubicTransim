@@ -170,5 +170,9 @@ fn main() {
         let v = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
         parts.push(format!("0x{v:08x}"));
     }
-    println!("seed={seed} pos=({x},{z}) adapter={:?} values={}", info.name, parts.join(" | "));
+    println!(
+        "seed={seed} pos=({x},{z}) adapter={:?} values={}",
+        info.name,
+        parts.join(" | ")
+    );
 }

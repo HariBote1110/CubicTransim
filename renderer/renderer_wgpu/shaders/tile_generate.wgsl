@@ -1,6 +1,16 @@
-struct TileParams { seed:u32, half_extent:i32, origin_x:i32, origin_z:i32, stride:i32, grid_size:u32, override_count:u32, _pad1:u32 };
+// thresholds: 地形プロファイル(平坦/標準/山がち)の標高1..10しきい値。1つのvec4が
+// 2つのu64を (hi,lo,hi,lo) で持つ(uniform配列は16byteストライドが要るため)。
+// プロファイル分岐はシェーダ側に持たず、CPU側で解決済みの値をこのuniformで渡す。
+struct TileParams { seed:u32, half_extent:i32, origin_x:i32, origin_z:i32, stride:i32, grid_size:u32, override_count:u32, _pad1:u32, thresholds: array<vec4<u32>, 5> };
 
 struct U64 { hi: u32, lo: u32 };
+
+@group(0) @binding(0) var<uniform> params:TileParams;
+@group(0) @binding(1) var<storage,read_write> heights:array<u32>;
+// R2: 疎な地形編集オーバーレイ。build_tile_overrides(Rust側)が local_index 昇順で
+// ソート済みの [local_index0, height0, local_index1, height1, ...] を詰める。
+// local_index はこのシェーダのスレッド添字 i (=lx*grid_size+lz) と同じ規約。
+@group(0) @binding(2) var<storage,read> overrides:array<u32>;
 
 
 const FIXED_ONE_HI: u32 = 1u;
@@ -103,15 +113,16 @@ fn composite_num(seed: u32, x: i32, z: i32) -> U64 {
   return n;
 }
 
+fn threshold_at(i: u32) -> U64 {
+  let packed = params.thresholds[i >> 1u];
+  if ((i & 1u) == 0u) { return U64(packed.x, packed.y); }
+  return U64(packed.z, packed.w);
+}
+
 fn height_from_num(n: U64) -> u32 {
-  let thresholds = array<U64, 10>(
-    U64(8u, 1073741824u), U64(9u, 2635548114u), U64(10u, 4197354403u), U64(12u, 1464193397u),
-    U64(13u, 3025999686u), U64(15u, 292838680u), U64(16u, 1854644969u), U64(17u, 3416451259u),
-    U64(19u, 683290252u), U64(20u, 2245096542u)
-  );
   var h = 0u;
   for (var i = 0u; i < 10u; i = i + 1u) {
-    if (u64_cmp(n, thresholds[i]) >= 0) { h = i + 1u; }
+    if (u64_cmp(n, threshold_at(i)) >= 0) { h = i + 1u; }
   }
   return h;
 }
@@ -123,12 +134,6 @@ fn corner_height_at(seed: u32, half_extent: i32, x: i32, z: i32) -> u32 {
   return height_from_num(n);
 }
 
-@group(0) @binding(0) var<uniform> params:TileParams;
-@group(0) @binding(1) var<storage,read_write> heights:array<u32>;
-// R2: 疎な地形編集オーバーレイ。build_tile_overrides(Rust側)が local_index 昇順で
-// ソート済みの [local_index0, height0, local_index1, height1, ...] を詰める。
-// local_index はこのシェーダのスレッド添字 i (=lx*grid_size+lz) と同じ規約。
-@group(0) @binding(2) var<storage,read> overrides:array<u32>;
 
 // 二分探索: このコーナー(local_index=i)を上書きする編集があれば height を返す
 // (createEditedTerrainField の「override ?? base」と同じ意味論)。無ければ -1。

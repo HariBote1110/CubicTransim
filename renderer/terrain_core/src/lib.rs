@@ -108,6 +108,17 @@ impl TerrainProfile {
         }
     }
 
+    /// Threshold table packed for the WGSL params uniform: 20 u32 words, (hi, lo) per threshold.
+    /// tile_generate.wgsl / terrain_noise.wgsl read these as 5 × vec4<u32> = (hi, lo, hi, lo).
+    pub fn threshold_words(self) -> [u32; 20] {
+        let mut out = [0u32; 20];
+        for (i, value) in self.thresholds().iter().enumerate() {
+            out[i * 2] = (*value >> 32) as u32;
+            out[i * 2 + 1] = *value as u32;
+        }
+        out
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
             TerrainProfile::Flat => "flat",

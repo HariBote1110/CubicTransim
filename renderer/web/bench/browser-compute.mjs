@@ -35,7 +35,9 @@ try {
   const result = await page.evaluate(async (CASES) => {
     const GRID=257, POINTS=GRID*GRID, TILE_BYTES=POINTS*4;
     const seed=0x12345678>>>0, halfExtent=8192;
-    const {cpuTilePacked,tileGenerateWgsl}=globalThis.__quarterviewTest;
+    const {cpuTilePacked,tileGenerateWgsl,profileThresholdWords}=globalThis.__quarterviewTest;
+    // 地形プロファイルを巡回させ、全プロファイルのしきい値でGPU/CPUを突き合わせる。
+    const PROFILES=['flat','normal','mountain'];
     const adapter=await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
     if(!adapter) throw new Error('No Browser WebGPU adapter');
     const device=await adapter.requestDevice();
@@ -62,7 +64,7 @@ try {
       const originSpan=Math.max(1,maxOrigin-min+1);
       state=(Math.imul(state,1664525)+1013904223)>>>0; const originX=min+(state%originSpan);
       state=(Math.imul(state,1664525)+1013904223)>>>0; const originZ=min+(state%originSpan);
-      cases.push({caseIndex,stride,originX,originZ});
+      cases.push({caseIndex,stride,originX,originZ,profile:PROFILES[caseIndex%PROFILES.length]});
     }
 
     // No corner overrides in this proto check (override_count stays 0 in every params
@@ -74,10 +76,13 @@ try {
     const bindGroups=[];
     const paramBuffers=[];
     for(const c of cases){
-      const bytes=new ArrayBuffer(32),dv=new DataView(bytes);
+      // TileParams = 8語(32byte) + しきい値20語(80byte) = 112byte。
+      const bytes=new ArrayBuffer(112),dv=new DataView(bytes);
       dv.setUint32(0,seed,true); dv.setInt32(4,halfExtent,true); dv.setInt32(8,c.originX,true); dv.setInt32(12,c.originZ,true);
       dv.setInt32(16,c.stride,true); dv.setUint32(20,GRID,true);
-      const params=device.createBuffer({size:32,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+      const thresholdWords=profileThresholdWords(c.profile);
+      for(let w=0;w<20;w++) dv.setUint32(32+w*4,thresholdWords[w],true);
+      const params=device.createBuffer({size:112,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
       device.queue.writeBuffer(params,0,bytes);
       paramBuffers.push(params);
       bindGroups.push(device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
@@ -102,7 +107,7 @@ try {
 
     // Generate the f64 Rust/WASM reference while the WebGPU queue is busy.
     const expected=[];
-    for(const c of cases) expected.push(cpuTilePacked(seed,halfExtent,c.originX,c.originZ,c.stride));
+    for(const c of cases) expected.push(cpuTilePacked(seed,halfExtent,c.originX,c.originZ,c.stride,c.profile));
     await mapPromise;
     const words=new Uint32Array(readback.getMappedRange());
     const segmentWords=segmentBytes/4;
@@ -122,7 +127,7 @@ try {
     readback.unmap();
     await device.queue.onSubmittedWorkDone();
     return {
-      kind:'browser-webgpu-noise-check',backend:'BrowserWebGpu',cases:CASES,points:CASES*POINTS,mismatches,first,
+      kind:'browser-webgpu-noise-check',backend:'BrowserWebGpu',cases:CASES,points:CASES*POINTS,profiles:PROFILES,mismatches,first,
       elapsedMs:performance.now()-started,uncaptured,deviceLost,adapterInfo:adapter.info??{},
       storageAlignment,segmentBytes,totalBufferMiB:totalBytes/1048576,
     };

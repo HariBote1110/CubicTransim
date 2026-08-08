@@ -3,6 +3,9 @@ struct Params {
   half_extent: i32,
   count: u32,
   _pad: u32,
+  // 地形プロファイルの標高しきい値。1つのvec4が2つのu64を (hi,lo,hi,lo) で持つ
+  // (uniform配列は16byteストライドが要るため)。tile_generate.wgsl と同じ規約。
+  thresholds: array<vec4<u32>, 5>,
 };
 
 struct U64 { hi: u32, lo: u32 };
@@ -111,15 +114,16 @@ fn composite_num(seed: u32, x: i32, z: i32) -> U64 {
   return n;
 }
 
+fn threshold_at(i: u32) -> U64 {
+  let packed = params.thresholds[i >> 1u];
+  if ((i & 1u) == 0u) { return U64(packed.x, packed.y); }
+  return U64(packed.z, packed.w);
+}
+
 fn height_from_num(n: U64) -> u32 {
-  let thresholds = array<U64, 10>(
-    U64(8u, 1073741824u), U64(9u, 2635548114u), U64(10u, 4197354403u), U64(12u, 1464193397u),
-    U64(13u, 3025999686u), U64(15u, 292838680u), U64(16u, 1854644969u), U64(17u, 3416451259u),
-    U64(19u, 683290252u), U64(20u, 2245096542u)
-  );
   var h = 0u;
   for (var i = 0u; i < 10u; i = i + 1u) {
-    if (u64_cmp(n, thresholds[i]) >= 0) { h = i + 1u; }
+    if (u64_cmp(n, threshold_at(i)) >= 0) { h = i + 1u; }
   }
   return h;
 }

@@ -88,7 +88,10 @@ pub mod projection {
         let rect = aabb_screen_rect(aabb, cam);
         let half_w = cam.viewport_w * 0.5;
         let half_h = cam.viewport_h * 0.5;
-        rect.max_x >= -half_w && rect.min_x <= half_w && rect.max_y >= -half_h && rect.min_y <= half_h
+        rect.max_x >= -half_w
+            && rect.min_x <= half_w
+            && rect.max_y >= -half_h
+            && rect.min_y <= half_h
     }
 
     #[cfg(test)]
@@ -126,9 +129,15 @@ pub mod projection {
         fn centred_box_is_visible_and_distant_box_is_not() {
             assert!(aabb_visible(&[-1.0, 0.0, -1.0, 1.0, 1.0, 1.0], cam()));
             // +x/+z へ大きく離すと画面下方向(sy)へ抜ける。
-            assert!(!aabb_visible(&[100.0, 0.0, 100.0, 101.0, 1.0, 101.0], cam()));
+            assert!(!aabb_visible(
+                &[100.0, 0.0, 100.0, 101.0, 1.0, 101.0],
+                cam()
+            ));
             // +x/-z へ離すと画面右方向(sx)へ抜ける。
-            assert!(!aabb_visible(&[100.0, 0.0, -101.0, 101.0, 1.0, -100.0], cam()));
+            assert!(!aabb_visible(
+                &[100.0, 0.0, -101.0, 101.0, 1.0, -100.0],
+                cam()
+            ));
         }
 
         #[test]
@@ -241,7 +250,8 @@ pub mod meshes {
 
         #[test]
         fn interleaves_position_and_colour_into_16_byte_vertices() {
-            let bytes = interleave_vertices(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0xff00_00ff, 0x00ff_00ff]);
+            let bytes =
+                interleave_vertices(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0xff00_00ff, 0x00ff_00ff]);
             assert_eq!(bytes.len(), 2 * VERTEX_STRIDE_BYTES);
             assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
             assert_eq!(&bytes[12..16], &0xff00_00ffu32.to_le_bytes());
@@ -265,7 +275,10 @@ pub mod meshes {
             assert_eq!(surface.len(), 2 * INSTANCE_STRIDE_BYTES);
             assert_eq!(underground.len(), INSTANCE_STRIDE_BYTES);
             assert_eq!(&surface[0..4], &1.0f32.to_le_bytes());
-            assert_eq!(&surface[INSTANCE_STRIDE_BYTES..INSTANCE_STRIDE_BYTES + 4], &3.0f32.to_le_bytes());
+            assert_eq!(
+                &surface[INSTANCE_STRIDE_BYTES..INSTANCE_STRIDE_BYTES + 4],
+                &3.0f32.to_le_bytes()
+            );
             assert_eq!(&underground[0..4], &2.0f32.to_le_bytes());
         }
 
@@ -279,7 +292,11 @@ pub mod meshes {
 
         #[test]
         fn layer_class_round_trips_and_clamps_unknown_values() {
-            for c in [LayerClass::Surface, LayerClass::Underground, LayerClass::Translucent] {
+            for c in [
+                LayerClass::Surface,
+                LayerClass::Underground,
+                LayerClass::Translucent,
+            ] {
                 assert_eq!(LayerClass::from_u32(c.as_u32()), c);
             }
             assert_eq!(LayerClass::from_u32(99), LayerClass::Surface);
@@ -452,17 +469,32 @@ pub mod mesh_pipeline {
         ]
         .map(|class| {
             create_mesh_pipeline(
-                device, &mesh_shader, &layout, format, class,
-                &[mesh_vertex_layout()], "mesh-draw-pipeline",
+                device,
+                &mesh_shader,
+                &layout,
+                format,
+                class,
+                &[mesh_vertex_layout()],
+                "mesh-draw-pipeline",
             )
         });
         let instanced = [LayerClass::Surface, LayerClass::Underground].map(|class| {
             create_mesh_pipeline(
-                device, &instanced_shader, &layout, format, class,
-                &[mesh_vertex_layout(), mesh_instance_layout()], "mesh-instanced-pipeline",
+                device,
+                &instanced_shader,
+                &layout,
+                format,
+                class,
+                &[mesh_vertex_layout(), mesh_instance_layout()],
+                "mesh-instanced-pipeline",
             )
         });
-        MeshPipelines { camera_bgl, class_bgl, chunk, instanced }
+        MeshPipelines {
+            camera_bgl,
+            class_bgl,
+            chunk,
+            instanced,
+        }
     }
 }
 
@@ -564,7 +596,8 @@ pub mod edits {
                     }
                     let snapped_lx = ((rel_x as f64) / (stride as f64)).round() as i32;
                     let snapped_lz = ((rel_z as f64) / (stride as f64)).round() as i32;
-                    if snapped_lx < 0 || snapped_lx >= grid || snapped_lz < 0 || snapped_lz >= grid {
+                    if snapped_lx < 0 || snapped_lx >= grid || snapped_lz < 0 || snapped_lz >= grid
+                    {
                         continue;
                     }
                     let sample_x = origin_x + snapped_lx * stride;
@@ -809,6 +842,8 @@ mod wasm {
 
         seed: u32,
         half_extent: i32,
+        /// 地形プロファイル(平坦/標準/山がち)。TS側 createTerrainField と同じテーブルを使う。
+        profile: quarterview_terrain_core::TerrainProfile,
         center_x: f64,
         center_z: f64,
         pixels_per_cell: f64,
@@ -832,8 +867,15 @@ mod wasm {
             canvas: HtmlCanvasElement,
             seed: u32,
             half_extent: i32,
+            // 地形プロファイル名 ("flat" / "normal" / "mountain")。世界ごとに不変なので
+            // 生成時に固定する。未指定(旧い呼び出し)は "normal" として扱う。
+            profile: Option<String>,
         ) -> Result<CanvasRenderer, JsValue> {
             console_error_panic_hook::set_once();
+            let profile = profile
+                .as_deref()
+                .map(quarterview_terrain_core::TerrainProfile::from_name)
+                .unwrap_or_default();
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::BROWSER_WEBGPU,
                 ..Default::default()
@@ -946,48 +988,217 @@ mod wasm {
             let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("draw-bgl"),
                 entries: &[
-                    wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
             let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera-bgl"), entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }],
+                label: Some("camera-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
             });
-            let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("draw-layout"), bind_group_layouts: &[&draw_bgl, &camera_bgl], push_constant_ranges: &[] });
+            let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("draw-layout"),
+                bind_group_layouts: &[&draw_bgl, &camera_bgl],
+                push_constant_ranges: &[],
+            });
 
-            let finalize_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tile-finalize"), source: wgpu::ShaderSource::Wgsl(super::TILE_FINALIZE_WGSL.into()) });
+            let finalize_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("tile-finalize"),
+                source: wgpu::ShaderSource::Wgsl(super::TILE_FINALIZE_WGSL.into()),
+            });
             let finalize_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("tile-finalize-bgl"), entries: &[
-                    wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                label: Some("tile-finalize-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
-            let finalize_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-finalize-layout"), bind_group_layouts: &[&finalize_bgl], push_constant_ranges: &[] });
-            let finalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-finalize-pipeline"), layout: Some(&finalize_layout), module: &finalize_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+            let finalize_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("tile-finalize-layout"),
+                bind_group_layouts: &[&finalize_bgl],
+                push_constant_ranges: &[],
+            });
+            let finalize_pipeline =
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("tile-finalize-pipeline"),
+                    layout: Some(&finalize_layout),
+                    module: &finalize_shader,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
 
             // Draw-safety guard: clamps every tile's indirect quad before it can be
             // submitted (see shaders/tile_clamp_args.wgsl).
-            let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("tile-clamp-args"), source: wgpu::ShaderSource::Wgsl(super::TILE_CLAMP_ARGS_WGSL.into()) });
+            let clamp_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("tile-clamp-args"),
+                source: wgpu::ShaderSource::Wgsl(super::TILE_CLAMP_ARGS_WGSL.into()),
+            });
             let clamp_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("tile-clamp-args-bgl"), entries: &[
-                    wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                    wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                label: Some("tile-clamp-args-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
-            let clamp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("tile-clamp-args-layout"), bind_group_layouts: &[&clamp_bgl], push_constant_ranges: &[] });
-            let clamp_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("tile-clamp-args-pipeline"), layout: Some(&clamp_layout), module: &clamp_shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+            let clamp_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("tile-clamp-args-layout"),
+                bind_group_layouts: &[&clamp_bgl],
+                push_constant_ranges: &[],
+            });
+            let clamp_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("tile-clamp-args-pipeline"),
+                layout: Some(&clamp_layout),
+                module: &clamp_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
             let mut clamp_params_bytes = [0u8; 16];
             put_u32(&mut clamp_params_bytes, 0, MAX_DRAW_VERTICES);
-            let clamp_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("tile-clamp-args-params"), contents: &clamp_params_bytes, usage: wgpu::BufferUsages::UNIFORM });
+            let clamp_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("tile-clamp-args-params"),
+                contents: &clamp_params_bytes,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
-            let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("terrain-camera-params"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain-camera-bg"), layout: &camera_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() }] });
+            let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("terrain-camera-params"),
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("terrain-camera-bg"),
+                layout: &camera_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }],
+            });
 
             let draw_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("terrain-draw-pipeline"),
@@ -1028,21 +1239,35 @@ mod wasm {
             // --- R4a: メッシュチャンク / インスタンス描画のパイプライン(mesh_pipeline モジュール) ---
             let mesh = super::mesh_pipeline::create_all(&device, format);
             let mesh_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("mesh-camera-bg"), layout: &mesh.camera_bgl,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() }],
+                label: Some("mesh-camera-bg"),
+                layout: &mesh.camera_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }],
             });
-            let class_bind_groups = [LayerClass::Surface, LayerClass::Underground, LayerClass::Translucent]
-                .map(|class| {
-                    let mut bytes = [0u8; 16];
-                    put_u32(&mut bytes, 0, class.as_u32());
-                    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("mesh-class-params"), contents: &bytes, usage: wgpu::BufferUsages::UNIFORM,
-                    });
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("mesh-class-bg"), layout: &mesh.class_bgl,
-                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-                    })
+            let class_bind_groups = [
+                LayerClass::Surface,
+                LayerClass::Underground,
+                LayerClass::Translucent,
+            ]
+            .map(|class| {
+                let mut bytes = [0u8; 16];
+                put_u32(&mut bytes, 0, class.as_u32());
+                let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("mesh-class-params"),
+                    contents: &bytes,
+                    usage: wgpu::BufferUsages::UNIFORM,
                 });
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("mesh-class-bg"),
+                    layout: &mesh.class_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    }],
+                })
+            });
             let mesh_pipelines = mesh.chunk;
             let instanced_pipelines = mesh.instanced;
 
@@ -1078,6 +1303,7 @@ mod wasm {
                 camera_revision: 1,
                 seed,
                 half_extent,
+                profile,
                 center_x: 0.0,
                 center_z: 0.0,
                 pixels_per_cell: 3.0,
@@ -1221,21 +1447,32 @@ mod wasm {
                 self.mesh_chunks.remove(&id);
                 return;
             }
-            let vertices = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("mesh-chunk-vertices"), contents: &vertex_bytes, usage: wgpu::BufferUsages::VERTEX,
-            });
-            let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("mesh-chunk-indices"), contents: bytemuck::cast_slice(indices), usage: wgpu::BufferUsages::INDEX,
-            });
+            let vertices = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("mesh-chunk-vertices"),
+                    contents: &vertex_bytes,
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let index_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("mesh-chunk-indices"),
+                    contents: bytemuck::cast_slice(indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
             let mut bounds = [0f32; 6];
             bounds[..aabb.len().min(6)].copy_from_slice(&aabb[..aabb.len().min(6)]);
-            self.mesh_chunks.insert(id, MeshChunk {
-                vertices,
-                indices: index_buffer,
-                index_count: indices.len() as u32,
-                class: LayerClass::from_u32(layer_class),
-                aabb: bounds,
-            });
+            self.mesh_chunks.insert(
+                id,
+                MeshChunk {
+                    vertices,
+                    indices: index_buffer,
+                    index_count: indices.len() as u32,
+                    class: LayerClass::from_u32(layer_class),
+                    aabb: bounds,
+                },
+            );
         }
 
         /// R4a: メッシュチャンクを外す(存在しない id は無視)。
@@ -1263,19 +1500,30 @@ mod wasm {
                 self.instanced_meshes.remove(&mesh_id);
                 return;
             }
-            let vertices = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("instanced-mesh-vertices"), contents: &vertex_bytes, usage: wgpu::BufferUsages::VERTEX,
-            });
-            let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("instanced-mesh-indices"), contents: bytemuck::cast_slice(indices), usage: wgpu::BufferUsages::INDEX,
-            });
-            self.instanced_meshes.insert(mesh_id, InstancedMesh {
-                vertices,
-                indices: index_buffer,
-                index_count: indices.len() as u32,
-                surface: None,
-                underground: None,
-            });
+            let vertices = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("instanced-mesh-vertices"),
+                    contents: &vertex_bytes,
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let index_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("instanced-mesh-indices"),
+                    contents: bytemuck::cast_slice(indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+            self.instanced_meshes.insert(
+                mesh_id,
+                InstancedMesh {
+                    vertices,
+                    indices: index_buffer,
+                    index_count: indices.len() as u32,
+                    surface: None,
+                    underground: None,
+                },
+            );
         }
 
         /// R4a: 登録済みメッシュのインスタンス配列を丸ごと差し替える。
@@ -1289,7 +1537,9 @@ mod wasm {
                     return None;
                 }
                 let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("instance-data"), contents: bytes, usage: wgpu::BufferUsages::VERTEX,
+                    label: Some("instance-data"),
+                    contents: bytes,
+                    usage: wgpu::BufferUsages::VERTEX,
                 });
                 Some((buffer, (bytes.len() / INSTANCE_STRIDE_BYTES) as u32))
             };
@@ -1518,7 +1768,9 @@ mod wasm {
                     LayerClass::Underground => mesh.underground.as_ref(),
                     _ => mesh.surface.as_ref(),
                 };
-                let Some((buffer, count)) = slice else { continue };
+                let Some((buffer, count)) = slice else {
+                    continue;
+                };
                 if *count == 0 {
                     continue;
                 }
@@ -1536,116 +1788,244 @@ mod wasm {
             let origin_z = key.z * tile_cell_span(key.lod);
             let stride = 1i32 << key.lod;
             let samples = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("terrain-tile-samples"), size: TILE_BYTES,
-                usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false,
+                label: Some("terrain-tile-samples"),
+                size: TILE_BYTES,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
             });
             // R2: このタイルが実際にサンプルする範囲へ重なる編集オーバーレイだけを、
             // local_index昇順のソート済みフラット配列へ変換する(build_tile_overrides の
             // LOD一貫性規則を参照)。tile_generate.wgsl はこれを二分探索する。
-            let override_entries = build_tile_overrides(&self.overrides, origin_x, origin_z, stride, GRID as i32);
+            let override_entries =
+                build_tile_overrides(&self.overrides, origin_x, origin_z, stride, GRID as i32);
             let override_count = (override_entries.len() / 2) as u32;
             let override_buffer_contents: Vec<u8> = if override_entries.is_empty() {
                 vec![0u8; 8]
             } else {
-                override_entries.iter().flat_map(|v| v.to_le_bytes()).collect()
+                override_entries
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect()
             };
-            let overrides_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("terrain-tile-overrides"), contents: &override_buffer_contents,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+            let overrides_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-tile-overrides"),
+                    contents: &override_buffer_contents,
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
             let mut params = Vec::with_capacity(32);
-            push_u32(&mut params, self.seed); push_i32(&mut params, self.half_extent);
-            push_i32(&mut params, origin_x); push_i32(&mut params, origin_z);
-            push_i32(&mut params, stride); push_u32(&mut params, GRID);
-            push_u32(&mut params, override_count); push_u32(&mut params, 0);
-            let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("terrain-tile-params"), contents: &params, usage: wgpu::BufferUsages::UNIFORM,
-            });
+            push_u32(&mut params, self.seed);
+            push_i32(&mut params, self.half_extent);
+            push_i32(&mut params, origin_x);
+            push_i32(&mut params, origin_z);
+            push_i32(&mut params, stride);
+            push_u32(&mut params, GRID);
+            push_u32(&mut params, override_count);
+            push_u32(&mut params, 0);
+            // プロファイル別の標高しきい値(hi,lo × 10)。シェーダ側はプロファイル分岐を持たない。
+            for word in self.profile.threshold_words() {
+                push_u32(&mut params, word);
+            }
+            let params = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-tile-params"),
+                    contents: &params,
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
             let compute_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("terrain-tile-compute-bg"), layout: &self.tile_bgl,
+                label: Some("terrain-tile-compute-bg"),
+                layout: &self.tile_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: overrides_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: samples.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: overrides_buf.as_entire_binding(),
+                    },
                 ],
             });
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("terrain-tile-generate"), timestamp_writes: None });
-                pass.set_pipeline(&self.tile_pipeline); pass.set_bind_group(0, &compute_bg, &[]);
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("terrain-tile-generate"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.tile_pipeline);
+                pass.set_bind_group(0, &compute_bg, &[]);
                 pass.dispatch_workgroups((GRID * GRID + 255) / 256, 1, 1);
             }
 
             let mut finalize_params_bytes = [0u8; 16];
             put_u32(&mut finalize_params_bytes, 0, GRID);
-            let finalize_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("terrain-tile-finalize-params"), contents: &finalize_params_bytes, usage: wgpu::BufferUsages::UNIFORM,
-            });
+            let finalize_params =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("terrain-tile-finalize-params"),
+                        contents: &finalize_params_bytes,
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
             let cliff_edges = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("terrain-cliff-edges"), size: (MAX_CLIFF_EDGES * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false,
+                label: Some("terrain-cliff-edges"),
+                size: (MAX_CLIFF_EDGES * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
             });
             let water_cells = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("terrain-water-cells"), size: (MAX_WATER_CELLS * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false,
+                label: Some("terrain-water-cells"),
+                size: (MAX_WATER_CELLS * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
             });
             let base_vertices = INDEX_COUNT_PER_TILE;
             // words: [vertex_count, instance_count, first_vertex, first_instance,
             //         cliff_vertices, water_vertices, pad, pad, diagnostics x4]
-            let render_args_bytes = [base_vertices, 1u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
-            let render_args = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("terrain-render-indirect-args"), contents: bytemuck::cast_slice(&render_args_bytes),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            });
+            let render_args_bytes = [
+                base_vertices,
+                1u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+            ];
+            let render_args = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-render-indirect-args"),
+                    contents: bytemuck::cast_slice(&render_args_bytes),
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::INDIRECT
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::COPY_SRC,
+                });
             debug_assert_eq!(render_args.size(), RENDER_ARGS_TOTAL_BYTES);
             let finalize_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("terrain-tile-finalize-bg"), layout: &self.finalize_bgl,
+                label: Some("terrain-tile-finalize-bg"),
+                layout: &self.finalize_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: finalize_params.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: render_args.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: finalize_params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: samples.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: cliff_edges.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: water_cells.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: render_args.as_entire_binding(),
+                    },
                 ],
             });
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("terrain-tile-finalize"), timestamp_writes: None });
-                pass.set_pipeline(&self.finalize_pipeline); pass.set_bind_group(0, &finalize_bg, &[]);
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("terrain-tile-finalize"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.finalize_pipeline);
+                pass.set_bind_group(0, &finalize_bg, &[]);
                 pass.dispatch_workgroups(((GRID - 1) * (GRID - 1) + 255) / 256, 1, 1);
             }
             {
                 let clamp_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("terrain-tile-clamp-args-bg"), layout: &self.clamp_bgl,
+                    label: Some("terrain-tile-clamp-args-bg"),
+                    layout: &self.clamp_bgl,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: self.clamp_params.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: render_args.as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.clamp_params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: render_args.as_entire_binding(),
+                        },
                     ],
                 });
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("terrain-tile-clamp-args"), timestamp_writes: None });
-                pass.set_pipeline(&self.clamp_pipeline); pass.set_bind_group(0, &clamp_bg, &[]);
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("terrain-tile-clamp-args"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.clamp_pipeline);
+                pass.set_bind_group(0, &clamp_bg, &[]);
                 pass.dispatch_workgroups(1, 1, 1);
             }
             let render_counts = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("terrain-render-counts"), size: RENDER_COUNTS_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+                label: Some("terrain-render-counts"),
+                size: RENDER_COUNTS_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
             });
             encoder.copy_buffer_to_buffer(&render_args, 0, &render_counts, 0, RENDER_COUNTS_BYTES);
 
             let mut tile_bytes = [0u8; 16];
-            put_i32(&mut tile_bytes, 0, origin_x); put_i32(&mut tile_bytes, 4, origin_z);
-            put_i32(&mut tile_bytes, 8, stride); put_u32(&mut tile_bytes, 12, GRID);
-            let tile_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("terrain-tile-draw-params"), contents: &tile_bytes, usage: wgpu::BufferUsages::UNIFORM,
-            });
+            put_i32(&mut tile_bytes, 0, origin_x);
+            put_i32(&mut tile_bytes, 4, origin_z);
+            put_i32(&mut tile_bytes, 8, stride);
+            put_u32(&mut tile_bytes, 12, GRID);
+            let tile_params = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-tile-draw-params"),
+                    contents: &tile_bytes,
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
             let draw_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("terrain-draw-bg"), layout: &self.draw_bgl,
+                label: Some("terrain-draw-bg"),
+                layout: &self.draw_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: tile_params.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: cliff_edges.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: water_cells.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: render_counts.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: tile_params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: samples.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: cliff_edges.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: water_cells.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: render_counts.as_entire_binding(),
+                    },
                 ],
             });
-            GpuTile { _samples: samples, _tile_params: tile_params, _cliff_edges: cliff_edges, _water_cells: water_cells, render_args, _render_counts: render_counts, _overrides: overrides_buf, draw_bind_group, last_used: self.frame_index }
+            GpuTile {
+                _samples: samples,
+                _tile_params: tile_params,
+                _cliff_edges: cliff_edges,
+                _water_cells: water_cells,
+                render_args,
+                _render_counts: render_counts,
+                _overrides: overrides_buf,
+                draw_bind_group,
+                last_used: self.frame_index,
+            }
         }
 
         fn prune_lru(&mut self) {
@@ -1681,9 +2061,34 @@ mod wasm {
         }
     }
 
+    fn profile_from_js(profile: Option<String>) -> quarterview_terrain_core::TerrainProfile {
+        profile
+            .as_deref()
+            .map(quarterview_terrain_core::TerrainProfile::from_name)
+            .unwrap_or_default()
+    }
+
+    /// 検証用: プロファイルの標高しきい値を (hi, lo) × 10 の 20 語で返す。
+    /// browser-compute.mjs が params uniform を自前で組むために使う(値の出所はRust1つに保つ)。
+    #[wasm_bindgen(js_name = profileThresholdWords)]
+    pub fn profile_threshold_words(profile: Option<String>) -> Vec<u32> {
+        profile_from_js(profile).threshold_words().to_vec()
+    }
+
     #[wasm_bindgen]
-    pub fn cpu_corner_height(seed: u32, half_extent: i32, x: i32, z: i32) -> u8 {
-        quarterview_terrain_core::TerrainField::new(seed, half_extent).corner_height_at(x, z)
+    pub fn cpu_corner_height(
+        seed: u32,
+        half_extent: i32,
+        x: i32,
+        z: i32,
+        profile: Option<String>,
+    ) -> u8 {
+        quarterview_terrain_core::TerrainField::with_profile(
+            seed,
+            half_extent,
+            profile_from_js(profile),
+        )
+        .corner_height_at(x, z)
     }
 
     #[wasm_bindgen(js_name = cpuTilePacked)]
@@ -1693,8 +2098,13 @@ mod wasm {
         origin_x: i32,
         origin_z: i32,
         stride: i32,
+        profile: Option<String>,
     ) -> Vec<u32> {
-        let field = quarterview_terrain_core::TerrainField::new(seed, half_extent);
+        let field = quarterview_terrain_core::TerrainField::with_profile(
+            seed,
+            half_extent,
+            profile_from_js(profile),
+        );
         let mut out = Vec::with_capacity((GRID * GRID) as usize);
         for lx in 0..GRID as i32 {
             for lz in 0..GRID as i32 {

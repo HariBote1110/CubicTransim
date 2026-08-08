@@ -1,4 +1,4 @@
-import init, { CanvasRenderer, cpuTilePacked, tileGenerateWgsl } from '../pkg/quarterview_renderer_wgpu.js';
+import init, { CanvasRenderer, cpuTilePacked, tileGenerateWgsl, profileThresholdWords } from '../pkg/quarterview_renderer_wgpu.js';
 
 const canvas = document.querySelector('#view');
 const hud = document.querySelector('#hud');
@@ -13,7 +13,7 @@ const fail = (message) => {
 if (!navigator.gpu) fail('WebGPU is not available in this browser. The game should fall back to the current three.js renderer here.');
 
 const wasm = await init();
-globalThis.__quarterviewTest = { cpuTilePacked, tileGenerateWgsl, wasmMemory: wasm.memory };
+globalThis.__quarterviewTest = { cpuTilePacked, tileGenerateWgsl, profileThresholdWords, wasmMemory: wasm.memory };
 globalThis.__quarterviewControl = null;
 const renderer = await CanvasRenderer.create(canvas, 0x12345678, 8192);
 globalThis.__quarterviewRenderer = renderer;

@@ -1,4 +1,4 @@
-use quarterview_terrain_core::TerrainField;
+use quarterview_terrain_core::{TerrainField, TerrainProfile};
 use std::{env, fs};
 
 fn main() {
@@ -16,7 +16,13 @@ fn main() {
         .next()
         .unwrap_or_else(|| "rust-heights.bin".to_string());
 
-    let field = TerrainField::new(seed, half_extent);
+    // 第5引数: 地形プロファイル名("flat"/"normal"/"mountain")。省略時は normal。
+    let profile = args
+        .next()
+        .map(|v| TerrainProfile::from_name(&v))
+        .unwrap_or_default();
+
+    let field = TerrainField::with_profile(seed, half_extent, profile);
     let span = (half_extent * 2 + 1) as u32;
     let mut state = 0x6d2b_79f5u32;
     let mut bytes = vec![0u8; count];
@@ -28,5 +34,5 @@ fn main() {
         *byte = field.corner_height_at(x, z);
     }
     fs::write(&output, &bytes).expect("write output");
-    println!("wrote {} bytes to {}", bytes.len(), output);
+    println!("wrote {} bytes to {} (profile={})", bytes.len(), output, profile.name());
 }

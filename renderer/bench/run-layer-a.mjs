@@ -92,6 +92,18 @@ const multiSeedNoise = strictNoiseSeeds.map(seed => {
   return parseLastJson(r.stdout);
 });
 const multiSeedNoisePass = multiSeedNoise.every(item => item.mismatches === 0);
+// 地形プロファイル(平坦/標準/山がち)ごとの Rust-CPU vs WGSL-GPU 突き合わせ。
+// しきい値テーブルだけが違う3本を、同じ正準ノイズで検証する。
+const terrainProfiles = ['flat', 'normal', 'mountain'];
+const profileNoise = terrainProfiles.map(profile => {
+  const r = spawnSync(path.join(rendererRoot, 'target/release/noise-check'), ['305419896', '2000000', '8192', profile], {
+    cwd: renderer,
+    env: rendererEnv,
+    encoding: 'utf8',
+  });
+  return parseLastJson(r.stdout);
+});
+const profileNoisePass = profileNoise.length === 3 && profileNoise.every(item => item.mismatches === 0 && item.count >= 2_000_000);
 const tile = parseLastJson(run(path.join(rendererRoot, 'target/release/tile_check'), [], renderer, rendererEnv).stdout);
 const editOverlay = parseLastJson(run(path.join(rendererRoot, 'target/release/edit_check'), [], renderer, rendererEnv).stdout);
 const offscreen = parseLastJson(run(path.join(rendererRoot, 'target/release/offscreen_render'), [], renderer, rendererEnv).stdout);
@@ -133,6 +145,11 @@ const heapBytes = browserSmoke?.diagnostics?.wasmHeapBytes ?? null;
 const firstFrameMs = browserSmoke?.diagnostics?.firstFrameMs ?? null;
 const a1Proto = selectedFrame.medianMs <= 2 && selectedFrame.p99Ms <= 4;
 const a2 = tile.cpuIssueMedianMs <= 0.3;
+const tileProfilesPass = tile.mismatches === 0
+  && (tile.pointsPerProfile ?? 0) >= 1_000_000
+  && Array.isArray(tile.profiles)
+  && tile.profiles.length === 3
+  && tile.profiles.every(item => item.mismatches === 0);
 const a4Native = noise.points ? noise.points >= 10_000_000 && noise.mismatches === 0 : noise.count >= 10_000_000 && noise.mismatches === 0;
 const a5Proto = heapBytes == null ? null : heapBytes <= 128 * 1024 * 1024;
 const a6 = wasmGzipBytes <= 2 * 1024 * 1024;
@@ -159,7 +176,7 @@ const strict = {
   T11: { pass: fullmap.drawCalls <= 24, target: '<=24 draw calls', measurement: fullmap.drawCalls },
   T12: { pass: null, target: '100k trees + 30k houses + 1k trains while maintaining T1-T3', status: 'Layer B final scene required' },
   T13: { pass: null, targetMs: 0.05, status: 'not instrumented yet' },
-  T14: { pass: multiSeedNoisePass, target: '5 seeds x 10,000,000 points x 0 mismatches', measurement: multiSeedNoise },
+  T14: { pass: multiSeedNoisePass && tileProfilesPass && profileNoisePass, target: '5 seeds x 10,000,000 points x 0 mismatches, plus all 3 terrain profiles byte-exact (CPU vs GPU)', measurement: { multiSeedNoise, tileProfiles: tile.profiles ?? null, profileNoise } },
   T15: { pass: wasmGzipBytes <= 1 * 1024 * 1024, targetBytes: 1 * 1024 * 1024, measuredBytes: wasmGzipBytes },
   indexPath: { pass: true, note: 'Indexed terrain grid: 66,049 unique vertex IDs vs 393,216 triangle-list vertex references (-83.2% index references). GPU vertex-cache hit rate is measured only on Layer B.' },
 };
@@ -187,7 +204,17 @@ const report = {
       target: '0 edit-overlay mismatches (LOD0 exact) + CPU diff apply <=1ms median',
       measurement: editOverlay,
     },
-    A4_production_ts_vs_rust_1m: { pass: build.productionTsVsRust1M, target: 'production src/sim/terrainField.ts vs Rust, 1,000,000 heights byte-for-byte', status: checkTsMigration ? undefined : 'pending main-TS integer migration owned by caller' },
+    A4_production_ts_vs_rust_1m: { pass: build.productionTsVsRust1M, target: 'production src/sim/terrainField.ts vs Rust, 1,000,000 heights byte-for-byte per terrain profile (flat/normal/mountain)', status: checkTsMigration ? undefined : 'pending main-TS integer migration owned by caller' },
+    A4_tile_profiles_gpu_vs_cpu: {
+      pass: tileProfilesPass,
+      target: 'tile_generate.wgsl vs Rust CPU, >=1,000,000 points per terrain profile, 0 mismatches',
+      measurement: { pointsPerProfile: tile.pointsPerProfile ?? null, profiles: tile.profiles ?? null },
+    },
+    A4_noise_exact_profiles: {
+      pass: profileNoisePass,
+      target: 'terrain_noise.wgsl vs Rust CPU, 2,000,000 points x 3 terrain profiles, 0 mismatches',
+      measurement: profileNoise,
+    },
     A4_noise_exact_native_10m: { pass: a4Native, target: '10,000,000 points, 0 mismatches', measurement: noise },
     A4_noise_exact_multiseed_50m: { pass: multiSeedNoisePass, target: '5 seeds x 10,000,000 points, 0 mismatches', measurement: multiSeedNoise },
     A4_noise_exact_browser_proto: browserNoise ? { pass: browserNoise.mismatches === 0, measurement: browserNoise } : { pass: null, status: 'not-run; add --browser-exact for ~1.06M BrowserWebGPU readback check' },
