@@ -123,13 +123,19 @@ interface SyncProps {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   /** 地下ビュー減光係数(1.0=通常)。GameScene の isLevelDimmed(0, ...) と同調させる。 */
   dim?: number;
+  /**
+   * R4c: 直近フレームのカメラ状態の置き場(任意)。渡されていれば毎フレーム書き込む。
+   * DOMラベルオーバーレイ(LabelOverlay.tsx)・列車の画面空間クリック判定(trainPicking.ts)が
+   * 同じフレームのカメラ状態を読むために使う(GPU往復・二重計算を避ける)。
+   */
+  stateRef?: React.MutableRefObject<WebGpuCameraState | null>;
 }
 
 /**
  * 上層(r3f)の中に置き、毎フレーム下層へカメラ状態を送って描かせるコンポーネント。
  * 画面に何も描かない。
  */
-export const WebGpuCameraSync: React.FC<SyncProps> = ({ layerRef, controlsRef, dim = 1 }) => {
+export const WebGpuCameraSync: React.FC<SyncProps> = ({ layerRef, controlsRef, dim = 1, stateRef }) => {
   const { camera, gl, size } = useThree();
 
   useFrame(() => {
@@ -144,6 +150,7 @@ export const WebGpuCameraSync: React.FC<SyncProps> = ({ layerRef, controlsRef, d
       widthPx: size.width * dpr,
       heightPx: size.height * dpr,
     };
+    if (stateRef) stateRef.current = state;
     controller.setDim(dim);
     const stats = controller.syncAndRender(state, OVERPASS_HEIGHT);
     if (stats) (window as any).__webgpuStats = stats;

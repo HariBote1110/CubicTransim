@@ -12,6 +12,10 @@ import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 
 import { DynamicTrain } from './DynamicTrain';
+import { WebGpuTrains } from './WebGpuTrains';
+import { pickTrainAtScreenPoint, type TrainScreenCandidate } from '../render/trainPicking';
+import { carGroupPosition } from '../render/trainInstanceMath';
+import type { WebGpuCameraState } from '../render/webgpuCamera';
 import { SimulationDriver } from './SimulationDriver';
 import { RailBlock } from './RailBlock';
 import { TrackNetwork } from './TrackNetwork';
@@ -29,6 +33,7 @@ import { WebGpuTrackExtras } from './WebGpuTrackExtras';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData } from '../types';
 import { findGroup } from '../sim/groups';
+import { carPositions } from '../sim/consist';
 import { toKey, fromKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis, BuildLevel } from '../sim/construction';
@@ -263,7 +268,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const [chunkView, setChunkView] = useState<ChunkView>({ targetCell: { x: 0, z: 0 }, viewRadiusCells: 24 });
   const orbitControlsRef = useRef<OrbitControlsImpl | null>(null);
   // R3: ビューポートのCSSピクセルサイズ(minZoom計算に使う。DPR非依存、webgpuCamera.ts参照)。
-  const { size: viewportSize } = useThree();
+  const { size: viewportSize, gl: webglRenderer } = useThree();
+  // R4c: WebGpuCameraSyncが毎フレーム書き込む最新カメラ状態。列車の画面空間クリック判定
+  // (webGpuLayerモードのみ)・DOMラベルオーバーレイが読む。
+  const webgpuCameraStateRef = useRef<WebGpuCameraState | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; z: number } | null>(null);
   const [dragStartPos, setDragStartPos] = useState<{ x: number; z: number } | null>(null);
   // dragStartPos の実体はこの ref に持つ。handlePointerUp が読むのは常にこちら。
@@ -470,8 +478,44 @@ export const GameScene: React.FC<GameSceneProps> = ({
             onSelectStation(elevatedStationId);
             return;
         }
+        // R4c: WebGPUモードでは列車が three.js メッシュを持たない(WebGpuTrains.tsxの
+        // インスタンス描画のみ)ため、地面プレーンのクリックからスクリーン空間で拾う
+        // (GPU往復なしの閉形式判定、render/trainPicking.ts)。classicモードは従来通り
+        // DynamicTrain自身のonClickに任せる。
+        if (webGpuLayer) {
+          const pickedId = pickTrainInWebGpuMode(e);
+          if (pickedId) {
+            onSelectTrain(pickedId);
+            return;
+          }
+        }
         onSelectTrain(null);
     }
+  };
+
+  /** R4c: 現在のカメラ状態・列車位置からスクリーン空間クリック判定を行う(webGpuLayer専用)。 */
+  const pickTrainInWebGpuMode = (e: ThreeEvent<MouseEvent>): string | null => {
+    const camera = webgpuCameraStateRef.current;
+    if (!camera) return null;
+    const rect = webglRenderer.domElement.getBoundingClientRect();
+    const dpr = webglRenderer.getPixelRatio();
+    const cursor = {
+      sx: (e.nativeEvent.clientX - rect.left - rect.width / 2) * dpr,
+      sy: (e.nativeEvent.clientY - rect.top - rect.height / 2) * dpr,
+    };
+    const candidates: TrainScreenCandidate[] = [];
+    for (const train of trains) {
+      if (train.status === 'stored') continue;
+      const runtime = world.current?.runtimes.get(train.id);
+      if (!runtime) continue;
+      const level = runtime.grid.layer ?? 0;
+      if (level < 0 && (!undergroundView || level !== buildLevel)) continue;
+      const [head] = carPositions(runtime, 1, 1.0, railMap, field);
+      if (!head) continue;
+      const groupPos = carGroupPosition(head, head.heading);
+      candidates.push({ trainId: train.id, worldX: groupPos.x, worldY: groupPos.y, worldZ: groupPos.z });
+    }
+    return pickTrainAtScreenPoint(candidates, cursor, camera);
   };
 
   const getPreviewColor = () => {
@@ -702,6 +746,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
           layerRef={webGpuLayer}
           controlsRef={orbitControlsRef}
           dim={isLevelDimmed(0, undergroundView, buildLevel) ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
+          stateRef={webgpuCameraStateRef}
         />
       )}
 
@@ -1063,23 +1108,44 @@ export const GameScene: React.FC<GameSceneProps> = ({
         </mesh>
       )}
 
-      {trains.map(train => (
-        <DynamicTrain
-          key={train.id} data={train} railMap={railMap} terrainField={field} elevatedTunnelIndex={elevatedTunnelIndex}
-          runtimes={world.current.runtimes} type="commuter"
-          isSelected={train.id === selectedTrainId}
-          lineColour={findGroup(groups, train.groupId)?.colour}
-          onClick={() => {
-            if (buildMode !== 'none') return;
-            if (justDraggedRef.current) { justDraggedRef.current = false; return; }
-            onSelectTrain(train.id);
-          }}
-          isDragging={draggingTrainId === train.id}
-          dragCell={draggingTrainId === train.id ? cursorPos : null}
+      {/* R4c: WebGPUモードでは列車もインスタンス描画(WebGpuTrains)に置き換える。
+          three.js側のDynamicTrainはアンマウントし(選択マーカー・経路ドット・Htmlツールチップも
+          含めてWebGpuTrainsとLabelOverlayが肩代わりする)、クリック選択はhandleClick内の
+          pickTrainInWebGpuModeがスクリーン空間で拾う。 */}
+      {webGpuLayer ? (
+        <WebGpuTrains
+          layerRef={webGpuLayer}
+          trains={trains}
+          railMap={railMap}
+          field={field}
+          elevatedTunnelIndex={elevatedTunnelIndex}
+          world={world}
+          selectedTrainId={selectedTrainId}
+          groups={groups}
           undergroundView={undergroundView}
           selectedLevel={buildLevel}
+          draggingTrainId={draggingTrainId}
+          dragCell={draggingTrainId ? cursorPos : null}
         />
-      ))}
+      ) : (
+        trains.map(train => (
+          <DynamicTrain
+            key={train.id} data={train} railMap={railMap} terrainField={field} elevatedTunnelIndex={elevatedTunnelIndex}
+            runtimes={world.current.runtimes} type="commuter"
+            isSelected={train.id === selectedTrainId}
+            lineColour={findGroup(groups, train.groupId)?.colour}
+            onClick={() => {
+              if (buildMode !== 'none') return;
+              if (justDraggedRef.current) { justDraggedRef.current = false; return; }
+              onSelectTrain(train.id);
+            }}
+            isDragging={draggingTrainId === train.id}
+            dragCell={draggingTrainId === train.id ? cursorPos : null}
+            undergroundView={undergroundView}
+            selectedLevel={buildLevel}
+          />
+        ))
+      )}
     </>
   );
 };
