@@ -17,7 +17,8 @@ import {
   calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
-import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT } from '../sim/terrainField';
+import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
+import type { TerrainProfile } from '../sim/terrainField';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
 import { createEditedTerrainField, applyCornerEdit, buildEditBlockers, cornerDiffsFromField } from '../sim/terrainOverlay';
 
@@ -59,6 +60,9 @@ export const useGameLogic = () => {
   // マップの生成半径(-halfExtent..halfExtentのセルを生成する)。既定はDEFAULT_HALF_EXTENT
   // (45、小91×91)。新規ゲーム時(newGame)にマップサイズ選択UIから差し替えられる。
   const [halfExtent, setHalfExtent] = useState<number>(DEFAULT_HALF_EXTENT);
+  // 地形プロファイル(平坦/標準/山がち)。世界ごとに不変で、newGame/loadGameでのみ変わる。
+  // seedと同じくWebGPUレンダラー側にも渡して同じ地形を生成させる。
+  const [terrainProfile, setTerrainProfile] = useState<TerrainProfile>(DEFAULT_TERRAIN_PROFILE);
   // 盛土/切土の疎な編集差分(コーナー格子)。terrainOverlay.tsのCornerDiffs。
   const [cornerDiffs, setCornerDiffs] = useState<CornerDiffs>(new Map());
   // デバッグシナリオが手組みの地形(尾根など、乱数シードでは表現できない形)を使うときの
@@ -66,7 +70,10 @@ export const useGameLogic = () => {
   const [debugFieldOverride, setDebugFieldOverride] = useState<TerrainField | null>(null);
 
   // worldSeed・halfExtentから決定的に導出する基底field。編集差分を含まない。
-  const baseField = useMemo(() => createTerrainField(worldSeed, halfExtent), [worldSeed, halfExtent]);
+  const baseField = useMemo(
+    () => createTerrainField(worldSeed, halfExtent, terrainProfile),
+    [worldSeed, halfExtent, terrainProfile]
+  );
   // 基底fieldへcornerDiffsを合成したfield。盛土/切土の結果を反映する。
   const editedField = useMemo(() => createEditedTerrainField(baseField, cornerDiffs), [baseField, cornerDiffs]);
   // 実際にゲーム全体が参照するfield。デバッグシナリオの上書きがあればそちらを優先する。
@@ -594,7 +601,7 @@ export const useGameLogic = () => {
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, worldSeed,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
       groups, worldRef.current.groupDepartures ?? new Map(), loan,
-      worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity
+      worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity, terrainProfile
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
@@ -619,6 +626,7 @@ export const useGameLogic = () => {
     setLoan(restored.loan);
     setTowns(restored.towns);
     setTownDensity(restored.townDensity);
+    setTerrainProfile(restored.terrainProfile);
     setWorldSeed(restored.seed);
     setCornerDiffs(restored.cornerDiffs);
     setDebugFieldOverride(null);
@@ -677,14 +685,20 @@ export const useGameLogic = () => {
 
   /**
    * ★追加(P5): 新規ゲーム開始(マップサイズ選択UIから呼ぶ)。所持金・列車・線路など
-   * 全状態を初期化し、新しいworldSeed・指定halfExtentで地形・町を作り直す。
+   * 全状態を初期化し、新しいworldSeed・指定halfExtent・指定地形プロファイルで
+   * 地形・町を作り直す。
    * halfExtentが変わるとbaseFieldのuseMemoも再計算されるため、生成した町は
    * generateRegionTownsに渡すfieldをここで直接作る(baseFieldのuseMemo更新を待たない)。
    */
-  const newGame = (selectedHalfExtent: number, selectedDensity: TownDensity = 'normal') => {
+  const newGame = (
+    selectedHalfExtent: number,
+    selectedDensity: TownDensity = 'normal',
+    selectedProfile: TerrainProfile = DEFAULT_TERRAIN_PROFILE
+  ) => {
     const seed = Date.now() % 2 ** 31;
-    const newField = createTerrainField(seed, selectedHalfExtent);
+    const newField = createTerrainField(seed, selectedHalfExtent, selectedProfile);
     setHalfExtent(selectedHalfExtent);
+    setTerrainProfile(selectedProfile);
     setWorldSeed(seed);
     setCornerDiffs(new Map());
     setDebugFieldOverride(null);
@@ -719,6 +733,7 @@ export const useGameLogic = () => {
     // 地形のシード。WebGPUレンダラー(renderer/)は同じ seed + halfExtent から
     // 地形を自前で生成するため、描画側にもそのまま渡す。
     worldSeed,
+    terrainProfile,
     baseField,
     editedField,
     cornerDiffs,

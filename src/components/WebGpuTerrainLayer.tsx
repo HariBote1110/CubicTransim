@@ -14,6 +14,7 @@ import React, { useEffect, useRef } from 'react';
 
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import type { CornerDiffs } from '../sim/terrainOverlay';
+import type { TerrainProfile } from '../sim/terrainField';
 import type { WebGpuCameraState } from '../render/webgpuCamera';
 import {
   toWebGpuCameraState, type GameCameraState, type ViewportSize,
@@ -30,6 +31,8 @@ export type WebGpuLayerRef = React.RefObject<WebGpuTerrainLayerController | null
 interface LayerProps {
   seed: number;
   halfExtent: number;
+  /** 地形プロファイル(平坦/標準/山がち)。TS側 createTerrainField と同じテーブルをwasmへ渡す。 */
+  terrainProfile: TerrainProfile;
   /** 地形編集オーバーレイ(useGameLogicのcornerDiffs)。変更があったチャンクだけをwasmへ送る。 */
   cornerDiffs: CornerDiffs;
   /** 生成したコントローラの置き場。フィーダ・描画ドライバが毎フレーム読む。 */
@@ -47,7 +50,7 @@ const EMPTY_CHUNK: ReadonlyMap<number, number> = new Map();
  * サイズは CSS で親いっぱいに広げ、バックバッファ(canvas.width/height)は
  * 上層と同じ DPR で `syncAndRender` 側が合わせる。
  */
-export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cornerDiffs, layerRef, onUnavailable, onReady }) => {
+export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, terrainProfile, cornerDiffs, layerRef, onUnavailable, onReady }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // wasm 側へ最後に反映した cornerDiffs(チャンク参照ごとの比較に使う)。
   const pushedDiffsRef = useRef<CornerDiffs>(new Map());
@@ -73,7 +76,7 @@ export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cor
     let disposed = false;
     pushedDiffsRef.current = new Map(); // 新しいレイヤーには何も転送していない状態から始める
 
-    WebGpuTerrainLayerController.create(canvas, seed, halfExtent)
+    WebGpuTerrainLayerController.create(canvas, seed, halfExtent, terrainProfile)
       .then(controller => {
         if (disposed) return;
         layerRef.current = controller;
@@ -81,7 +84,7 @@ export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cor
         pushChangedChunks(controller, latestDiffsRef.current);
         // 検証用のデバッグフック(CLAUDE.mdのブラウザ検証手順で使う)。
         (window as any).__webgpuLayer = controller;
-        (window as any).__webgpuParams = { seed, halfExtent };
+        (window as any).__webgpuParams = { seed, halfExtent, terrainProfile };
         onReady?.();
       })
       .catch((error: unknown) => {
@@ -98,7 +101,7 @@ export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cor
       (window as any).__webgpuLayer = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seed, halfExtent, layerRef, onUnavailable, onReady]);
+  }, [seed, halfExtent, terrainProfile, layerRef, onUnavailable, onReady]);
 
   useEffect(() => {
     const controller = layerRef.current;

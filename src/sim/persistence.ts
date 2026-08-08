@@ -6,6 +6,7 @@ import { fallbackTownName } from './towns';
 import type { SerialisedCornerDiffs, CornerDiffs } from './terrainOverlay';
 import { serialiseCornerDiffs, deserialiseCornerDiffs } from './terrainOverlay';
 import type { TownDensity } from './towns';
+import type { TerrainProfile } from './terrainField';
 
 // v15: 地形の持ち方を「全セル実体化(terrain/heights Map)」から「決定的な純関数
 // (worldSeed)+疎な編集差分(cornerDiffs)」へ転換した(progress/16k-map-architecture.md
@@ -14,8 +15,12 @@ import type { TownDensity } from './towns';
 // v14以前からの移行処理は書かず、ロード時は問答無用でreject(null)する
 // (P6でV1〜V14の型チェーンとLegacyCellData/LegacyLedgerを削除し、SaveDataV15単独の
 // 定義にした。旧バージョン識別に必要な`version`フィールドだけをLegacySaveDataに残す)。
-export interface SaveDataV15 {
-  version: 15;
+// v16: 新規ゲームの「地形」選択(平坦/標準/山がち)を terrainProfile として保存する
+// (progress/terrain-profiles.md)。v15セーブは terrainProfile が無いだけで、地形は
+// 標準テーブルで生成されていたことが確定しているため、'normal' として読み込む
+// (v14以前と違い破壊的な形式変更ではないので、拒否せず受け入れる)。
+export interface SaveDataV16 {
+  version: 16 | 15;
   /** 地形の乱数シード(sim/terrainField.tsのcreateTerrainFieldへそのまま渡す)。 */
   seed: number;
   /** マップの生成半径(-halfExtent..halfExtentのセルを生成する)。 */
@@ -48,6 +53,12 @@ export interface SaveDataV15 {
    * UI表示や将来の追加生成の参考情報としてのみ保持する)。
    */
   townDensity?: TownDensity;
+  /**
+   * 地形プロファイル(平坦/標準/山がち)。v15セーブには存在しないため、
+   * 読み込み時は 'normal'(歴史的既定)を補う。seedと組で地形を決めるので、
+   * townDensityと違いロード後の地形生成に実際に使われる。
+   */
+  terrainProfile?: TerrainProfile;
 }
 
 /** v14以前の旧セーブ。バージョン判定にのみ使う(内容は読まない。deserialiseWorldが即reject)。 */
@@ -55,7 +66,7 @@ export interface LegacySaveData {
   version: number;
 }
 
-export type SaveData = SaveDataV15 | LegacySaveData;
+export type SaveData = SaveDataV16 | LegacySaveData;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -79,14 +90,16 @@ export function serialiseWorld(
   demand: Map<string, PassengerCohort[]> = new Map(),
   halfExtent: number,
   cornerDiffs: CornerDiffs = new Map(),
-  townDensity: TownDensity = 'normal'
-): SaveDataV15 {
+  townDensity: TownDensity = 'normal',
+  terrainProfile: TerrainProfile = 'normal'
+): SaveDataV16 {
   return {
-    version: 15,
+    version: 16,
     seed,
     halfExtent,
     cornerDiffs: serialiseCornerDiffs(cornerDiffs),
     townDensity,
+    terrainProfile,
     railMap: Array.from(railMap.entries()),
     stations: Array.from(stations.entries()),
     trains,
@@ -129,20 +142,22 @@ export interface RestoredWorld {
   demand: Map<string, PassengerCohort[]>;
   /** 町密度(省略時=normal)。 */
   townDensity: TownDensity;
+  /** 地形プロファイル(省略時=normal)。createTerrainFieldへそのまま渡す。 */
+  terrainProfile: TerrainProfile;
 }
 
 /**
- * セーブデータの復元。v15のみ受け付ける。v14以前はterrain/heights Mapを全セル
+ * セーブデータの復元。v16と(terrainProfile欠落=normal扱いの)v15を受け付ける。v14以前はterrain/heights Mapを全セル
  * 実体化していた旧形式であり、v15(worldSeed+halfExtent+cornerDiffs)とは
  * 互換性が無い。リリース前でセーブ互換は破壊してよい(ユーザー明言)ため、
  * 移行処理は書かずnullを返す(呼び出し側は壊れたセーブと同様に扱う)。
  */
 export function deserialiseWorld(input: SaveData): RestoredWorld | null {
-  if (input.version !== 15) return null;
+  if (input.version !== 16 && input.version !== 15) return null;
   // LegacySaveDataのversionは(旧バージョン識別のためだけに)number型なので、上のガードだけでは
-  // TypeScriptの判別共用体narrowingが効かない(number側が15を許容範囲として残るため)。
-  // ここまで来た時点でversion===15であることは実行時に確定しているので、明示的に絞り込む。
-  const data = input as SaveDataV15;
+  // TypeScriptの判別共用体narrowingが効かない(number側が15/16を許容範囲として残るため)。
+  // ここまで来た時点でversionが15/16であることは実行時に確定しているので、明示的に絞り込む。
+  const data = input as SaveDataV16;
 
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -196,5 +211,6 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
     loan: data.loan,
     demand: new Map(data.demand),
     townDensity: data.townDensity ?? 'normal',
+    terrainProfile: data.terrainProfile ?? 'normal',
   };
 }

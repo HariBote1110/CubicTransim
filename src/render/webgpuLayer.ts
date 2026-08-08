@@ -9,6 +9,7 @@
 //   npm run dev             # 設定パネルで「WebGPU実験版」を選ぶ
 
 import type { WebGpuCameraState } from './webgpuCamera';
+import type { TerrainProfile } from '../sim/terrainField';
 
 /** フォールバック理由。UI・console warn の文言に使う。 */
 export type WebGpuUnavailableReason =
@@ -76,7 +77,9 @@ export const MESH_LAYER_CLASS = {
 interface RendererModule {
   default: () => Promise<unknown>;
   CanvasRenderer: {
-    create(canvas: HTMLCanvasElement, seed: number, halfExtent: number): Promise<CanvasRendererHandle>;
+    create(
+      canvas: HTMLCanvasElement, seed: number, halfExtent: number, profile: string,
+    ): Promise<CanvasRendererHandle>;
   };
 }
 
@@ -126,17 +129,22 @@ export class WebGpuTerrainLayerController {
     this.renderer = renderer;
   }
 
+  /**
+   * `profile` は世界ごとに不変なので生成時に固定する(あとから差し替えるAPIは持たない)。
+   * 変更したいときは呼び出し側がレイヤーごと作り直す(App.tsx の key に含めてある)。
+   */
   static async create(
     canvas: HTMLCanvasElement,
     seed: number,
     halfExtent: number,
+    profile: TerrainProfile,
   ): Promise<WebGpuTerrainLayerController> {
     if (typeof navigator === 'undefined' || !('gpu' in navigator)) {
       throw new WebGpuUnavailableError('no-webgpu');
     }
     const mod = await loadModule();
     try {
-      const renderer = await mod.CanvasRenderer.create(canvas, seed >>> 0, halfExtent);
+      const renderer = await mod.CanvasRenderer.create(canvas, seed >>> 0, halfExtent, profile);
       return new WebGpuTerrainLayerController(canvas, renderer);
     } catch (error) {
       throw new WebGpuUnavailableError('init-failed', error);

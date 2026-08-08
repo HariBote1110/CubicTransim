@@ -6,6 +6,7 @@ import type { BuildMode } from './components/GameUI';
 import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
+import type { TerrainProfile } from './sim/terrainField';
 import { T, button as themeButton } from './ui/theme';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
 import type { WebGpuTerrainLayerController, WebGpuUnavailableReason } from './render/webgpuLayer';
@@ -32,6 +33,14 @@ const TOWN_DENSITY_OPTIONS: { label: string; value: TownDensity }[] = [
   { label: '標準', value: 'normal' },
   { label: '多い', value: 'dense' },
   { label: '過密', value: 'packed' },
+];
+
+// 新規ゲーム開始時の地形プロファイル選択肢(progress/terrain-profiles.md)。
+// sim/terrainField.ts の TerrainProfile と1対1で、標高しきい値テーブルだけが変わる。
+const TERRAIN_PROFILE_OPTIONS: { label: string; value: TerrainProfile; hint: string }[] = [
+  { label: '平坦', value: 'flat', hint: '広い平野' },
+  { label: '標準', value: 'normal', hint: 'ほどよい丘' },
+  { label: '山がち', value: 'mountain', hint: '起伏だらけ' },
 ];
 
 /**
@@ -96,6 +105,8 @@ export default function App() {
   const [showDebugScenarios, setShowDebugScenarios] = useState(false);
   // 起動ダイアログの町密度選択(既定は標準=normal)。マップサイズのボタンを押した時点の値を使う。
   const [selectedTownDensity, setSelectedTownDensity] = useState<TownDensity>('normal');
+  // 起動ダイアログの地形選択(既定は標準=normal)。マップサイズのボタンを押した時点の値を使う。
+  const [selectedTerrainProfile, setSelectedTerrainProfile] = useState<TerrainProfile>('normal');
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
@@ -167,7 +178,7 @@ export default function App() {
   }, []);
 
   const {
-    railMap, stations, trains, towns, townTileIndex, newGame, field, worldSeed, halfExtent, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
+    railMap, stations, trains, towns, townTileIndex, newGame, field, worldSeed, halfExtent, terrainProfile, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
     buyTrain, deployTrain,
@@ -189,9 +200,10 @@ export default function App() {
   return (
     <div ref={rootRef} style={{ width: '100vw', height: '100vh', background: '#cfe3ef', position: 'relative', overflow: 'hidden' }}>
       <WebGpuTerrainLayer
-        key={`${worldSeed}:${halfExtent}`}
+        key={`${worldSeed}:${halfExtent}:${terrainProfile}`}
         seed={worldSeed}
         halfExtent={halfExtent}
+        terrainProfile={terrainProfile}
         cornerDiffs={cornerDiffs}
         layerRef={webGpuLayerRef}
         onUnavailable={handleRendererUnavailable}
@@ -297,7 +309,7 @@ export default function App() {
                       key={opt.label}
                       style={{ ...themeButton({ active: true }), width: '100%', textAlign: 'left' }}
                       onClick={() => {
-                        newGame(opt.halfExtent, selectedTownDensity);
+                        newGame(opt.halfExtent, selectedTownDensity, selectedTerrainProfile);
                         setShowStartupOptions(false);
                       }}
                     >
@@ -318,6 +330,22 @@ export default function App() {
                         width: '100%',
                       }}
                       onClick={() => setSelectedTownDensity(opt.value)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55, marginTop: 0 }}>地形</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: T.gap, marginBottom: T.gap }}>
+                  {TERRAIN_PROFILE_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      style={{
+                        ...themeButton({ active: selectedTerrainProfile === opt.value, compact: true }),
+                        width: '100%',
+                      }}
+                      onClick={() => setSelectedTerrainProfile(opt.value)}
+                      title={opt.hint}
                     >
                       {opt.label}
                     </button>
