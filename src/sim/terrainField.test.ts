@@ -292,15 +292,18 @@ describe('createTerrainField: 地形プロファイル', () => {
         for (const [ox, oz] of offsets) {
           const grid = field.cornerGridFor!(ox, oz, size, size);
           const gh = size + 1;
+          // 100万ペア規模なのでペアごとのexpectは使わず、違反があった最初の1件だけを報告する。
           for (let lx = 0; lx <= size; lx++) {
             for (let lz = 0; lz <= size; lz++) {
               const h = grid[lx * gh + lz];
               if (lx < size) {
-                expect(Math.abs(grid[(lx + 1) * gh + lz] - h), `${profile} x (${ox + lx},${oz + lz})`).toBeLessThanOrEqual(1);
+                const d = Math.abs(grid[(lx + 1) * gh + lz] - h);
+                if (d > 1) expect.fail(`${profile} x-delta ${d} at (${ox + lx},${oz + lz})`);
                 pairs++;
               }
               if (lz < size) {
-                expect(Math.abs(grid[lx * gh + lz + 1] - h), `${profile} z (${ox + lx},${oz + lz})`).toBeLessThanOrEqual(1);
+                const d = Math.abs(grid[lx * gh + lz + 1] - h);
+                if (d > 1) expect.fail(`${profile} z-delta ${d} at (${ox + lx},${oz + lz})`);
                 pairs++;
               }
             }

@@ -16,11 +16,19 @@ import {
   compositeNoiseNumerator,
   deriveSeedU32,
   hashU32,
-  heightFromNumerator,
+  heightFromNumeratorWith,
+  heightThresholdsFor,
   isWaterNumerator,
   lerpQ,
   smoothQ,
 } from './canonicalNoise';
+import type { TerrainProfile } from './canonicalNoise';
+
+export type { TerrainProfile } from './canonicalNoise';
+export { TERRAIN_PROFILES } from './canonicalNoise';
+
+/** 地形プロファイルの既定値。省略時は歴史的な標準(normal)。 */
+export const DEFAULT_TERRAIN_PROFILE: TerrainProfile = 'normal';
 
 /** 既定マップの生成半径(-45..45)。旧terrain.tsのTERRAIN_COORD_RANGEを引き継ぐ。 */
 export const DEFAULT_HALF_EXTENT = 45;
@@ -93,9 +101,20 @@ export interface TerrainField {
  * 返す設計判断: 16Kマップでも建設可能領域はhalfExtent内に限られるため、境界の外側は
  * 「常に安全な平地」として扱えば十分であり、範囲外との連続性(1-Lipschitz)を
  * 保証するための追加コストを払う必要がない。
+ *
+ * `profile`(平坦/標準/山がち)は「Nを標高へ落とすしきい値テーブル」だけを差し替える。
+ * ハッシュ・オクターブ・合成ノイズ分子Nの計算は共通なので、正準定義のバイト一致検証
+ * (TS/Rust/WGSL)はプロファイルを跨いでそのまま成立する。省略時はnormal(歴史的既定)。
  */
-export function createTerrainField(seed: number, halfExtent: number): TerrainField {
+export function createTerrainField(
+  seed: number,
+  halfExtent: number,
+  profile: TerrainProfile = DEFAULT_TERRAIN_PROFILE
+): TerrainField {
   const inRange = (v: number): boolean => v >= -halfExtent && v <= halfExtent;
+  // しきい値テーブルはfield生成時に1度だけ解決する(頂点ごとのRecord引きを避ける)。
+  const thresholds = heightThresholdsFor(profile);
+  const heightFromNumerator = (n: number): number => heightFromNumeratorWith(n, thresholds);
 
   // --- P9a: バッチ用の合成ノイズ分子(N)格子計算 ---
   //
