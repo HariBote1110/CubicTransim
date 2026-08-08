@@ -5,6 +5,10 @@
 //! tiles with compute, then vertex-pulls the packed height/water buffer directly.
 
 pub const TERRAIN_NOISE_WGSL: &str = include_str!("../shaders/terrain_noise.wgsl");
+/// R4a: ジオラマ物(木・町・レール等)のメッシュチャンク描画シェーダ。
+pub const MESH_DRAW_WGSL: &str = include_str!("../shaders/mesh_draw.wgsl");
+/// R4a: 列車などのインスタンス描画シェーダ(R4cで使う)。
+pub const MESH_INSTANCED_WGSL: &str = include_str!("../shaders/mesh_instanced.wgsl");
 pub const TILE_GENERATE_WGSL: &str = include_str!("../shaders/tile_generate.wgsl");
 pub const TERRAIN_DRAW_WGSL: &str = include_str!("../shaders/terrain_draw.wgsl");
 pub const TILE_FINALIZE_WGSL: &str = include_str!("../shaders/tile_finalize.wgsl");
@@ -25,6 +29,442 @@ pub const MAX_DRAW_VERTICES: u32 = 2_000_000;
 pub const RENDER_ARGS_TOTAL_BYTES: u64 = 48;
 /// Bytes copied into the vertex shader's read-only snapshot: the draw quad plus counts.
 pub const RENDER_COUNTS_BYTES: u64 = 32;
+
+/// R4a: 真等角投影の閉形式(shaders/*.wgsl と同じ式)と、それを使った画面空間の
+/// バウンディングボックス判定。ターゲット非依存(ネイティブの `cargo test` で検証できる)。
+pub mod projection {
+    /// 画面座標係数(shaders/terrain_draw.wgsl の ISO_X / ISO_Y / ISO_H と同一)。
+    /// three.js 側の OrthographicCamera(position=(20,20,20), up=+Y)から導いた値。
+    pub const ISO_X: f64 = std::f64::consts::FRAC_1_SQRT_2; // 1/sqrt(2)
+    pub const ISO_Y: f64 = 0.408_248_290_463_863; // 1/sqrt(6)
+    /// 高さ項の係数(2/sqrt(6))。メッシュの y は**ワールド単位**(段数ではない)なので、
+    /// 画面へのオフセットは `y_world * pixels_per_cell * ISO_H` になる。
+    pub const ISO_H: f64 = 0.816_496_580_927_726;
+
+    /// カリング判定に必要なカメラ状態(render() が毎フレーム作る)。
+    #[derive(Clone, Copy, Debug)]
+    pub struct CullCamera {
+        pub centre_x: f64,
+        pub centre_z: f64,
+        pub pixels_per_cell: f64,
+        pub viewport_w: f64,
+        pub viewport_h: f64,
+    }
+
+    /// 画面中心を原点とした矩形(ピクセル、+y は画面下向き)。
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ScreenRect {
+        pub min_x: f64,
+        pub max_x: f64,
+        pub min_y: f64,
+        pub max_y: f64,
+    }
+
+    /// ワールド AABB `[min_x,min_y,min_z,max_x,max_y,max_z]`(y はワールド単位)を
+    /// 等角投影して画面空間の外接矩形を求める。
+    ///
+    /// 投影は各軸について単調なので、8頂点を回さずに端点の組み合わせだけで厳密な
+    /// 外接矩形が出る:
+    ///   sx = (rx-rz)*ppc*ISO_X       -> rx 最大・rz 最小で最大
+    ///   sy = (rx+rz)*ppc*ISO_Y - y*ppc*ISO_H -> rx,rz 最大・y 最小で最大
+    pub fn aabb_screen_rect(aabb: &[f32; 6], cam: CullCamera) -> ScreenRect {
+        let x0 = aabb[0] as f64 - cam.centre_x;
+        let y0 = aabb[1] as f64;
+        let z0 = aabb[2] as f64 - cam.centre_z;
+        let x1 = aabb[3] as f64 - cam.centre_x;
+        let y1 = aabb[4] as f64;
+        let z1 = aabb[5] as f64 - cam.centre_z;
+        let ppc = cam.pixels_per_cell;
+        ScreenRect {
+            min_x: (x0 - z1) * ppc * ISO_X,
+            max_x: (x1 - z0) * ppc * ISO_X,
+            min_y: (x0 + z0) * ppc * ISO_Y - y1 * ppc * ISO_H,
+            max_y: (x1 + z1) * ppc * ISO_Y - y0 * ppc * ISO_H,
+        }
+    }
+
+    /// AABB がビューポートに掛かるか(接触も可視扱い)。
+    pub fn aabb_visible(aabb: &[f32; 6], cam: CullCamera) -> bool {
+        let rect = aabb_screen_rect(aabb, cam);
+        let half_w = cam.viewport_w * 0.5;
+        let half_h = cam.viewport_h * 0.5;
+        rect.max_x >= -half_w && rect.min_x <= half_w && rect.max_y >= -half_h && rect.min_y <= half_h
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn cam() -> CullCamera {
+            CullCamera {
+                centre_x: 0.0,
+                centre_z: 0.0,
+                pixels_per_cell: 10.0,
+                viewport_w: 100.0,
+                viewport_h: 100.0,
+            }
+        }
+
+        #[test]
+        fn origin_cell_projects_to_screen_centre() {
+            let rect = aabb_screen_rect(&[0.0; 6], cam());
+            assert!(rect.min_x.abs() < 1e-9 && rect.max_x.abs() < 1e-9);
+            assert!(rect.min_y.abs() < 1e-9 && rect.max_y.abs() < 1e-9);
+        }
+
+        #[test]
+        fn height_pushes_the_box_upwards_on_screen() {
+            // y は画面下向きなので、高い(y_max が大きい)ほど min_y は小さくなる。
+            let flat = aabb_screen_rect(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], cam());
+            let tall = aabb_screen_rect(&[0.0, 0.0, 0.0, 0.0, 2.0, 0.0], cam());
+            assert!(tall.min_y < flat.min_y);
+            assert!((tall.min_y - (-2.0 * 10.0 * ISO_H)).abs() < 1e-9);
+            assert!((tall.max_y - flat.max_y).abs() < 1e-9);
+        }
+
+        #[test]
+        fn centred_box_is_visible_and_distant_box_is_not() {
+            assert!(aabb_visible(&[-1.0, 0.0, -1.0, 1.0, 1.0, 1.0], cam()));
+            // +x/+z へ大きく離すと画面下方向(sy)へ抜ける。
+            assert!(!aabb_visible(&[100.0, 0.0, 100.0, 101.0, 1.0, 101.0], cam()));
+            // +x/-z へ離すと画面右方向(sx)へ抜ける。
+            assert!(!aabb_visible(&[100.0, 0.0, -101.0, 101.0, 1.0, -100.0], cam()));
+        }
+
+        #[test]
+        fn camera_centre_follows_the_box() {
+            let far = [100.0f32, 0.0, 100.0, 101.0, 1.0, 101.0];
+            let mut c = cam();
+            assert!(!aabb_visible(&far, c));
+            c.centre_x = 100.5;
+            c.centre_z = 100.5;
+            assert!(aabb_visible(&far, c));
+        }
+    }
+}
+
+/// R4a: メッシュチャンク / インスタンス描画のCPU側データ整形。
+///
+/// wasm 側(CanvasRenderer)からもネイティブのテストからも使える target 非依存モジュール。
+pub mod meshes {
+    /// 頂点1つのバイト数: position(f32x3) + colour(unorm8x4)。
+    pub const VERTEX_STRIDE_BYTES: usize = 16;
+
+    /// インスタンス1つあたりの f32 個数。
+    ///
+    /// レイアウト(TS 側 `setInstances` が渡すフラット配列と同じ並び):
+    ///   0: x, 1: y, 2: z            — ワールド位置(y はワールド単位)
+    ///   3: yaw   — +Y 軸まわり(three.js の rotateY と同符号、`angleFromVector` 準拠)
+    ///   4: pitch — 進行方向まわりの傾き(勾配の可視化に使う)
+    ///   5..7: tintR, tintG, tintB   — 頂点色へ掛ける色(路線色など、0..1)
+    ///   8: flags — bit0=1 で地下クラス(深度Always・地下ビュー以外では非表示)
+    ///   9: 予約(16バイト境界に揃えるためのパディング。常に 0 を書く)
+    pub const INSTANCE_STRIDE_FLOATS: usize = 10;
+    pub const INSTANCE_STRIDE_BYTES: usize = INSTANCE_STRIDE_FLOATS * 4;
+
+    /// インスタンスフラグ: 地下クラスとして描く。
+    pub const INSTANCE_FLAG_UNDERGROUND: u32 = 1;
+
+    /// メッシュチャンクの描画クラス。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum LayerClass {
+        /// 地表の不透明物。地形と同じ dim 係数で減光される。
+        Surface,
+        /// 地下の構造物。地表より後に深度比較 Always で描く(地下ビュー以外では非表示)。
+        Underground,
+        /// 半透明オーバーレイ。深度書き込み無しで最後に描く(αは頂点色のA)。
+        Translucent,
+    }
+
+    impl LayerClass {
+        /// JS から渡る数値(0/1/2)を解釈する。未知の値は Surface に丸める。
+        pub fn from_u32(v: u32) -> Self {
+            match v {
+                1 => LayerClass::Underground,
+                2 => LayerClass::Translucent,
+                _ => LayerClass::Surface,
+            }
+        }
+
+        pub fn as_u32(self) -> u32 {
+            match self {
+                LayerClass::Surface => 0,
+                LayerClass::Underground => 1,
+                LayerClass::Translucent => 2,
+            }
+        }
+    }
+
+    /// position(f32x3 のフラット配列)と colour(頂点ごとの RGBA8 パック値)を
+    /// GPU 頂点バッファのバイト列(stride 16)へ交互配置する。
+    ///
+    /// 長さが食い違う場合は短いほうに合わせる(JS からの呼び出しを落とさないための防御)。
+    pub fn interleave_vertices(positions: &[f32], colours: &[u32]) -> Vec<u8> {
+        let count = (positions.len() / 3).min(colours.len());
+        let mut out = Vec::with_capacity(count * VERTEX_STRIDE_BYTES);
+        for i in 0..count {
+            out.extend_from_slice(&positions[i * 3].to_le_bytes());
+            out.extend_from_slice(&positions[i * 3 + 1].to_le_bytes());
+            out.extend_from_slice(&positions[i * 3 + 2].to_le_bytes());
+            out.extend_from_slice(&colours[i].to_le_bytes());
+        }
+        out
+    }
+
+    /// インスタンス配列を「地表」「地下」の2本へ振り分ける(flags の bit0 で判定)。
+    ///
+    /// パイプライン状態(深度比較)はドロー単位でしか変えられないため、クラスの
+    /// 振り分けは CPU 側で行い、それぞれを別のインスタンスバッファ+別ドローにする。
+    /// 端数(stride に満たない末尾)は無視する。
+    pub fn split_instances_by_class(data: &[f32]) -> (Vec<u8>, Vec<u8>) {
+        let count = data.len() / INSTANCE_STRIDE_FLOATS;
+        let mut surface = Vec::new();
+        let mut underground = Vec::new();
+        for i in 0..count {
+            let chunk = &data[i * INSTANCE_STRIDE_FLOATS..(i + 1) * INSTANCE_STRIDE_FLOATS];
+            let flags = chunk[8] as u32;
+            let target = if flags & INSTANCE_FLAG_UNDERGROUND != 0 {
+                &mut underground
+            } else {
+                &mut surface
+            };
+            for v in chunk {
+                target.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        (surface, underground)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn interleaves_position_and_colour_into_16_byte_vertices() {
+            let bytes = interleave_vertices(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0xff00_00ff, 0x00ff_00ff]);
+            assert_eq!(bytes.len(), 2 * VERTEX_STRIDE_BYTES);
+            assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
+            assert_eq!(&bytes[12..16], &0xff00_00ffu32.to_le_bytes());
+            assert_eq!(&bytes[16..20], &4.0f32.to_le_bytes());
+        }
+
+        #[test]
+        fn interleave_clamps_to_the_shorter_input() {
+            let bytes = interleave_vertices(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0xffff_ffff]);
+            assert_eq!(bytes.len(), VERTEX_STRIDE_BYTES);
+        }
+
+        #[test]
+        fn splits_instances_by_the_underground_flag() {
+            let mut data = vec![0.0f32; INSTANCE_STRIDE_FLOATS * 3];
+            data[0] = 1.0; // instance 0: surface
+            data[INSTANCE_STRIDE_FLOATS] = 2.0; // instance 1: underground
+            data[INSTANCE_STRIDE_FLOATS + 8] = INSTANCE_FLAG_UNDERGROUND as f32;
+            data[INSTANCE_STRIDE_FLOATS * 2] = 3.0; // instance 2: surface
+            let (surface, underground) = split_instances_by_class(&data);
+            assert_eq!(surface.len(), 2 * INSTANCE_STRIDE_BYTES);
+            assert_eq!(underground.len(), INSTANCE_STRIDE_BYTES);
+            assert_eq!(&surface[0..4], &1.0f32.to_le_bytes());
+            assert_eq!(&surface[INSTANCE_STRIDE_BYTES..INSTANCE_STRIDE_BYTES + 4], &3.0f32.to_le_bytes());
+            assert_eq!(&underground[0..4], &2.0f32.to_le_bytes());
+        }
+
+        #[test]
+        fn split_ignores_a_trailing_partial_instance() {
+            let data = vec![0.0f32; INSTANCE_STRIDE_FLOATS + 3];
+            let (surface, underground) = split_instances_by_class(&data);
+            assert_eq!(surface.len(), INSTANCE_STRIDE_BYTES);
+            assert!(underground.is_empty());
+        }
+
+        #[test]
+        fn layer_class_round_trips_and_clamps_unknown_values() {
+            for c in [LayerClass::Surface, LayerClass::Underground, LayerClass::Translucent] {
+                assert_eq!(LayerClass::from_u32(c.as_u32()), c);
+            }
+            assert_eq!(LayerClass::from_u32(99), LayerClass::Surface);
+        }
+    }
+}
+
+/// R4a: メッシュチャンク / インスタンス描画のパイプライン構築。
+///
+/// wasm の `CanvasRenderer` と、ネイティブの検証バイナリ(`mesh_shader_check`)の
+/// 両方から使う target 非依存モジュール。WGSL とバッファレイアウトの整合はここ1箇所で
+/// 決まるので、ブラウザを立ち上げずに `cargo run --bin mesh_shader_check` で検証できる。
+pub mod mesh_pipeline {
+    use super::meshes::{LayerClass, INSTANCE_STRIDE_BYTES, VERTEX_STRIDE_BYTES};
+
+    /// メッシュ頂点バッファのレイアウト(位置 f32x3 + 頂点色 unorm8x4、stride 16)。
+    const MESH_VERTEX_ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Unorm8x4,
+    ];
+    /// インスタンスバッファのレイアウト(meshes::INSTANCE_STRIDE_FLOATS のコメント参照)。
+    /// flags(offset 32)と予約(offset 36)はシェーダから読まないので属性を張らない。
+    const MESH_INSTANCE_ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+        2 => Float32x3,
+        3 => Float32x2,
+        4 => Float32x3,
+    ];
+
+    pub fn mesh_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: VERTEX_STRIDE_BYTES as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &MESH_VERTEX_ATTRS,
+        }
+    }
+
+    pub fn mesh_instance_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: INSTANCE_STRIDE_BYTES as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &MESH_INSTANCE_ATTRS,
+        }
+    }
+
+    /// カメラ uniform のバインドグループレイアウト(group 0)。地形のものと違い、
+    /// フラグメントでも dim を読むため VERTEX|FRAGMENT にする。
+    pub fn camera_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mesh-camera-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        })
+    }
+
+    /// クラス uniform(0=地表/1=地下/2=半透明)のバインドグループレイアウト(group 1)。
+    pub fn class_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mesh-class-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        })
+    }
+
+    /// クラス別の深度・ブレンド状態でメッシュ描画パイプラインを作る。
+    ///
+    /// - Surface: 地形と同じ深度テスト(LessEqual)+深度書き込み。dim で減光。
+    /// - Underground: 地表の後に深度比較 Always で上描き(地下ビューでのみ描く)。
+    /// - Translucent: αブレンド・深度書き込み無しで最後に描く。
+    pub fn create_mesh_pipeline(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        layout: &wgpu::PipelineLayout,
+        format: wgpu::TextureFormat,
+        class: LayerClass,
+        buffers: &[wgpu::VertexBufferLayout<'_>],
+        label: &str,
+    ) -> wgpu::RenderPipeline {
+        let (depth_write, depth_compare, blend) = match class {
+            LayerClass::Surface => (true, wgpu::CompareFunction::LessEqual, None),
+            LayerClass::Underground => (false, wgpu::CompareFunction::Always, None),
+            LayerClass::Translucent => (
+                false,
+                wgpu::CompareFunction::LessEqual,
+                Some(wgpu::BlendState::ALPHA_BLENDING),
+            ),
+        };
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                buffers,
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: depth_write,
+                depth_compare,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        })
+    }
+
+    /// メッシュチャンク3クラス+インスタンス2クラスのパイプライン一式を作る。
+    pub struct MeshPipelines {
+        pub camera_bgl: wgpu::BindGroupLayout,
+        pub class_bgl: wgpu::BindGroupLayout,
+        /// index は `LayerClass::as_u32()`(0=地表/1=地下/2=半透明)。
+        pub chunk: [wgpu::RenderPipeline; 3],
+        /// index 0=地表 / 1=地下(半透明インスタンスは用途が無いので作らない)。
+        pub instanced: [wgpu::RenderPipeline; 2],
+    }
+
+    pub fn create_all(device: &wgpu::Device, format: wgpu::TextureFormat) -> MeshPipelines {
+        let camera_bgl = camera_bind_group_layout(device);
+        let class_bgl = class_bind_group_layout(device);
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("mesh-layout"),
+            bind_group_layouts: &[&camera_bgl, &class_bgl],
+            push_constant_ranges: &[],
+        });
+        let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("mesh-draw"),
+            source: wgpu::ShaderSource::Wgsl(super::MESH_DRAW_WGSL.into()),
+        });
+        let instanced_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("mesh-instanced"),
+            source: wgpu::ShaderSource::Wgsl(super::MESH_INSTANCED_WGSL.into()),
+        });
+        let chunk = [
+            LayerClass::Surface,
+            LayerClass::Underground,
+            LayerClass::Translucent,
+        ]
+        .map(|class| {
+            create_mesh_pipeline(
+                device, &mesh_shader, &layout, format, class,
+                &[mesh_vertex_layout()], "mesh-draw-pipeline",
+            )
+        });
+        let instanced = [LayerClass::Surface, LayerClass::Underground].map(|class| {
+            create_mesh_pipeline(
+                device, &instanced_shader, &layout, format, class,
+                &[mesh_vertex_layout(), mesh_instance_layout()], "mesh-instanced-pipeline",
+            )
+        });
+        MeshPipelines { camera_bgl, class_bgl, chunk, instanced }
+    }
+}
 
 /// 地形編集オーバーレイ(terrainOverlay.ts の CornerDiffs)を GPU タイル生成へ橋渡しする
 /// 共有ロジック。wasm 側(CanvasRenderer)とネイティブの回帰ゲート(edit_check)の両方から
@@ -257,13 +697,11 @@ mod wasm {
         out[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
     }
 
-    /// 真等角投影の画面座標係数(shaders/terrain_draw.wgsl の ISO_X / ISO_Y と同一)。
-    /// three.js 側の OrthographicCamera(position=(20,20,20), up=+Y)から導いた値。
-    pub(crate) const ISO_X: f64 = std::f64::consts::FRAC_1_SQRT_2; // 1/sqrt(2)
-    pub(crate) const ISO_Y: f64 = 0.408_248_290_463_863_0; // 1/sqrt(6)
-    /// 高さ項の係数(2/sqrt(6))。y は段数なので、ワールド高さ(=段数×height_per_level)へ
-    /// 直してから掛ける。
-    pub(crate) const ISO_H: f64 = 0.816_496_580_927_726_0;
+    pub use super::meshes::{
+        interleave_vertices, split_instances_by_class, LayerClass, INSTANCE_STRIDE_BYTES,
+        INSTANCE_STRIDE_FLOATS, VERTEX_STRIDE_BYTES,
+    };
+    pub use super::projection::{aabb_visible, CullCamera, ISO_H, ISO_X, ISO_Y};
     /// 拡大の上限(物理ピクセル/ワールド単位)。three.js 側の maxZoom(100)× DPR(<=2)を
     /// 十分に上回る値にしておく。
     const MAX_PIXELS_PER_CELL: f64 = 4096.0;
@@ -312,6 +750,26 @@ mod wasm {
         (texture, view)
     }
 
+    /// R4a: TS 側が組み立てたジオラマ物のメッシュ1バケット分(GPU常駐)。
+    struct MeshChunk {
+        vertices: wgpu::Buffer,
+        indices: wgpu::Buffer,
+        index_count: u32,
+        class: LayerClass,
+        /// ワールド AABB `[min_x,min_y,min_z,max_x,max_y,max_z]`(y はワールド単位)。
+        aabb: [f32; 6],
+    }
+
+    /// R4a: インスタンス描画用に登録したプロトタイプメッシュと、その現在のインスタンス群。
+    struct InstancedMesh {
+        vertices: wgpu::Buffer,
+        indices: wgpu::Buffer,
+        index_count: u32,
+        /// (バッファ, インスタンス数)。クラスごとに別ドローになるので2本持つ。
+        surface: Option<(wgpu::Buffer, u32)>,
+        underground: Option<(wgpu::Buffer, u32)>,
+    }
+
     #[wasm_bindgen]
     pub struct CanvasRenderer {
         surface: wgpu::Surface<'static>,
@@ -333,6 +791,15 @@ mod wasm {
         clamp_pipeline: wgpu::ComputePipeline,
         clamp_bgl: wgpu::BindGroupLayout,
         clamp_params: wgpu::Buffer,
+
+        /// R4a: ジオラマ物のメッシュ描画。クラス(0=地表/1=地下/2=半透明)ごとにパイプラインと
+        /// クラス uniform のバインドグループを持つ。
+        mesh_pipelines: [wgpu::RenderPipeline; 3],
+        instanced_pipelines: [wgpu::RenderPipeline; 2],
+        class_bind_groups: [wgpu::BindGroup; 3],
+        mesh_camera_bind_group: wgpu::BindGroup,
+        mesh_chunks: HashMap<u32, MeshChunk>,
+        instanced_meshes: HashMap<u32, InstancedMesh>,
 
         tiles: HashMap<TileKey, GpuTile>,
         visible: Vec<TileKey>,
@@ -558,6 +1025,27 @@ mod wasm {
                 cache: None,
             });
 
+            // --- R4a: メッシュチャンク / インスタンス描画のパイプライン(mesh_pipeline モジュール) ---
+            let mesh = super::mesh_pipeline::create_all(&device, format);
+            let mesh_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mesh-camera-bg"), layout: &mesh.camera_bgl,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() }],
+            });
+            let class_bind_groups = [LayerClass::Surface, LayerClass::Underground, LayerClass::Translucent]
+                .map(|class| {
+                    let mut bytes = [0u8; 16];
+                    put_u32(&mut bytes, 0, class.as_u32());
+                    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("mesh-class-params"), contents: &bytes, usage: wgpu::BufferUsages::UNIFORM,
+                    });
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("mesh-class-bg"), layout: &mesh.class_bgl,
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+                    })
+                });
+            let mesh_pipelines = mesh.chunk;
+            let instanced_pipelines = mesh.instanced;
+
             Ok(Self {
                 surface,
                 device,
@@ -577,6 +1065,12 @@ mod wasm {
                 clamp_pipeline,
                 clamp_bgl,
                 clamp_params,
+                mesh_pipelines,
+                instanced_pipelines,
+                class_bind_groups,
+                mesh_camera_bind_group,
+                mesh_chunks: HashMap::new(),
+                instanced_meshes: HashMap::new(),
                 tiles: HashMap::with_capacity(128),
                 visible: Vec::with_capacity(64),
                 needed: Vec::with_capacity(96),
@@ -698,6 +1192,115 @@ mod wasm {
             }
         }
 
+        /// R4a: ジオラマ物のメッシュチャンクを1つ登録(同じ id は置き換え)する。
+        ///
+        /// - `layer_class`: 0=地表(dim で減光) / 1=地下(深度 Always・地下ビュー限定) /
+        ///   2=半透明(αは頂点色のA、深度書き込み無しで最後に描く)
+        /// - `aabb`: `[min_x,min_y,min_z,max_x,max_y,max_z]`(y はワールド単位)。
+        ///   毎フレームこの AABB を等角投影してビューポートと矩形判定し、外れたら描かない。
+        /// - `positions`: xyz のフラット配列、`colours`: 頂点ごとの RGBA8(リトルエンディアン
+        ///   で R,G,B,A の順)、`indices`: 三角形リストの u32 インデックス。
+        ///
+        /// 空(インデックス0件)の登録は既存チャンクの削除と同義に扱う。
+        #[wasm_bindgen(js_name = uploadMeshChunk)]
+        pub fn upload_mesh_chunk(
+            &mut self,
+            id: u32,
+            layer_class: u32,
+            aabb: &[f32],
+            positions: &[f32],
+            colours: &[u32],
+            indices: &[u32],
+        ) {
+            if indices.is_empty() || positions.is_empty() {
+                self.mesh_chunks.remove(&id);
+                return;
+            }
+            let vertex_bytes = interleave_vertices(positions, colours);
+            if vertex_bytes.is_empty() {
+                self.mesh_chunks.remove(&id);
+                return;
+            }
+            let vertices = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mesh-chunk-vertices"), contents: &vertex_bytes, usage: wgpu::BufferUsages::VERTEX,
+            });
+            let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mesh-chunk-indices"), contents: bytemuck::cast_slice(indices), usage: wgpu::BufferUsages::INDEX,
+            });
+            let mut bounds = [0f32; 6];
+            bounds[..aabb.len().min(6)].copy_from_slice(&aabb[..aabb.len().min(6)]);
+            self.mesh_chunks.insert(id, MeshChunk {
+                vertices,
+                indices: index_buffer,
+                index_count: indices.len() as u32,
+                class: LayerClass::from_u32(layer_class),
+                aabb: bounds,
+            });
+        }
+
+        /// R4a: メッシュチャンクを外す(存在しない id は無視)。
+        #[wasm_bindgen(js_name = removeMeshChunk)]
+        pub fn remove_mesh_chunk(&mut self, id: u32) {
+            self.mesh_chunks.remove(&id);
+        }
+
+        /// R4a: インスタンス描画のプロトタイプメッシュを登録(同じ id は置き換え)する。
+        /// 頂点色のアルファは「路線色(tint)で塗る重み」として使う(mesh_instanced.wgsl 参照)。
+        #[wasm_bindgen(js_name = registerInstancedMesh)]
+        pub fn register_instanced_mesh(
+            &mut self,
+            mesh_id: u32,
+            positions: &[f32],
+            colours: &[u32],
+            indices: &[u32],
+        ) {
+            if indices.is_empty() || positions.is_empty() {
+                self.instanced_meshes.remove(&mesh_id);
+                return;
+            }
+            let vertex_bytes = interleave_vertices(positions, colours);
+            if vertex_bytes.is_empty() {
+                self.instanced_meshes.remove(&mesh_id);
+                return;
+            }
+            let vertices = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("instanced-mesh-vertices"), contents: &vertex_bytes, usage: wgpu::BufferUsages::VERTEX,
+            });
+            let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("instanced-mesh-indices"), contents: bytemuck::cast_slice(indices), usage: wgpu::BufferUsages::INDEX,
+            });
+            self.instanced_meshes.insert(mesh_id, InstancedMesh {
+                vertices,
+                indices: index_buffer,
+                index_count: indices.len() as u32,
+                surface: None,
+                underground: None,
+            });
+        }
+
+        /// R4a: 登録済みメッシュのインスタンス配列を丸ごと差し替える。
+        /// 1インスタンス = `INSTANCE_STRIDE_FLOATS` 個の f32(レイアウトは meshes モジュール参照)。
+        /// 未登録の mesh_id は無視する。
+        #[wasm_bindgen(js_name = setInstances)]
+        pub fn set_instances(&mut self, mesh_id: u32, data: &[f32]) {
+            let (surface_bytes, underground_bytes) = split_instances_by_class(data);
+            let make = |device: &wgpu::Device, bytes: &[u8]| -> Option<(wgpu::Buffer, u32)> {
+                if bytes.is_empty() {
+                    return None;
+                }
+                let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("instance-data"), contents: bytes, usage: wgpu::BufferUsages::VERTEX,
+                });
+                Some((buffer, (bytes.len() / INSTANCE_STRIDE_BYTES) as u32))
+            };
+            let surface = make(&self.device, &surface_bytes);
+            let underground = make(&self.device, &underground_bytes);
+            if let Some(mesh) = self.instanced_meshes.get_mut(&mesh_id) {
+                mesh.surface = surface;
+                mesh.underground = underground;
+            }
+        }
+
         #[wasm_bindgen(js_name = zoomBy)]
         pub fn zoom_by(&mut self, factor: f64) {
             let min_ppc = full_map_min_ppc(self.config.width, self.config.height, self.half_extent);
@@ -745,6 +1348,9 @@ mod wasm {
 
             let mut generated = 0usize;
             let param_updates = 1usize;
+            // R4a: この1フレームで実際に発行したジオラマ物のドロー数(perf JSON へ出す)。
+            let mut mesh_draws = 0usize;
+            let mut instance_draws = 0usize;
             // Visible tiles are hard priority. Prefetch is best-effort and budgeted so the
             // first frame never synchronously generates the whole one-tile border.
             for i in 0..self.visible.len() {
@@ -829,6 +1435,45 @@ mod wasm {
                         pass.draw_indirect(&tile.render_args, 0);
                     }
                 }
+
+                // --- R4a: ジオラマ物(メッシュチャンク+インスタンス) ---
+                // 描画順は 地表(不透明) → 地表インスタンス → 地下 → 地下インスタンス →
+                // 半透明。地下クラスは深度比較 Always で地形の上に出るため、地下ビュー
+                // (dim<1.0)以外では丸ごと描かない(three.js 側で通常表示時に地下の
+                // ジオメトリを出さないのと同じ規則)。
+                let cull = CullCamera {
+                    centre_x: self.center_x,
+                    centre_z: self.center_z,
+                    pixels_per_cell: self.pixels_per_cell,
+                    viewport_w: self.config.width as f64,
+                    viewport_h: self.config.height as f64,
+                };
+                let underground_visible = self.dim < 1.0;
+                pass.set_bind_group(0, &self.mesh_camera_bind_group, &[]);
+
+                let draw_class = |pass: &mut wgpu::RenderPass<'_>, class: LayerClass| {
+                    let slot = class.as_u32() as usize;
+                    pass.set_pipeline(&self.mesh_pipelines[slot]);
+                    pass.set_bind_group(1, &self.class_bind_groups[slot], &[]);
+                    let mut drawn = 0usize;
+                    for chunk in self.mesh_chunks.values() {
+                        if chunk.class != class || !aabb_visible(&chunk.aabb, cull) {
+                            continue;
+                        }
+                        pass.set_vertex_buffer(0, chunk.vertices.slice(..));
+                        pass.set_index_buffer(chunk.indices.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+                        drawn += 1;
+                    }
+                    drawn
+                };
+                mesh_draws += draw_class(&mut pass, LayerClass::Surface);
+                instance_draws += self.draw_instances(&mut pass, LayerClass::Surface);
+                if underground_visible {
+                    mesh_draws += draw_class(&mut pass, LayerClass::Underground);
+                    instance_draws += self.draw_instances(&mut pass, LayerClass::Underground);
+                }
+                mesh_draws += draw_class(&mut pass, LayerClass::Translucent);
             }
             self.queue.submit(Some(encoder.finish()));
             frame.present();
@@ -836,12 +1481,15 @@ mod wasm {
 
             let cpu_ms = js_sys::Date::now() - cpu_started;
             let lod = self.visible.first().map(|t| t.lod).unwrap_or(0);
+            // drawCalls は従来どおり地形タイルのドロー数(既存の計測・ゲートとの互換のため)。
+            // R4a のジオラマ物は meshDrawCalls / instancedDrawCalls として別に出す。
             Ok(format!(
-                "{{\"cpuMs\":{cpu_ms:.3},\"cfgW\":{},\"cfgH\":{},\"heightScale\":{:.3},\"halfExtent\":{},\"drawCalls\":{},\"visibleTiles\":{},\"generatedTiles\":{generated},\"paramUpdates\":{param_updates},\"residentTiles\":{},\"tileGpuBytes\":{},\"lod\":{lod},\"centerX\":{:.3},\"centerZ\":{:.3},\"pixelsPerCell\":{:.5}}}",
+                "{{\"cpuMs\":{cpu_ms:.3},\"cfgW\":{},\"cfgH\":{},\"heightScale\":{:.3},\"halfExtent\":{},\"drawCalls\":{},\"visibleTiles\":{},\"generatedTiles\":{generated},\"paramUpdates\":{param_updates},\"residentTiles\":{},\"tileGpuBytes\":{},\"lod\":{lod},\"centerX\":{:.3},\"centerZ\":{:.3},\"pixelsPerCell\":{:.5},\"meshChunks\":{},\"meshDrawCalls\":{mesh_draws},\"instancedMeshes\":{},\"instancedDrawCalls\":{instance_draws}}}",
                 self.config.width, self.config.height,
                 self.pixels_per_cell * ISO_H * self.height_per_level, self.half_extent,
                 self.visible.len(), self.visible.len(), self.tiles.len(), self.tiles.len() as u64 * TILE_BYTES,
                 self.center_x, self.center_z, self.pixels_per_cell,
+                self.mesh_chunks.len(), self.instanced_meshes.len(),
             ))
         }
 
@@ -855,6 +1503,34 @@ mod wasm {
     }
 
     impl CanvasRenderer {
+        /// R4a: 登録済みインスタンスメッシュのうち、指定クラスのインスタンス群を描く。
+        /// 戻り値は発行したドロー数(メッシュ1つにつき1インスタンスドロー)。
+        fn draw_instances(&self, pass: &mut wgpu::RenderPass<'_>, class: LayerClass) -> usize {
+            let slot = match class {
+                LayerClass::Underground => 1,
+                _ => 0,
+            };
+            pass.set_pipeline(&self.instanced_pipelines[slot]);
+            pass.set_bind_group(1, &self.class_bind_groups[class.as_u32() as usize], &[]);
+            let mut draws = 0usize;
+            for mesh in self.instanced_meshes.values() {
+                let slice = match class {
+                    LayerClass::Underground => mesh.underground.as_ref(),
+                    _ => mesh.surface.as_ref(),
+                };
+                let Some((buffer, count)) = slice else { continue };
+                if *count == 0 {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, buffer.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..*count);
+                draws += 1;
+            }
+            draws
+        }
+
         fn create_gpu_tile(&self, key: TileKey, encoder: &mut wgpu::CommandEncoder) -> GpuTile {
             let origin_x = key.x * tile_cell_span(key.lod);
             let origin_z = key.z * tile_cell_span(key.lod);
