@@ -9,11 +9,12 @@
 // - 新しく可視になったキーは1フレームあたり `budgetPerFrame` 件までしか構築しない
 //   (パンで一気に数十チャンクが可視になってもヒッチしないよう分割する)
 // - `version` が変わると全チャンクを作り直す(遠景フェードの段階が変わったときなど)
-// - コントローラ(wasm)の生成は非同期なので、useFrame の中で毎回 null チェックする
+// - コントローラ(wasm)の生成は非同期なので、フレームごとに毎回 null チェックする
 
 import { useEffect, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
 
+import { FRAME_ORDER } from '../render/frameLoop';
+import { useFrameLoop } from '../hooks/useFrameLoop';
 import type { BakedMeshChunk } from '../render/bakedMesh';
 import { MeshChunkRegistry } from '../render/meshChunkRegistry';
 import { MESH_LAYER_CLASS } from '../render/webgpuLayer';
@@ -52,7 +53,7 @@ export function useMeshChunkFeeder({
   /** 最後に載せた相手のレンダラー(差し替わったら台帳を作り直す)。 */
   const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
 
-  // useFrame から読む最新の入力(再レンダーのたびに差し替える)。
+  // フレームループから読む最新の入力(再レンダーのたびに差し替える)。
   const desiredRef = useRef(desiredKeys);
   const buildRef = useRef(buildChunk);
   const versionRef = useRef(version);
@@ -77,7 +78,7 @@ export function useMeshChunkFeeder({
     for (const id of ids) controller.removeMeshChunk(id);
   }, [layerRef]);
 
-  useFrame(() => {
+  useFrameLoop(FRAME_ORDER.feed, () => {
     const controller = layerRef.current;
     if (!controller) return;
 

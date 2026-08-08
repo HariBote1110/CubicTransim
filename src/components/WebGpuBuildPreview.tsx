@@ -14,16 +14,29 @@
 
 import React, { useRef } from 'react';
 import * as THREE from 'three';
+import { FRAME_ORDER } from '../render/frameLoop';
+import { useFrameLoop } from '../hooks/useFrameLoop';
 import { bakeGeometries, type BakedMeshChunk } from '../render/bakedMesh';
+import { mergeAndDispose } from '../render/mergeGeometry';
 import { MESH_LAYER_CLASS } from '../render/webgpuLayer';
 import type { WebGpuTerrainLayerController } from '../render/webgpuLayer';
 import type { WebGpuLayerRef } from './WebGpuTerrainLayer';
-import { useFrame } from '@react-three/fiber';
 
 /** 半透明ボックスの不透明度(classicの meshBasicMaterial opacity=0.45 と同じ)。 */
 const PREVIEW_ALPHA = Math.round(0.45 * 255);
 const PREVIEW_CHUNK_ID = 0x9100_0001;
 const DRAG_CHUNK_ID = 0x9100_0002;
+const GRID_CHUNK_ID = 0x9100_0003;
+
+/** R4d: 建設モードのグリッド(旧 three.js gridHelper の代替)。中心セルからの片側セル数。 */
+const GRID_HALF_CELLS = 48;
+/** グリッド線の太さ(ワールド単位)と高さ。旧 gridHelper と同じく地表すれすれに置く。 */
+const GRID_LINE_WIDTH = 0.03;
+const GRID_LINE_Y = 0.004;
+const GRID_COLOUR = '#9fbb84';
+const GRID_ALPHA = Math.round(0.5 * 255);
+/** グリッドを作り直す間隔(中心セルがこのセル数だけ動いたら作り直す)。 */
+const GRID_SNAP_CELLS = 8;
 
 export interface PreviewGhostCell {
   x: number;
@@ -38,7 +51,32 @@ interface Props {
   cells: readonly PreviewGhostCell[];
   /** 列車ドラッグ中の置き先ゴースト(無ければnull)。 */
   dragCell?: PreviewGhostCell | null;
+  /**
+   * 建設グリッドの中心セル(null で非表示)。旧 GameScene の
+   * `buildMode !== 'none' && <gridHelper .../>` と同じ「建設中だけ出す」規則。
+   */
+  gridCentre?: { x: number; z: number } | null;
 }
+
+/** 中心セル周りの格子線を、細い板(quad)の集まりとして焼き込む。 */
+const buildGridChunk = (centre: { x: number; z: number }): BakedMeshChunk | null => {
+  const geometries: THREE.BufferGeometry[] = [];
+  const span = GRID_HALF_CELLS * 2;
+  // セル境界(±0.5 オフセット)へ線を置く。gridHelper と同じ見え方。
+  for (let i = -GRID_HALF_CELLS; i <= GRID_HALF_CELLS; i++) {
+    const alongZ = new THREE.BoxGeometry(GRID_LINE_WIDTH, 0.001, span);
+    alongZ.translate(centre.x + i + 0.5, GRID_LINE_Y, centre.z + 0.5);
+    geometries.push(alongZ);
+    const alongX = new THREE.BoxGeometry(span, 0.001, GRID_LINE_WIDTH);
+    alongX.translate(centre.x + 0.5, GRID_LINE_Y, centre.z + i + 0.5);
+    geometries.push(alongX);
+  }
+  const merged = mergeAndDispose(geometries);
+  if (!merged) return null;
+  const baked = bakeGeometries([{ geometry: merged, colour: GRID_COLOUR, options: { alpha: GRID_ALPHA } }]);
+  merged.dispose();
+  return baked;
+};
 
 const buildBoxChunk = (cells: readonly PreviewGhostCell[]): BakedMeshChunk | null => {
   if (cells.length === 0) return null;
@@ -58,12 +96,13 @@ const buildBoxChunk = (cells: readonly PreviewGhostCell[]): BakedMeshChunk | nul
 const signatureOf = (cells: readonly PreviewGhostCell[]): string =>
   cells.map(c => `${c.x},${c.y.toFixed(3)},${c.z},${c.colour}`).join('|');
 
-export const WebGpuBuildPreview: React.FC<Props> = ({ layerRef, cells, dragCell }) => {
+export const WebGpuBuildPreview: React.FC<Props> = ({ layerRef, cells, dragCell, gridCentre = null }) => {
   const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
   const lastPreviewSigRef = useRef<string>('');
   const lastDragSigRef = useRef<string>('');
+  const lastGridSigRef = useRef<string>('');
 
-  useFrame(() => {
+  useFrameLoop(FRAME_ORDER.feed, () => {
     const controller = layerRef.current;
     if (!controller) return;
 
@@ -72,6 +111,7 @@ export const WebGpuBuildPreview: React.FC<Props> = ({ layerRef, cells, dragCell 
       lastControllerRef.current = controller;
       lastPreviewSigRef.current = '';
       lastDragSigRef.current = '';
+      lastGridSigRef.current = '';
     }
 
     const previewSig = signatureOf(cells);
@@ -89,6 +129,22 @@ export const WebGpuBuildPreview: React.FC<Props> = ({ layerRef, cells, dragCell 
       const chunk = buildBoxChunk(dragCells);
       if (chunk) controller.uploadMeshChunk(DRAG_CHUNK_ID, MESH_LAYER_CLASS.translucent, chunk);
       else controller.removeMeshChunk(DRAG_CHUNK_ID);
+    }
+
+    // 建設グリッド。中心セルを GRID_SNAP_CELLS でスナップして、少し動いただけでは
+    // 作り直さないようにする(パンのたびに 194 本の板を焼き直さないため)。
+    const snapped = gridCentre
+      ? {
+        x: Math.round(gridCentre.x / GRID_SNAP_CELLS) * GRID_SNAP_CELLS,
+        z: Math.round(gridCentre.z / GRID_SNAP_CELLS) * GRID_SNAP_CELLS,
+      }
+      : null;
+    const gridSig = snapped ? `${snapped.x},${snapped.z}` : '';
+    if (controllerChanged || gridSig !== lastGridSigRef.current) {
+      lastGridSigRef.current = gridSig;
+      const chunk = snapped ? buildGridChunk(snapped) : null;
+      if (chunk) controller.uploadMeshChunk(GRID_CHUNK_ID, MESH_LAYER_CLASS.translucent, chunk);
+      else controller.removeMeshChunk(GRID_CHUNK_ID);
     }
   });
 

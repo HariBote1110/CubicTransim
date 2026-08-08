@@ -13,7 +13,8 @@
 // 等の3クラス近似とは異なる簡略化。r4-threejs-retirement-plan.mdのR4c実装メモに記録)。
 
 import React, { useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { FRAME_ORDER } from '../render/frameLoop';
+import { useFrameLoop } from '../hooks/useFrameLoop';
 import type { CellData, TrainData, TrainGroupData } from '../types';
 import type { TerrainField } from '../sim/terrainField';
 import type { SimWorld } from '../sim/simulation';
@@ -103,7 +104,7 @@ export const WebGpuTrains: React.FC<Props> = ({
   const selectionBuf = useRef(new InstanceBuffer());
   const dotBuf = useRef(new InstanceBuffer());
 
-  useFrame(() => {
+  useFrameLoop(FRAME_ORDER.feed, () => {
     const controller = layerRef.current;
     if (!controller) return;
 

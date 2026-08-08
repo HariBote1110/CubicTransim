@@ -1,18 +1,25 @@
-// R4b: 駅ホーム・駅舎のジオメトリ生成を components/StationBlock.tsx から抽出した純粋関数。
+// 駅ホーム・駅舎のジオメトリ生成(純粋関数)。
 //
-// 寸法定数(PLATFORM_HEIGHT等)は components/StationBlock.tsx からexportされたものを
-// そのまま使い、配置ロジックの一次情報源を1箇所に保つ(three.js JSX側とwgpu側で
-// 同じ数値を二重管理しない)。
+// R4b で components/StationBlock.tsx(three.js JSX)から抽出し、R4d で three.js 側を
+// 退役させたのに伴い、寸法定数の一次情報源もこのファイルへ移した。
 import * as THREE from 'three';
 import type { PlatformDoorType } from '../types';
 import { angleFromVector, PALETTE } from './palette';
 import { BOUNDARY_OFFSETS } from './trackGeometry';
-import {
-  PLATFORM_HEIGHT, PLATFORM_INNER, PLATFORM_OUTER, PLATFORM_WIDTH, PLATFORM_CENTRE,
-  TACTILE_WIDTH, CANOPY_HEIGHT, CANOPY_WIDTH, PILLAR_RADIUS,
-} from '../components/StationBlock';
 
-/** 線路の接続方向からホームの向き(軌道の軸)を求める(StationBlock.tsxと同じ規約)。 */
+// --- 寸法(1セル=1.0、線路の軌道中心が原点) ---
+export const PLATFORM_HEIGHT = 0.19;   // ホーム面の高さ(レール上面0.13より少し高い)
+export const PLATFORM_INNER = 0.22;    // 軌道中心からホーム端までの距離
+export const PLATFORM_OUTER = 0.5;     // セル境界まで
+export const PLATFORM_WIDTH = PLATFORM_OUTER - PLATFORM_INNER;
+export const PLATFORM_CENTRE = (PLATFORM_INNER + PLATFORM_OUTER) / 2;
+export const TACTILE_WIDTH = 0.06;
+export const CANOPY_HEIGHT = 0.72;
+/** 上屋の幅。ホーム幅より狭くして軌道側を開けておく。 */
+export const CANOPY_WIDTH = 0.2;
+export const PILLAR_RADIUS = 0.022;
+
+/** 線路の接続方向からホームの向き(軌道の軸)を求める。ローカル +Z が軌道方向。 */
 export const trackAngleFromConnections = (connections = 0): number => {
   for (const o of BOUNDARY_OFFSETS) {
     if (connections & o.bit) {

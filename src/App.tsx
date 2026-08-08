@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
 import { useGameLogic } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
 import { GameUI } from './components/GameUI';
@@ -8,13 +7,13 @@ import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import { T, button as themeButton } from './ui/theme';
-import { loadRendererMode, saveRendererMode, type RendererMode } from './ui/rendererPreference';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
-import type { WebGpuTerrainLayerController } from './render/webgpuLayer';
+import type { WebGpuTerrainLayerController, WebGpuUnavailableReason } from './render/webgpuLayer';
 import type { WebGpuCameraState } from './render/webgpuCamera';
-import { LabelOverlay, type LabelOverlayItem } from './components/LabelOverlay';
-import { OVERPASS_HEIGHT } from './sim/trackPath';
-import { formatPopulation } from './render/townGeometry';
+import {
+  createCameraState, type GameCameraState, type ViewportSize,
+} from './render/cameraState';
+import { frameLoop } from './render/frameLoop';
 
 // ★追加(P5): 新規ゲーム開始時のマップサイズ選択肢。halfExtentはsim/persistence.tsの
 // v15セーブに含まれる値で、マップは-halfExtent..halfExtentのセル(一辺 2*halfExtent+1)。
@@ -35,6 +34,62 @@ const TOWN_DENSITY_OPTIONS: { label: string; value: TownDensity }[] = [
   { label: '過密', value: 'packed' },
 ];
 
+/**
+ * R4d: WebGPU が使えないときの案内画面。three.js のフォールバックは廃止したので、
+ * ここから先へは進めない(理由ごとに次の一手を日本語で示す)。
+ */
+const UNAVAILABLE_GUIDANCE: Record<WebGpuUnavailableReason, { title: string; body: string[] }> = {
+  'no-webgpu': {
+    title: 'WebGPU に対応した環境が必要です',
+    body: [
+      'CubicTransim の描画は WebGPU 専用です。この環境では WebGPU が有効になっていません。',
+      'Chrome / Edge / Electron の最新版でお試しください（Safari は現時点では未対応の場合があります）。',
+      'ブラウザが最新でも表示されない場合は、GPU アクセラレーションが無効になっていないか設定を確認してください。',
+    ],
+  },
+  'asset-missing': {
+    title: 'WebGPU レンダラーがビルドされていません',
+    body: [
+      'wasm レンダラー（public/renderer/）が見つかりません。開発環境では次のコマンドでビルドしてください。',
+      'npm run build:renderer',
+      'ビルド後にページを再読み込みすると起動します。',
+    ],
+  },
+  'init-failed': {
+    title: 'WebGPU レンダラーの初期化に失敗しました',
+    body: [
+      'アダプタの取得またはデバイスの生成に失敗しました。',
+      'ブラウザを再起動するか、GPU ドライバを更新してからお試しください。',
+      '詳細な原因は開発者コンソールのログに出力されています。',
+    ],
+  },
+};
+
+const UnavailableScreen: React.FC<{ reason: WebGpuUnavailableReason }> = ({ reason }) => {
+  const guidance = UNAVAILABLE_GUIDANCE[reason];
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+      background: '#0b1116', color: '#f4f7fa', zIndex: 100, padding: 24,
+    }}>
+      <div style={{ maxWidth: 560 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>{guidance.title}</div>
+        {guidance.body.map((line, i) => (
+          <p key={i} style={{
+            color: '#b9c3cc', lineHeight: 1.7,
+            fontFamily: line.startsWith('npm ') ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : undefined,
+            background: line.startsWith('npm ') ? '#1a232c' : undefined,
+            padding: line.startsWith('npm ') ? '8px 12px' : undefined,
+            borderRadius: line.startsWith('npm ') ? 6 : undefined,
+          }}>
+            {line}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const [showStartupOptions, setShowStartupOptions] = useState(true);
   // 起動ダイアログで「デバッグモード」を押すと、シナリオ一覧(sim/debugScenarios.ts)を表示する。
@@ -49,35 +104,56 @@ export default function App() {
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
 
-  // レンダラー選択(従来 three.js / WebGPU実験版)。localStorage に永続化する。
-  // WebGPUが使えない環境ではWebGpuTerrainLayerがonUnavailableで理由を返すので、
-  // 従来へ自動フォールバックし、設定パネルにその理由を出す。
-  const [rendererMode, setRendererMode] = useState<RendererMode>(loadRendererMode);
-  const [rendererNote, setRendererNote] = useState<string | null>(null);
   const webGpuLayerRef = useRef<WebGpuTerrainLayerController | null>(null);
-  const handleRendererUnavailable = useCallback((message: string) => {
-    setRendererNote(message);
-    setRendererMode('classic');
-    saveRendererMode('classic');
+  const [unavailableReason, setUnavailableReason] = useState<WebGpuUnavailableReason | null>(null);
+  const handleRendererUnavailable = useCallback((reason: WebGpuUnavailableReason) => {
+    setUnavailableReason(reason);
   }, []);
-  const changeRendererMode = useCallback((mode: RendererMode) => {
-    setRendererNote(null);
-    setRendererMode(mode);
-    saveRendererMode(mode);
-  }, []);
-  const webGpuActive = rendererMode === 'webgpu';
-  // R4c: WebGpuCameraSync(GameScene内)が毎フレーム書き込む最新カメラ状態。
-  // Canvasの外側にあるLabelOverlay(DOMラベル)がここから読む。
+  const handleRendererReady = useCallback(() => setUnavailableReason(null), []);
+
+  // R4d: カメラの真実源(render/cameraState.ts)。GameScene の入力レイヤーが書き換え、
+  // 共有 rAF ループの render フェーズで wgpu へ push される。
+  const cameraRef = useRef<GameCameraState>(createCameraState());
+  const viewportRef = useRef<ViewportSize>({
+    cssWidth: window.innerWidth,
+    cssHeight: window.innerHeight,
+    dpr: window.devicePixelRatio || 1,
+  });
+  // ビューポートの変化は minZoom などの派生値に効くので state にも反映する(頻度は低い)。
+  const [, setViewportTick] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // 直近フレームのカメラ状態(DOMラベルオーバーレイが読む)。
   const webgpuCameraStateRef = useRef<WebGpuCameraState | null>(null);
-  // R4c: 駅の待ち人数・選択列車の速度/状態はsim層(worldRef)を直接ポーリングして
-  // ラベル内容へ反映する(r3fのuseFrameに乗せずに済むよう、DynamicTrain/StationLabelと
-  // 同程度の低頻度(0.5秒)でだけ再計算する)。
-  const [labelTick, setLabelTick] = useState(0);
+
   useEffect(() => {
-    if (!webGpuActive) return;
-    const id = window.setInterval(() => setLabelTick(t => t + 1), 500);
-    return () => window.clearInterval(id);
-  }, [webGpuActive]);
+    const element = rootRef.current;
+    const apply = () => {
+      const rect = element?.getBoundingClientRect();
+      viewportRef.current = {
+        cssWidth: Math.max(1, rect?.width ?? window.innerWidth),
+        cssHeight: Math.max(1, rect?.height ?? window.innerHeight),
+        dpr: window.devicePixelRatio || 1,
+      };
+      setViewportTick(t => t + 1);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    if (element) observer.observe(element);
+    window.addEventListener('resize', apply);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', apply);
+    };
+  }, []);
+
+  // 共有 rAF ループを起動する(r3f の Canvas が持っていた描画ループの置き換え)。
+  useEffect(() => {
+    frameLoop.start();
+    // 検証用フック(CLAUDE.md のブラウザ検証手順で使う)。読み書きともに有効で、
+    // 書き込んだ値は次フレームの描画にそのまま反映される。
+    (window as any).__webgpuCamera = cameraRef.current;
+    return () => frameLoop.stop();
+  }, []);
 
   // GameScene側のuseEffect依存に入るため参照を固定し、内容が変わらないときは
   // stateを更新しない(毎フレームの再レンダリングを避ける)。
@@ -110,139 +186,54 @@ export default function App() {
     renameGroup, clearGroupSchedule, deleteGroup,
   } = useGameLogic();
 
-  // R4c: WebGPUモードのDOMラベルオーバーレイの中身(駅名・町名・選択列車ツールチップ)。
-  // labelTickで0.5秒ごとに再計算し、worldRef.current(sim層)から待ち人数・列車速度を
-  // 直接読む(StationLabel/DynamicTrainのHtml版と同じ更新頻度)。位置の高頻度更新は
-  // LabelOverlay側のrAFループが担う(このuseMemoはDOM操作の対象=中身の再構築のみ)。
-  const labelItems: LabelOverlayItem[] = webGpuActive ? (() => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-    labelTick;
-    const items: LabelOverlayItem[] = [];
-    const world = worldRef.current;
-    for (const station of stations.values()) {
-      const waiting = Math.floor(world?.waiting.get(station.id) ?? 0);
-      const door = station.platformDoors === 'standard' ? '半' : station.platformDoors === 'fullscreen' ? '全' : null;
-      items.push({
-        key: `station-${station.id}`,
-        world: { x: station.center.x, y: 1.35, z: station.center.z },
-        content: (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: T.ink, color: T.text,
-            border: `1px solid ${T.line}`, borderRadius: T.radiusPill,
-            padding: '3px 9px', fontSize: 11, fontWeight: 600,
-            boxShadow: T.shadowSm, backdropFilter: T.blur, whiteSpace: 'nowrap',
-          }}>
-            {station.name}
-            {door && (
-              <span style={{
-                fontSize: 9, fontWeight: 700, color: T.accent,
-                border: `1px solid ${T.accent}`, borderRadius: 3, padding: '0 3px', lineHeight: '12px',
-              }}>
-                {door}
-              </span>
-            )}
-            <span style={{ color: T.textMuted, fontVariantNumeric: 'tabular-nums' }}>{waiting}人</span>
-          </div>
-        ),
-      });
-    }
-    for (const town of towns) {
-      items.push({
-        key: `town-${town.id}`,
-        world: { x: town.centre.x, y: 2.6 + field.cellHeightAt(town.centre.x, town.centre.z) * OVERPASS_HEIGHT, z: town.centre.z },
-        content: (
-          <div style={{
-            background: 'rgba(24,30,38,0.62)', color: '#f2f5f8', padding: '2px 7px',
-            borderRadius: '999px', fontSize: '10px', whiteSpace: 'nowrap',
-            backdropFilter: 'blur(3px)', border: '1px solid rgba(255,255,255,0.14)',
-          }}>
-            <span style={{ fontWeight: 700, marginRight: 5 }}>{town.name}</span>
-            {formatPopulation(town.population)}
-          </div>
-        ),
-      });
-    }
-    if (selectedTrainId) {
-      const runtime = world?.runtimes.get(selectedTrainId);
-      const train = trains.find(t => t.id === selectedTrainId);
-      if (runtime && train && train.status !== 'stored') {
-        items.push({
-          key: `train-${selectedTrainId}`,
-          world: { x: runtime.renderPos.x, y: runtime.renderPos.y + 1.1, z: runtime.renderPos.z },
-          content: (
-            <div style={{
-              background: 'rgba(17,22,28,0.86)', color: '#f4f7fa', padding: '5px 9px',
-              borderRadius: '7px', fontSize: '11px', textAlign: 'center', width: 200,
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-              border: '1px solid rgba(255,255,255,0.18)', boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-            }}>
-              <div style={{ fontWeight: 700 }}>{train.id}</div>
-              <div style={{ color: '#8fe3a5', fontWeight: 'bold' }}>{Math.round(runtime.speedKmh)} km/h</div>
-              <div style={{ color: '#b9c3cc' }}>{runtime.debugStatus}</div>
-            </div>
-          ),
-        });
-      }
-    }
-    return items;
-  })() : [];
-
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#cfe3ef', position: 'relative', overflow: 'hidden' }}>
-      {webGpuActive && (
-        <WebGpuTerrainLayer
-          key={`${worldSeed}:${halfExtent}`}
-          seed={worldSeed}
-          halfExtent={halfExtent}
-          cornerDiffs={cornerDiffs}
-          layerRef={webGpuLayerRef}
-          onUnavailable={handleRendererUnavailable}
-        />
-      )}
+    <div ref={rootRef} style={{ width: '100vw', height: '100vh', background: '#cfe3ef', position: 'relative', overflow: 'hidden' }}>
+      <WebGpuTerrainLayer
+        key={`${worldSeed}:${halfExtent}`}
+        seed={worldSeed}
+        halfExtent={halfExtent}
+        cornerDiffs={cornerDiffs}
+        layerRef={webGpuLayerRef}
+        onUnavailable={handleRendererUnavailable}
+        onReady={handleRendererReady}
+      />
 
-      {/* 上層は常に three.js。WebGPUモードでは背景を透過させ、下層の地形を透かす。 */}
-      <Canvas shadows gl={{ alpha: true }} style={{ position: 'absolute', inset: 0 }}>
-        <GameScene
-          railMap={railMap}
-          stations={stations}
-          trains={trains}
-          towns={towns}
-          townTiles={townTileIndex}
-          field={field}
-          halfExtent={halfExtent}
-          cornerDiffs={cornerDiffs}
-          webGpuLayer={webGpuActive ? webGpuLayerRef : undefined}
-          webGpuCameraStateRef={webGpuActive ? webgpuCameraStateRef : undefined}
-          world={worldRef}
-          buildMode={buildMode}
-          buildLevel={buildLevel}
-          selectedTrainId={selectedTrainId}
-          isEditingSchedule={isEditingSchedule}
-          simSpeed={simSpeed}
-          money={money}
-          onCommitPath={commitPath}
-          removeSignal={removeSignal}
-          onSimEvent={(event) => {
-            if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
-            if (event.type === 'income') addIncome(event.amount);
-            if (event.type === 'accident') handleAccident(event);
-            if (event.type === 'monthEnd') handleMonthEnd(event);
-            if (event.type === 'townGrowth') handleTownGrowth(event);
-          }}
-          onSelectTrain={setSelectedTrainId}
-          onBuyTrain={buyTrain}
-          onAddSchedule={addSchedule}
-          onSelectStation={selectStation}
-          onPreviewChange={handlePreviewChange}
-          groups={groups}
-          onRelocateTrain={relocateTrainAt}
-        />
-      </Canvas>
-
-      {/* R4c: WebGPUモードのDOMラベルオーバーレイ(駅名・町名・選択列車ツールチップ)。
-          classicモードはGameScene内のdrei <Html>のまま(StationLabel/TownLabels/DynamicTrain)。 */}
-      {webGpuActive && <LabelOverlay cameraStateRef={webgpuCameraStateRef} items={labelItems} />}
+      <GameScene
+        railMap={railMap}
+        stations={stations}
+        trains={trains}
+        towns={towns}
+        townTiles={townTileIndex}
+        field={field}
+        halfExtent={halfExtent}
+        webGpuLayer={webGpuLayerRef}
+        cameraRef={cameraRef}
+        viewportRef={viewportRef}
+        webGpuCameraStateRef={webgpuCameraStateRef}
+        world={worldRef}
+        buildMode={buildMode}
+        buildLevel={buildLevel}
+        selectedTrainId={selectedTrainId}
+        isEditingSchedule={isEditingSchedule}
+        simSpeed={simSpeed}
+        money={money}
+        onCommitPath={commitPath}
+        removeSignal={removeSignal}
+        onSimEvent={(event) => {
+          if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
+          if (event.type === 'income') addIncome(event.amount);
+          if (event.type === 'accident') handleAccident(event);
+          if (event.type === 'monthEnd') handleMonthEnd(event);
+          if (event.type === 'townGrowth') handleTownGrowth(event);
+        }}
+        onSelectTrain={setSelectedTrainId}
+        onBuyTrain={buyTrain}
+        onAddSchedule={addSchedule}
+        onSelectStation={selectStation}
+        onPreviewChange={handlePreviewChange}
+        groups={groups}
+        onRelocateTrain={relocateTrainAt}
+      />
 
       <GameUI
         buildMode={buildMode}
@@ -283,9 +274,6 @@ export default function App() {
         stopLocation={stopLocation}
         onSetStopLocation={setStopLocation}
         previewPath={previewPath}
-        rendererMode={rendererMode}
-        onSetRendererMode={changeRendererMode}
-        rendererNote={rendererNote}
         groups={groups}
         onCreateGroup={createGroup}
         onAssignGroup={assignTrainToGroup}
@@ -375,6 +363,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {unavailableReason && <UnavailableScreen reason={unavailableReason} />}
     </div>
   );
 }

@@ -19,7 +19,6 @@ import { computeStationArrivals } from '../sim/arrivals';
 import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
-import type { RendererMode } from '../ui/rendererPreference';
 import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
 import type { BuildLevel } from '../sim/construction';
 import { UNDERGROUND_RAIL_COST_MULTIPLIER, UNDERGROUND_STATION_COST } from '../sim/economy';
@@ -80,11 +79,6 @@ interface GameUIProps {
   onSetStopLocation: (loc: 'near' | 'middle' | 'far') => void;
   /** 建設プレビュー中のセル列(GameSceneのカーソル/ドラッグから流れてくる) */
   previewPath: { x: number; z: number }[];
-  /** レンダラー選択(従来 three.js / WebGPU実験版)。設定パネルで切り替える。 */
-  rendererMode: RendererMode;
-  onSetRendererMode: (mode: RendererMode) => void;
-  /** WebGPUが使えず従来へ自動フォールバックしたときの理由文。 */
-  rendererNote: string | null;
   // ★追加: 運用グループ(共有運行表＋発車間隔)
   groups: TrainGroupData[];
   onCreateGroup: (seedTrainId?: string) => string;
@@ -129,12 +123,6 @@ const STOP_LOCATION_LABEL = {
   far: '奥',
 } as const;
 
-// 設定パネルのレンダラー選択。
-const RENDERER_OPTIONS: { value: RendererMode; label: string }[] = [
-  { value: 'classic', label: '従来' },
-  { value: 'webgpu', label: 'WebGPU実験版' },
-];
-
 export const GameUI: React.FC<GameUIProps> = ({
   buildMode, setBuildMode,
   buildLevel, setBuildLevel,
@@ -150,9 +138,6 @@ export const GameUI: React.FC<GameUIProps> = ({
   loan, onBorrow, onRepay,
   stopLocation, onSetStopLocation,
   previewPath,
-  rendererMode,
-  onSetRendererMode,
-  rendererNote,
   groups, onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup,
   onClearGroupSchedule, onDeleteGroup,
 }) => {
@@ -402,33 +387,6 @@ export const GameUI: React.FC<GameUIProps> = ({
               編成がホームのどこに止まるかを決めます。編成がホームより長い場合は、
               設定によらず奥端で停車します。
             </div>
-
-            <div style={{ height: 1, background: T.line, margin: '14px 0' }} />
-
-            <div style={sectionLabel}>レンダラー</div>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {RENDERER_OPTIONS.map(opt => (
-                <button
-                  key={opt.value}
-                  onClick={() => onSetRendererMode(opt.value)}
-                  style={{ ...button({ active: rendererMode === opt.value, compact: true }), flex: 1 }}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.6 }}>
-              WebGPU実験版は地形だけを新しいレンダラー(Rust + wgpu)で描きます。
-              地形編集(盛土/切土)の結果も反映されますが、地形に影はまだ落ちません。
-              全図が画面に収まるまでズームアウトでき、遠景では木・町の建物・駅名などは
-              間引かれて町は簡易な色付きマーカーになります(ズームインすれば元通りです)。
-              非対応の環境では自動で従来に戻ります。
-            </div>
-            {rendererNote && (
-              <div style={{ fontSize: 11, color: T.warning, marginTop: 6, lineHeight: 1.6 }}>
-                {rendererNote}
-              </div>
-            )}
           </div>
         )}
 

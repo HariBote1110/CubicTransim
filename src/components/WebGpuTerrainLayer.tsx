@@ -1,9 +1,9 @@
-// 二層合成の下層: wgpu(WebGPU)で地形を描くキャンバス。
+// wgpu(WebGPU)で世界を描くキャンバス。R4d で three.js を全面退役させたため、
+// ゲーム画面はこのキャンバス1枚だけになった(上に重なるのは DOM のラベルと GUI だけ)。
 //
-// 上層は既存の three.js キャンバス(透過)で、レール・列車・駅・町・樹木を描く。
-// カメラの真実源は上層の OrbitControls で、毎フレーム `WebGpuCameraSync`(下記、
-// r3f の useFrame から動く)が同じフレームのカメラ状態を下層へ渡して描かせる。
-// 2つの rAF ループに分けないのは、パン中に層がずれて見えるのを避けるため。
+// カメラの真実源は TS 側の `GameCameraState`(render/cameraState.ts)で、共有 rAF ループ
+// (render/frameLoop.ts)の render フェーズで `WebGpuRenderDriver` が毎フレーム wasm へ
+// push して1回だけ描かせる。
 //
 // 地形編集(cornerDiffs)の反映(R2): このコンポーネントが cornerDiffs を受け取り、
 // 変更のあったチャンク(overlayChunkRefsと同じ「サブMapの参照が変わったか」判定)だけを
@@ -11,16 +11,18 @@
 // 限られ、頻度は編集操作の回数(=フレームごとではない)。
 
 import React, { useEffect, useRef } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
-import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import type { CornerDiffs } from '../sim/terrainOverlay';
+import type { WebGpuCameraState } from '../render/webgpuCamera';
 import {
-  groundCentreFromTarget, pixelsPerWorldUnit, type WebGpuCameraState,
-} from '../render/webgpuCamera';
+  toWebGpuCameraState, type GameCameraState, type ViewportSize,
+} from '../render/cameraState';
+import { FRAME_ORDER, frameLoop } from '../render/frameLoop';
+import { useFrameLoop } from '../hooks/useFrameLoop';
 import {
-  WebGpuTerrainLayerController, WebGpuUnavailableError, UNAVAILABLE_MESSAGE,
+  WebGpuTerrainLayerController, WebGpuUnavailableError,
+  type WebGpuUnavailableReason,
 } from '../render/webgpuLayer';
 
 export type WebGpuLayerRef = React.RefObject<WebGpuTerrainLayerController | null>;
@@ -30,10 +32,12 @@ interface LayerProps {
   halfExtent: number;
   /** 地形編集オーバーレイ(useGameLogicのcornerDiffs)。変更があったチャンクだけをwasmへ送る。 */
   cornerDiffs: CornerDiffs;
-  /** 生成したコントローラの置き場。上層(GameScene内のWebGpuCameraSync)が毎フレーム読む。 */
+  /** 生成したコントローラの置き場。フィーダ・描画ドライバが毎フレーム読む。 */
   layerRef: WebGpuLayerRef;
-  /** WebGPUが使えないとき(非対応・未ビルド・初期化失敗)に理由文を通知する。 */
-  onUnavailable: (message: string) => void;
+  /** WebGPUが使えないとき(非対応・未ビルド・初期化失敗)に理由を通知する。 */
+  onUnavailable: (reason: WebGpuUnavailableReason) => void;
+  /** 生成完了の通知(案内画面を閉じるのに使う)。 */
+  onReady?: () => void;
 }
 
 const EMPTY_CHUNK: ReadonlyMap<number, number> = new Map();
@@ -43,7 +47,7 @@ const EMPTY_CHUNK: ReadonlyMap<number, number> = new Map();
  * サイズは CSS で親いっぱいに広げ、バックバッファ(canvas.width/height)は
  * 上層と同じ DPR で `syncAndRender` 側が合わせる。
  */
-export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cornerDiffs, layerRef, onUnavailable }) => {
+export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cornerDiffs, layerRef, onUnavailable, onReady }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // wasm 側へ最後に反映した cornerDiffs(チャンク参照ごとの比較に使う)。
   const pushedDiffsRef = useRef<CornerDiffs>(new Map());
@@ -78,14 +82,14 @@ export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cor
         // 検証用のデバッグフック(CLAUDE.mdのブラウザ検証手順で使う)。
         (window as any).__webgpuLayer = controller;
         (window as any).__webgpuParams = { seed, halfExtent };
+        onReady?.();
       })
       .catch((error: unknown) => {
         if (disposed) return;
-        const message = error instanceof WebGpuUnavailableError
-          ? UNAVAILABLE_MESSAGE[error.reason]
-          : UNAVAILABLE_MESSAGE['init-failed'];
-        console.warn('[webgpu] falling back to the classic renderer:', message, error);
-        onUnavailable(message);
+        const reason: WebGpuUnavailableReason =
+          error instanceof WebGpuUnavailableError ? error.reason : 'init-failed';
+        console.error('[webgpu] renderer unavailable:', reason, error);
+        onUnavailable(reason);
       });
 
     return () => {
@@ -94,7 +98,7 @@ export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cor
       (window as any).__webgpuLayer = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seed, halfExtent, layerRef, onUnavailable]);
+  }, [seed, halfExtent, layerRef, onUnavailable, onReady]);
 
   useEffect(() => {
     const controller = layerRef.current;
@@ -118,42 +122,40 @@ export const WebGpuTerrainLayer: React.FC<LayerProps> = ({ seed, halfExtent, cor
  */
 export const WEBGPU_UNDERGROUND_DIM_FACTOR = 0.3;
 
-interface SyncProps {
+interface RenderDriverProps {
   layerRef: WebGpuLayerRef;
-  controlsRef: React.RefObject<OrbitControlsImpl | null>;
+  /** カメラの真実源(App.tsx が保持し、入力ハンドラが書き換える)。 */
+  cameraRef: React.RefObject<GameCameraState>;
+  viewportRef: React.RefObject<ViewportSize>;
   /** 地下ビュー減光係数(1.0=通常)。GameScene の isLevelDimmed(0, ...) と同調させる。 */
   dim?: number;
   /**
-   * R4c: 直近フレームのカメラ状態の置き場(任意)。渡されていれば毎フレーム書き込む。
-   * DOMラベルオーバーレイ(LabelOverlay.tsx)・列車の画面空間クリック判定(trainPicking.ts)が
-   * 同じフレームのカメラ状態を読むために使う(GPU往復・二重計算を避ける)。
+   * 直近フレームのカメラ状態(物理ピクセル基準)の置き場。DOMラベルオーバーレイ
+   * (LabelOverlay.tsx)が読む。ピッキングは即時性が要るのでこれを読まず、
+   * cameraRef/viewportRef から毎回その場で組み立てる。
    */
   stateRef?: React.MutableRefObject<WebGpuCameraState | null>;
 }
 
 /**
- * 上層(r3f)の中に置き、毎フレーム下層へカメラ状態を送って描かせるコンポーネント。
- * 画面に何も描かない。
+ * 共有 rAF ループの render フェーズで、カメラ状態を wgpu へ送って1フレーム描かせる。
+ * 画面には何も出さない(描画そのものは WebGpuTerrainLayer のキャンバスが受け持つ)。
  */
-export const WebGpuCameraSync: React.FC<SyncProps> = ({ layerRef, controlsRef, dim = 1, stateRef }) => {
-  const { camera, gl, size } = useThree();
+export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
+  layerRef, cameraRef, viewportRef, dim = 1, stateRef,
+}) => {
+  const dimRef = useRef(dim);
+  dimRef.current = dim;
 
-  useFrame(() => {
+  useFrameLoop(FRAME_ORDER.render, () => {
     const controller = layerRef.current;
     if (!controller) return;
-    const target = controlsRef.current?.target ?? { x: 0, y: 0, z: 0 };
-    const dpr = gl.getPixelRatio();
-    const zoom = (camera as { zoom?: number }).zoom ?? 1;
-    const state: WebGpuCameraState = {
-      ...groundCentreFromTarget(target),
-      pixelsPerUnit: pixelsPerWorldUnit(zoom, dpr),
-      widthPx: size.width * dpr,
-      heightPx: size.height * dpr,
-    };
+    const state = toWebGpuCameraState(cameraRef.current, viewportRef.current);
     if (stateRef) stateRef.current = state;
-    controller.setDim(dim);
+    controller.setDim(dimRef.current);
     const stats = controller.syncAndRender(state, OVERPASS_HEIGHT);
     if (stats) (window as any).__webgpuStats = stats;
+    (window as any).__dbgFrames = frameLoop.frameCount;
   });
 
   return null;
