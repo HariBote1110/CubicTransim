@@ -232,7 +232,7 @@ fn main() {
     let origin_x = -128i32;
     let origin_z = -128i32;
     let stride = 1i32;
-    let mut tile_params = Vec::with_capacity(32);
+    let mut tile_params = Vec::with_capacity(112);
     u32b(0x1234_5678, &mut tile_params);
     i32b(8192, &mut tile_params);
     i32b(origin_x, &mut tile_params);
@@ -241,6 +241,10 @@ fn main() {
     u32b(GRID, &mut tile_params);
     u32b(0, &mut tile_params);
     u32b(0, &mut tile_params);
+    // TileParams のしきい値(プロファイル別)。オフスクリーン描画は歴史的既定(Normal)を使う。
+    for word in quarterview_terrain_core::TerrainProfile::Normal.threshold_words() {
+        u32b(word, &mut tile_params);
+    }
     let tile_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("tile-params"),
         contents: &tile_params,

@@ -233,6 +233,10 @@ fn main() {
         push_u32(&mut params, GRID);
         push_u32(&mut params, override_count);
         push_u32(&mut params, 0);
+        // TileParams のしきい値(プロファイル別)。この検査は歴史的既定(Normal)を使う。
+        for word in quarterview_terrain_core::TerrainProfile::Normal.threshold_words() {
+            push_u32(&mut params, word);
+        }
         let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("edit-check-params"),
             contents: &params,

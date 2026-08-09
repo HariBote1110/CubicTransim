@@ -282,6 +282,10 @@ fn main() {
         u32b(GRID, &mut tile_params);
         u32b(0, &mut tile_params);
         u32b(0, &mut tile_params);
+        // TileParams のしきい値(プロファイル別)。全図描画は歴史的既定(Normal)を使う。
+        for word in quarterview_terrain_core::TerrainProfile::Normal.threshold_words() {
+            u32b(word, &mut tile_params);
+        }
         let tile_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("tile-params"),
             contents: &tile_params,
