@@ -102,6 +102,9 @@ fn composite_num(seed: u32, x: i32, z: i32) -> U64 {
   return n;
 }
 
+// このデバッグ可視化シェーダだけは歴史的既定(normalプロファイル)のしきい値を直書きする。
+// 実際の地形生成に使う tile_generate.wgsl / terrain_noise.wgsl は params uniform 経由で
+// プロファイル別のしきい値を受け取る(progress/terrain-profiles.md)。
 fn height_from_num(n: U64) -> u32 {
   let thresholds = array<U64, 10>(
     U64(8u, 1073741824u), U64(9u, 2635548114u), U64(10u, 4197354403u), U64(12u, 1464193397u),

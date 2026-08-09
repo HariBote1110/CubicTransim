@@ -21,7 +21,7 @@ OpenTTD・A列車で行こう系を目指すインフラ整備ゲームのプロ
   - `trackPath.ts` — 線路の中心線（セルを通る2次ベジェ）。`renderPos` と `carPositions` の走行線はこれに載せる。描画側 `render/trackGeometry.ts` と同じ定義なので、レールと列車がずれない
   - `groups.ts` — 運用グループ（共有運行表＋発車間隔による等間隔化）
   - `townTiles.ts` — タイルベースの町（家・道路）。町id・人口・地形・線路網から決定的に再生成（セーブ不要）。地平の線路は家タイル不可・道路タイルは踏切として可、高架の桁は上空通過可（坂は不可）、駅/車庫/信号は町タイル不可。索引は useGameLogic の townTileIndex（useMemo）を全経路で共有する
-  - `terrainField.ts` — 地形の一次データ。`createTerrainField(seed, halfExtent)` がコーナー格子（頂点標高）の純関数 `cornerHeightAt`/`cellCornerHeights`/`cellHeightAt`/`terrainTypeAt` を返す。全セル実体化せず、ノイズのオクターブ振幅・波長そのものから1-Lipschitz（隣接コーナー段差1以下）を構成保証するため正規化パスが無く、16Kマップでもチャンク非依存にO(1)/セルで計算できる
+  - `terrainField.ts` — 地形の一次データ。`createTerrainField(seed, halfExtent, profile)` がコーナー格子（頂点標高）の純関数 `cornerHeightAt`/`cellCornerHeights`/`cellHeightAt`/`terrainTypeAt` を返す。全セル実体化せず、ノイズのオクターブ振幅・波長そのものから1-Lipschitz（隣接コーナー段差1以下）を構成保証するため正規化パスが無く、16Kマップでもチャンク非依存にO(1)/セルで計算できる。第3引数の地形プロファイル(平坦/標準/山がち)は標高しきい値テーブルだけを差し替える(既定=標準=歴史的既定とバイト一致。progress/terrain-profiles.md)
   - `terrainOverlay.ts` — 盛土/切土の疎な編集オーバーレイ（チャンク単位の差分Map）と `applyCornerEdit`（矩形選択を±1段、方向つきBFS伝播で段差1以下を回復、同一参照no-op）。旧terrainEdit.ts（全域Mapクローン方式）を置き換えた。`buildEditBlockers` がrail/町タイル/水域/範囲外のブロック条件を1つの述語にまとめる共有ヘルパー
 - `src/hooks/useGameLogic.ts` — React state（railMap/stations/trains）と `worldRef: SimWorld` の同期、建設・購入ロジック
 - `src/components/` — wgpu への供給とDOM。React は「何を描くか」を決めるだけで、描画は wgpu が行う
