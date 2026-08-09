@@ -79,6 +79,67 @@ Out-of-range corners are height 0 and not water.
 
 The smoothstep polynomial is evaluated from the exact rational `r^2(3w-2r)/w^3`, then quantized once to Q0.32. Interpolation uses exact 64-bit products and truncation toward zero after division by `2^32`. Octave weighting and normalization are kept as one integer numerator, so there is no f32/f64 boundary behavior left to reproduce.
 
+## Terrain profiles (authoritative, added 0.5.0-Alpha-4a)
+
+The hash, the octaves, the composite numerator `N` and the water rule above are **the same for
+every terrain profile**. A profile only replaces the height threshold table, so the 1000-vector
+corpus and every TS/Rust/WGSL byte-exactness check stay valid.
+
+`normal` is the historic default: it is byte-for-byte the table listed above, and it is what the
+1000 test vectors encode. Saves written before v16 (no `terrainProfile` field) are `normal`.
+
+```text
+FULL = 15 * 2^32 = 64,424,509,440   (normalized noise 1.0)
+water iff N < 9 * 2^30              (all profiles, unchanged)
+
+height thresholds by profile (N is integer):
+    h   flat             normal (historic)   mountain
+    1   43,486,543,872   35,433,480,192      28,991,029,248
+    2   51,286,543,872   41,290,253,778      34,191,029,248
+    3   59,086,543,872   47,147,027,363      39,391,029,248
+    4   66,886,543,872   53,003,800,949      44,591,029,248
+    5   74,686,543,872   58,860,574,534      49,791,029,248
+    6   82,486,543,872   64,717,348,120      54,991,029,248
+    7   90,286,543,872   70,574,121,705      60,191,029,248
+    8   98,086,543,872   76,430,895,291      65,391,029,248
+    9  105,886,543,872   82,287,668,876      70,591,029,248
+   10  113,686,543,872   88,144,442,462      75,791,029,248
+
+minimum spacing:
+    flat      7,800,000,000
+    normal    5,856,773,585
+    mountain  5,200,000,000
+```
+
+### Adjacency bound (why the spacing is legal)
+
+Adjacent corners must never differ by more than one height step (the 1-Lipschitz property the
+whole slope/track model depends on). Each octave is a u32 lattice hash interpolated by a
+smoothstep whose maximum slope is `1.5 / wave`, and the interpolant is continuous and piecewise
+C1, so a unit step in x or z changes it by at most `(2^32-1) * 1.5 / wave_i`. Weighted:
+
+```text
+|dN| <= (2^32-1) * 1.5 * (8/40 + 4/20 + 2/10 + 1/5) = (2^32-1) * 1.2 < 1.2 * 2^32 = 5,153,960,755.2
+```
+
+Integer rounding (three truncating lerps per octave, weights summing to 15, plus the half-up
+rounding of `t`) adds at most 64, so the authoritative integer bound is
+
+```text
+ADJACENT_NUM_BOUND = 5,153,960,820
+```
+
+A profile is legal iff **every** gap between consecutive thresholds is `>= ADJACENT_NUM_BOUND`:
+crossing two thresholds would require `|dN| > spacing`, which contradicts the bound. All three
+tables above satisfy it (mountain with only 0.9% of headroom, flat with 51%). The h=1 threshold
+of every profile is also above the water threshold, so a water vertex is always height 0.
+
+Implementations: `src/sim/canonicalNoise.ts` (`HEIGHT_THRESHOLDS_BY_PROFILE`,
+`ADJACENT_NUMERATOR_BOUND`), `renderer/terrain_core/src/lib.rs` (`TerrainProfile`,
+`ADJACENT_NUM_BOUND`), and the `thresholds` field of the params uniform in
+`tile_generate.wgsl` / `terrain_noise.wgsl` (the shaders carry no per-profile branch).
+Design notes: `progress/terrain-profiles.md`.
+
 ## Verification
 
 WGSL vs the Rust canonical implementation: 5 seeds × 10,000,000 points = 50,000,000 points, 0 mismatches on the VM's Vulkan/llvmpipe backend. Seeds: `0x00000000`, `0x00000001`, `0x12345678`, `0xDEADBEEF`, `0xFFFFFFFF`.
