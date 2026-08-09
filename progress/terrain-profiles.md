@@ -12,7 +12,7 @@
 この設計により:
 
 - 正準定義(`progress/canonical-terrain-noise-integer.md`)の1000件テストベクタと、
-  TS/Rust/WGSLのバイト一致検証機構がそのまま生き続ける(standardは歴史的既定と完全一致)。
+  TS/Rust/WGSLのバイト一致検証機構がそのまま生き続ける(標準=normalは歴史的既定と完全一致)。
 - 同じseedなら3プロファイルの地形は「同じ地形の等高線を別のしきい値で切った」関係になる
   (尾根・谷・湖・町の位置が対応する)。実際にブラウザで同一seedの3枚を並べて確認した。
 - WGSL側にプロファイル分岐が要らない(CPUで解決したu64しきい値10件をparams uniformで渡す)。
@@ -135,6 +135,18 @@ Bの導出(`src/sim/canonicalNoise.ts` の `ADJACENT_NUMERATOR_BOUND` のコメ�
   山がちマップでも `MIN_STARTING_TOWNS`(3)は確保できることをテストで担保した
   (小マップ5seed)。極大(16385²)山がちマップでも町4,077個が270msで生成できている。
 
+## ブラウザ実機での確認(Chrome / WebGPU / dev 5175)
+
+- 同一seed(1681972299)の中マップ(257²)を3プロファイルで比較(セーブv16のterrainProfileを
+  書き換えて読み込み直す方法で、seedを固定したまま切り替えた)。尾根・谷・町(青井村)の位置は
+  3枚とも対応し、段丘の密度だけが変わる = 「同じノイズを別のしきい値で切った」関係を目視確認。
+  山がち=段丘だらけ+広い平坦ポケット、標準=現行どおり、平坦=広大な平野に孤立した低い台地。
+- 山がちマップの遊べること: 標高1→0→1→2→3を横断する17セルの線路を敷設(¥2,200)。坂セルが
+  正しく生成され、崖の陰影(R4f)も段丘ごとに読める。尾根越えではトンネル計画が働き、
+  出入口の標高が合わない経路は「トンネル出口の標高が合いません」で正しく拒否された。
+- 山がちの極大マップ(16385²): 新規ゲーム生成(町4,077個を含む)が270ms、全図ズームアウトで
+  drawCalls 9 / LOD5 / residentTiles 25 / tileGpuBytes 6.6MB。異常な遅さは無し。
+
 ## ゲート結果(0.5.0-Alpha-4a)
 
 - `npm run test`: 944件 green / `npm run build`: green / `npm run build:renderer`: green /
@@ -143,12 +155,19 @@ Bの導出(`src/sim/canonicalNoise.ts` の `ADJACENT_NUMERATOR_BOUND` のコメ�
   T1 median 0.624/0.624/0.626ms・p99 1.447/1.304/1.086ms、T4 median 2.440/2.450/2.493ms・
   p99 3.291/3.241/3.949ms、T3/T5 hitch 0/10260、T6 firstFrame 11.1/7.4/6.1ms、
   T7 タイル遅延 median 0フレーム。anomalies なし。
-- **層A(VM / llvmpipe / Vulkan、`--browser-exact --check-ts-migration`)**: 判定対象の
-  ゲートは全pass。プロファイル関連の新ゲートは
+- **層A(VM / llvmpipe / Vulkan、`--browser-exact --check-ts-migration`)**: build
+  (workspaceTests/nativeBins/productionTsVsRust1M/wasmPack/vite)すべてtrue。判定対象の
+  ゲートは全pass(`pass:null` は層B専用)。A1 median 0.000099ms/p99 0.000174ms、
+  A2 0.000876ms/tile、A3 mismatch 0・CPU diff median 0.010255ms、A5/T10 heap 1,245,184B
+  (上限96MiB)、A6/T15 wasm gzip 89,658B(上限1MiB)、A7 hitch 0、A8 決定性true、
+  T4/T11 drawCalls 9(上限24)、T6 firstFrame 63.6ms、T14 5seed×1000万点 mismatch 0、
+  cameraReplay 3回とも ok(score 68/78/57)。プロファイル関連の新ゲートは
   - `A4_production_ts_vs_rust_1m`: 本体TS `terrainField.ts` vs Rust を**プロファイルごとに
-    100万点**(計300万点)バイト一致
+    100万点**(計300万点)バイト一致 → pass
   - `A4_tile_profiles_gpu_vs_cpu`: `tile_generate.wgsl` vs Rust CPU を**プロファイルごとに
-    1,056,784点**(計3,170,352点)mismatch 0
+    1,056,784点**(計3,170,352点)→ flat/normal/mountain すべて mismatch 0
   - `A4_noise_exact_profiles`: `terrain_noise.wgsl` vs Rust CPU を3プロファイル×200万点
-    mismatch 0
-  - T14は従来の5seed×1000万点に加え、上記2つの全プロファイル一致も条件に含めた
+    → すべて mismatch 0
+  - `A4_noise_exact_browser_proto`(BrowserWebGPU読み戻し): 16タイル×66,049点=1,056,784点を
+    3プロファイルを巡回させて検証 → mismatch 0
+  - T14は従来の5seed×1000万点に加え、上記の全プロファイル一致も条件に含めた
