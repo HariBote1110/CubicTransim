@@ -9,6 +9,24 @@ describe('trackAngleFromConnections', () => {
   it('接続なしは南北向き(0)を返す', () => {
     expect(trackAngleFromConnections(0)).toBeCloseTo(0, 6);
   });
+
+  it('東西の通り抜け(E|W)は東西向き(π/2)を返す', () => {
+    expect(trackAngleFromConnections(DIR.E | DIR.W)).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it('南北の通り抜け(N|S)は南北向き(π)を返す', () => {
+    expect(trackAngleFromConnections(DIR.N | DIR.S)).toBeCloseTo(Math.PI, 6);
+  });
+
+  // レンダー側の頑健化: カーブ・接合部や旧セーブの混在ビットで、対向する2方向が
+  // 両方立った「通り抜けの直線」があれば、単独ビットより優先してその軸を採る。
+  it('東西の通り抜けに単独の北ビットが混ざっていても東西向きを優先する', () => {
+    expect(trackAngleFromConnections(DIR.E | DIR.W | DIR.N)).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it('通り抜けが無い単独ビットのみの場合は従来通りその方向を返す(カーブ等)', () => {
+    expect(trackAngleFromConnections(DIR.N | DIR.E)).toBeCloseTo(Math.PI, 6);
+  });
 });
 
 describe('buildPlatformSideGeometries', () => {
