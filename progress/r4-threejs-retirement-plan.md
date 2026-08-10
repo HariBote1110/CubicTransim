@@ -843,3 +843,60 @@ HMRアーティファクト(`npm run build:renderer`直後の依存関係変更�
 古いまま残る。「WebGPUレンダラーが未ビルドです」の404+Reactフックエラーとして現れる。
 R4d/R4eの実装メモにも同種の記録あり)が再発した。このときはページ再読み込みだけでは
 直らず、devサーバ自体の再起動(`preview_stop`→`preview_start`)が必要だった。
+
+## R4追記(0.5.0-Alpha-4c): 地上ビューで地下を透かすゴーストクラスの追加
+
+R4aメモでは「地下クラスは深度比較Alwaysで地形の上に出るため、地下ビュー(dim<1.0)以外では
+丸ごと描かない(three.js側で通常表示時に地下のジオメトリを出さないのと同じ規則)」と
+決めていた。この規則自体はthree.js時代の再現として正しかったが、**地下にしかない駅が
+地上ビューで完全に見えなくなる**(駅舎もラベルも出ない)という実害の報告を受けて、
+仕様を変更した。詳細と経緯はprogress/underground-design.mdの0.5.0-Alpha-4c節を参照。
+
+### 設計: 4つ目の描画クラス `LayerClass::UndergroundGhost`(=3)
+
+- 深度: 書き込み無し・比較`Always`(地形に隠されない)。ブレンド: `ALPHA_BLENDING`。
+  退役したthree.jsの`DIMMED_MATERIALS`(opacity 0.3 + depthTest:false)と同じ性質を、
+  既存の3クラスの組み合わせでは作れなかったため新設した(`Underground`は不透明、
+  `Translucent`は深度`LessEqual`で地形に負ける)。
+- **WGSLは無変更**。ゴーストは地上ビュー(`dim==1.0`)でしか使わないので、
+  フラグメントの`factor = select(camera.dim, 1.0, layer_class == 1u)`は
+  class 3 に対しても正しく1.0を返す。αは頂点色に焼き込む(TS側の`bakeGeometries`の
+  `options.alpha`、既存の地下dimチャンクと同じ0.3)。**シェーダを触っていないので
+  Chrome側WGSL検証器の罠(progress/…/wgsl-browser-validator-traps.md)には該当しない**が、
+  ブラウザ実機確認は行っている(下記)。
+- 描画順は 地表 → 地表インスタンス → (地下ビューなら)地下+地下インスタンス →
+  **地下ゴースト** → 半透明。ゴーストを描くかどうかの条件はレンダラー側に持たせず、
+  「地上ビューのときだけTS側のフィーダがゴーストチャンクを載せる」ことで表現する。
+- `depth_blend_state_for(class)`としてクラス別の深度・ブレンド決定をパイプライン生成から
+  切り出し、Rustのユニットテストで固定した。`mesh_shader_check`にも
+  「不透明な赤の上へα0.3の青を重ねるとブレンドされる」検査(`undergroundGhostBlends`)を追加。
+
+### ゲート結果(0.5.0-Alpha-4c)
+
+`npm run test`: 960件green。`npm run build`: green。`npm run build:renderer`: green。
+`cargo test`(renderer): 16件green。`mesh_shader_check`: ok、failures無し
+(pixels.ghostOverSurface=[179,0,76] = 赤の上にα0.3の青)。
+
+**層B(Mac / Apple M4 / Metal、3回計測、`layer_b_bench` release)**: T1〜T7のstrict閾値
+すべて3回とも全pass(T8はスコープ外でpass:null)。
+run1: T1 median 0.639ms/p99 1.128ms、T4 median 2.421ms/p99 3.059ms、T3/T5 hitch 0/10260、
+T6 firstFrame 7.38ms、T7 p99 0.00ms。
+run2: T1 median 0.640ms/p99 1.327ms、T4 median 2.426ms/p99 3.043ms、hitch 0/10260、
+T6 7.36ms。
+run3: T1 median 0.639ms/p99 1.093ms、T4 median 2.430ms/p99 3.093ms、hitch 0/10260、
+T6 5.46ms。
+直前(R4f時点)の数値帯と同等で、パイプライン1本追加による性能回帰は無い
+(ゴーストチャンクはベンチシーンには存在しないため、そもそも描画コストは増えない)。
+
+### ブラウザ実機確認(WebGPU、dev port 5175)
+
+小マップ(91×91)で「地上線路→掘割ランプ→地下線→地下駅」を実際に建設し、
+地上ビュー/地下ビューを往復して確認した。
+
+- 地上ビュー: 地下線と地下ホームが不透明度0.3のゴーストとして地形の上に重なり、
+  駅名ラベル「A駅 0人」も表示される(修正前は何ひとつ描かれず、盤上から駅を
+  見つけられなかった)。z-fightingやちらつきは見られない。
+- 地下ビュー: 従来どおり地表が暗くなり、選択中の地下レベルの線路・ホーム・列車が
+  通常輝度で描かれる(挙動に変更なし)。
+- 列車: 地下走行中の列車は地上ビューでは非表示のまま(パリティ判断。理由は
+  WebGpuTrains.tsxのコメント参照)。選択中ならDOMツールチップは出る。
