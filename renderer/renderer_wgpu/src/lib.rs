@@ -183,14 +183,19 @@ pub mod meshes {
         Underground,
         /// 半透明オーバーレイ。深度書き込み無しで最後に描く(αは頂点色のA)。
         Translucent,
+        /// 地上ビューで地下を透かして見せるゴースト。Underground と同じく深度比較
+        /// Always で地形の上に出るが、αブレンドで薄く重なる(退役した three.js の
+        /// DIMMED_MATERIALS: opacity 0.3 + depthTest:false と同じ狙い)。
+        UndergroundGhost,
     }
 
     impl LayerClass {
-        /// JS から渡る数値(0/1/2)を解釈する。未知の値は Surface に丸める。
+        /// JS から渡る数値(0/1/2/3)を解釈する。未知の値は Surface に丸める。
         pub fn from_u32(v: u32) -> Self {
             match v {
                 1 => LayerClass::Underground,
                 2 => LayerClass::Translucent,
+                3 => LayerClass::UndergroundGhost,
                 _ => LayerClass::Surface,
             }
         }
@@ -200,6 +205,7 @@ pub mod meshes {
                 LayerClass::Surface => 0,
                 LayerClass::Underground => 1,
                 LayerClass::Translucent => 2,
+                LayerClass::UndergroundGhost => 3,
             }
         }
     }
@@ -296,10 +302,32 @@ pub mod meshes {
                 LayerClass::Surface,
                 LayerClass::Underground,
                 LayerClass::Translucent,
+                LayerClass::UndergroundGhost,
             ] {
                 assert_eq!(LayerClass::from_u32(c.as_u32()), c);
             }
             assert_eq!(LayerClass::from_u32(99), LayerClass::Surface);
+        }
+
+        #[test]
+        fn underground_ghost_is_translucent_and_ignores_depth() {
+            // 地上ビューで地下を薄いゴーストとして地形の上に重ねるためのクラス。
+            // αブレンド(半透明)+深度比較 Always(地形に隠されない)+深度書き込み無し。
+            let state = super::super::mesh_pipeline::depth_blend_state_for(
+                LayerClass::UndergroundGhost,
+            );
+            assert!(!state.depth_write);
+            assert_eq!(state.depth_compare, wgpu::CompareFunction::Always);
+            assert!(state.blend.is_some());
+        }
+
+        #[test]
+        fn underground_class_stays_opaque_over_terrain() {
+            let state =
+                super::super::mesh_pipeline::depth_blend_state_for(LayerClass::Underground);
+            assert!(!state.depth_write);
+            assert_eq!(state.depth_compare, wgpu::CompareFunction::Always);
+            assert!(state.blend.is_none());
         }
     }
 }
@@ -376,6 +404,36 @@ pub mod mesh_pipeline {
         })
     }
 
+    /// クラスごとの深度・ブレンド状態。パイプライン生成から切り離してテストできるようにする。
+    pub struct DepthBlendState {
+        pub depth_write: bool,
+        pub depth_compare: wgpu::CompareFunction,
+        pub blend: Option<wgpu::BlendState>,
+    }
+
+    pub fn depth_blend_state_for(class: LayerClass) -> DepthBlendState {
+        let (depth_write, depth_compare, blend) = match class {
+            LayerClass::Surface => (true, wgpu::CompareFunction::LessEqual, None),
+            LayerClass::Underground => (false, wgpu::CompareFunction::Always, None),
+            LayerClass::Translucent => (
+                false,
+                wgpu::CompareFunction::LessEqual,
+                Some(wgpu::BlendState::ALPHA_BLENDING),
+            ),
+            // 地上ビューのゴースト: 地形に隠されず(Always)、薄く重なる(αブレンド)。
+            LayerClass::UndergroundGhost => (
+                false,
+                wgpu::CompareFunction::Always,
+                Some(wgpu::BlendState::ALPHA_BLENDING),
+            ),
+        };
+        DepthBlendState {
+            depth_write,
+            depth_compare,
+            blend,
+        }
+    }
+
     /// クラス別の深度・ブレンド状態でメッシュ描画パイプラインを作る。
     ///
     /// - Surface: 地形と同じ深度テスト(LessEqual)+深度書き込み。dim で減光。
@@ -390,15 +448,11 @@ pub mod mesh_pipeline {
         buffers: &[wgpu::VertexBufferLayout<'_>],
         label: &str,
     ) -> wgpu::RenderPipeline {
-        let (depth_write, depth_compare, blend) = match class {
-            LayerClass::Surface => (true, wgpu::CompareFunction::LessEqual, None),
-            LayerClass::Underground => (false, wgpu::CompareFunction::Always, None),
-            LayerClass::Translucent => (
-                false,
-                wgpu::CompareFunction::LessEqual,
-                Some(wgpu::BlendState::ALPHA_BLENDING),
-            ),
-        };
+        let DepthBlendState {
+            depth_write,
+            depth_compare,
+            blend,
+        } = depth_blend_state_for(class);
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(layout),
@@ -440,8 +494,8 @@ pub mod mesh_pipeline {
     pub struct MeshPipelines {
         pub camera_bgl: wgpu::BindGroupLayout,
         pub class_bgl: wgpu::BindGroupLayout,
-        /// index は `LayerClass::as_u32()`(0=地表/1=地下/2=半透明)。
-        pub chunk: [wgpu::RenderPipeline; 3],
+        /// index は `LayerClass::as_u32()`(0=地表/1=地下/2=半透明/3=地下ゴースト)。
+        pub chunk: [wgpu::RenderPipeline; 4],
         /// index 0=地表 / 1=地下(半透明インスタンスは用途が無いので作らない)。
         pub instanced: [wgpu::RenderPipeline; 2],
     }
@@ -466,6 +520,7 @@ pub mod mesh_pipeline {
             LayerClass::Surface,
             LayerClass::Underground,
             LayerClass::Translucent,
+            LayerClass::UndergroundGhost,
         ]
         .map(|class| {
             create_mesh_pipeline(
@@ -825,11 +880,11 @@ mod wasm {
         clamp_bgl: wgpu::BindGroupLayout,
         clamp_params: wgpu::Buffer,
 
-        /// R4a: ジオラマ物のメッシュ描画。クラス(0=地表/1=地下/2=半透明)ごとにパイプラインと
-        /// クラス uniform のバインドグループを持つ。
-        mesh_pipelines: [wgpu::RenderPipeline; 3],
+        /// R4a: ジオラマ物のメッシュ描画。クラス(0=地表/1=地下/2=半透明/3=地下ゴースト)
+        /// ごとにパイプラインとクラス uniform のバインドグループを持つ。
+        mesh_pipelines: [wgpu::RenderPipeline; 4],
         instanced_pipelines: [wgpu::RenderPipeline; 2],
-        class_bind_groups: [wgpu::BindGroup; 3],
+        class_bind_groups: [wgpu::BindGroup; 4],
         mesh_camera_bind_group: wgpu::BindGroup,
         mesh_chunks: HashMap<u32, MeshChunk>,
         instanced_meshes: HashMap<u32, InstancedMesh>,
@@ -1250,6 +1305,7 @@ mod wasm {
                 LayerClass::Surface,
                 LayerClass::Underground,
                 LayerClass::Translucent,
+                LayerClass::UndergroundGhost,
             ]
             .map(|class| {
                 let mut bytes = [0u8; 16];
@@ -1723,6 +1779,9 @@ mod wasm {
                     mesh_draws += draw_class(&mut pass, LayerClass::Underground);
                     instance_draws += self.draw_instances(&mut pass, LayerClass::Underground);
                 }
+                // 地上ビューの地下ゴースト。存在するかどうかは TS 側のフィーダが
+                // 決める(地下ビュー中はチャンクを載せない)ので、ここでは条件を持たない。
+                mesh_draws += draw_class(&mut pass, LayerClass::UndergroundGhost);
                 mesh_draws += draw_class(&mut pass, LayerClass::Translucent);
             }
             self.queue.submit(Some(encoder.finish()));

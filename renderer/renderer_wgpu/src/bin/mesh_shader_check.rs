@@ -205,6 +205,7 @@ fn main() {
         LayerClass::Surface,
         LayerClass::Underground,
         LayerClass::Translucent,
+        LayerClass::UndergroundGhost,
     ]
     .map(|c| {
         let buffer = class_buffer(&device, c);
@@ -293,6 +294,34 @@ fn main() {
         pass.draw_indexed(0..white_indices.len() as u32, 0, 0..1);
     });
 
+    // 5) 地下ゴーストクラス(地上ビューで地下を透かす層): 不透明な赤の地表を描いた上へ
+    //    α=0.3 の青を重ね、深度に関係なく(Always)αブレンドされることを確かめる。
+    let (ghost_bytes, ghost_indices) = full_screen_triangle(0x4cff_0000);
+    let ghost_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("verts-ghost"),
+        contents: &ghost_bytes,
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let ghost_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("indices-ghost"),
+        contents: bytemuck::cast_slice(&ghost_indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    let ghost_over_surface = read_centre_pixel(&device, &queue, |pass| {
+        pass.set_pipeline(&pipelines.chunk[0]);
+        pass.set_bind_group(0, &camera_full, &[]);
+        pass.set_bind_group(1, &class_bgs[0], &[]);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+
+        pass.set_pipeline(&pipelines.chunk[3]);
+        pass.set_bind_group(1, &class_bgs[3], &[]);
+        pass.set_vertex_buffer(0, ghost_vertices.slice(..));
+        pass.set_index_buffer(ghost_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..ghost_indices.len() as u32, 0, 0..1);
+    });
+
     let near = |a: u8, b: u8| (a as i32 - b as i32).abs() <= 2;
     let checks = [
         (
@@ -308,6 +337,13 @@ fn main() {
             "instancedTint",
             instanced_tinted[0] == 0 && instanced_tinted[1] == 255 && instanced_tinted[2] == 0,
         ),
+        // 赤(255,0,0)の上へ α=0.3 の青 -> R≈178, B≈76 のブレンド結果になる。
+        (
+            "undergroundGhostBlends",
+            near(ghost_over_surface[0], 179)
+                && near(ghost_over_surface[2], 76)
+                && ghost_over_surface[1] == 0,
+        ),
     ];
     let failures: Vec<&str> = checks
         .iter()
@@ -316,7 +352,7 @@ fn main() {
         .collect();
     let info = adapter.get_info();
     println!(
-        "{{\"ok\":{},\"adapter\":{:?},\"backend\":\"{:?}\",\"pipelines\":5,\"failures\":{:?},\"pixels\":{{\"surfaceUndimmed\":{:?},\"surfaceDimmed\":{:?},\"undergroundDimmed\":{:?},\"instancedTinted\":{:?}}}}}",
+        "{{\"ok\":{},\"adapter\":{:?},\"backend\":\"{:?}\",\"pipelines\":6,\"failures\":{:?},\"pixels\":{{\"surfaceUndimmed\":{:?},\"surfaceDimmed\":{:?},\"undergroundDimmed\":{:?},\"instancedTinted\":{:?},\"ghostOverSurface\":{:?}}}}}",
         failures.is_empty(),
         info.name,
         info.backend,
@@ -325,6 +361,7 @@ fn main() {
         surface_dimmed,
         underground_dimmed,
         instanced_tinted,
+        ghost_over_surface,
     );
     if !failures.is_empty() {
         std::process::exit(1);
