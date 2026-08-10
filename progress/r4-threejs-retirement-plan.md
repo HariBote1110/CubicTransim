@@ -888,6 +888,16 @@ T6 5.46ms。
 直前(R4f時点)の数値帯と同等で、パイプライン1本追加による性能回帰は無い
 (ゴーストチャンクはベンチシーンには存在しないため、そもそも描画コストは増えない)。
 
+**層A(VM / llvmpipe / Vulkan、`node renderer/bench/run-layer-a.mjs --browser-exact
+--check-ts-migration`)**: build全項目true(workspaceTests / nativeBins /
+productionTsVsRust1M / wasmPack / vite)。判定対象ゲートすべてpass(`pass:null`は層B専用)。
+A1 median 0.0001ms/p99 0.00017ms、A2 0.000865ms/tile、A3 mismatch 0・CPU diff median
+0.0103ms、A4 browser-exact(BrowserWebGPU読み戻し、16ケース×1,056,784点×3プロファイル)
+mismatch 0、A5/T10 heap 1,245,184B、A6/T15 wasm gzip 89,703B、A7 hitch 0、A8 決定性true、
+T4/T11 drawCalls 9、T6 firstFrame 165.33ms、T14 5シード×1000万点+3プロファイル mismatch 0、
+cameraReplay 3run全ok。今回の変更はcompute側(ノイズ・タイル生成)に一切触れていないため、
+A2/A3/A4/A14系のバイト一致ゲートに影響しないことを確認した。
+
 ### ブラウザ実機確認(WebGPU、dev port 5175)
 
 小マップ(91×91)で「地上線路→掘割ランプ→地下線→地下駅」を実際に建設し、
