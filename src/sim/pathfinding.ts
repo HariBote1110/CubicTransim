@@ -319,7 +319,9 @@ export function calculateRouteWithStop(
                const backLayer = resolveEntryLayer(railMap, prev, curr, layer) ?? layer;
                queue.push({
                  curr: prev,
-                 path: [...path, { x: prev.x, z: prev.z, layer: backLayer > 0 ? backLayer : undefined }],
+                 // 層タグは0(地平)以外なら必ず付ける。`> 0`にすると地下(負)のタグが
+                 // 落ちて地平扱いになる(extendThroughPlatformと同じ修正)。
+                 path: [...path, { x: prev.x, z: prev.z, layer: backLayer !== 0 ? backLayer : undefined }],
                  prev: curr,
                  layer: backLayer,
                });
@@ -330,7 +332,8 @@ export function calculateRouteWithStop(
               if (!visited.has(visitKey)) {
                   visited.add(visitKey);
                   const cellPos = { x: move.x, z: move.z };
-                  const pathCell = { x: move.x, z: move.z, layer: move.layer > 0 ? move.layer : undefined };
+                  // 同上: 地下(負レベル)のタグを落とさないため`!== 0`で判定する。
+                  const pathCell = { x: move.x, z: move.z, layer: move.layer !== 0 ? move.layer : undefined };
                   queue.push({ curr: cellPos, path: [...path, pathCell], prev: curr, layer: move.layer });
               }
           }

@@ -104,12 +104,20 @@ export interface StationHousePlacement {
   position: readonly [number, number, number];
   angle: number;
   labelY: number;
+  /**
+   * 駅舎メッシュを描かない(地下にしかない駅を地上ビューで見ているとき)。
+   * 配置そのものは返すので、駅名ラベル(GameLabels)は地上ビューでも出せる。
+   * 0.5.0-Alpha-4c以前はこの場合にnullを返しており、地下だけの駅が地上ビューで
+   * ラベルごと完全に消えていた。
+   */
+  houseHidden: boolean;
 }
 
 /**
  * 駅舎(1駅につき1つ)の配置(位置・向き・ラベルY)を求める。GameScene.tsxの
  * 駅舎JSXブロックから抽出した純粋関数(three.js/wgpu両方の駅舎描画が同じ配置を使う)。
- * 通常表示中に隠すべき完全地下駅(houseIsUnderground)はnullを返す。
+ * 完全地下駅を地上ビューで見ているときは houseHidden=true(駅舎は描かないが
+ * ラベルは出す)。セルが1つも無い駅だけnullを返す。
  */
 export function computeStationHousePlacement(
   station: StationData,
@@ -142,10 +150,10 @@ export function computeStationHousePlacement(
     ? 1.35 + Math.max(...elevatedLevels) * OVERPASS_HEIGHT
     : 1.35 + houseY;
   const houseIsUnderground = houseIsElevated && houseLevel < 0;
-  if (houseIsUnderground && hasUndergroundCells && !ownGroundCells.length && !hasElevatedCells && !undergroundView) {
-    return null;
-  }
-  return { position: [centreCell.x, houseY, centreCell.z], angle, labelY };
+  const houseHidden =
+    houseIsUnderground && hasUndergroundCells && !ownGroundCells.length
+    && !hasElevatedCells && !undergroundView;
+  return { position: [centreCell.x, houseY, centreCell.z], angle, labelY, houseHidden };
 }
 
 export function elevatedCellCandidateFromGroundClick(

@@ -165,6 +165,11 @@ export const WebGpuTrains: React.FC<Props> = ({
       const level = runtime.grid.layer ?? 0;
       // 通常表示では地下(level<0)は完全非表示。地下ビュー中は選択レベル以外を近似的に隠す
       // (「発見した実装上の注意点」参照)。
+      // 0.5.0-Alpha-4cで地下の線路・ホームは地上ビューでもゴースト表示になったが、
+      // 列車はここだけ従来どおり隠したままにしている: インスタンス描画のシェーダは
+      // 頂点色のαを「路線色の重み」として使い切っており、αブレンドで薄くする経路が無い
+      // (WGSL変更が要る)。退役したthree.jsでも地下の列車は不透明な地形に遮られて
+      // 実質見えなかったため、見た目の互換としても後退にはならない。
       if (level < 0 && (!undergroundView || level !== selectedLevel)) continue;
 
       const positions = carPositions(runtime, train.cars, 1.0, railMap, field);

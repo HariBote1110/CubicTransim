@@ -72,6 +72,8 @@ export const MESH_LAYER_CLASS = {
   surface: 0,
   underground: 1,
   translucent: 2,
+  /** 地上ビューで地下を透かして重ねるゴースト(深度Always+αブレンド)。 */
+  undergroundGhost: 3,
 } as const;
 
 interface RendererModule {

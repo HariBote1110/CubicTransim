@@ -20,6 +20,7 @@ import {
 } from '../sim/trackPath';
 import { railRenderHeight } from '../sim/slopes';
 import { ALL_LEVELS } from '../sim/construction';
+import { undergroundBucketOf, type UndergroundBucket } from './viewMode';
 
 // 高架のレベル1〜MAX_ELEVATED_LEVELを走査するための配列([1,2,3])。
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
@@ -54,6 +55,8 @@ export interface RailNetworkGeometry {
   undergroundBright: MergedTrackParts;
   /** 地下ビュー中、選択中レベル以外の地下線(暗く描く)。 */
   undergroundDim: MergedTrackParts;
+  /** 地上ビュー: 地形の上へ薄く透かして重ねる地下線(全レベル合算)。 */
+  undergroundGhost: MergedTrackParts;
   /** 通常表示のみ: 掘割ランプの地表開口(暗い穴+擁壁)。 */
   openings: THREE.BufferGeometry | null;
 }
@@ -62,10 +65,13 @@ export interface RailNetworkGeometry {
  * 線路網全体(敷設済みの全セル)のジオメトリをまとめて生成する。
  *
  * P8b: 地下(uppers[-1..-3]・ramp.base<0)は「surface」(地平+高架、常時表示)とは
- * 別バケットで管理する。通常表示では地下の線路そのものは一切描かず、掘割ランプの
- * 浅い側(地表に接するセル)だけに開口部の書き割りを出す。地下ビュー中は、
- * 選択中のレベルに一致する地下だけ通常輝度(bright)、それ以外の地下(と地平・高架)は
- * 暗く半透明(dimmed)で描く。
+ * 別バケットで管理する。地下ビュー中は、選択中のレベルに一致する地下だけ通常輝度
+ * (bright)、それ以外の地下は暗く半透明(dim)で描く。
+ *
+ * 0.5.0-Alpha-4c: 地上ビューでも地下線をゴースト(undergroundGhost、地形の上へ薄く
+ * 重ねる)として出すようになった。以前は地上ビューで地下を一切描かず、掘割の開口
+ * だけを出していたため、地下にしかない路線・駅が地上ビューで完全に消えていた。
+ * 掘割の開口(地表に開いた穴)は地上ビューでのみ従来どおり出す。
  */
 export function buildRailNetworkGeometry(
   railMap: Map<string, CellData>,
@@ -79,12 +85,16 @@ export function buildRailNetworkGeometry(
 
   const undergroundBright: TrackParts = emptyTrackParts();
   const undergroundDim: TrackParts = emptyTrackParts();
+  const undergroundGhost: TrackParts = emptyTrackParts();
   const openings: THREE.BufferGeometry[] = [];
 
-  // 地下ランプ(base<0)が選択中レベルに対して「今アクティブ(bright)」かどうか。
-  // ランプはbase〜base+1の1段を繋ぐので、選択レベルがどちらかの端に一致すれば良い。
-  const undergroundRampIsActive = (base: number): boolean =>
-    selectedLevel === base || selectedLevel === base + 1;
+  const bucketOf = (bucket: UndergroundBucket): TrackParts =>
+    bucket === 'bright' ? undergroundBright : bucket === 'dim' ? undergroundDim : undergroundGhost;
+
+  // 地下ランプ(base<0)は base〜base+1 の1段を繋ぐので、選択レベルがどちらかの端に
+  // 一致すればbright扱いにする(undergroundBucketOfへ渡す「実質のレベル」を作る)。
+  const rampBucketLevel = (base: number): number =>
+    selectedLevel === base + 1 ? base + 1 : base;
 
   for (const [key, data] of railMap) {
     // 車庫セルは建屋を描くため線路は敷かない(建屋側で床を描く)。
@@ -133,16 +143,19 @@ export function buildRailNetworkGeometry(
           }
         }
       } else {
-        if (undergroundView) {
-          const bucket = undergroundRampIsActive(base) ? undergroundBright : undergroundDim;
-          bucket.sleepers.push(...rampParts.sleepers);
-          bucket.rails.push(...rampParts.rails);
-          if (base === -1) {
-            bucket.ballast.push(...rampParts.ballast);
+        // 地下の坂(掘割)。地下ビューではbright/dim、地上ビューではゴーストへ入れる。
+        const bucket = bucketOf(
+          undergroundBucketOf(rampBucketLevel(base), undergroundView, selectedLevel),
+        );
+        bucket.sleepers.push(...rampParts.sleepers);
+        bucket.rails.push(...rampParts.rails);
+        if (base === -1) {
+          bucket.ballast.push(...rampParts.ballast);
+          if (!undergroundView) {
+            // 地上ビューでは地表に開いた穴(暗いpit+擁壁)も従来どおり出す。
+            const opening = buildUndergroundOpeningPart(data.ramp.dir, x, z);
+            if (opening) openings.push(opening.pit, opening.wallA, opening.wallB);
           }
-        } else if (base === -1) {
-          const opening = buildUndergroundOpeningPart(data.ramp.dir, x, z);
-          if (opening) openings.push(opening.pit, opening.wallA, opening.wallB);
         }
       }
     }
@@ -166,9 +179,8 @@ export function buildRailNetworkGeometry(
         supports.piers.push(...support.piers);
         supports.decks.push(...support.decks);
       } else {
-        if (!undergroundView) continue;
         const upperParts = buildCellTrackParts(upperConnections, x, z, originY, false);
-        const bucket = level === selectedLevel ? undergroundBright : undergroundDim;
+        const bucket = bucketOf(undergroundBucketOf(level, undergroundView, selectedLevel));
         bucket.sleepers.push(...upperParts.sleepers);
         bucket.rails.push(...upperParts.rails);
       }
@@ -210,6 +222,11 @@ export function buildRailNetworkGeometry(
       ballast: mergeParts(undergroundDim.ballast),
       sleepers: mergeParts(undergroundDim.sleepers),
       rails: mergeParts(undergroundDim.rails),
+    },
+    undergroundGhost: {
+      ballast: mergeParts(undergroundGhost.ballast),
+      sleepers: mergeParts(undergroundGhost.sleepers),
+      rails: mergeParts(undergroundGhost.rails),
     },
     openings: mergeParts(openings),
   };

@@ -1,13 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import type { CellData } from '../types';
+import type { CellData, StationData } from '../types';
 import {
   isElevatedStationCell,
   groundStationCells,
   elevatedStationCells,
   computeStationEndKeys,
   elevatedCellCandidateFromGroundClick,
+  computeStationHousePlacement,
 } from './stationLayers';
-import { toKey } from '../utils';
+import { createTerrainField } from '../sim/terrainField';
+import { DIR, toKey } from '../utils';
+
+const field = createTerrainField(1, 32);
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 
 const cell = (partial: Partial<CellData>): CellData => ({
@@ -118,5 +122,47 @@ describe('elevatedCellCandidateFromGroundClick', () => {
   it('高さ省略時はOVERPASS_HEIGHTを使う', () => {
     const withDefault = elevatedCellCandidateFromGroundClick({ x: 0, z: 0 });
     expect(withDefault).toEqual({ x: Math.round(OVERPASS_HEIGHT), z: Math.round(OVERPASS_HEIGHT) });
+  });
+});
+
+// 0.5.0-Alpha-4c: 地下にしかない駅が地上ビューで完全に消えていた(駅舎も駅名ラベルも
+// 出ない)ユーザー報告への対応。駅舎は地上ビューでは出さないまま、配置自体は返して
+// ラベル(GameLabels)が出せるようにする。
+describe('computeStationHousePlacement: 地下のみの駅の地上ビュー表示', () => {
+  const undergroundOnlyStation = (): StationData => ({
+    id: 'u1',
+    name: '地下駅',
+    cells: [{ x: 0, z: 0, layer: -1 }],
+    center: { x: 0, z: 0 },
+    platformDoors: 'none',
+  });
+  const railMapWithUnderground = () => new Map<string, CellData>([
+    [toKey(0, 0), { type: 'rail', connections: 0, uppers: { '-1': { connections: DIR.N | DIR.S, stationId: 'u1' } } } as CellData],
+  ]);
+
+  it('地上ビューでも配置(ラベルY)を返す。ただし駅舎は隠す', () => {
+    const placement = computeStationHousePlacement(
+      undergroundOnlyStation(), railMapWithUnderground(), field, false,
+    );
+    expect(placement).not.toBeNull();
+    expect(placement!.houseHidden).toBe(true);
+  });
+
+  it('地下ビュー中は駅舎も出す', () => {
+    const placement = computeStationHousePlacement(
+      undergroundOnlyStation(), railMapWithUnderground(), field, true,
+    );
+    expect(placement!.houseHidden).toBe(false);
+  });
+
+  it('地平ホームを持つ駅は地上ビューでも駅舎を出す', () => {
+    const station: StationData = {
+      id: 's1', name: 'A駅', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none',
+    };
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'station', connections: DIR.N | DIR.S, stationId: 's1' }],
+    ]);
+    const placement = computeStationHousePlacement(station, railMap, field, false);
+    expect(placement!.houseHidden).toBe(false);
   });
 });

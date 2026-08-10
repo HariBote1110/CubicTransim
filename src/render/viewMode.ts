@@ -12,13 +12,25 @@ export function isUndergroundView(selectedLevel: number): boolean {
 }
 
 /**
- * レベルlevelのコンテンツをこのフレームで描画すべきか。
- * 地平・高架(level>=0)は常に描く。地下(level<0)は地下ビュー中だけ描く
- * (通常表示では掘割ランプの開口だけを別途描き、地下線そのものは隠す)。
+ * 地下コンテンツ(線路・駅ホーム)の描画バケット。
+ *
+ * - 'bright' 地下ビューで選択中の深さ。通常輝度・不透明(layerClass=underground)
+ * - 'dim'    地下ビューで選択中でない深さ。薄い半透明(layerClass=translucent)
+ * - 'ghost'  地上ビュー。地形の上へ薄く重ねる透けた表示(layerClass=undergroundGhost)
+ *
+ * 0.5.0-Alpha-4c以前は地上ビューで地下を一切描かなかったため、地下にしかない駅が
+ * 地上ビューで完全に消滅して見つけられなくなっていた(ユーザー報告)。地上ビューでは
+ * ゴーストとして必ず出す。
  */
-export function shouldRenderLevel(level: number, undergroundView: boolean): boolean {
-  if (level < 0) return undergroundView;
-  return true;
+export type UndergroundBucket = 'bright' | 'dim' | 'ghost';
+
+export function undergroundBucketOf(
+  level: number,
+  undergroundView: boolean,
+  selectedLevel: number,
+): UndergroundBucket {
+  if (!undergroundView) return 'ghost';
+  return level === selectedLevel ? 'bright' : 'dim';
 }
 
 // P8b: 地下ビュー中の描画順序。three.jsの不透明/半透明キューの並び替えに任せず、

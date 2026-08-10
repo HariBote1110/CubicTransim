@@ -11,7 +11,7 @@
 // この写しがuseGameLogic.commitPathとずれたら、それ自体が回帰の兆候なので、
 // commitPathを変更したときはこのヘルパーも合わせて更新すること。
 import { describe, expect, it } from 'vitest';
-import type { CellData, StationAxis, StationData } from '../types';
+import type { CellData, StationData } from '../types';
 import { evaluateBuild } from './buildPreview';
 import {
   applyRailPath, applyStation, applyDepot, applySignal,
@@ -19,6 +19,7 @@ import {
   removePath,
   resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
   type ConstructionState, type BuildLevel, type ElevatedLevel, type UndergroundLevel,
+  type StationAxis,
 } from './construction';
 import {
   costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfUndergroundPath,

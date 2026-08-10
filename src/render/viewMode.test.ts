@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isUndergroundView, shouldRenderLevel, isLevelDimmed } from './viewMode';
+import { isUndergroundView, undergroundBucketOf, isLevelDimmed } from './viewMode';
 
 describe('isUndergroundView: 選択レベルから地下ビューかどうかを判定する', () => {
   it('レベルが負なら地下ビュー', () => {
@@ -13,17 +13,15 @@ describe('isUndergroundView: 選択レベルから地下ビューかどうかを
   });
 });
 
-describe('shouldRenderLevel: そのレベルのコンテンツを描くべきか', () => {
-  it('地平・高架(level>=0)は地下ビューの有無によらず常に描く', () => {
-    expect(shouldRenderLevel(0, false)).toBe(true);
-    expect(shouldRenderLevel(0, true)).toBe(true);
-    expect(shouldRenderLevel(2, false)).toBe(true);
-    expect(shouldRenderLevel(2, true)).toBe(true);
+describe('undergroundBucketOf: 地下コンテンツをどのバケットへ入れるか', () => {
+  it('地上ビューでは、どの深さの地下もゴースト(薄く透ける)になる', () => {
+    expect(undergroundBucketOf(-1, false, 0)).toBe('ghost');
+    expect(undergroundBucketOf(-3, false, 2)).toBe('ghost');
   });
-  it('地下(level<0)は地下ビュー中のみ描く', () => {
-    expect(shouldRenderLevel(-1, true)).toBe(true);
-    expect(shouldRenderLevel(-1, false)).toBe(false);
-    expect(shouldRenderLevel(-3, false)).toBe(false);
+  it('地下ビュー中は、選択中の深さだけbright', () => {
+    expect(undergroundBucketOf(-1, true, -1)).toBe('bright');
+    expect(undergroundBucketOf(-2, true, -1)).toBe('dim');
+    expect(undergroundBucketOf(-1, true, -3)).toBe('dim');
   });
 });
 

@@ -14,6 +14,9 @@
 // - `${stationId}:undergroundBright` 選択中の地下レベルのホーム構造。layerClass=underground。
 // - `${stationId}:undergroundDim`    選択中でない地下レベルのホーム構造。layerClass=translucent、
 //   alpha=0.3×255(three.jsのDIMMED_MATERIALS opacity 0.3相当)。
+// - `${stationId}:undergroundGhost`  地上ビューでの地下ホーム。layerClass=undergroundGhost
+//   (深度Always+αブレンド)。0.5.0-Alpha-4cで追加。以前は地上ビューで地下ホームを
+//   一切描かなかったため、地下にしかない駅が地上ビューで完全に消えていた。
 
 import React, { useCallback, useMemo } from 'react';
 import type { StationData } from '../types';
@@ -40,13 +43,15 @@ interface Props {
   undergroundEndKeys: Set<string>;
   stations: Map<string, StationData>;
   field: TerrainField;
-  /** 駅id→駅舎の配置(render/stationLayers.tsのcomputeStationHousePlacement、nullは非表示)。 */
+  /** 駅id→駅舎の配置(render/stationLayers.tsのcomputeStationHousePlacement)。 */
   housePlacements: Map<string, StationHousePlacement>;
   undergroundView?: boolean;
   selectedLevel?: number;
 }
 
 const UNDERGROUND_DIM_ALPHA = Math.round(0.3 * 255);
+/** 地上ビューで地下ホームを透かすゴーストの不透明度(dimと同じ0.3)。 */
+const UNDERGROUND_GHOST_ALPHA = UNDERGROUND_DIM_ALPHA;
 const GLASS_ALPHA = Math.round(0.55 * 255);
 
 interface CellEntry {
@@ -126,6 +131,18 @@ export const WebGpuStations: React.FC<Props> = ({
     return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour, options })));
   }, [grouping, cellGeometries, undergroundView]);
 
+  // 地上ビュー: 深さに関係なく地下ホーム全体を1チャンクのゴーストとして出す。
+  const ghostKeys = useMemo(
+    () => (undergroundView ? [] : undergroundKeys), [undergroundView, undergroundKeys],
+  );
+  const buildUndergroundGhost = useCallback((stationId: string): BakedMeshChunk | null => {
+    const cells = grouping.undergroundByStation.get(stationId);
+    if (!cells) return null;
+    const entries = cells.flatMap(cellGeometries).filter(e => !e.translucent);
+    const options = { alpha: UNDERGROUND_GHOST_ALPHA };
+    return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour, options })));
+  }, [grouping, cellGeometries]);
+
   const buildUndergroundChunk = useCallback((stationId: string, bright: boolean): BakedMeshChunk | null => {
     const cells = grouping.undergroundByStation.get(stationId);
     if (!cells) return null;
@@ -144,7 +161,11 @@ export const WebGpuStations: React.FC<Props> = ({
     (id: string) => buildUndergroundChunk(id, false), [buildUndergroundChunk],
   );
 
-  const houseKeys = useMemo(() => [...housePlacements.keys()], [housePlacements]);
+  // houseHidden(地上ビューでの完全地下駅)は駅舎メッシュを出さない。ラベルだけ出る。
+  const houseKeys = useMemo(
+    () => [...housePlacements.entries()].filter(([, p]) => !p.houseHidden).map(([id]) => id),
+    [housePlacements],
+  );
   const buildHouseChunk = useCallback((stationId: string): BakedMeshChunk | null => {
     const placement = housePlacements.get(stationId);
     if (!placement) return null;
@@ -186,6 +207,13 @@ export const WebGpuStations: React.FC<Props> = ({
     desiredKeys: dimKeys,
     buildChunk: buildUndergroundDim,
     layerClass: MESH_LAYER_CLASS.translucent,
+  });
+  useMeshChunkFeeder({
+    layerRef,
+    namespace: MESH_CHUNK_NAMESPACE.stationUndergroundGhost,
+    desiredKeys: ghostKeys,
+    buildChunk: buildUndergroundGhost,
+    layerClass: MESH_LAYER_CLASS.undergroundGhost,
   });
 
   return null;

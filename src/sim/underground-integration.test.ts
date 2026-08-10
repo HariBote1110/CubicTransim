@@ -76,6 +76,41 @@ describe('P8a統合: 地上車庫→掘割→地下(町の下想定)→地下駅
     expect(rt.debugStatus).toBeDefined();
   });
 
+  // 0.5.0-Alpha-4c: 走行中の層タグが落ちて地平扱いになるバグの回帰テスト。
+  // pathfindingが経路セルへ付ける層タグが`layer > 0`条件で、地下(負)のときだけ
+  // undefined(=地平)になっていたため、列車は地下線の上を「地表を走っている」
+  // 状態で進み、描画高さも地表のまま(地下駅に着いた列車が地上に見える)だった。
+  it('地下線を走行中の列車はgrid.layer=-1で、描画高さも地表より下になる', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    state = applyDepot(state, { x: 0, z: 0 });
+    state = applyUndergroundPath(state, [
+      { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+      { x: 6, z: 0 }, { x: 7, z: 0 }, { x: 8, z: 0 },
+    ], undefined, -1);
+    state = applyUndergroundStation(state, { x: 7, z: 0 });
+    const stationId = state.railMap.get(toKey(7, 0))!.uppers?.[-1]!.stationId!;
+
+    const train = makeTrain({ x: 0, z: 0, schedule: [stationId], status: 'running' });
+    const world = makeWorld(state.railMap, state.stations, [train]);
+
+    // 掘割(2,0)-(3,0)を抜けた先の(4,0)以降は完全な地下区間。
+    const undergroundSamples: { layer: number | undefined; y: number }[] = [];
+    for (let i = 0; i < 1500; i++) {
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      if (rt.grid.x >= 4 && rt.grid.x <= 6) {
+        undergroundSamples.push({ layer: rt.grid.layer, y: rt.renderPos.y });
+      }
+    }
+
+    expect(undergroundSamples.length).toBeGreaterThan(0);
+    for (const sample of undergroundSamples) {
+      expect(sample.layer).toBe(-1);
+      expect(sample.y).toBeLessThan(0);
+    }
+  });
+
   it('同一駅IDに地上ホームと地下ホームを両方持たせると、乗換駅として機能する(片方のスケジュールで両方の入口を使い分けない単純な確認: 地上/地下それぞれのstationIdAtLayerが同じIDを返す)', () => {
     let state = emptyState();
     state = applyStation(state, { x: 10, z: 0 }, undefined, [], 'ew');

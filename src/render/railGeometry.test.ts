@@ -19,6 +19,7 @@ describe('buildRailNetworkGeometry: 地平のみのセル', () => {
     expect(geo.surface.decks).toBeNull();
     expect(geo.undergroundBright.rails).toBeNull();
     expect(geo.undergroundDim.rails).toBeNull();
+    expect(geo.undergroundGhost.rails).toBeNull();
     expect(geo.openings).toBeNull();
   });
 });
@@ -40,8 +41,10 @@ describe('buildRailNetworkGeometry: 地下(uppers負レベル)の可視性', () 
     [toKey(0, 0), { type: 'rail', connections: 0, uppers: { '-1': { connections: DIR.N | DIR.S } } as any }],
   ]);
 
-  it('通常表示(undergroundView=false)では地下線を一切生成しない', () => {
+  // 0.5.0-Alpha-4c: 地上ビューでも地下をゴーストとして描く(以前は完全に消えていた)。
+  it('通常表示(undergroundView=false)では地下線をゴーストバケットへ入れる', () => {
     const geo = buildRailNetworkGeometry(railMap, field, false, 0);
+    expect(geo.undergroundGhost.rails).not.toBeNull();
     expect(geo.undergroundBright.rails).toBeNull();
     expect(geo.undergroundDim.rails).toBeNull();
   });
@@ -50,20 +53,23 @@ describe('buildRailNetworkGeometry: 地下(uppers負レベル)の可視性', () 
     const bright = buildRailNetworkGeometry(railMap, field, true, -1);
     expect(bright.undergroundBright.rails).not.toBeNull();
     expect(bright.undergroundDim.rails).toBeNull();
+    expect(bright.undergroundGhost.rails).toBeNull();
 
     const dim = buildRailNetworkGeometry(railMap, field, true, -2);
     expect(dim.undergroundBright.rails).toBeNull();
     expect(dim.undergroundDim.rails).not.toBeNull();
+    expect(dim.undergroundGhost.rails).toBeNull();
   });
 });
 
 describe('buildRailNetworkGeometry: 掘割ランプの地表開口', () => {
-  it('base=-1の坂は通常表示で開口(pit/wall)を生成し、地下線そのものは出さない', () => {
+  it('base=-1の坂は通常表示で開口(pit/wall)を生成し、坂の線路はゴーストで出す', () => {
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: 0, ramp: { dir: DIR.N, base: -1, level: 1 } }],
     ]);
     const geo = buildRailNetworkGeometry(railMap, field, false, 0);
     expect(geo.openings).not.toBeNull();
+    expect(geo.undergroundGhost.rails).not.toBeNull();
     expect(geo.undergroundBright.rails).toBeNull();
     expect(geo.undergroundDim.rails).toBeNull();
   });
