@@ -162,3 +162,29 @@ export function elevatedCellCandidateFromGroundClick(
 ): { x: number; z: number } {
   return { x: Math.round(pos.x + height), z: Math.round(pos.z + height) };
 }
+
+/**
+ * 地下レベルLの駅クリック解決(P8c)。地下ホームはy=L*OVERPASS_HEIGHT(L<0なので負)
+ * に描画されるので、elevatedCellCandidateFromGroundClickと全く同じ幾何(候補=見えている
+ * 位置=pos+高さ)を負の高さに対して使う。地下ビューでの駅クリック・スケジュール追加が
+ * 効かなかったバグ(GameScene.handleClickが地平/高架しか見ていなかった)への対応。
+ */
+export function undergroundCellCandidateFromGroundClick(
+  pos: { x: number; z: number },
+  level: -1 | -2 | -3,
+): { x: number; z: number } {
+  return elevatedCellCandidateFromGroundClick(pos, level * OVERPASS_HEIGHT);
+}
+
+/**
+ * 地下ビューでクリックを解決するときに試す地下レベルの順序。選択中のレベル
+ * (GameUIのbuildLevel、地下ビュー中は「今見ている深さ」を兼ねる)を最優先にし、
+ * 他のレベルは候補が誤って重なった場合の保険として後段で試す。
+ */
+export function undergroundLevelSearchOrder(selectedLevel: Level): readonly (-1 | -2 | -3)[] {
+  if (selectedLevel < 0 && (UNDERGROUND_LEVELS as readonly Level[]).includes(selectedLevel)) {
+    const selected = selectedLevel as -1 | -2 | -3;
+    return [selected, ...UNDERGROUND_LEVELS.filter(l => l !== selected)];
+  }
+  return UNDERGROUND_LEVELS;
+}
