@@ -181,8 +181,8 @@ export function undergroundCellCandidateFromGroundClick(
  * (GameUIのbuildLevel、地下ビュー中は「今見ている深さ」を兼ねる)を最優先にし、
  * 他のレベルは候補が誤って重なった場合の保険として後段で試す。
  */
-export function undergroundLevelSearchOrder(selectedLevel: Level): readonly (-1 | -2 | -3)[] {
-  if (selectedLevel < 0 && (UNDERGROUND_LEVELS as readonly Level[]).includes(selectedLevel)) {
+export function undergroundLevelSearchOrder(selectedLevel: number): readonly (-1 | -2 | -3)[] {
+  if ((UNDERGROUND_LEVELS as readonly number[]).includes(selectedLevel)) {
     const selected = selectedLevel as -1 | -2 | -3;
     return [selected, ...UNDERGROUND_LEVELS.filter(l => l !== selected)];
   }

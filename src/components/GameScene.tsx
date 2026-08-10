@@ -57,7 +57,8 @@ import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
 import {
   groundStationCells, elevatedStationCells, undergroundStationCells, computeStationEndKeys,
-  elevatedCellCandidateFromGroundClick, computeStationHousePlacement, type StationHousePlacement,
+  elevatedCellCandidateFromGroundClick, undergroundCellCandidateFromGroundClick,
+  undergroundLevelSearchOrder, computeStationHousePlacement, type StationHousePlacement,
 } from '../render/stationLayers';
 
 const REMOVE_COLOUR = '#ff3b47';
@@ -409,21 +410,41 @@ export const GameScene: React.FC<GameSceneProps> = ({
       onBuyTrain(pos.x, pos.z);
       return;
     }
-    // 地平にヒットするものが無ければ、等角カメラの見え方から「見えている高架駅セル」の
-    // 候補を逆算して確認する(完璧ではないが、高架ホームをクリックして駅を選べる)。
-    const elevatedCandidate = elevatedCellCandidateFromGroundClick(pos);
-    const elevatedCell = railMap.get(toKey(elevatedCandidate.x, elevatedCandidate.z));
-    const elevatedStationId =
-      elevatedCell?.uppers?.[1]?.stationId
-      ?? elevatedCell?.uppers?.[2]?.stationId
-      ?? elevatedCell?.uppers?.[3]?.stationId;
-    if (elevatedStationId && selectedTrainId) {
-      if (isEditingSchedule) onAddSchedule(selectedTrainId, elevatedStationId);
-      return;
-    }
-    if (elevatedStationId && !selectedTrainId && !isEditingSchedule) {
-      onSelectStation(elevatedStationId);
-      return;
+    if (undergroundView) {
+      // 地下ビュー中は、等角カメラの見え方から「見えている地下駅セル」の候補を
+      // 選択中の深さ(buildLevel)優先で逆算して確認する(elevatedと同じ幾何を
+      // 負の高さへ適用。undergroundCellCandidateFromGroundClick参照)。
+      for (const level of undergroundLevelSearchOrder(buildLevel)) {
+        const candidate = undergroundCellCandidateFromGroundClick(pos, level);
+        const undergroundCell = railMap.get(toKey(candidate.x, candidate.z));
+        const undergroundStationId = undergroundCell?.uppers?.[level]?.stationId;
+        if (!undergroundStationId) continue;
+        if (selectedTrainId) {
+          if (isEditingSchedule) onAddSchedule(selectedTrainId, undergroundStationId);
+          return;
+        }
+        if (!isEditingSchedule) {
+          onSelectStation(undergroundStationId);
+          return;
+        }
+      }
+    } else {
+      // 地平にヒットするものが無ければ、等角カメラの見え方から「見えている高架駅セル」の
+      // 候補を逆算して確認する(完璧ではないが、高架ホームをクリックして駅を選べる)。
+      const elevatedCandidate = elevatedCellCandidateFromGroundClick(pos);
+      const elevatedCell = railMap.get(toKey(elevatedCandidate.x, elevatedCandidate.z));
+      const elevatedStationId =
+        elevatedCell?.uppers?.[1]?.stationId
+        ?? elevatedCell?.uppers?.[2]?.stationId
+        ?? elevatedCell?.uppers?.[3]?.stationId;
+      if (elevatedStationId && selectedTrainId) {
+        if (isEditingSchedule) onAddSchedule(selectedTrainId, elevatedStationId);
+        return;
+      }
+      if (elevatedStationId && !selectedTrainId && !isEditingSchedule) {
+        onSelectStation(elevatedStationId);
+        return;
+      }
     }
     const pickedId = pickTrainAt(event);
     if (pickedId) {
