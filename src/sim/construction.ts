@@ -37,19 +37,44 @@ const axisBitsFor = (axis: StationAxis): number => {
   return DIR.N | DIR.E | DIR.S | DIR.W;
 };
 
+const hasRailOrStationCell = (railMap: Map<string, CellData>, x: number, z: number): boolean => {
+  const c = railMap.get(toKey(x, z));
+  return !!c && (c.type === 'rail' || c.type === 'station');
+};
+
 // 隣接する既存の線路・駅セルから軸を推測する。南北方向に隣接セルがあればns、
 // 東西方向にあればew、両方あればcross(交差)。何も無ければ東西(ew)を既定にする。
 const inferStationAxis = (railMap: Map<string, CellData>, x: number, z: number): StationAxis => {
-  const hasNeighbourCell = (nx: number, nz: number): boolean => {
-    const c = railMap.get(toKey(nx, nz));
-    return !!c && (c.type === 'rail' || c.type === 'station');
-  };
-  const hasNS = hasNeighbourCell(x, z - 1) || hasNeighbourCell(x, z + 1);
-  const hasEW = hasNeighbourCell(x - 1, z) || hasNeighbourCell(x + 1, z);
+  const hasNS = hasRailOrStationCell(railMap, x, z - 1) || hasRailOrStationCell(railMap, x, z + 1);
+  const hasEW = hasRailOrStationCell(railMap, x - 1, z) || hasRailOrStationCell(railMap, x + 1, z);
   if (hasNS && hasEW) return 'cross';
   if (hasNS) return 'ns';
   if (hasEW) return 'ew';
   return 'ew';
+};
+
+// axisHint(ドラッグ方向のヒント)がそのセルの実状と矛盾しないかを検証する。
+// - 対象セルが既存の線路/駅として何の接続も持たない(真っさらな空セル)場合は、
+//   衝突しようがないのでヒントをそのまま信用する(駅スタブの初期方向を決めるのに必要)。
+// - 既に何らかの接続を持つセルの場合は、ヒントの軸方向に実在の隣接線路/駅セルが
+//   無ければヒントを信用しない。ヒントはポインタのドラッグ量(mousedown→mouseup)の
+//   差分から作る雑な推測値でしかなく、既存の直線区間を単にクリックしただけでも
+//   1セル分のブレで直交方向のヒントが立ってしまうことがある。それをそのまま
+//   connectionsへORすると、実在しない直交接続が混入し、ホームが線路と直交して
+//   描画される(ユーザー報告の不具合の根本原因)。一方、十字乗換駅のように実際に
+//   直交する線路へ向けて意図的にドラッグしたケースはヒント方向に本物の隣接セルが
+//   あるので、この検証を通過して従来通りcrossを形成できる。
+const axisHintIsSupported = (
+  railMap: Map<string, CellData>,
+  x: number,
+  z: number,
+  ownConnections: number,
+  hint: StationAxis
+): boolean => {
+  if (ownConnections === 0) return true;
+  if (hint === 'ns') return hasRailOrStationCell(railMap, x, z - 1) || hasRailOrStationCell(railMap, x, z + 1);
+  if (hint === 'ew') return hasRailOrStationCell(railMap, x - 1, z) || hasRailOrStationCell(railMap, x + 1, z);
+  return true; // 'cross' を明示指定するのは稀な直接呼び出しのみなので無条件に許可する
 };
 
 // field省略時は空field(=すべて平地)扱いにする。既存呼び出し・既存テストとの互換のため。
@@ -644,8 +669,13 @@ export function applyStation(
   }
 
   // 軸(axis)は明示的に渡されればそれを使い、省略時は隣接する既存の線路・駅から推測する
-  // (何も無ければ東西を既定にする)。
-  const resolvedAxis: StationAxis = axis ?? inferStationAxis(state.railMap, pos.x, pos.z);
+  // (何も無ければ東西を既定にする)。ただし既存の接続を持つセルに対しては、
+  // ヒントの軸方向に実在の隣接構造が無い限りヒントを採用しない(axisHintIsSupported)。
+  const ownConnections = existingBeforeUpdate && (existingBeforeUpdate.type === 'rail' || existingBeforeUpdate.type === 'station')
+    ? (existingBeforeUpdate.connections ?? 0)
+    : 0;
+  const trustedAxis = axis && axisHintIsSupported(state.railMap, pos.x, pos.z, ownConnections, axis) ? axis : undefined;
+  const resolvedAxis: StationAxis = trustedAxis ?? inferStationAxis(state.railMap, pos.x, pos.z);
   const newBits = axisBitsFor(resolvedAxis);
 
   // 既に駅セルで、統合すべき別の駅IDが周囲に無い場合:
