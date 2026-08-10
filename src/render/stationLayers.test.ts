@@ -6,6 +6,8 @@ import {
   elevatedStationCells,
   computeStationEndKeys,
   elevatedCellCandidateFromGroundClick,
+  undergroundCellCandidateFromGroundClick,
+  undergroundLevelSearchOrder,
   computeStationHousePlacement,
 } from './stationLayers';
 import { createTerrainField } from '../sim/terrainField';
@@ -122,6 +124,34 @@ describe('elevatedCellCandidateFromGroundClick', () => {
   it('高さ省略時はOVERPASS_HEIGHTを使う', () => {
     const withDefault = elevatedCellCandidateFromGroundClick({ x: 0, z: 0 });
     expect(withDefault).toEqual({ x: Math.round(OVERPASS_HEIGHT), z: Math.round(OVERPASS_HEIGHT) });
+  });
+});
+
+// P8c: 地下ビューでの駅クリック解決。地下レベルLのホームはy=L*OVERPASS_HEIGHT(負)に
+// 描画されるので、高架と同じ幾何を負の高さへ適用して逆算する。
+describe('undergroundCellCandidateFromGroundClick', () => {
+  it('負の高さぶん(x+h, z+h)へ丸めた候補を返す(elevatedと符号違いの同じ幾何)', () => {
+    expect(undergroundCellCandidateFromGroundClick({ x: 3, z: -2 }, -1)).toEqual({
+      x: Math.round(3 + -1 * OVERPASS_HEIGHT),
+      z: Math.round(-2 + -1 * OVERPASS_HEIGHT),
+    });
+  });
+
+  it('レベルが深いほど候補セルがさらにずれる', () => {
+    const l1 = undergroundCellCandidateFromGroundClick({ x: 0, z: 0 }, -1);
+    const l2 = undergroundCellCandidateFromGroundClick({ x: 0, z: 0 }, -2);
+    expect(l2.x).not.toEqual(l1.x);
+  });
+});
+
+describe('undergroundLevelSearchOrder', () => {
+  it('選択中のレベルを最優先にした地下レベルの探索順を返す', () => {
+    expect(undergroundLevelSearchOrder(-2)).toEqual([-2, -1, -3]);
+  });
+
+  it('地上/高架が選択中(負でない)なら既定順(-1,-2,-3)を返す', () => {
+    expect(undergroundLevelSearchOrder(1)).toEqual([-1, -2, -3]);
+    expect(undergroundLevelSearchOrder(0)).toEqual([-1, -2, -3]);
   });
 });
 
