@@ -126,6 +126,30 @@ describe('applyStation（特性テスト）', () => {
     expect(cell.connections! & DIR.N).toBe(0);
   });
 
+  // バグ報告: 既存の東西線路上でクリック設置したのに、ドラッグ方向の誤差(軸ヒント)が
+  // 直交方向として拾われ、実在しない南北connectionsが混入してホームが線路と直交してしまう。
+  // ヒントより実際のconnections/隣接セルの構造を優先すべき。
+  it('既存の東西線路セルに南北ヒント付きで設置しても、実際の東西connectionsが優先される', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }]);
+    // ドラッグの微妙なブレでaxis='ns'ヒントが渡ってしまうケースを再現
+    const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.connections).toBe(DIR.E | DIR.W);
+    expect(cell.connections! & DIR.N).toBe(0);
+    expect(cell.connections! & DIR.S).toBe(0);
+  });
+
+  it('既存の南北線路セルに東西ヒント付きで設置しても、実際の南北connectionsが優先される', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: -1 }, { x: 0, z: 0 }, { x: 0, z: 1 }]);
+    const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
+    const cell = result.railMap.get(toKey(0, 0))!;
+    expect(cell.connections).toBe(DIR.N | DIR.S);
+    expect(cell.connections! & DIR.E).toBe(0);
+    expect(cell.connections! & DIR.W).toBe(0);
+  });
+
   // 十字乗換駅: 別々に建設された2つの駅が交差セルで1つに統合される
   it('別の駅IDの駅セルを横切ると1つの駅に統合される（十字駅）', () => {
     let state = emptyState();
