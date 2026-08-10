@@ -513,9 +513,16 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
   if (!preview || preview.cellCount === 0) return null;
 
   const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, slopeIssue } = preview;
-  const tone = reason === 'ok' ? T.positive : reason === 'insufficient-funds' ? T.danger : T.warning;
+  // 'incomplete-path'(高架/地下の線路でまだ1マスしか指していない)は建設不可ではなく
+  // 「操作の途中」なので、警告色ではなく控えめな案内にする(0.5.0-Alpha-4c)。
+  const tone =
+    reason === 'ok' ? T.positive
+    : reason === 'insufficient-funds' ? T.danger
+    : reason === 'incomplete-path' ? T.textMuted
+    : T.warning;
   const message =
     reason === 'insufficient-funds' ? '資金が足りません'
+    : reason === 'incomplete-path' ? 'ドラッグして2マス以上の経路を指定してください'
     : reason === 'no-effect' ? (slopeIssue ? SLOPE_ISSUE_MESSAGES[slopeIssue] : 'ここには建設できません')
     : null;
   const isElevatedRail = mode === 'rail' && level > 0;

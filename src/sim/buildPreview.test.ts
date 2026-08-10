@@ -377,6 +377,45 @@ describe('evaluateBuild(rail/station, level<0) 地下線・地下駅(P8a)', () =
   });
 });
 
+// 0.5.0-Alpha-4c: 高架/地下の線路は2マス以上の経路でしか敷けない(applyElevatedPath/
+// applyUndergroundPathがpath.length<2をno-opにする)。ドラッグ前のホバー(1マス)を
+// 「ここには建設できません」と判定してしまうと、実際には建設できる場所なのに
+// 建設不可の表示が出続ける(ユーザー報告のバグ)。経路が短いだけの状態は
+// 'incomplete-path'として区別する。
+describe('evaluateBuild(rail, level!==0): 1マスの経路は incomplete-path', () => {
+  it('地下の線路ツールでホバー中(1マス)はno-effectではなくincomplete-path', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('rail', [{ x: 0, z: 0 }], railMap, stations, field, 100_000, -1);
+    expect(p.reason).toBe('incomplete-path');
+    expect(p.cost).toBe(0);
+  });
+
+  it('高架の線路ツールでホバー中(1マス)も同じくincomplete-path', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('rail', [{ x: 0, z: 0 }], railMap, stations, field, 100_000, 2);
+    expect(p.reason).toBe('incomplete-path');
+    expect(p.cost).toBe(0);
+  });
+
+  it('地平(level 0)の線路は1マスでも建設できるのでokのまま', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('rail', [{ x: 0, z: 0 }], railMap, stations, field, 100_000, 0);
+    expect(p.reason).toBe('ok');
+  });
+
+  it('2マスあれば通常どおり判定する(地下)', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('rail', [{ x: 0, z: 0 }, { x: 1, z: 0 }], railMap, stations, field, 100_000, -1);
+    expect(p.reason).toBe('ok');
+  });
+
+  it('地下駅は1マスが正しい経路なのでincomplete-pathにはしない', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('station', [{ x: 2, z: 0 }], railMap, stations, field, 100_000, -1);
+    expect(p.reason).toBe('no-effect');
+  });
+});
+
 describe('evaluateBuild: 地形編集(盛土/切土)', () => {
   it('terrainEdit引数を省略するとno-effect(cellCountはpath長のまま)', () => {
     const { railMap, stations, field } = emptyMaps();

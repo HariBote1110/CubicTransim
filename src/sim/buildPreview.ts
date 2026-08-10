@@ -26,6 +26,7 @@ import {
   isElevatedConnectPlanBuildable,
   resolveGroundRailPlan,
   resolveGroundRailPlanDetailed,
+  LAYERED_RAIL_MIN_PATH_CELLS,
   type GroundRailPlanFailureReason,
 } from './construction';
 import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
@@ -41,7 +42,15 @@ export type BuildBlockReason =
   /** 資金が足りない */
   | 'insufficient-funds'
   /** 地形や既存設備の制約で何も変化しない(水域に駅、既存セルの上書きなど) */
-  | 'no-effect';
+  | 'no-effect'
+  /**
+   * 経路がまだ足りないだけで、その場所が建設不可というわけではない。
+   * 高架/地下の線路(level!==0)はLAYERED_RAIL_MIN_PATH_CELLSマス以上の経路が要るため、
+   * ドラッグ前のホバー(1マス)がこれになる。'no-effect'と同一視して
+   * 「ここには建設できません」と出すと、実際には建設できる場所で建設不可の表示が
+   * 出続けてしまう(0.5.0-Alpha-4cで分離)。
+   */
+  | 'incomplete-path';
 
 export interface BuildPreview {
   mode: BuildMode;
@@ -108,6 +117,13 @@ export function evaluateBuild(
       cost,
       reason: !effective ? 'no-effect' : cost > money ? 'insufficient-funds' : 'ok',
     };
+  }
+
+  // 高架/地下の線路は2マス以上の経路でしか敷けない(construction.tsのapply系が
+  // LAYERED_RAIL_MIN_PATH_CELLS未満をno-opにする)。この状態は「場所が悪い」のではなく
+  // 「経路がまだ足りない」だけなので、no-effectとは別の理由として返す。
+  if (mode === 'rail' && level !== 0 && path.length < LAYERED_RAIL_MIN_PATH_CELLS) {
+    return { ...empty, cellCount: path.length, reason: 'incomplete-path' };
   }
 
   const elevated = level > 0 && (mode === 'rail' || mode === 'station');

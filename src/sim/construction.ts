@@ -859,6 +859,17 @@ export type BuildLevel = 0 | Level;
 export const ALL_LEVELS: readonly Level[] = [1, 2, 3, -1, -2, -3];
 
 /**
+ * 高架線(applyElevatedPath)・地下線(applyUndergroundPath)を敷くのに最低限必要な
+ * 経路の長さ。1マスでは坂/桁の役割分担(planElevatedPath)が成立しないため、
+ * どちらも path.length < この値 を no-op にする。
+ *
+ * buildPreview.tsも同じ定数を参照し、「ドラッグ前のホバー(1マス)」を
+ * 「ここには建設できません(=その場所自体が不可)」ではなく
+ * 「経路がまだ足りない」として区別するために使う(0.5.0-Alpha-4c)。
+ */
+export const LAYERED_RAIL_MIN_PATH_CELLS = 2;
+
+/**
  * 経路の端(始点 or 終点)に既に存在する線路のレベル一覧を返す(昇順、0=地平、1〜3=uppers)。
  * 各レベルは独立して併存できるため、複数レベルが同時に存在してもよい。
  */
@@ -1065,7 +1076,7 @@ export function applyElevatedPath(
   // 坂(ramp)セルは家タイルに置けない。
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
 ): ConstructionState {
-  if (path.length < 2) return state;
+  if (path.length < LAYERED_RAIL_MIN_PATH_CELLS) return state;
   for (let i = 0; i < path.length - 1; i++) {
     const dx = path[i + 1].x - path[i].x;
     const dz = path[i + 1].z - path[i].z;
@@ -1189,7 +1200,7 @@ export function applyUndergroundPath(
   level: UndergroundLevel = -1,
   forcedEnds?: { start?: ElevatedEndPlan; end?: ElevatedEndPlan }
 ): ConstructionState {
-  if (path.length < 2) return state;
+  if (path.length < LAYERED_RAIL_MIN_PATH_CELLS) return state;
   for (let i = 0; i < path.length - 1; i++) {
     const dx = path[i + 1].x - path[i].x;
     const dz = path[i + 1].z - path[i].z;
