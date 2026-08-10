@@ -4,6 +4,7 @@
 // 退役させたのに伴い、寸法定数の一次情報源もこのファイルへ移した。
 import * as THREE from './geom';
 import type { PlatformDoorType } from '../types';
+import { DIR } from '../utils';
 import { angleFromVector, PALETTE } from './palette';
 import { BOUNDARY_OFFSETS } from './trackGeometry';
 
@@ -19,8 +20,24 @@ export const CANOPY_HEIGHT = 0.72;
 export const CANOPY_WIDTH = 0.2;
 export const PILLAR_RADIUS = 0.022;
 
-/** 線路の接続方向からホームの向き(軌道の軸)を求める。ローカル +Z が軌道方向。 */
+// 対向する2方向(南北・東西)の組。「通り抜けの直線」判定に使う。
+const CARDINAL_AXIS_PAIRS = [
+  [BOUNDARY_OFFSETS.find(o => o.bit === DIR.N)!, BOUNDARY_OFFSETS.find(o => o.bit === DIR.S)!],
+  [BOUNDARY_OFFSETS.find(o => o.bit === DIR.E)!, BOUNDARY_OFFSETS.find(o => o.bit === DIR.W)!],
+] as const;
+
+/** 線路の接続方向からホームの向き(軌道の軸)を求める。ローカル +Z が軌道方向。
+ *  対向する2方向が両方立っている「通り抜けの直線」があれば、単独ビットより
+ *  優先してその軸を採る(カーブ・接合部や旧セーブの混在ビットで、単独の
+ *  直交ビットに向きが引きずられないようにするため)。通り抜けが無ければ
+ *  従来通りBOUNDARY_OFFSETS順で最初に見つかったビットの方向を返す。 */
 export const trackAngleFromConnections = (connections = 0): number => {
+  for (const [a, b] of CARDINAL_AXIS_PAIRS) {
+    if ((connections & a.bit) && (connections & b.bit)) {
+      const len = Math.sqrt(a.x * a.x + a.z * a.z) || 1;
+      return angleFromVector(a.x / len, a.z / len);
+    }
+  }
   for (const o of BOUNDARY_OFFSETS) {
     if (connections & o.bit) {
       const len = Math.sqrt(o.x * o.x + o.z * o.z) || 1;
