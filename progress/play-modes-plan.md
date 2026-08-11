@@ -1,8 +1,60 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
-状態: **PM2 実装済み**（軌間・電化(modes)の静的可否判定、本番経路探索への配線、
-高架/地下への配線、Stage B改軌ツール、Stage C UI、軌間・架線の描画差まで完了）。
-2026-08-11 の設計会話を基に作成、同日PM1着手。
+状態: **PM3 実装済み**（PM2の軌間・電化(modes)に加え、'boundaries'段階の交直流電化
+[dc/ac]・デッドセクション惰行・交流/交直流車の可否判定と購入・架線の交流色分けまで完了）。
+2026-08-11 の設計会話を基に作成、同日PM1着手。0.5.0-Alpha-7aでPM3完了。
+
+## 実装メモ（PM3、0.5.0-Alpha-7a）
+
+- `src/types.ts`: `CellData.electrified`を`boolean`から`'dc'|'ac'|boolean`へ拡張(legacyの
+  `true`=直流)。`TrainPower`に`'electric-ac'`(交流専用)・`'electric-acdc'`(交直流両用)を追加。
+  既存の`'electric'`は「直流専用車」の意味に固定した(名称は変えていない)。
+- `src/sim/gameRules.ts`: `electrificationOf(cell): 'dc'|'ac'|null`を新設し、legacyの
+  `true`を`'dc'`へ正規化する唯一の場所にした(persistence.tsの読み込み時正規化に加え、
+  こちらも防御的に同じ変換をする二重化)。`cellAllowsTrain`を拡張し、
+  diesel=常に許可/electric=dc限定/electric-ac=ac限定/electric-acdc=dc・ac両方許可、
+  という表を実装。`isDeadSectionBoundary(a, b)`を新設し、隣接2セルが「両方電化かつ
+  方式が異なる」ときだけtrueを返す(片方が非電化の境界はデッドセクションではない)。
+- `src/sim/pathfinding.ts`: **コード変更なし**。`cellAllowsTrain`が交直流を判定するように
+  なったことで、BFSは自動的に「dc専用車はac区間を含む経路を選ばない」ようになる
+  (design decision 4で「自然に落ちる」と想定した通り、テストで確認)。
+- `src/sim/physics.ts`: `computeAcceleration`のmodeに`'coasting'`を追加。牽引力を0にし、
+  既存の転がり抵抗・空気抵抗の項だけを差し引く(新しい減速モデルを追加したのではなく、
+  既存の抵抗項をそのまま流用する)。
+- `src/sim/simulation.ts`: `stepTrain`の加速分岐で、現在セル(`rt.grid`)と次セル
+  (`nextTile`)が`isDeadSectionBoundary`ならmode='coasting'を使う。「先頭が境界の前後
+  1セル以内」を「現在セルと次セルの電化方式差」で近似している(1セル単位の粒度なので
+  これで要件を満たす)。最低進入速度・失速はPM3のスコープ外(follow-upとして残す)。
+- `src/sim/economy.ts`: `trainCostFor(power)`を新設。`AC_TRAIN_PRICE_MULTIPLIER=1.2`
+  (交流+20%)・`ACDC_TRAIN_PRICE_MULTIPLIER=1.5`(交直流+50%)、diesel/electric(直流)は
+  従来のTRAIN_COSTのまま(値は「あったら楽しい」判断)。
+- `src/hooks/useGameLogic.ts`: `buyTrain`が`trainCostFor(power)`で動力別に課金するよう変更
+  (電化概念が無い場合はTRAIN_COST固定)。
+- `src/sim/persistence.ts`: `deserialiseWorld`でrailMapのエントリを走査し、
+  `electrified === true`のセルを`'dc'`へ書き換える。バージョン上げは不要
+  (CellDataの型が広がっただけで、既存のMap丸ごとシリアライズの仕組みはそのまま)。
+- `src/components/GameUI.tsx`: `rules.electrification`が`'modes'`のときは従来の
+  電化/非電化トグルのまま、`'boundaries'`以上では非電化/直流/交流の三択ボタンに切り替わる。
+  車庫の購入動力選択に、`'boundaries'`以上でのみ交流電車/交直流電車ボタンを追加
+  (ボタンのtitleに`trainCostFor`の価格を表示)。
+- `src/render/palette.ts` / `railGeometry.ts`: `catenaryMastAc`/`catenaryWireAc`
+  (直流よりわずかに青みがかった色)を追加。`buildRailNetworkGeometry`が
+  `electrificationOf(cell)`で`'ac'`セルの架線を`catenaryAc`バケット、それ以外を
+  従来の`catenary`バケットへ振り分ける。`WebGpuTrackNetwork.tsx`のsurfaceチャンクへ
+  `catenaryAc.masts`/`.wires`を追加しただけ(デッドセクション自体の専用視覚表現は
+  スコープ外、follow-upとして残す)。
+- 信号(signalling)は本PM3では**コード変更なし**。progress/signalling-plan.mdへ
+  「S0(おまかせ・CBTC風の移動閉塞)は現行の予約(PBS)＋制動距離システムがそのまま
+  実装として機能しており、rules.signalling='s0'が既定として正式に運用中」という
+  ステータス追記のみ行った(design decision 7どおり)。
+- ブラウザ実機(アドバンスドモード)で、`window.__debugWorld.railMap`に'dc'/'ac'セルが
+  正しく載ること、GameUI.tsxの三択電化セレクタ・交流/交直流車購入ボタンの表示切替、
+  架線のac色分けをスクリーンショットで確認した(詳細は本ファイル末尾の検証ログ参照)。
+  `npm run test`(1037件)・`npm run build`ともgreen。
+- **残るfollow-up**: 最低進入速度/デッドセクション内での失速(design decision 4で
+  明示的にスコープ外)、デッドセクション自体の専用視覚表現(design decision 5で
+  明示的にスコープ外)、電化の「給電インフラ」段階(`electrification: 'feeding'`、
+  リアリスティック固有、PM4以降)。
 
 ## 実装メモ（PM2、2026-08-11）
 
