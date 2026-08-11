@@ -1182,6 +1182,24 @@ describe('地下線(applyUndergroundPath, P8a)', () => {
     // 書くのと対称の理由)。ramp.base自体は-1のまま変わらない。
     expect(groundCell.connections).toBeGreaterThan(0);
   });
+
+  it('掘割ランプのdirは高さの高い側(地表・地平寄り)を向く(隣接セル・地平線路と連続させるため)', () => {
+    // レンダラー(buildRampTrackParts)はdirを「高さの高い側」として解釈する
+    // (rampHeightAtPosはposHighに近いほど高い)。base<0の掘割は地表(0)に近い側が
+    // 高さの高い側なので、dirは地平線路(この例ではx=1側、西)を向かなければならない。
+    // 逆向きだと隣接セル境界の高さが一致せず、線路が寸断されて見える(0.5.0-Alpha-8bで修正)。
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]);
+    state = applyUndergroundPath(state, [
+      { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 },
+    ], flatField, -1);
+    const level2Cell = state.railMap.get(toKey(2, 0))!;
+    const level1Cell = state.railMap.get(toKey(3, 0))!;
+    expect(level2Cell.ramp!.level).toBe(2);
+    expect(level1Cell.ramp!.level).toBe(1);
+    expect(level2Cell.ramp!.dir).toBe(DIR.W);
+    expect(level1Cell.ramp!.dir).toBe(DIR.W);
+  });
 });
 
 describe('地下駅(applyUndergroundStation, P8a)', () => {
