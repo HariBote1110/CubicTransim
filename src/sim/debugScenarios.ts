@@ -120,8 +120,15 @@ function buildTunnelScenario(): DebugScenarioWorld {
   // 焼き直して転送する(その変換はcornerHeightAtだけを読む)。以前はcornerHeightAtが
   // 常に0を返しており、cellCornerHeights/terrainTypeAtが表現する尾根と矛盾していたため、
   // 転送後の地形が完全に平坦になり、ブラウザで山が一切描画されない不具合になっていた。
-  // cornerHeightAtも尾根の位置(x=-2..2)で標高1を返すようにし、矛盾を解消する。
-  const cornerHeightAt = (x: number): number => (isRidge(Math.round(x)) ? 1 : 0);
+  //
+  // 単純に0/1の1段差だけにすると理屈上は矛盾しないが、実際にブラウザで見るとほぼ
+  // 色の違いにしか見えず(1-Lipschitzのなだらかな坂は高低差が視認しづらい)、
+  // 「トンネルが必要な山」に見えなかった。尾根の中心(x=0)を頂点に、両端(|x|>=3)で
+  // 標高0まで直線的に落ちる山型(三角形断面、頂点標高3)にして、実際に隆起した
+  // シルエットとして視認できるようにする。RIDGE_HALF_WIDTH(=2)の外側は必ず0。
+  const RIDGE_PEAK_HEIGHT = 3;
+  const cornerHeightAt = (x: number): number =>
+    Math.max(0, RIDGE_PEAK_HEIGHT - Math.abs(Math.round(x)));
   const field: TerrainField = {
     cornerHeightAt: (x) => cornerHeightAt(x),
     cellCornerHeights: (x) => (isRidge(Math.round(x)) ? [1, 1, 1, 0] : [0, 0, 0, 0]),
