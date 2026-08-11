@@ -8,7 +8,9 @@ import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import {
   computePortalHeadwall, buildHeadwallOutline, buildArchOutline, type Point2D,
   PORTAL_WALL_WIDTH, PORTAL_WALL_THICKNESS, PORTAL_BODY_DEPTH, PORTAL_MOUTH_CAP_DEPTH,
+  computeWingWallPlacements,
 } from './tunnelPortalGeometry';
+import { angleFromVector } from './palette';
 import type { ShadedGeometryEntry } from './stationGeometry';
 
 export interface TunnelPortalLike {
@@ -22,7 +24,10 @@ export interface TunnelPortalLike {
 const HEADWALL_COLOUR = '#a2a7ae';
 const COPING_COLOUR = '#8b9097';
 const MOUTH_COLOUR = '#0b0e12';
-const BODY_COLOUR = '#a2a7ae';
+// ボディ(壁の背後の中実な箱)はヘッドウォールよりわずかに暗くし、正面壁と山側の
+// 境界に陰影の段差をつける。同色だと「ひと続きの直方体」に見えてしまうため。
+const BODY_COLOUR = '#8f949b';
+const WING_WALL_COLOUR = '#8b9097';
 
 const openingHalfWidth = 0.26;
 const openingStraightHeight = 0.26;
@@ -92,6 +97,20 @@ export function buildTunnelPortalGeometries(
     const body = new THREE.BoxGeometry(wallWidth, wallHeight, bodyDepth);
     body.translate(0, wallHeight / 2, bodyZ);
     place(body, BODY_COLOUR);
+
+    // 翼壁(wing wall): 壁前面の左右端から山側へハの字に開く低い擁壁。これが無いと
+    // 正面壁がただの直方体に見えてしまう(「黒枠が生えてるだけ」という指摘の原因)。
+    const frontFaceZ = wallZ + wallThickness / 2;
+    for (const wing of computeWingWallPlacements(wallWidth, wallHeight, frontFaceZ)) {
+      const wingGeom = new THREE.BoxGeometry(wing.thickness, wing.height, wing.length);
+      wingGeom.rotateY(angleFromVector(wing.dirX, wing.dirZ));
+      wingGeom.translate(
+        wing.cornerX + wing.dirX * (wing.length / 2),
+        wing.height / 2,
+        wing.cornerZ + wing.dirZ * (wing.length / 2),
+      );
+      place(wingGeom, WING_WALL_COLOUR);
+    }
   }
 
   return entries;

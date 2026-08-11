@@ -30,8 +30,12 @@ export const PALETTE = {
   overpassDeck: '#5f5a50',
 
   // --- 掘割ランプの地表開口(P8b) ---
-  undergroundPit: '#14140f',
-  undergroundWall: '#736a5c',
+  // R4末: 山岳トンネル坑口(ヘッドウォール)と色調を揃え、開口全体が「暗い穴+
+  // コンクリート擁壁」の掘割として一貫して見えるようにした(以前は擁壁も穴と
+  // 同じほぼ黒色で焼いていたため、擁壁の存在が視認できず「ただの黒い平面」に
+  // 見えていた)。
+  undergroundPit: '#0b0e12',
+  undergroundWall: '#8b9097',
 
   // --- 架線(electrified区間、PM2 follow-up) ---
   catenaryMast: '#4a4d52',

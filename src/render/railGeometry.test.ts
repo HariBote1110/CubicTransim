@@ -20,7 +20,8 @@ describe('buildRailNetworkGeometry: 地平のみのセル', () => {
     expect(geo.undergroundBright.rails).toBeNull();
     expect(geo.undergroundDim.rails).toBeNull();
     expect(geo.undergroundGhost.rails).toBeNull();
-    expect(geo.openings).toBeNull();
+    expect(geo.openingPits).toBeNull();
+    expect(geo.openingWalls).toBeNull();
   });
 });
 
@@ -123,7 +124,8 @@ describe('buildRailNetworkGeometry: 掘割ランプの地表開口', () => {
       [toKey(0, 0), { type: 'rail', connections: 0, ramp: { dir: DIR.N, base: -1, level: 1 } }],
     ]);
     const geo = buildRailNetworkGeometry(railMap, field, false, 0);
-    expect(geo.openings).not.toBeNull();
+    expect(geo.openingPits).not.toBeNull();
+    expect(geo.openingWalls).not.toBeNull();
     expect(geo.undergroundGhost.rails).not.toBeNull();
     expect(geo.undergroundBright.rails).toBeNull();
     expect(geo.undergroundDim.rails).toBeNull();

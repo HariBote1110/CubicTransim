@@ -36,7 +36,7 @@ describe('buildWaterBridgeGeometries', () => {
 });
 
 describe('buildTunnelPortalGeometries', () => {
-  it('坑口1つにつきヘッドウォール・笠石・暗がり・ボディの4パーツを生成する', () => {
+  it('坑口1つにつきヘッドウォール・笠石・暗がり・ボディ・翼壁2枚の6パーツを生成する', () => {
     const field = createTerrainField(1, 32);
     const railMap = new Map<string, CellData>([
       [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, tunnel: { height: 0 } }],
@@ -45,6 +45,6 @@ describe('buildTunnelPortalGeometries', () => {
     const portals = tunnelPortals(railMap, field);
     expect(portals.length).toBeGreaterThan(0);
     const entries = buildTunnelPortalGeometries(portals, field);
-    expect(entries).toHaveLength(portals.length * 4);
+    expect(entries).toHaveLength(portals.length * 6);
   });
 });

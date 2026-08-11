@@ -58,8 +58,11 @@ export interface RailNetworkGeometry {
   undergroundDim: MergedTrackParts;
   /** 地上ビュー: 地形の上へ薄く透かして重ねる地下線(全レベル合算)。 */
   undergroundGhost: MergedTrackParts;
-  /** 通常表示のみ: 掘割ランプの地表開口(暗い穴+擁壁)。 */
-  openings: THREE.BufferGeometry | null;
+  /** 通常表示のみ: 掘割ランプの地表開口の暗い穴(pit)。擁壁とは別色で焼くため分離。 */
+  openingPits: THREE.BufferGeometry | null;
+  /** 通常表示のみ: 掘割ランプの地表開口の擁壁(retaining wall)。坑口のヘッドウォールと
+   *  近い明るいコンクリート色にし、暗い穴と混ざって「ただの黒い平面」に見えないようにする。 */
+  openingWalls: THREE.BufferGeometry | null;
   /** electrified区間の架線(地平・高架のみ。地下は対象外)。直流(またはlegacy true)区間。 */
   catenary: { masts: THREE.BufferGeometry | null; wires: THREE.BufferGeometry | null };
   /** PM3: 交流電化区間の架線(色調のみdcと異なる。palette.tsのcatenaryMastAc/catenaryWireAc)。 */
@@ -91,7 +94,8 @@ export function buildRailNetworkGeometry(
   const undergroundBright: TrackParts = emptyTrackParts();
   const undergroundDim: TrackParts = emptyTrackParts();
   const undergroundGhost: TrackParts = emptyTrackParts();
-  const openings: THREE.BufferGeometry[] = [];
+  const openingPits: THREE.BufferGeometry[] = [];
+  const openingWalls: THREE.BufferGeometry[] = [];
   const catenary: CatenaryParts = { masts: [], wires: [] };
   const catenaryAc: CatenaryParts = { masts: [], wires: [] };
 
@@ -170,7 +174,10 @@ export function buildRailNetworkGeometry(
           if (!undergroundView) {
             // 地上ビューでは地表に開いた穴(暗いpit+擁壁)も従来どおり出す。
             const opening = buildUndergroundOpeningPart(data.ramp.dir, x, z);
-            if (opening) openings.push(opening.pit, opening.wallA, opening.wallB);
+            if (opening) {
+              openingPits.push(opening.pit);
+              openingWalls.push(opening.wallA, opening.wallB);
+            }
           }
         }
       }
@@ -251,7 +258,8 @@ export function buildRailNetworkGeometry(
       sleepers: mergeParts(undergroundGhost.sleepers),
       rails: mergeParts(undergroundGhost.rails),
     },
-    openings: mergeParts(openings),
+    openingPits: mergeParts(openingPits),
+    openingWalls: mergeParts(openingWalls),
     catenary: {
       masts: mergeParts(catenary.masts),
       wires: mergeParts(catenary.wires),
