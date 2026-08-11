@@ -14,7 +14,7 @@ import {
   UNDERGROUND_RAIL_COST_MULTIPLIER,
   UNDERGROUND_STATION_COST,
 } from './economy';
-import { applyElevatedPath, applyUndergroundPath } from './construction';
+import { applyElevatedPath, applyUndergroundPath, applyRailPath } from './construction';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import type { EditBlockers } from './terrainOverlay';
@@ -475,5 +475,32 @@ describe('evaluateBuild: 地形編集(盛土/切土)', () => {
       new Map(), terrainEditFor(field, railMap)
     );
     expect(p.reason).toBe('no-effect');
+  });
+});
+
+describe('evaluateBuild: PM2 軌間・電化', () => {
+  it('railOptions省略時は従来どおりの平地コスト(電化上乗せ無し)', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000, 0, new Map(), undefined, {});
+    expect(p.cost).toBe(3 * RAIL_COST);
+  });
+
+  it('electrified:trueは架線設備費が上乗せされる', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000, 0, new Map(), undefined, { electrified: true });
+    expect(p.cost).toBeGreaterThan(3 * RAIL_COST);
+    expect(p.reason).toBe('ok');
+  });
+
+  it('軌間の異なる既存線路への接続は、経路自体は敷けるが接続ビットは立たない(construction.tsの規約をそのまま反映する)', () => {
+    const { railMap: baseMap, stations, field } = emptyMaps();
+    // 標準軌の単独セルを実際に敷いておく(construction.tsのapplyRailPathを直接使う)
+    const laidState = applyRailPath({ railMap: baseMap, stations }, [{ x: -1, z: 0 }, { x: 0, z: 0 }], field, new Map(), { gauge: 1435 });
+    const p = evaluateBuild('rail', [{ x: 0, z: 0 }, { x: 1, z: 0 }], laidState.railMap, laidState.stations, field, 100_000, 0, new Map(), undefined, { gauge: 1067 });
+    // (1,0)は新規セルとして敷かれるため'ok'(no-effectにはならない)。
+    // 実際に(0,0)⇔(1,0)間の接続ビットが立たないことはconstruction.test.tsで確認済み。
+    expect(p.reason).toBe('ok');
   });
 });

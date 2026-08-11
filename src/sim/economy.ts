@@ -92,6 +92,10 @@ export const TRAIN_COST = 5_000; // 新造時(2両編成)の価格
 export const CAR_COST = 2_000; // 増結1両あたり
 export const CAR_REFUND = 1_000; // 解結1両あたりの払い戻し
 
+// PM2: 電化(直流前提の単純ON/OFF)の追加コスト。架線設備費として1セルあたり
+// RAIL_COSTの50%増しにする(値は「あったら楽しい」判断、progress/play-modes-plan.md)。
+export const ELECTRIFICATION_COST_MULTIPLIER = 0.5;
+
 // 地形編集(盛土/切土)の1セル・1段あたりのコスト。線路(RAIL_COST=100)の半分にして、
 // OpenTTD同様「整地してから敷くほうがトンネル(8倍)・橋(5倍)より安いが、
 // 広範囲の造成は財布に響く」バランスにする。
@@ -101,6 +105,12 @@ export const TERRAIN_EDIT_COST = 50;
 // 1回の編集で各セルの変化は常に±1段なので件数=総段数)。
 export function costOfTerrainEdit(cellSteps: number): number {
   return cellSteps * TERRAIN_EDIT_COST;
+}
+
+// PM2: 電化を選んだ場合の追加費用。cellCountは建設対象セル数(地平/高架/地下いずれも
+// 同一の1セルあたり単価とする、電化設備費を線路本体のコストと分離した単純化)。
+export function costOfElectrification(cellCount: number): number {
+  return cellCount * RAIL_COST * ELECTRIFICATION_COST_MULTIPLIER;
 }
 
 // 水上は「橋」、山岳は「トンネル」としてRAIL_COSTに乗算する倍率

@@ -29,7 +29,8 @@ import {
   LAYERED_RAIL_MIN_PATH_CELLS,
   type GroundRailPlanFailureReason,
 } from './construction';
-import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
+import type { RailBuildOptions } from './construction';
 import type { TerrainField } from './terrainField';
 import type { EditedTerrainField } from './terrainOverlay';
 import { applyCornerEdit, type EditBlockers } from './terrainOverlay';
@@ -94,7 +95,11 @@ export function evaluateBuild(
     base: TerrainField;
     editedField: EditedTerrainField;
     blockers: EditBlockers;
-  }
+  },
+  // PM2: 軌間/電化。現状は地平(level 0)のrail建設にのみ反映する(高架/地下はPM2の
+  // スコープ外。construction.ts側もapplyElevatedPath/applyUndergroundPathには
+  // railOptionsを未配線。progress/play-modes-plan.mdのPM2実装メモに簡略化として記載)。
+  railOptions: RailBuildOptions = {}
 ): BuildPreview {
   const empty: BuildPreview = {
     mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0, level,
@@ -187,7 +192,7 @@ export function evaluateBuild(
   }
   const groundRampCount = groundRampFlags ? groundRampFlags.filter(Boolean).length : 0;
 
-  const cost = mode === 'remove'
+  const baseCost = mode === 'remove'
     ? 0
     : mode === 'rail' && elevated
     ? costOfElevatedPath(elevatedRampCount, elevatedOverpassCount)
@@ -208,6 +213,10 @@ export function evaluateBuild(
         mode === 'rail' ? field : undefined,
         mode === 'rail' ? railMap : undefined
       );
+  // PM2: 電化を選んだ地平のrail建設には、線路本体のコストに架線設備費を上乗せする。
+  const cost = mode === 'rail' && !elevated && !underground && railOptions.electrified
+    ? baseCost + costOfElectrification(path.length)
+    : baseCost;
 
   // 実際に適用してみて、変化が生じるか(=建設が成立するか)を確かめる。
   const state: ConstructionState = { railMap, stations };
@@ -231,7 +240,7 @@ export function evaluateBuild(
       } else if (underground) {
         result = applyUndergroundPath(state, path, field, undergroundLevel);
       } else {
-        const detailed = applyRailPathDetailed(state, path, field, townTiles);
+        const detailed = applyRailPathDetailed(state, path, field, townTiles, railOptions);
         result = detailed;
         overpassCells = detailed.overpassCells.size;
       }
