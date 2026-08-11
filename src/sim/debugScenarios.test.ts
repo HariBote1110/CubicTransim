@@ -103,6 +103,21 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
     expect(heights.some(h => h > 0)).toBe(true);
   });
 
+  // なだらかな1段差はP7b以降の勾配追従(incline)でそのまま登れてしまい、
+  // 「トンネルが必要な急峻な尾根」に見えない(見た目上も1色の帯にしか見えず、
+  // ブラウザで「山に見えない」と報告された)。中心が高く両端で0まで落ちる
+  // 三角形断面(ピーク型)にして、実際に隆起した尾根のシルエットになるようにする。
+  it('山岳トンネル: cornerHeightAtは尾根の中心が最も高く、両端でなだらかに0へ落ちる山型になる', () => {
+    const world = scenario('mountain-tunnel').build();
+    const field = world.field!;
+    const centre = field.cornerHeightAt(0, 0);
+    expect(centre).toBeGreaterThan(1); // 1段だけの平らな帯ではなく、山らしい高さを持つ
+    expect(field.cornerHeightAt(1, 0)).toBeLessThan(centre);
+    expect(field.cornerHeightAt(-1, 0)).toBe(field.cornerHeightAt(1, 0)); // 左右対称
+    expect(field.cornerHeightAt(3, 0)).toBe(0);
+    expect(field.cornerHeightAt(-3, 0)).toBe(0);
+  });
+
   it('単線行き違い: 信号3基と対向2列車を持つ', () => {
     const world = scenario('passing-loop').build();
     const signals = Array.from(world.railMap.values()).filter(c => c.signalDir !== undefined);
