@@ -1099,7 +1099,12 @@ export function applyElevatedPath(
   forcedEnds?: { start?: ElevatedEndPlan; end?: ElevatedEndPlan },
   // 町タイル索引。高架の桁(span)は家タイルの上を通過できるが、地面に接する
   // 坂(ramp)セルは家タイルに置けない。
-  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  // PM2: 軌間/電化。高架・地下は「セル単位で1つの軌間を共有する」単純化のため、
+  // レベル別ではなくCellData本体(セル全体)へ付ける。省略時は既存挙動と完全に同一
+  // (異なる軌間の既存セルへの接続拒否は地平のaddConnectionToCellのみの機能で、
+  // ここでは行わない=高架/地下の軌間ミスマッチ判定はPM2のスコープ外)。
+  railOptions: RailBuildOptions = {}
 ): ConstructionState {
   if (path.length < LAYERED_RAIL_MIN_PATH_CELLS) return state;
   for (let i = 0; i < path.length - 1; i++) {
@@ -1146,6 +1151,11 @@ export function applyElevatedPath(
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
+  // PM2: セル単位で軌間/電化を共有するため、CellData本体(uppersの外側)へ付ける。
+  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
+    ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
+    ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
+  };
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -1169,6 +1179,7 @@ export function applyElevatedPath(
           ...(base?.uppers ?? {}),
           [level]: { connections: (upperAtLevel?.connections ?? 0) | axisBits, stationId: upperAtLevel?.stationId },
         },
+        ...gaugeElectrifiedPatch,
       });
     } else if (role.kind === 'anchor') {
       // applyElevatedPath(level>=1)はpickElevatedConnectionの仕様上、常にconnectLevel<level
@@ -1183,6 +1194,7 @@ export function applyElevatedPath(
           ...(existing?.uppers ?? {}),
           [role.connectLevel]: { connections: (upperAtLevel?.connections ?? 0) | dir, stationId: upperAtLevel?.stationId },
         },
+        ...gaugeElectrifiedPatch,
       });
     } else {
       const bits = prevDir | nextDir;
@@ -1194,6 +1206,7 @@ export function applyElevatedPath(
         type: merged.type ?? 'rail',
         ...terrainFlags(field, path[i].x, path[i].z),
         ramp: { dir: rampDir, level: role.level, base: role.base },
+        ...gaugeElectrifiedPatch,
       });
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
     }
@@ -1223,7 +1236,9 @@ export function applyUndergroundPath(
   path: Pos[],
   field: TerrainField = EMPTY_FIELD,
   level: UndergroundLevel = -1,
-  forcedEnds?: { start?: ElevatedEndPlan; end?: ElevatedEndPlan }
+  forcedEnds?: { start?: ElevatedEndPlan; end?: ElevatedEndPlan },
+  // PM2: applyElevatedPathと同じ「セル単位で軌間/電化を共有する」単純化。
+  railOptions: RailBuildOptions = {}
 ): ConstructionState {
   if (path.length < LAYERED_RAIL_MIN_PATH_CELLS) return state;
   for (let i = 0; i < path.length - 1; i++) {
@@ -1272,6 +1287,10 @@ export function applyUndergroundPath(
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
+  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
+    ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
+    ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
+  };
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -1290,6 +1309,7 @@ export function applyUndergroundPath(
           ...(existing?.uppers ?? {}),
           [level]: { connections: (upperAtLevel?.connections ?? 0) | axisBits, stationId: upperAtLevel?.stationId },
         },
+        ...gaugeElectrifiedPatch,
       });
     } else if (role.kind === 'anchor') {
       const dir = role.side === 'start' ? nextDir : prevDir;
@@ -1301,6 +1321,7 @@ export function applyUndergroundPath(
           ...(existing?.uppers ?? {}),
           [role.connectLevel]: { connections: (upperAtLevel?.connections ?? 0) | dir, stationId: upperAtLevel?.stationId },
         },
+        ...gaugeElectrifiedPatch,
       });
     } else {
       const bits = prevDir | nextDir;
@@ -1321,6 +1342,7 @@ export function applyUndergroundPath(
         ...merged,
         type: merged.type ?? 'rail',
         ramp: { dir: rampDir, level: role.level, base: role.base },
+        ...gaugeElectrifiedPatch,
       });
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
     }

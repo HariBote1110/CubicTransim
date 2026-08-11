@@ -96,9 +96,9 @@ export function evaluateBuild(
     editedField: EditedTerrainField;
     blockers: EditBlockers;
   },
-  // PM2: 軌間/電化。現状は地平(level 0)のrail建設にのみ反映する(高架/地下はPM2の
-  // スコープ外。construction.ts側もapplyElevatedPath/applyUndergroundPathには
-  // railOptionsを未配線。progress/play-modes-plan.mdのPM2実装メモに簡略化として記載)。
+  // PM2: 軌間/電化。地平・高架・地下いずれのrail建設にも反映する(construction.tsの
+  // applyRailPathDetailed/applyElevatedPath/applyUndergroundPathすべてがrailOptionsを
+  // 受け取る)。高架/地下は「セル単位で1つの軌間を共有する」単純化(レベル別に持たない)。
   railOptions: RailBuildOptions = {}
 ): BuildPreview {
   const empty: BuildPreview = {
@@ -213,8 +213,9 @@ export function evaluateBuild(
         mode === 'rail' ? field : undefined,
         mode === 'rail' ? railMap : undefined
       );
-  // PM2: 電化を選んだ地平のrail建設には、線路本体のコストに架線設備費を上乗せする。
-  const cost = mode === 'rail' && !elevated && !underground && railOptions.electrified
+  // PM2: 電化を選んだrail建設には、線路本体のコストに架線設備費を上乗せする
+  // (地平/高架/地下いずれも同じ単価。costOfElectrificationのdocコメント参照)。
+  const cost = mode === 'rail' && railOptions.electrified
     ? baseCost + costOfElectrification(path.length)
     : baseCost;
 
@@ -235,10 +236,10 @@ export function evaluateBuild(
     case 'depot': result = applyDepot(state, path[path.length - 1], field, townTiles); break;
     case 'rail': {
       if (elevated) {
-        result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTiles);
+        result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTiles, railOptions);
         if (result.railMap !== state.railMap) overpassCells = elevatedOverpassCount;
       } else if (underground) {
-        result = applyUndergroundPath(state, path, field, undergroundLevel);
+        result = applyUndergroundPath(state, path, field, undergroundLevel, undefined, railOptions);
       } else {
         const detailed = applyRailPathDetailed(state, path, field, townTiles, railOptions);
         result = detailed;

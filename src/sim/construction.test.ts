@@ -1699,4 +1699,41 @@ describe('applyRailPath: PM2 軌間(railOptions)', () => {
     const originCell = result.railMap.get(toKey(0, 0))!;
     expect(originCell.connections! & DIR.E).toBe(DIR.E);
   });
+
+  it('applyElevatedPath: railOptions省略時は従来どおりgauge/electrifiedが付かない', () => {
+    const state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const result = applyElevatedPath(state, path, undefined, 1);
+    expect(result.railMap.get(toKey(1, 0))!.gauge).toBeUndefined();
+    expect(result.railMap.get(toKey(1, 0))!.electrified).toBeUndefined();
+  });
+
+  it('applyElevatedPath: railOptionsで指定した軌間・電化が経路上の全セル(セル単位で共有)に付く', () => {
+    const state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const result = applyElevatedPath(state, path, undefined, 1, undefined, undefined, { gauge: 1435, electrified: true });
+    for (const p of path) {
+      const cell = result.railMap.get(toKey(p.x, p.z))!;
+      expect(cell.gauge).toBe(1435);
+      expect(cell.electrified).toBe(true);
+    }
+  });
+
+  it('applyUndergroundPath: railOptions省略時は従来どおりgauge/electrifiedが付かない', () => {
+    const state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const result = applyUndergroundPath(state, path, undefined, -1);
+    expect(result.railMap.get(toKey(1, 0))!.gauge).toBeUndefined();
+  });
+
+  it('applyUndergroundPath: railOptionsで指定した軌間・電化が経路上の全セルに付く', () => {
+    const state = emptyState();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }];
+    const result = applyUndergroundPath(state, path, undefined, -1, undefined, { gauge: 762, electrified: true });
+    for (const p of path) {
+      const cell = result.railMap.get(toKey(p.x, p.z))!;
+      expect(cell.gauge).toBe(762);
+      expect(cell.electrified).toBe(true);
+    }
+  });
 });
