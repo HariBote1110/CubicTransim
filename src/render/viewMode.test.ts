@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { isUndergroundView, undergroundBucketOf, isLevelDimmed } from './viewMode';
+import { isUndergroundView, undergroundBucketOf, isLevelDimmed, previewMeshLayerClass } from './viewMode';
+import { MESH_LAYER_CLASS } from './webgpuLayer';
 
 describe('isUndergroundView: 選択レベルから地下ビューかどうかを判定する', () => {
   it('レベルが負なら地下ビュー', () => {
@@ -38,5 +39,19 @@ describe('isLevelDimmed: そのレベルのコンテンツを暗くすべきか'
   });
   it('地下ビュー中でも選択中のレベル自身は暗くしない', () => {
     expect(isLevelDimmed(-1, true, -1)).toBe(false);
+  });
+});
+
+describe('previewMeshLayerClass: 建設プレビューの描画クラスを最小y座標から選ぶ', () => {
+  it('すべてのセルがy>=0なら半透明(translucent)', () => {
+    expect(previewMeshLayerClass(0)).toBe(MESH_LAYER_CLASS.translucent);
+    expect(previewMeshLayerClass(1.5)).toBe(MESH_LAYER_CLASS.translucent);
+  });
+  it('いずれかのセルがy<0(地下)なら地下ゴースト(undergroundGhost)', () => {
+    expect(previewMeshLayerClass(-0.1)).toBe(MESH_LAYER_CLASS.undergroundGhost);
+    expect(previewMeshLayerClass(-5)).toBe(MESH_LAYER_CLASS.undergroundGhost);
+  });
+  it('境界y=0はtranslucent', () => {
+    expect(previewMeshLayerClass(0)).toBe(MESH_LAYER_CLASS.translucent);
   });
 });
