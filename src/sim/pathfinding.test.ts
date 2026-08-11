@@ -848,3 +848,66 @@ describe('多レベル高架: 地平→レベル1→レベル2と登坂する経
     expect(route2[route2.length - 1]).toMatchObject({ x: 7, z: 0, layer: 1 });
   });
 });
+
+describe('calculateRoute: PM2 軌間・電化', () => {
+  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+
+  it('rules省略時(ライト相当)はセルにgauge/electrifiedが付いていても無視して通過する', () => {
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(1, 0), { ...railMap.get(toKey(1, 0))!, gauge: 1435 });
+    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const result = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+    });
+    expect(result).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
+  });
+
+  it('rules.gauge=trueだと軌間の異なるセルへは進入できない', () => {
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(1, 0), { ...railMap.get(toKey(1, 0))!, gauge: 1435 });
+    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, gauge: 1435, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const blocked = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+      rules: NORMAL_RULES, trainGauge: 1067, trainPower: 'diesel',
+    });
+    expect(blocked).toEqual([]);
+
+    const allowed = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+      rules: NORMAL_RULES, trainGauge: 1435, trainPower: 'diesel',
+    });
+    expect(allowed).toEqual([{ x: 1, z: 0 }, { x: 2, z: 0 }]);
+  });
+
+  it('electrification!==noneかつ電車は非電化セルへ進入できない', () => {
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(1, 0), { ...railMap.get(toKey(1, 0))!, gauge: 1067, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const blocked = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+      rules: NORMAL_RULES, trainGauge: 1067, trainPower: 'electric',
+    });
+    expect(blocked).toEqual([]);
+
+    railMap.set(toKey(1, 0), { ...railMap.get(toKey(1, 0))!, electrified: true });
+    const allowed = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+      rules: NORMAL_RULES, trainGauge: 1067, trainPower: 'electric',
+    });
+    expect(allowed).toEqual([{ x: 1, z: 0 }]);
+  });
+});

@@ -1,6 +1,7 @@
 import { toKey, DIR, getVectorFromDir, getDirFromVector, getOppositeDir } from '../utils';
-import type { CellData, StationData, Level } from '../types';
+import type { CellData, StationData, Level, RailGauge, TrainPower } from '../types';
 import { reservationKey } from './reservation';
+import { cellAllowsTrain, DEFAULT_GAME_RULES, type GameRules } from './gameRules';
 
 export type Layer = 0 | Level;
 
@@ -78,6 +79,13 @@ export interface RouteQuery {
   // 停車位置設定(OpenTTD流のNear/Middle/Far)。省略時は'middle'(既存の編成中央基準)。
   // ただし編成長(cars) >= ホーム長(P)の場合はこの設定によらず無条件でFarEnd(奥端)固定になる。
   stopLocation?: 'near' | 'middle' | 'far';
+  // PM2: 軌間・電化の静的可否判定。rules省略時はDEFAULT_GAME_RULES(ライト相当=概念なし)、
+  // trainGauge/trainPower省略時は「その概念を持たない列車」としてcellAllowsTrainが
+  // 判定に使う既定値(1067/diesel)へ短絡する。ライトモードでは常にtrueなので、
+  // 挙動は一切変わらない。
+  rules?: GameRules;
+  trainGauge?: RailGauge;
+  trainPower?: TrainPower;
 }
 
 const normalize = (x: number, z: number) => {
@@ -235,7 +243,10 @@ export function calculateRouteWithStop(
   reserved: Set<string>,
   query: RouteQuery
 ): RouteResult {
-  const { start, prev: prevGrid, targetStationId: targetId, cars, stopLocation = 'middle' } = query;
+  const {
+    start, prev: prevGrid, targetStationId: targetId, cars, stopLocation = 'middle',
+    rules = DEFAULT_GAME_RULES, trainGauge = 1067, trainPower = 'diesel',
+  } = query;
 
   const targetSt = stations.get(targetId);
   if (!targetSt) return { path: [], stopProgress: 1 };
@@ -292,6 +303,9 @@ export function calculateRouteWithStop(
               if (nextLayer === null) continue;
 
               const targetCell = railMap.get(toKey(tx, tz));
+              // PM2: 軌間ミスマッチ・電車が非電化セルへ進入することを拒否する。
+              // rules.gauge=false(ライト相当)・electrification='none'なら常にtrue。
+              if (!cellAllowsTrain(targetCell, rules, trainGauge, trainPower)) continue;
               if (targetCell && targetCell.signalDir) {
                   const sv = getVectorFromDir(targetCell.signalDir);
                   const dv = { x: d.x, z: d.z };
