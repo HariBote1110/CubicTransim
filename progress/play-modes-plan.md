@@ -1,7 +1,8 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
-状態: **PM2 部分実装済み**（sim層の静的可否判定が中心。UI・改軌ツール・本番経路探索への
-配線は未着手、詳細は下記実装メモ参照）。2026-08-11 の設計会話を基に作成、同日PM1着手。
+状態: **PM2 実装済み**（軌間・電化(modes)の静的可否判定、本番経路探索への配線、
+高架/地下への配線、Stage B改軌ツール、Stage C UIまで完了。残る follow-up は
+軌間・架線の描画差のみ）。2026-08-11 の設計会話を基に作成、同日PM1着手。
 
 ## 実装メモ（PM2、2026-08-11）
 
@@ -35,23 +36,41 @@
   乗るため、persistence.ts側の変更は`rules.extendedGauges`のフィールド単位デフォルト
   補完のみで済んだ。**v18への版上げは不要**。
 
-### 未着手・次段への持ち越し(スコープ外として明示的に見送った項目)
+### 追記(PM2続き、2026-08-11): 本番経路探索・高架/地下・Stage B/C
 
-- **高架/地下へのgauge配線**: `applyElevatedPath`/`applyUndergroundPath`は
-  `RailBuildOptions`を受け取らない。地平のrailのみgauge/electrifiedが効く。
-- **simulation.ts本番経路探索への配線**: `SimWorld`に`rules`が乗っていない
-  (PM1の設計判断どおり、rulesはReact state止まりでworldRefには乗せていない)ため、
-  `stepWorld`が呼ぶ`calculateRouteWithStop`は`rules`/`trainGauge`/`trainPower`を
-  渡していない。pathfinding.ts自体の述語とAPIは完成しているので、次段で
-  `SimWorld`に`rules`を足すか、呼び出し側で列車の`gauge`/`power`とReactの
-  `gameRules`を引き回せば配線できる。
-- **Stage B(改軌ツール)**: 未実装。既存線路の軌間を変換する建設操作
-  (セルに列車が在線していれば失敗、既に目的軌間のセルはスキップ、demolish+rebuildより
-  安いコスト)は次段で着手する。
-- **Stage C(UI)**: 未実装。軌間セレクタ(基本2種/拡張4種)・電化トグル・改軌ボタン・
-  列車購入時の動力選択UIはまだ無い。sim層のAPI(railOptions/buyTrainのpower引数)は
-  用意済みなので、GameUI.tsxからそれらを呼ぶ配線だけが残っている。
-- **描画差**: 軌間・架線の見た目の違いはスコープ外(元のタスク定義どおり)。
+- **simulation.ts本番経路探索への配線**: `SimWorld`に`rules?: GameRules`を追加し、
+  `useGameLogic.ts`が既存のrailMap/stations等と同じ`useEffect`同期パターンで
+  `gameRules` stateを鏡写しするようにした。`stepTrain`内2箇所の
+  `calculateRouteWithStop`呼び出しに`rules`(未設定時は`DEFAULT_GAME_RULES`)・
+  `train.gauge`(既定1067)・`train.power`(既定diesel)を渡す。`rules`未設定の
+  ワールド(旧セーブ・デバッグシナリオ)は短絡するため挙動は変わらない。
+- **高架/地下へのgauge配線**: `applyElevatedPath`/`applyUndergroundPath`に
+  `RailBuildOptions`引数を追加。高架・地下は「セル単位で1つの軌間を共有する」
+  単純化のもとCellData本体(uppersの外側)へgauge/electrifiedを付ける
+  (uppers側のレベル別データは変更しない)。異なる軌間の既存セルへの接続拒否
+  (地平と同じロジック)は高架/地下には実装していない(スコープ外のまま)。
+  `buildPreview.ts`のelectrified追加コストとapply呼び出しを地平/高架/地下すべてに拡張。
+- **Stage B(改軌ツール)**: `construction.ts`に`applyRegaugePath`を実装。既存の
+  自線路(`type==='rail'`、駅・車庫・立体交差は対象外)の軌間を一括変換し、既に
+  目的軌間のセルは無料でスキップ、経路中に非railセル・列車在線中のセルが1つでも
+  あれば全体をno-opにする。電化フラグは変更しない。`economy.ts`に
+  `REGAUGE_COST_PER_CELL = RAIL_COST × 0.6`(=60円/セル。撤去+再敷設の100円/セルより
+  安い「あったら楽しい」判断)と`costOfRegauge`を追加。`buildPreview.ts`の
+  `BuildMode`へ`'regauge'`を追加し、apply結果から実際に変わったセル数を数えて
+  コスト・可否を返す(他モードと同じ規約)。
+- **Stage C(UI)**: `GameUI.tsx`に線路ツール用の軌間セレクタ(基本: 狭軌/標準軌、
+  `rules.extendedGauges`なら特殊狭軌/馬車軌間を追加)と電化/非電化トグルを、
+  建設レベル行と同じ`panel()`+`button()`スタイルで追加。改軌ツールボタン
+  (`rules.gauge`のときのみ表示、キーボードショートカット'9')と目的軌間セレクタも
+  追加。車庫ツールには購入動力(電車/気動車)選択を追加(`rules.electrification!=='none'`
+  のときのみ表示。軌間は車庫セルから自動継承、既存のbuyTrainの挙動どおり)。
+  `commitPath`(useGameLogic.ts)に`railOptions`/`regaugeTargetGauge`引数を追加し、
+  `App.tsx`が対応するReact stateを持って`onCommitPath`/`onBuyTrain`のクロージャで
+  橋渡しする(`GameScene.tsx`は`BuildMode`型の変更のみで済み、呼び出しシグネチャは
+  無改造)。ブラウザ実機(ノーマルモード)で軌間/電化UI・改軌ボタンの表示条件・
+  トグル操作を確認済み。
+- **残る follow-up**: 軌間・架線の見た目の違い(描画差)のみ。元のタスク定義どおり
+  スコープ外として据え置く。
 
 ## 実装メモ（PM1、2026-08-11）
 
