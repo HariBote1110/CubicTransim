@@ -19,6 +19,8 @@ import {
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
 import type { TerrainProfile } from '../sim/terrainField';
+import { DEFAULT_GAME_RULES } from '../sim/gameRules';
+import type { GameRules } from '../sim/gameRules';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
 import { createEditedTerrainField, applyCornerEdit, buildEditBlockers, cornerDiffsFromField } from '../sim/terrainOverlay';
 
@@ -63,6 +65,7 @@ export const useGameLogic = () => {
   // 地形プロファイル(平坦/標準/山がち)。世界ごとに不変で、newGame/loadGameでのみ変わる。
   // seedと同じくWebGPUレンダラー側にも渡して同じ地形を生成させる。
   const [terrainProfile, setTerrainProfile] = useState<TerrainProfile>(DEFAULT_TERRAIN_PROFILE);
+  const [gameRules, setGameRules] = useState<GameRules>(DEFAULT_GAME_RULES);
   // 盛土/切土の疎な編集差分(コーナー格子)。terrainOverlay.tsのCornerDiffs。
   const [cornerDiffs, setCornerDiffs] = useState<CornerDiffs>(new Map());
   // デバッグシナリオが手組みの地形(尾根など、乱数シードでは表現できない形)を使うときの
@@ -601,7 +604,7 @@ export const useGameLogic = () => {
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, worldSeed,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
       groups, worldRef.current.groupDepartures ?? new Map(), loan,
-      worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity, terrainProfile
+      worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity, terrainProfile, gameRules
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
   };
@@ -627,6 +630,7 @@ export const useGameLogic = () => {
     setTowns(restored.towns);
     setTownDensity(restored.townDensity);
     setTerrainProfile(restored.terrainProfile);
+    setGameRules(restored.rules);
     setWorldSeed(restored.seed);
     setCornerDiffs(restored.cornerDiffs);
     setDebugFieldOverride(null);
@@ -693,12 +697,14 @@ export const useGameLogic = () => {
   const newGame = (
     selectedHalfExtent: number,
     selectedDensity: TownDensity = 'normal',
-    selectedProfile: TerrainProfile = DEFAULT_TERRAIN_PROFILE
+    selectedProfile: TerrainProfile = DEFAULT_TERRAIN_PROFILE,
+    selectedRules: GameRules = DEFAULT_GAME_RULES
   ) => {
     const seed = Date.now() % 2 ** 31;
     const newField = createTerrainField(seed, selectedHalfExtent, selectedProfile);
     setHalfExtent(selectedHalfExtent);
     setTerrainProfile(selectedProfile);
+    setGameRules(selectedRules);
     setWorldSeed(seed);
     setCornerDiffs(new Map());
     setDebugFieldOverride(null);
@@ -734,6 +740,7 @@ export const useGameLogic = () => {
     // 地形を自前で生成するため、描画側にもそのまま渡す。
     worldSeed,
     terrainProfile,
+    gameRules,
     baseField,
     editedField,
     cornerDiffs,

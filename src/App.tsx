@@ -7,6 +7,7 @@ import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
+import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, type PlayMode } from './sim/gameRules';
 import { T, button as themeButton } from './ui/theme';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
 import type { WebGpuTerrainLayerController, WebGpuUnavailableReason } from './render/webgpuLayer';
@@ -42,6 +43,18 @@ const TERRAIN_PROFILE_OPTIONS: { label: string; value: TerrainProfile; hint: str
   { label: '標準', value: 'normal', hint: 'ほどよい丘' },
   { label: '山がち', value: 'mountain', hint: '起伏だらけ' },
 ];
+
+// 新規ゲーム開始時のプレイモード選択肢(progress/play-modes-plan.md PM1)。
+// PLAY_MODE_PRESETSと1対1で、選ぶとそのプリセットのGameRulesがそのまま新ゲームへ渡る。
+const PLAY_MODE_HINTS: Record<PlayMode, string> = {
+  light: '軌間・電化の概念なし(現行仕様)',
+  normal: '軌間の選択、直流電化の選択',
+  advanced: 'ノーマル+交直流の扱い',
+  realistic: '電化まわり全部盛り',
+};
+const PLAY_MODE_OPTIONS: { label: string; value: PlayMode; hint: string }[] = (
+  Object.keys(PLAY_MODE_PRESETS) as PlayMode[]
+).map(mode => ({ label: PLAY_MODE_LABELS[mode], value: mode, hint: PLAY_MODE_HINTS[mode] }));
 
 /**
  * R4d: WebGPU が使えないときの案内画面。three.js のフォールバックは廃止したので、
@@ -107,6 +120,7 @@ export default function App() {
   const [selectedTownDensity, setSelectedTownDensity] = useState<TownDensity>('normal');
   // 起動ダイアログの地形選択(既定は標準=normal)。マップサイズのボタンを押した時点の値を使う。
   const [selectedTerrainProfile, setSelectedTerrainProfile] = useState<TerrainProfile>('normal');
+  const [selectedPlayMode, setSelectedPlayMode] = useState<PlayMode>('light');
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
@@ -309,7 +323,7 @@ export default function App() {
                       key={opt.label}
                       style={{ ...themeButton({ active: true }), width: '100%', textAlign: 'left' }}
                       onClick={() => {
-                        newGame(opt.halfExtent, selectedTownDensity, selectedTerrainProfile);
+                        newGame(opt.halfExtent, selectedTownDensity, selectedTerrainProfile, PLAY_MODE_PRESETS[selectedPlayMode]);
                         setShowStartupOptions(false);
                       }}
                     >
@@ -351,6 +365,25 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55, marginTop: 0 }}>プレイモード</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: T.gap, marginBottom: 4 }}>
+                  {PLAY_MODE_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      style={{
+                        ...themeButton({ active: selectedPlayMode === opt.value, compact: true }),
+                        width: '100%',
+                      }}
+                      onClick={() => setSelectedPlayMode(opt.value)}
+                      title={opt.hint}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p style={{ color: T.textMuted, fontSize: 11, lineHeight: 1.5, marginTop: 0, marginBottom: T.gap }}>
+                  {PLAY_MODE_OPTIONS.find(opt => opt.value === selectedPlayMode)?.hint}
+                </p>
                 <button
                   style={{ ...themeButton(), width: '100%' }}
                   onClick={() => setShowDebugScenarios(true)}

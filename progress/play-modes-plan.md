@@ -1,6 +1,29 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
-状態: **計画段階（未実装）**。2026-08-11 の設計会話を基に作成。
+状態: **PM1 実装済み**（器のみ・挙動変更ゼロ）。2026-08-11 の設計会話を基に作成、同日PM1着手。
+
+## 実装メモ（PM1、2026-08-11）
+
+- `src/sim/gameRules.ts` を新設。`GameRules`型（`gauge`/`electrification`/`signalling`の3軸）、
+  `PLAY_MODE_PRESETS`（ライト/ノーマル/アドバンスド/リアリスティックの4プリセット。
+  signallingはいずれも既定`'s0'`で揃え、独立軸として扱う）、`DEFAULT_GAME_RULES`（ライト相当）、
+  日本語表示ラベル`PLAY_MODE_LABELS`、逆引き`playModeOf`（gauge/electrificationの組がどの
+  プリセットとも一致しなければ`'custom'`。signallingは無視）を実装。
+- セーブスキーマを **v17** へ拡張（`src/sim/persistence.ts`）。`rules?: GameRules`を追加し、
+  v16以前（rules欠落）は`DEFAULT_GAME_RULES`として読み込む。モード名ではなくフラグ集合を
+  保存する計画どおり。降格禁止ルールはPM1では未着手（rulesを誰も参照しないため実害なし。
+  PM2以降でgauge/electrificationを実際の建設判定に使う段階で検討する）。
+- `src/hooks/useGameLogic.ts` に `gameRules` state を追加し、`townDensity`/`terrainProfile`と
+  同じ経路（save時はserialiseWorldへ渡す、load時はsetGameRules、newGame時は引数で受け取る）
+  で配線。`worldRef.current`（SimWorld）には乗せず、React state止まり（既存2値と同じ扱い）。
+- `src/App.tsx` の新規ゲームダイアログに「プレイモード」ボタン行を追加（町の密度/地形と同じ
+  `themeButton`パターン、既定選択はライト）。選択したプレイモードのプリセットを
+  `newGame(halfExtent, townDensity, terrainProfile, PLAY_MODE_PRESETS[selectedPlayMode])`
+  として渡す。選択中モードの一行説明を表示。
+- PM1のスコープどおり、rulesはセーブ・ロード・UI表示以外のどこからも読まれない
+  （construction.ts / pathfinding.ts などの可否判定には未接続）。`npm run test` /
+  `npm run build` とも green。PM2で軌間・電化方式(`electrification: 'modes'`)の
+  静的可否判定へ接続する。
 
 ## 目的
 
