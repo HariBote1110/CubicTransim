@@ -6,6 +6,7 @@ import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 import { buildTownTileIndex } from './townTiles';
 import { createTerrainField, fieldFromMaps } from './terrainField';
+import { cornerDiffsFromField } from './terrainOverlay';
 
 const scenario = (id: string) => {
   const def = DEBUG_SCENARIOS.find(s => s.id === id);
@@ -80,6 +81,26 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
     expect(world.field!.terrainTypeAt(0, 0)).toBe('mountain');
     const tunnelCells = Array.from(world.railMap.entries()).filter(([, c]) => c.tunnel);
     expect(tunnelCells.length).toBeGreaterThanOrEqual(3);
+  });
+
+  // R4末: wgpuレンダラーはseed+halfExtentからしか地形を作れないため、シナリオの
+  // 手組みfieldはcornerDiffsFromField(useGameLogic.loadDebugScenario)でオーバーレイ
+  // 差分へ焼き直して転送する。その変換はfield.cornerHeightAtだけを読むので、
+  // cornerHeightAtがcellCornerHeights(尾根)と矛盾する値(常に0=平坦)を返すと、
+  // 転送先には尾根が一切現れず、ブラウザで山が描画されない不具合になっていた。
+  it('山岳トンネル: cornerHeightAtが尾根の標高を返し、オーバーレイ転送後も尾根が平坦化しない', () => {
+    const world = scenario('mountain-tunnel').build();
+    const field = world.field!;
+    // 尾根の内側(x=0)は標高1、尾根の外側(x=6)は標高0であるべき
+    // (terrainTypeAt(0,0)==='mountain'と矛盾しないように、cornerHeightAtも
+    // 尾根の位置で高さを持たなければならない)。
+    expect(field.cornerHeightAt(0, 0)).toBeGreaterThan(0);
+    expect(field.cornerHeightAt(6, 0)).toBe(0);
+
+    const diffs = cornerDiffsFromField(field, 16);
+    // 転送後のオーバーレイにも尾根の標高(0より大きい値)が残っていること。
+    const heights = [...diffs.values()].flatMap(chunk => [...chunk.values()]);
+    expect(heights.some(h => h > 0)).toBe(true);
   });
 
   it('単線行き違い: 信号3基と対向2列車を持つ', () => {
