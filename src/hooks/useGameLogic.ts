@@ -170,6 +170,14 @@ export const useGameLogic = () => {
     worldRef.current.groups = groups;
   }, [groups]);
 
+  // PM2: プレイモードのルールフラグ集合をSimWorldへ鏡写しする(stepWorldの経路探索が
+  // rules.gauge/electrificationを参照するため)。newGame/loadGameでも即座に上書きするが、
+  // このeffectが無いと初期マウント時の既定値(DEFAULT_GAME_RULES)のまま更新が遅れる
+  // (railMap等と同じ同期パターン)。
+  useEffect(() => {
+    worldRef.current.rules = gameRules;
+  }, [gameRules]);
+
   // ★追加: 事故バナーの自動消去。該当列車のhaltRemainingが尽きたら通知を取り除く。
   useEffect(() => {
     const id = setInterval(() => {

@@ -15,6 +15,7 @@ import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { growTown, townServiceLevel, resolveTownSpawnTick } from './towns';
 import type { StationTransportInfo } from './towns';
 import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
+import { DEFAULT_GAME_RULES, type GameRules } from './gameRules';
 import {
   pathPointAt, pathHeightAt, rampHeightAtPos, OVERPASS_HEIGHT,
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
@@ -211,6 +212,12 @@ export interface SimWorld {
   serviceGraph?: ServiceGraph;
   routeCache?: RouteCache;
   serviceSignature?: string;
+  /**
+   * PM2: プレイモードのルールフラグ集合。旧セーブ・デバッグシナリオには存在しないため
+   * 任意とし、未設定時はDEFAULT_GAME_RULES(ライト相当=軌間・電化の概念なし)として扱う
+   * (stepWorldの参照箇所は必ず`world.rules ?? DEFAULT_GAME_RULES`で読む)。
+   */
+  rules?: GameRules;
 }
 
 /**
@@ -679,12 +686,18 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     const blocked = buildBlockedSet(world, train.id);
     const carCountForRoute = train.cars ?? 2;
     const stopLocation = world.stopLocation ?? 'middle';
+    // PM2: rules省略時(旧セーブ・デバッグシナリオ)はDEFAULT_GAME_RULES(ライト相当)に
+    // 短絡するため、軌間・電化の概念が無いワールドでは挙動が一切変わらない。
+    const rules = world.rules ?? DEFAULT_GAME_RULES;
     let routeResult = calculateRouteWithStop(world.railMap, world.stations, blocked, blocked, {
       start: rt.grid,
       prev: rt.prevGrid,
       targetStationId,
       cars: carCountForRoute,
       stopLocation,
+      rules,
+      trainGauge: train.gauge ?? 1067,
+      trainPower: train.power ?? 'diesel',
     });
     let newPath = routeResult.path;
 
@@ -725,6 +738,9 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
           targetStationId,
           cars: carCountForRoute,
           stopLocation,
+          rules,
+          trainGauge: train.gauge ?? 1067,
+          trainPower: train.power ?? 'diesel',
         });
         newPath = routeResult.path;
       }

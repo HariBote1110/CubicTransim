@@ -1398,3 +1398,65 @@ describe('stepWorld: 立体交差の十字乗換駅(統合) 地平×高架の同
     expect(arrivedAtN).toBe(true);
   });
 });
+
+describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () => {
+  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+  const ELECTRIFICATION_ONLY_RULES = { gauge: false, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+
+  it('電車は非電化区間では経路が見つからず停止したままになる', () => {
+    const { railMap, stations } = buildStraightLine(6, 'stA');
+    const train = makeTrain({ schedule: ['stA'], power: 'electric' });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = ELECTRIFICATION_ONLY_RULES;
+
+    runTicks(world, 0.1, 50);
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.route.length).toBe(0);
+    expect(rt.speedKmh).toBe(0);
+    expect(rt.grid).toEqual({ x: 0, z: 0 });
+  });
+
+  it('電化すれば同じ電車が走り出す', () => {
+    const { railMap, stations } = buildStraightLine(6, 'stA');
+    for (const cell of railMap.values()) cell.electrified = true;
+    const train = makeTrain({ schedule: ['stA'], power: 'electric' });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = ELECTRIFICATION_ONLY_RULES;
+
+    runTicks(world, 0.1, 50);
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.speedKmh).toBeGreaterThan(0);
+  });
+
+  it('標準軌(1435)の列車は狭軌(1067)のセルへ進入できず経路が見つからない', () => {
+    const { railMap, stations } = buildStraightLine(6, 'stA');
+    for (const cell of railMap.values()) cell.gauge = 1067;
+    const train = makeTrain({ schedule: ['stA'], gauge: 1435 });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = NORMAL_RULES;
+
+    runTicks(world, 0.1, 50);
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.route.length).toBe(0);
+    expect(rt.grid).toEqual({ x: 0, z: 0 });
+  });
+
+  it('rules未設定(旧セーブ・デバッグシナリオ相当)ならgauge/electrifiedが付いたセルでも従来どおり走行する', () => {
+    const { railMap, stations } = buildStraightLine(6, 'stA');
+    for (const cell of railMap.values()) { cell.gauge = 1435; cell.electrified = false; }
+    const train = makeTrain({ schedule: ['stA'], gauge: 1067, power: 'electric' });
+    const world = makeWorld(railMap, stations, [train]);
+    // world.rules を設定しない(=DEFAULT_GAME_RULESに短絡し、ライト相当として概念を無視する)
+
+    const dt = 0.1;
+    let ticks = 0;
+    let rt = world.runtimes.get('t1');
+    while (ticks < 5000) {
+      stepWorld(world, dt);
+      ticks++;
+      rt = world.runtimes.get('t1')!;
+      if (rt.stopRemaining > 0) break;
+    }
+    expect(rt!.grid).toEqual({ x: 5, z: 0 });
+  });
+});
