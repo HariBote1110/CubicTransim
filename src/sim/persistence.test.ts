@@ -5,6 +5,7 @@ import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
 import type { CornerDiffs } from './terrainOverlay';
+import { DEFAULT_GAME_RULES, PLAY_MODE_PRESETS } from './gameRules';
 
 describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v15)', () => {
   it('railMap/stations/trains/runtimes/waiting/money/towns/seed/halfExtent/cornerDiffs/clock/台帳/stopLocation/運用グループ/借入残高/行き先つき待ち客 が JSON 経由でも復元できる', () => {
@@ -65,7 +66,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand,
       halfExtent, cornerDiffs
     );
-    expect(saveData.version).toBe(16);
+    expect(saveData.version).toBe(17);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -216,5 +217,30 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     const restored = deserialiseWorld(raw);
     expect(restored).not.toBeNull();
     expect(restored!.terrainProfile).toBe('normal');
+  });
+
+  it('rulesがJSON経由で往復する', () => {
+    const saveData = serialiseWorld(
+      new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map(), 'normal', 'mountain', PLAY_MODE_PRESETS.normal
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.rules).toEqual(PLAY_MODE_PRESETS.normal);
+  });
+
+  it('rulesを省略したセーブ(v16以前)はDEFAULT_GAME_RULES(ライト相当)として読み込む', () => {
+    const saveData = serialiseWorld(
+      new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const raw = JSON.parse(JSON.stringify(saveData));
+    delete raw.rules;
+    raw.version = 16;
+    const restored = deserialiseWorld(raw);
+    expect(restored).not.toBeNull();
+    expect(restored!.rules).toEqual(DEFAULT_GAME_RULES);
   });
 });
