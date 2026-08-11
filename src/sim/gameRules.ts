@@ -78,6 +78,19 @@ export function gaugesCompatible(a: RailGauge, b: RailGauge, rules: GameRules): 
   return a === b;
 }
 
+/**
+ * セルの電化方式を正規化する('dc'|'ac'|null)。PM2以前のセーブ・'modes'段階のUIが
+ * 書き込むlegacyのboolean `true`は「直流」を意味する(design decision 1)。
+ * persistence.tsのdeserialiseWorldで一度正規化しているが、テスト・デバッグシナリオ等
+ * 経由で正規化前のCellDataがそのまま渡ってくることもあるため、ここでも防御的に扱う。
+ */
+export function electrificationOf(cell: CellData | undefined): 'dc' | 'ac' | null {
+  const e = cell?.electrified;
+  if (e === 'ac') return 'ac';
+  if (e === 'dc' || e === true) return 'dc';
+  return null;
+}
+
 /** 列車がそのセルへ進入できるか(軌間+電化)。rules側の各段階に応じて短絡する。 */
 export function cellAllowsTrain(
   cell: CellData | undefined,
@@ -86,6 +99,26 @@ export function cellAllowsTrain(
   trainPower: TrainPower
 ): boolean {
   if (rules.gauge && !gaugesCompatible(effectiveGauge(cell, rules), trainGauge, rules)) return false;
-  if (rules.electrification !== 'none' && trainPower === 'electric' && !cell?.electrified) return false;
-  return true;
+  if (rules.electrification === 'none' || trainPower === 'diesel') return true;
+
+  const system = electrificationOf(cell);
+  if (!system) return trainPower === 'diesel'; // ここには来ないが型のため明示
+
+  // 'modes'段階はUIが'ac'を書き込まないため、trainPowerも'electric'(=直流専用)しか
+  // 存在しない前提だが、念のため'boundaries'以上と同じ判定式を使い回す。
+  if (trainPower === 'electric') return system === 'dc';
+  if (trainPower === 'electric-ac') return system === 'ac';
+  if (trainPower === 'electric-acdc') return system === 'dc' || system === 'ac';
+  return false;
+}
+
+/**
+ * 隣接する2セルがデッドセクション境界か(PM3)。両方が電化されており、かつ
+ * 電化方式が異なる('dc'と'ac')場合にtrueを返す。片方でも非電化ならデッドセクションではない
+ * (単に非電化区間との境界であり、気動車の運用は元々自由)。
+ */
+export function isDeadSectionBoundary(a: CellData | undefined, b: CellData | undefined): boolean {
+  const sa = electrificationOf(a);
+  const sb = electrificationOf(b);
+  return sa !== null && sb !== null && sa !== sb;
 }

@@ -12,8 +12,13 @@ export type RailGauge = 762 | 1067 | 1372 | 1435;
 /** 建設時の既定軌間(狭軌)。省略されたセル・列車はこの値として扱う(rules.gauge=true時)。 */
 export const DEFAULT_GAUGE: RailGauge = 1067;
 
-/** 列車の動力方式(PM2)。気動車はどのセルでも走行可、電車は電化セルのみ。 */
-export type TrainPower = 'diesel' | 'electric';
+/**
+ * 列車の動力方式(PM2/PM3)。気動車はどのセルでも走行可。
+ * 'electric'は直流専用車(PM2からの既存名称、以後は直流専用の意味に固定する)、
+ * 'electric-ac'は交流専用車、'electric-acdc'は交直流両用車(PM3、rules.electrification
+ * が'boundaries'以上のときのみ選べる。'modes'段階は直流のみのため従来どおり'electric'一択)。
+ */
+export type TrainPower = 'diesel' | 'electric' | 'electric-ac' | 'electric-acdc';
 
 /**
  * 立体交差の層。正=高架(uppers[1..3]、高さL*OVERPASS_HEIGHT)、負=地下(P8a、
@@ -85,8 +90,14 @@ export interface CellData {
    * 立体交差した別レベルの線路が異なる軌間を持つケースはPM2のスコープ外)。
    */
   gauge?: RailGauge;
-  /** 電化(PM2、簡略化: 直流前提のON/OFFのみ。交流・電圧はPM3以降)。省略時は非電化。 */
-  electrified?: boolean;
+  /**
+   * 電化(PM2/PM3)。PM2時点ではboolean(ON/OFF、直流前提)のみだったが、PM3で
+   * 交流を追加し'dc'|'ac'|booleanのunionへ拡張した。旧セーブ・'modes'段階のUIが
+   * 書き込むlegacyの`true`は「直流」を意味する(gameRules.tsのelectrificationOfで
+   * 正規化する)。省略時は非電化。'ac'はrules.electrificationが'boundaries'以上の
+   * ときのみUIから書き込まれる。
+   */
+  electrified?: 'dc' | 'ac' | boolean;
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';

@@ -7,6 +7,8 @@ import {
   effectiveGauge,
   gaugesCompatible,
   cellAllowsTrain,
+  electrificationOf,
+  isDeadSectionBoundary,
   type GameRules,
 } from './gameRules';
 import type { CellData } from '../types';
@@ -99,5 +101,48 @@ describe('gameRules: PM2 軌間・電化の静的可否判定', () => {
   it('electrification=noneなら電車でも非電化セルを走行可(概念が無いため)', () => {
     const bare: CellData = { type: 'rail', gauge: 1067 };
     expect(cellAllowsTrain(bare, lightRules, 1067, 'electric')).toBe(true);
+  });
+});
+
+describe('gameRules: PM3 交直流電化', () => {
+  const boundariesRules = PLAY_MODE_PRESETS.advanced; // electrification: 'boundaries'
+
+  it('electrificationOfはlegacyのtrueをdcとして正規化する', () => {
+    expect(electrificationOf({ type: 'rail', electrified: true })).toBe('dc');
+    expect(electrificationOf({ type: 'rail', electrified: 'dc' })).toBe('dc');
+    expect(electrificationOf({ type: 'rail', electrified: 'ac' })).toBe('ac');
+    expect(electrificationOf({ type: 'rail' })).toBe(null);
+    expect(electrificationOf(undefined)).toBe(null);
+  });
+
+  it('cellAllowsTrainはdc車をac区間から拒否し、ac車をdc区間から拒否する', () => {
+    const dcCell: CellData = { type: 'rail', electrified: 'dc' };
+    const acCell: CellData = { type: 'rail', electrified: 'ac' };
+    expect(cellAllowsTrain(dcCell, boundariesRules, 1067, 'electric')).toBe(true);
+    expect(cellAllowsTrain(acCell, boundariesRules, 1067, 'electric')).toBe(false);
+    expect(cellAllowsTrain(acCell, boundariesRules, 1067, 'electric-ac')).toBe(true);
+    expect(cellAllowsTrain(dcCell, boundariesRules, 1067, 'electric-ac')).toBe(false);
+  });
+
+  it('cellAllowsTrainはacdc車をdc/ac両方に許可する', () => {
+    const dcCell: CellData = { type: 'rail', electrified: 'dc' };
+    const acCell: CellData = { type: 'rail', electrified: 'ac' };
+    expect(cellAllowsTrain(dcCell, boundariesRules, 1067, 'electric-acdc')).toBe(true);
+    expect(cellAllowsTrain(acCell, boundariesRules, 1067, 'electric-acdc')).toBe(true);
+  });
+
+  it('気動車はboundaries段階でもどこでも走行可', () => {
+    const acCell: CellData = { type: 'rail', electrified: 'ac' };
+    expect(cellAllowsTrain(acCell, boundariesRules, 1067, 'diesel')).toBe(true);
+  });
+
+  it('isDeadSectionBoundaryはdc/ac隣接セルのみtrue', () => {
+    const dcCell: CellData = { type: 'rail', electrified: 'dc' };
+    const acCell: CellData = { type: 'rail', electrified: 'ac' };
+    const bareCell: CellData = { type: 'rail' };
+    expect(isDeadSectionBoundary(dcCell, acCell)).toBe(true);
+    expect(isDeadSectionBoundary(dcCell, dcCell)).toBe(false);
+    expect(isDeadSectionBoundary(dcCell, bareCell)).toBe(false);
+    expect(isDeadSectionBoundary(bareCell, bareCell)).toBe(false);
   });
 });
