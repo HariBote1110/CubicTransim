@@ -15,7 +15,7 @@ import type { PassengerCohort, RouteCache, ServiceGraph } from './passengers';
 import { growTown, townServiceLevel, resolveTownSpawnTick } from './towns';
 import type { StationTransportInfo } from './towns';
 import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
-import { DEFAULT_GAME_RULES, type GameRules } from './gameRules';
+import { DEFAULT_GAME_RULES, isDeadSectionBoundary, type GameRules } from './gameRules';
 import {
   pathPointAt, pathHeightAt, rampHeightAtPos, OVERPASS_HEIGHT,
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
@@ -934,14 +934,21 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
     // 制動不要。ブレーキを緩解して加速(または巡航)する。
     rt.brakeDecelMs2 = 0;
     if (rt.speedKmh < releaseEnvelopeKmh) {
+      // PM3: 先頭が現在セル→次セルの境界(=デッドセクション)の前後1セル以内にいる間は
+      // 牽引力ゼロで惰行する(design decision 4)。現在セルと次セルの電化方式が異なれば
+      // その境界を跨いでいる/跨ごうとしていることになる。
+      const currentCellForDeadSection = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
+      const nextCellForDeadSection = world.railMap.get(toKey(nextTile.x, nextTile.z));
+      const inDeadSection = isDeadSectionBoundary(currentCellForDeadSection, nextCellForDeadSection);
+
       // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
       // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
       const accelMs2 = computeAcceleration(
         { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
-        'accelerating',
+        inDeadSection ? 'coasting' : 'accelerating',
         DECEL_KMH_S
       );
-      rt.speedKmh = Math.min(releaseEnvelopeKmh, rt.speedKmh + accelMs2 * 3.6 * dt);
+      rt.speedKmh = Math.min(releaseEnvelopeKmh, Math.max(0, rt.speedKmh + accelMs2 * 3.6 * dt));
     }
   }
 

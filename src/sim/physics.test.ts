@@ -26,6 +26,19 @@ describe('computeAcceleration', () => {
     const decel = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 80 }, 'braking', 20);
     expect(decel).toBeCloseTo(-20 / 3.6, 5);
   });
+
+  it('コースティングモード(PM3デッドセクション)は牽引力ゼロで転がり抵抗のみの負の加速度を返す', () => {
+    const coast = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 60 }, 'coasting', 20);
+    expect(coast).toBeLessThan(0);
+    // 常用ブレーキ(fallbackDecelKmhS=20)より緩やか(惰行は制動よりゆっくり減速する)。
+    expect(coast).toBeGreaterThan(-20 / 3.6);
+  });
+
+  it('コースティングモードは停止時(速度0)でも転がり抵抗ぶんのわずかな負の加速度のみ(急停止しない)', () => {
+    const coast = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 0 }, 'coasting', 20);
+    expect(coast).toBeLessThanOrEqual(0);
+    expect(coast).toBeGreaterThan(-20 / 3.6); // 常用ブレーキよりずっと緩やか
+  });
 });
 
 describe('applyOverspeedDecay', () => {

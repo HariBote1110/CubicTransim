@@ -1460,3 +1460,53 @@ describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () =
     expect(rt!.grid).toEqual({ x: 5, z: 0 });
   });
 });
+
+describe('stepWorld: PM3 交直流デッドセクション', () => {
+  const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const };
+
+  it('dc専用車はac区間を含む経路には進入できず停止したままになる', () => {
+    const { railMap, stations } = buildStraightLine(6, 'stA');
+    for (const cell of railMap.values()) cell.electrified = 'dc';
+    railMap.get(toKey(3, 0))!.electrified = 'ac';
+    const train = makeTrain({ schedule: ['stA'], power: 'electric' });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = BOUNDARIES_RULES;
+
+    runTicks(world, 0.1, 50);
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.route.length).toBe(0);
+    expect(rt.grid).toEqual({ x: 0, z: 0 });
+  });
+
+  it('交直流車はdc/ac混在区間を走行でき、境界の前後1セルでは加速しない(惰行)', () => {
+    const { railMap, stations } = buildStraightLine(6, 'stA');
+    for (const cell of railMap.values()) cell.electrified = 'dc';
+    railMap.get(toKey(3, 0))!.electrified = 'ac';
+    railMap.get(toKey(4, 0))!.electrified = 'ac';
+    const train = makeTrain({ schedule: ['stA'], power: 'electric-acdc' });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = BOUNDARIES_RULES;
+
+    const dt = 0.1;
+    let ticks = 0;
+    let rt = world.runtimes.get('t1');
+    let sawBoundaryCoast = false;
+    while (ticks < 5000) {
+      stepWorld(world, dt);
+      ticks++;
+      rt = world.runtimes.get('t1')!;
+      // 先頭が2(dc)にいて次セルが3(ac)、すなわち境界通過中は速度が増えていないはず。
+      if (rt.grid.x === 2 && rt.route[0]?.x === 3) {
+        const before = rt.speedKmh;
+        stepWorld(world, dt);
+        ticks++;
+        rt = world.runtimes.get('t1')!;
+        expect(rt.speedKmh).toBeLessThanOrEqual(before + 1e-6);
+        sawBoundaryCoast = true;
+        break;
+      }
+      if (rt.stopRemaining > 0) break;
+    }
+    expect(sawBoundaryCoast).toBe(true);
+  });
+});

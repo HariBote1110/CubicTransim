@@ -50,11 +50,15 @@ export function computeMassKg(spec: TrainSpec, cars: number, passengers: number)
  * - mode='accelerating': 牽引力(粘着限界でクランプ)から転がり抵抗・空気抵抗(速度の2乗項)を
  *   差し引いた正味力を質量で割る。乗客が多いほど質量が増え加速が鈍る。
  * - mode='braking': OpenTTD同様、既存の一定減速度(fallbackDecelKmhS)をそのまま採用する。
- * 戻り値の単位は m/s²(brakingは負値)。
+ * - mode='coasting'(PM3): デッドセクション通過中の惰行。牽引力ゼロ(forceN=0)のまま
+ *   転がり抵抗・空気抵抗だけを差し引く。既存の'accelerating'の抵抗項をそのまま
+ *   再利用しており、新しい減速モデルを追加したわけではない(design decision 4:
+ *   「passive dragがあるならそれで減速、無いならゼロ加速度」に対応)。
+ * 戻り値の単位は m/s²(braking/coastingは負値または0)。
  */
 export function computeAcceleration(
   input: AccelerationInput,
-  mode: 'accelerating' | 'braking',
+  mode: 'accelerating' | 'braking' | 'coasting',
   fallbackDecelKmhS: number
 ): number {
   if (mode === 'braking') {
@@ -65,15 +69,19 @@ export function computeAcceleration(
   const massKg = computeMassKg(spec, cars, passengers);
   const speedMs = Math.max(0, speedKmh) / 3.6;
 
+  const rollingN = massKg * GRAVITY_MS2 * ROLLING_RESISTANCE_COEF;
+  const airN = AIR_DRAG_COEF_PER_CAR * cars * speedMs * speedMs;
+  const resistanceN = rollingN + airN;
+
+  if (mode === 'coasting') {
+    return -resistanceN / massKg;
+  }
+
   const powerW = spec.enginePower * 1000;
   const maxTeN = spec.maxTractiveEffort * 1000;
 
   // F=P/v。停止付近(v→0)は発散するため、キックオフ牽引力(粘着限界)で代用する。
   const forceN = speedMs < KICKOFF_SPEED_MS ? maxTeN : Math.min(maxTeN, powerW / speedMs);
-
-  const rollingN = massKg * GRAVITY_MS2 * ROLLING_RESISTANCE_COEF;
-  const airN = AIR_DRAG_COEF_PER_CAR * cars * speedMs * speedMs;
-  const resistanceN = rollingN + airN;
 
   const netForceN = forceN - resistanceN;
   return netForceN / massKg;
