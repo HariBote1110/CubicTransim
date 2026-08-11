@@ -462,4 +462,31 @@ describe('cornerDiffsFromField', () => {
     expect(rebuilt.cornerHeightAt(4, 4)).toBe(source.cornerHeightAt(4, 4));
     expect(rebuilt.cornerHeightAt(-3, -3)).toBe(source.cornerHeightAt(-3, -3));
   });
+
+  // R4末: wgpuレンダラー側に、コーナー座標の絶対値が大きい範囲までオーバーレイを
+  // 書き出すとタイル生成が標高を正しく反映しなくなる不具合が見つかった(ブラウザ実機、
+  // progress/openttd-tunnel-portals.md参照)。z方向に依存しない手組み地形(山岳
+  // トンネルの尾根など)では、実際に使う範囲だけへ絞れるようboundsを渡せるようにする。
+  it('bounds を渡すと、その矩形の外側には一切書き出さない', () => {
+    const source = createTerrainField(4242, 20);
+    const diffs = cornerDiffsFromField(source, 20, { x0: -3, x1: 3, z0: -2, z1: 2 });
+    const rebuilt = createEditedTerrainField(createTerrainField(1, 20), diffs);
+    // 範囲内はsourceの値を反映する
+    expect(rebuilt.cornerHeightAt(0, 0)).toBe(source.cornerHeightAt(0, 0));
+    // 範囲外はbase(1)のまま、sourceの値では上書きされない
+    expect(rebuilt.cornerHeightAt(10, 10)).toBe(createTerrainField(1, 20).cornerHeightAt(10, 10));
+  });
+
+  it('bounds省略時は従来どおりhalfExtent全域を書き出す(無回帰)', () => {
+    const source = createTerrainField(4242, 6);
+    const withBounds = cornerDiffsFromField(source, 6, { x0: -6, x1: 7, z0: -6, z1: 7 });
+    const withoutBounds = cornerDiffsFromField(source, 6);
+    const rebuiltA = createEditedTerrainField(createTerrainField(1, 6), withBounds);
+    const rebuiltB = createEditedTerrainField(createTerrainField(1, 6), withoutBounds);
+    for (let z = -6; z <= 6; z++) {
+      for (let x = -6; x <= 6; x++) {
+        expect(rebuiltA.cornerHeightAt(x, z)).toBe(rebuiltB.cornerHeightAt(x, z));
+      }
+    }
+  });
 });

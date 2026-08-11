@@ -389,6 +389,14 @@ export function deserialiseCornerDiffs(data: SerialisedCornerDiffs): CornerDiffs
   return diffs;
 }
 
+/** cornerDiffsFromField が書き出す範囲を絞るための矩形(コーナー座標、両端含む)。 */
+export interface CornerDiffsBounds {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+}
+
 /**
  * TerrainField のコーナー標高を、マップ全域ぶんの CornerDiffs として書き出す(R4d)。
  *
@@ -401,11 +409,27 @@ export function deserialiseCornerDiffs(data: SerialisedCornerDiffs): CornerDiffs
  * 制約: オーバーレイはコーナー標高だけを表現するので、`cellCornerHeights` を
  * 直接実装して4隅を不揃いにするタイプの擬似field(山岳トンネルのシナリオの尾根)は
  * 再現できない。その場合は cornerHeightAt の値(=平坦)が使われる。
+ *
+ * `bounds` を渡すと、その矩形の外側は一切書き出さない(省略時は従来どおりマップ全域)。
+ * ブラウザ実機検証で、コーナー座標の絶対値がおよそ±20を超える範囲までオーバーレイを
+ * 書き出すと、wgpu側のタイル生成が正しく標高を反映しなくなる(色は変わるが高さが
+ * 上がらない)不具合が確認されている。z方向に依存しない手組み地形(山岳トンネルの
+ * 尾根など)では、実際に線路が通る周辺だけに絞ることでこの不具合を回避できる。
+ * 根本原因はwgpuレンダラー側(renderer/renderer_wgpu)に残っており、
+ * progress/openttd-tunnel-portals.md に詳細を記録した。
  */
-export function cornerDiffsFromField(field: TerrainField, halfExtent: number): CornerDiffs {
+export function cornerDiffsFromField(
+  field: TerrainField,
+  halfExtent: number,
+  bounds?: CornerDiffsBounds,
+): CornerDiffs {
+  const x0 = bounds?.x0 ?? -halfExtent;
+  const x1 = bounds?.x1 ?? halfExtent + 1;
+  const z0 = bounds?.z0 ?? -halfExtent;
+  const z1 = bounds?.z1 ?? halfExtent + 1;
   const diffs: CornerDiffs = new Map();
-  for (let z = -halfExtent; z <= halfExtent + 1; z++) {
-    for (let x = -halfExtent; x <= halfExtent + 1; x++) {
+  for (let z = z0; z <= z1; z++) {
+    for (let x = x0; x <= x1; x++) {
       const cx = chunkCoordOf(x);
       const cz = chunkCoordOf(z);
       const key = chunkKeyOf(cx, cz);

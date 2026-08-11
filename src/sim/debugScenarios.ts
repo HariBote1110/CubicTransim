@@ -14,6 +14,7 @@ import {
 } from './construction';
 import { createDebugScenario } from './debugScenario';
 import type { TerrainField } from './terrainField';
+import type { CornerDiffsBounds } from './terrainOverlay';
 import { GROUP_COLOURS } from './groups';
 
 /**
@@ -27,6 +28,14 @@ export interface DebugScenarioWorld {
   trains: TrainData[];
   /** 手組みの地形field(terrainField.tsのfieldFromMapsでMapから橋渡し)。省略時は全域平地。 */
   field?: TerrainField;
+  /**
+   * fieldをcornerDiffsへ焼き出す範囲を絞る(sim/terrainOverlay.tsのcornerDiffsFromField
+   * 参照)。省略時はマップ全域。z方向に依存しない手組み地形(尾根など)で、実際に
+   * 線路が通る周辺だけに絞ることで、wgpu側のタイル生成がコーナー座標の絶対値が
+   * 大きい範囲まで書き出すと標高を正しく反映しなくなる不具合(progress/
+   * openttd-tunnel-portals.md参照)を回避する。
+   */
+  fieldBounds?: CornerDiffsBounds;
   /** 通常の乱数地形を使いたい場合、worldSeedをこの値に差し替える(cornerDiffsはクリアされる)。 */
   worldSeedOverride?: number;
   towns?: TownData[];
@@ -145,6 +154,14 @@ function buildTunnelScenario(): DebugScenarioWorld {
     railMap: state.railMap,
     stations: state.stations,
     field,
+    // R4末: 尾根はzに依存しない(全z共通)ため、cornerDiffsFromFieldがマップ全域
+    // (z=-halfExtent..halfExtent+1)へ書き出すと、wgpuレンダラーがコーナー座標の
+    // 絶対値が大きい範囲まで含むオーバーレイをタイル生成へ正しく反映できなくなる
+    // 不具合(ブラウザ実機で確認、根本原因はrenderer/renderer_wgpu側)を踏む。
+    // ブラウザ実機での二分探索で、|z|がおよそ5を超えると症状が再現し、4以内なら
+    // 安定して正しく反映されることを確認したため、実際に線路が通るz=0の周辺
+    // (z=-4..4)だけに絞る。
+    fieldBounds: { x0: -8, x1: 9, z0: -4, z1: 4 },
     trains: [
       {
         id: 'debug-tunnel',

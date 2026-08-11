@@ -118,3 +118,22 @@
 - 掘割ランプの地表開口(`buildUndergroundOpeningPart`)は、従来pit(暗い穴)とwallA/wallB(擁壁)をまとめて1つの`openings`ジオメトリとして`PALETTE.undergroundPit`(ほぼ黒)一色で焼いていたため、擁壁が実在しても視覚的には「ただの黒い平面」にしか見えなかった。`render/railGeometry.ts`の`RailNetworkGeometry`を`openingPits`/`openingWalls`の2フィールドへ分離し、`WebGpuTrackNetwork.tsx`でそれぞれ別のPALETTE色(pit=`undergroundPit`、wall=坑口ヘッドウォールと同じコンクリート系グレーへ変更した`undergroundWall`)で焼くようにした。
 - ブラウザ実機検証: デバッグシナリオ「山岳トンネル」で坑口の翼壁が壁前面の左右端から山側へ張り出して見えることを確認(zoom=100でのclose-up screenshot)。一方、掘割の地表開口(pit+wall)は、平坦な新規マップに手動で地上→地下1のランプを敷設して検証したところ、色分け後も含めて**画面上に一切描画されない**ことが判明した(pit/wallとも完全に不可視。ボールバスト・レール・枕木は正しく描かれる)。`buildRailNetworkGeometry`単体のVitestテスト(`railGeometry.test.ts`)では`openingPits`/`openingWalls`とも非nullを返しており、ジオメトリ生成ロジック自体は正しい。原因はメッシュチャンクのフィード経路(`WebGpuTrackNetwork.tsx`のSURFACE_KEYチャンク)側にあると推測されるが、今回のカラー分離作業とは独立した既存の不具合(このセッションでの変更前から発生していた可能性が高い)であり、坑口(本題)のスコープ外として次回への申し送りとする。
 - **TODO(要調査)**: 掘割の地表開口(pit/wall)がブラウザ上で全く描画されない件。`buildRailNetworkGeometry`が返すジオメトリ自体は正しいことをVitestで確認済みなので、`WebGpuTrackNetwork.tsx`のSURFACE_KEYチャンクの`bakeGeometries`呼び出しやメッシュチャンクフィーダ(`useMeshChunkFeeder`)側での欠落を疑うところから調査を始めるとよい。
+
+## 追記(v0.5.0-Alpha-8d: 掘割開口の不可視バグを修正、山岳トンネルの地形描画バグの原因を特定・回避)
+
+### 1. 掘割の地表開口が不可視だった件の根本原因
+- Alpha-8cのTODOの続き。原因は「地形メッシュはterrainOverlayで実際に掘り下げない限り常にy=0の不透明な連続面のままなので、`buildUndergroundOpeningPart`のpit(y=-OPENING_PIT_DEPTH/2-0.01、地表の下)が上から見て必ず地形に隠れて完全に不可視になっていた」こと。擁壁(wallA/wallB)も中心が地表より下にあり、ほぼ埋まっていた。tunnelPortalGeometry.tsの坑口が「地形を一切変形させず、構造物側を地表から立ち上げる」方針で解決したのと全く同じ理由。
+- `src/render/trackGeometry.ts`の`buildUndergroundOpeningPart`を、pitを地表からわずかに持ち上げた薄い暗色プレート(`OPENING_PIT_HEIGHT=0.03`、y∈[0,0.03])に、擁壁を地表からしっかり立ち上がる高さ(`OPENING_WALL_HEIGHT=0.3`、y∈[0,0.3])に変更。TDD: pit/wallの全頂点がy>=0であることを検証するテストをRedで先に固定してから実装した。
+- ブラウザ実機(平坦な新規マップに地上→地下1のランプを敷設)で、暗い床と両脇の擁壁が実際に見えることを確認。
+
+### 2. 山岳トンネルシナリオの地形が描画されない件の根本原因
+- `sim/debugScenarios.ts`の`buildTunnelScenario`が使う手組み`TerrainField`は、`cornerHeightAt`が常に`0`を返す実装になっていた(z非依存の尾根を表現するため`cellCornerHeights`/`terrainTypeAt`だけで済ませていた名残)。`useGameLogic.loadDebugScenario`は手組みfieldを`cornerDiffsFromField`(sim/terrainOverlay.ts)経由でオーバーレイ差分へ焼き直しwgpuレンダラーへ転送するが、この変換は`cornerHeightAt`だけを読むため、転送後の地形が完全に平坦になっていた。`cornerHeightAt`を尾根の中心(x=0)で標高3・両端(|x|>=3)で0まで落ちる山型に修正(段差1では色の違いにしか見えず「山」に見えないと判明したため、単なる0/1の1段差ではなくピーク型にした)。
+- この修正後もなお山が描画されなかったため深掘りしたところ、**wgpuレンダラー(renderer/renderer_wgpu)側に別の不具合**が見つかった: `pushCornerOverrideChunk`で送るコーナーオーバーライドのZ座標の絶対値がおよそ5を超える範囲まで含むと、そのタイルの地形生成(`build_tile_overrides`→`tile_generate.wgsl`)が標高を正しく反映しなくなる(色(`h>=1.0`のグラデーション)は変わるが高さが一切上がらない)。ブラウザ実機で`window.__webgpuLayer.pushCornerOverrideChunk`を直接呼ぶ多数の二分探索テストで再現・特定した:
+  - 単一チャンク・複数チャンク(x方向境界またぎ)は問題なし。
+  - z範囲が±4以内なら(1チャンクでも4チャンクをまたいでも)常に正しく標高が反映される。
+  - z範囲が±5以上になると、同じ形状のデータでも標高が反映されなくなる(色だけ変わる)。実際の待ち時間・フレーム数を増やしても解消しない(非同期処理の完了待ちの問題ではない)。
+  - `MAX_TILE_OVERRIDES`(16384)には遠く及ばない件数(数百件)でも発生するため、件数上限の問題でもない。
+  - Rust側のコード(`build_tile_overrides`・`tile_generate.wgsl`のoverride_height二分探索・GPUバッファ確保)を読んだ限りでは論理的な原因を特定できておらず、真因は未解明のまま(WebGPU側のタイミング/バッファサイズに起因する何らかのバグの可能性が高い)。
+- 根本原因(wgpu側)の修正は今回のスコープでは完了できなかったため、**実用上の回避策**として`cornerDiffsFromField`(sim/terrainOverlay.ts)に任意の`bounds: CornerDiffsBounds`引数を追加し、書き出す矩形を絞れるようにした(省略時は従来どおりマップ全域、無回帰)。`DebugScenarioWorld`に`fieldBounds`を追加し、`useGameLogic.loadDebugScenario`が`cornerDiffsFromField(overrideField, halfExtent, scenario.fieldBounds)`として渡す。山岳トンネルシナリオの尾根はzに依存しない(全z共通)ので、実際に線路が通るz=0の周辺(`z: -4..4`)だけに絞ることで、上記の不具合の再現条件(|z|>4)を踏まずに済むようにした。
+- ブラウザ実機で最終確認: デバッグシナリオ「山岳トンネル」を新規読み込みし、A/B両側の坑口が実際に隆起した山肌(段丘状の崖面つき)に埋め込まれて見えること、トンネル内部走行中の列車が正しく非表示になること(既存の`isInTunnelInterior`は変更していないため無回帰)を確認した。E/W両坑口で再現性を2回確認済み。
+- **TODO(要調査・スコープ外)**: wgpuレンダラー(`renderer/renderer_wgpu/src/lib.rs`の`build_tile_overrides`、`shaders/tile_generate.wgsl`)側の「コーナーオーバーライドのz絶対値が大きいと標高が反映されない」不具合の真因調査。今回は影響範囲を絞る回避策(cornerDiffsFromFieldのbounds引数)で凌いだが、盛土/切土のような通常の地形編集でも、編集対象が原点から離れたz座標(絶対値5超)にある場合に同様の症状が起きる可能性がある(未検証)。次に着手する場合は、`renderer/renderer_wgpu/src/bin/edit_check.rs`のようなRust側の検証バイナリでCPU-GPU一致を確認しつつ、`tile_generate.wgsl`のoverride_height二分探索とGPUバッファ(`overrides_buf`)のアップロードタイミングを疑うとよい。
