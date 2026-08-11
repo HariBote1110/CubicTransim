@@ -119,15 +119,15 @@ const tileHash = (seed: number, x: number, z: number): number => {
 /** セルが地面(地平レベル)を占有しているか。純粋な高架専用セルはfalse。 */
 export const cellOccupiesGround = (cell: CellData | undefined): boolean => {
   if (!cell) return false;
-  if (cell.type === 'station' || cell.type === 'depot') return true;
+  if (cell.type === 'station' || cell.type === 'depot' || cell.type === 'substation') return true;
   if (cell.ramp) return true;
   return (cell.connections ?? 0) !== 0;
 };
 
-// 道路タイルとの同居を許す線路セルか(素の地平線路のみ=踏切)。駅・車庫・坂は不可。
+// 道路タイルとの同居を許す線路セルか(素の地平線路のみ=踏切)。駅・車庫・変電所・坂は不可。
 const cellAllowsRoadCrossing = (cell: CellData | undefined): boolean => {
   if (!cell) return true;
-  if (cell.type === 'station' || cell.type === 'depot') return false;
+  if (cell.type === 'station' || cell.type === 'depot' || cell.type === 'substation') return false;
   if (cell.ramp) return false;
   return true; // type 'rail'(高架のみのセル含む)は踏切として同居できる
 };

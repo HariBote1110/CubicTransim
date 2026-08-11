@@ -29,6 +29,9 @@ export const MESH_CHUNK_NAMESPACE = {
   signalMarker: 0x6100_0000,
   tunnelPortal: 0x7000_0000,
   waterBridge: 0x8000_0000,
+  // PM4: 変電所(電化・feeding段階のみ設置可)。depot(0x5000_0000)と同系統だが
+  // id空間の衝突を避けるため専用の名前空間を割り当てる。
+  substation: 0x9000_0000,
 } as const;
 
 export class MeshChunkRegistry {

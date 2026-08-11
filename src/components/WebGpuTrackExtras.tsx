@@ -9,6 +9,7 @@ import type { TerrainField } from '../sim/terrainField';
 import { fromKey } from '../utils';
 import { bakeGeometries, type BakedMeshChunk } from '../render/bakedMesh';
 import { buildDepotGeometries } from '../render/depotGeometry';
+import { buildSubstationGeometries } from '../render/substationGeometry';
 import { buildSignalGeometries } from '../render/signalGeometry';
 import { buildTunnelPortalGeometries, type TunnelPortalLike } from '../render/tunnelPortalMeshGeometry';
 import { buildWaterBridgeGeometries } from '../render/waterBridgeGeometry';
@@ -26,6 +27,7 @@ interface Props {
 }
 
 const DEPOT_KEY = 'depots';
+const SUBSTATION_KEY = 'substations';
 const SIGNAL_KEY = 'signals';
 const PORTAL_KEY = 'portals';
 const BRIDGE_KEY = 'bridges';
@@ -37,6 +39,17 @@ export const WebGpuTrackExtras: React.FC<Props> = ({ layerRef, railMap, field, t
       const { x, z } = fromKey(key);
       const groundY = field.cellHeightAt(x, z) * OVERPASS_HEIGHT;
       return buildDepotGeometries([x, groundY, z], data.rotation ?? 0);
+    });
+    return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour })));
+  }, [railMap, field]);
+
+  // PM4: 変電所。車庫と同じくrailMap上のセル1つとして持つ(常に地平)。
+  const buildSubstationChunk = useCallback((): BakedMeshChunk | null => {
+    const entries = [...railMap.entries()].flatMap(([key, data]) => {
+      if (data.type !== 'substation') return [];
+      const { x, z } = fromKey(key);
+      const groundY = field.cellHeightAt(x, z) * OVERPASS_HEIGHT;
+      return buildSubstationGeometries([x, groundY, z]);
     });
     return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour })));
   }, [railMap, field]);
@@ -76,16 +89,24 @@ export const WebGpuTrackExtras: React.FC<Props> = ({ layerRef, railMap, field, t
 
   const buildChunk = useCallback((key: string): BakedMeshChunk | null => {
     if (key === DEPOT_KEY) return buildDepotChunk();
+    if (key === SUBSTATION_KEY) return buildSubstationChunk();
     if (key === SIGNAL_KEY) return buildSignalChunk();
     if (key === PORTAL_KEY) return buildPortalChunk();
     if (key === BRIDGE_KEY) return buildBridgeChunk();
     return null;
-  }, [buildDepotChunk, buildSignalChunk, buildPortalChunk, buildBridgeChunk]);
+  }, [buildDepotChunk, buildSubstationChunk, buildSignalChunk, buildPortalChunk, buildBridgeChunk]);
 
   useMeshChunkFeeder({
     layerRef,
     namespace: MESH_CHUNK_NAMESPACE.depot,
     desiredKeys: [DEPOT_KEY],
+    buildChunk,
+    layerClass: MESH_LAYER_CLASS.surface,
+  });
+  useMeshChunkFeeder({
+    layerRef,
+    namespace: MESH_CHUNK_NAMESPACE.substation,
+    desiredKeys: [SUBSTATION_KEY],
     buildChunk,
     layerClass: MESH_LAYER_CLASS.surface,
   });

@@ -104,8 +104,8 @@ export function buildRailNetworkGeometry(
     selectedLevel === base + 1 ? base + 1 : base;
 
   for (const [key, data] of railMap) {
-    // 車庫セルは建屋を描くため線路は敷かない(建屋側で床を描く)。
-    if (data.type === 'depot') continue;
+    // 車庫・変電所セルは建屋を描くため線路は敷かない(建屋側で床を描く)。
+    if (data.type === 'depot' || data.type === 'substation') continue;
     const { x, z } = fromKey(key);
 
     // 坂(ramp)セルは、桁側へ向かう軸ビットだけ地平の平坦な部品から除外し、

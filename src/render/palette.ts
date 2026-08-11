@@ -54,6 +54,10 @@ export const PALETTE = {
   depotWall: '#3d6b93',
   depotRoof: '#2c4f6f',
   depotFloor: '#4a4a4a',
+  // PM4: 変電所(変圧器の箱・碍子・ボディ)。車庫と混同しないよう黄系のアクセントにする。
+  substationBody: '#6b6f78',
+  substationTransformer: '#c9a227',
+  substationInsulator: '#e8e2d0',
   signalMast: '#3a3f45',
   signalGo: '#39d353',
   chevron: '#ffcc00',

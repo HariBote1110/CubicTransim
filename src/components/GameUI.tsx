@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
-  CAR_COST, CAR_REFUND,
+  CAR_COST, CAR_REFUND, SUBSTATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   demandFactor, clockToDate,
 } from '../sim/economy';
@@ -136,6 +136,9 @@ const BUILD_TOOLS: {
   // フィルタは描画側で行う。BUILD_TOOLSはキーボードショートカット判定にも使うため、
   // 定義自体は常に含めておく)。
   { mode: 'regauge', label: '改軌', key: '9', accent: T.bridge, cost: `¥${REGAUGE_COST_PER_CELL}/マス`, hint: '既存の線路をドラッグして軌間を変換する。列車が在線中の区間は不可' },
+  // PM4: rules.electrification==='feeding'(リアリスティック)のときだけツールバーに表示する
+  // (BUILD_TOOLSからのフィルタは描画側で行う。regaugeと同じ規約)。
+  { mode: 'substation', label: '変電所', key: '0', accent: T.depot, cost: `¥${SUBSTATION_COST.toLocaleString()}`, hint: '電化線路に隣接する空きマスに設置。き電区間へ給電する' },
 ];
 
 const SPEEDS: (0 | 1 | 2 | 4)[] = [0, 1, 2, 4];
@@ -239,7 +242,9 @@ export const GameUI: React.FC<GameUIProps> = ({
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
 
-      const tool = BUILD_TOOLS.find(t => t.key === e.key && (t.mode !== 'regauge' || gameRules.gauge));
+      const tool = BUILD_TOOLS.find(t => t.key === e.key
+        && (t.mode !== 'regauge' || gameRules.gauge)
+        && (t.mode !== 'substation' || gameRules.electrification === 'feeding'));
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
       if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); return; }
@@ -254,7 +259,7 @@ export const GameUI: React.FC<GameUIProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge]);
+  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge, gameRules.electrification]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
@@ -603,7 +608,10 @@ export const GameUI: React.FC<GameUIProps> = ({
         )}
 
         <div style={panel({ display: 'flex', gap: 4, padding: 5 })}>
-          {BUILD_TOOLS.filter(tool => tool.mode !== 'regauge' || gameRules.gauge).map(tool => (
+          {BUILD_TOOLS.filter(tool =>
+            (tool.mode !== 'regauge' || gameRules.gauge) &&
+            (tool.mode !== 'substation' || gameRules.electrification === 'feeding')
+          ).map(tool => (
             <button
               key={tool.mode}
               onClick={() => setBuildMode(tool.mode)}

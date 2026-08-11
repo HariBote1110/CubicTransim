@@ -151,7 +151,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
     if (!dragStartPos) return [cursorPos];
-    if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal') {
+    if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal') {
       return [cursorPos];
     }
     // 地形編集は8方向の直線ではなく矩形範囲を選択する(OpenTTD流)。
@@ -358,7 +358,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
     const start = dragStartRef.current;
     if (!start) return;
     const pos = cellFromEvent(event);
-    const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
+    const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal')
       ? [pos]
       : terrainEditActive
       ? rectCells(start, pos)
@@ -459,6 +459,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const getPreviewColour = () => {
     if (buildMode === 'station') return STATION_COLOUR;
     if (buildMode === 'depot') return DEPOT_COLOUR;
+    if (buildMode === 'substation') return DEPOT_COLOUR;
     if (buildMode === 'remove') return REMOVE_COLOUR;
     if (buildMode === 'signal') return SIGNAL_COLOUR;
     if (buildMode === 'raise') return T.terrain;
@@ -526,7 +527,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       ? 0.2 + (role?.kind === 'ramp' ? role.base : buildLevel) * OVERPASS_HEIGHT
       : buildMode === 'station' && buildLevel !== 0
       ? 0.2 + buildLevel * OVERPASS_HEIGHT
-      : (terrainEditActive || buildMode === 'station' || buildMode === 'depot' || buildMode === 'signal')
+      : (terrainEditActive || buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal')
       ? 0.2 + field.cellHeightAt(pos.x, pos.z) * OVERPASS_HEIGHT
       : 0.2;
     return { x: pos.x, y, z: pos.z, colour };
