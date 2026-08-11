@@ -137,3 +137,9 @@
 - 根本原因(wgpu側)の修正は今回のスコープでは完了できなかったため、**実用上の回避策**として`cornerDiffsFromField`(sim/terrainOverlay.ts)に任意の`bounds: CornerDiffsBounds`引数を追加し、書き出す矩形を絞れるようにした(省略時は従来どおりマップ全域、無回帰)。`DebugScenarioWorld`に`fieldBounds`を追加し、`useGameLogic.loadDebugScenario`が`cornerDiffsFromField(overrideField, halfExtent, scenario.fieldBounds)`として渡す。山岳トンネルシナリオの尾根はzに依存しない(全z共通)ので、実際に線路が通るz=0の周辺(`z: -4..4`)だけに絞ることで、上記の不具合の再現条件(|z|>4)を踏まずに済むようにした。
 - ブラウザ実機で最終確認: デバッグシナリオ「山岳トンネル」を新規読み込みし、A/B両側の坑口が実際に隆起した山肌(段丘状の崖面つき)に埋め込まれて見えること、トンネル内部走行中の列車が正しく非表示になること(既存の`isInTunnelInterior`は変更していないため無回帰)を確認した。E/W両坑口で再現性を2回確認済み。
 - **TODO(要調査・スコープ外)**: wgpuレンダラー(`renderer/renderer_wgpu/src/lib.rs`の`build_tile_overrides`、`shaders/tile_generate.wgsl`)側の「コーナーオーバーライドのz絶対値が大きいと標高が反映されない」不具合の真因調査。今回は影響範囲を絞る回避策(cornerDiffsFromFieldのbounds引数)で凌いだが、盛土/切土のような通常の地形編集でも、編集対象が原点から離れたz座標(絶対値5超)にある場合に同様の症状が起きる可能性がある(未検証)。次に着手する場合は、`renderer/renderer_wgpu/src/bin/edit_check.rs`のようなRust側の検証バイナリでCPU-GPU一致を確認しつつ、`tile_generate.wgsl`のoverride_height二分探索とGPUバッファ(`overrides_buf`)のアップロードタイミングを疑うとよい。
+
+### 追記(v0.5.0-Alpha-8f: 上記TODOの根本原因調査完了、レンダラー不具合ではなかった)
+- 上記TODOに着手し、ネイティブのRust検証バイナリ→wasmデバッグAPI(`debugTiles`/`debugOverrideStore`/`debugReadTileSamples`、`renderer/renderer_wgpu/src/lib.rs`に常設)→ブラウザでのGPUバッファ readback→スキャンライン単位の画素比較まで一通り検証した結果、**コーナーオーバーライドの適用経路(データ構築・GPUバッファ・シェーダ二分探索)はz座標の絶対値によらずバイト単位で一致しており、wgpuレンダラー側に不具合は無いことを確認した**。
+- 真因は「zに依存しない(全z共通の)長い尾根が、真等角投影ではほぼエッジオンに見えるため、平坦な色帯にしか見えない」という光学的な誤診断だった。1段/セルのなだらかな勾配は段丘状の崖(テラス)を作らず滑らかに繋がるため、`z: -4..4`にfieldBoundsで絞ったときにだけ生じる端部(z=±4)の段差(テラス)が、あたかも回避策が効いて山が現れたかのように見えていた。
+- 対処として、`sim/debugScenarios.ts`の山岳トンネルシナリオの尾根自体をz依存の局所的な丘(`|z|<=4`のみ隆起、それ以遠は標高0)に変更し、`fieldBounds`による転送範囲の絞り込みを撤去した。`bounds`引数自体(`CornerDiffsBounds`/`cornerDiffsFromField`)はレンダラー回避策としては不要だが、転送量を減らす最適化として`sim/terrainOverlay.ts`に残している。
+- 調査の詳細・手順・残る教訓は`progress/wgpu-corner-override-z-investigation.md`に独立して記録した。本TODOはこれで解消。
