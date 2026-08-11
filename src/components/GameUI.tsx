@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND,
@@ -25,13 +25,27 @@ import { UNDERGROUND_RAIL_COST_MULTIPLIER, UNDERGROUND_STATION_COST } from '../s
 import type { TerrainField } from '../sim/terrainField';
 import type { EditedTerrainField } from '../sim/terrainOverlay';
 import { buildEditBlockers } from '../sim/terrainOverlay';
+import type { GameRules } from '../sim/gameRules';
+import type { RailBuildOptions } from '../sim/construction';
+import { REGAUGE_COST_PER_CELL } from '../sim/economy';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
 // 選択中列車の乗客数・駅の待ち人数の更新間隔(ms)。
 const POLL_INTERVAL_MS = 400;
 
-export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'raise' | 'lower';
+// PM2 Stage B: 改軌ツール。rules.gauge=trueのときだけ'regauge'ツールボタンを表示する。
+export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'raise' | 'lower' | 'regauge';
+
+// PM2: 軌間の選択肢(基本ラインナップ2種+拡張ラインナップ2種)。
+const BASIC_GAUGES: { value: RailGauge; label: string }[] = [
+  { value: 1067, label: '狭軌' },
+  { value: 1435, label: '標準軌' },
+];
+const EXTENDED_GAUGES: { value: RailGauge; label: string }[] = [
+  { value: 762, label: '特殊狭軌' },
+  { value: 1372, label: '馬車軌間' },
+];
 
 interface GameUIProps {
   buildMode: BuildMode;
@@ -88,6 +102,17 @@ interface GameUIProps {
   onRenameGroup: (groupId: string, name: string) => void;
   onClearGroupSchedule: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
+  // PM2: プレイモードのルールフラグ集合。rules.gauge=falseなら軌間/電化UIは一切出さない。
+  gameRules: GameRules;
+  // PM2: 線路(rail)ツール専用の軌間/電化選択。
+  railOptions: RailBuildOptions;
+  setRailOptions: (opts: RailBuildOptions) => void;
+  // PM2 Stage B: 改軌ツール専用の目的軌間。
+  regaugeTargetGauge: RailGauge | undefined;
+  setRegaugeTargetGauge: (gauge: RailGauge | undefined) => void;
+  // PM2: 車庫(depot)ツールで列車を購入するときの動力方式選択。
+  purchasePower: TrainPower;
+  setPurchasePower: (power: TrainPower) => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -107,6 +132,10 @@ const BUILD_TOOLS: {
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
   { mode: 'raise', label: '盛土', key: '7', accent: T.terrain, cost: `¥${TERRAIN_EDIT_COST}/マス`, hint: 'ドラッグした矩形範囲を1段盛り上げる。段差1以下を保つため周囲も自動でならされる(その分も課金)。線路・町・水の上は不可' },
   { mode: 'lower', label: '切土', key: '8', accent: T.terrain, cost: `¥${TERRAIN_EDIT_COST}/マス`, hint: 'ドラッグした矩形範囲を1段掘り下げる。段差1以下を保つため周囲も自動でならされる(その分も課金)。線路・町・水の上は不可' },
+  // PM2 Stage B: rules.gauge=trueのときだけツールバーに表示する(BUILD_TOOLSからの
+  // フィルタは描画側で行う。BUILD_TOOLSはキーボードショートカット判定にも使うため、
+  // 定義自体は常に含めておく)。
+  { mode: 'regauge', label: '改軌', key: '9', accent: T.bridge, cost: `¥${REGAUGE_COST_PER_CELL}/マス`, hint: '既存の線路をドラッグして軌間を変換する。列車が在線中の区間は不可' },
 ];
 
 const SPEEDS: (0 | 1 | 2 | 4)[] = [0, 1, 2, 4];
@@ -140,6 +169,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   previewPath,
   groups, onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup,
   onClearGroupSchedule, onDeleteGroup,
+  gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
+  purchasePower, setPurchasePower,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
@@ -208,7 +239,7 @@ export const GameUI: React.FC<GameUIProps> = ({
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
 
-      const tool = BUILD_TOOLS.find(t => t.key === e.key);
+      const tool = BUILD_TOOLS.find(t => t.key === e.key && (t.mode !== 'regauge' || gameRules.gauge));
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
       if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); return; }
@@ -223,7 +254,7 @@ export const GameUI: React.FC<GameUIProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel]);
+  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
@@ -235,8 +266,8 @@ export const GameUI: React.FC<GameUIProps> = ({
     const blockers = buildEditBlockers({ halfExtent, railMap, townTileIndex: townTiles, baseField });
     return evaluateBuild(buildMode, previewPath, railMap, stations, field, money, buildLevel, townTiles, {
       base: baseField, editedField, blockers,
-    });
-  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent]);
+    }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge' ? { targetGauge: regaugeTargetGauge ?? 1067 } : undefined);
+  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(
@@ -467,8 +498,81 @@ export const GameUI: React.FC<GameUIProps> = ({
           </div>
         )}
 
+        {/* PM2: 軌間・電化の選択(線路ツール、rules.gauge=trueのときのみ)。 */}
+        {buildMode === 'rail' && gameRules.gauge && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>軌間</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[...BASIC_GAUGES, ...(gameRules.extendedGauges ? EXTENDED_GAUGES : [])].map(g => (
+                <button
+                  key={g.value}
+                  onClick={() => setRailOptions({ ...railOptions, gauge: g.value })}
+                  style={button({ active: (railOptions.gauge ?? 1067) === g.value, accent: T.accent, compact: true })}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
+            {gameRules.electrification !== 'none' && (
+              <>
+                <div style={{ width: 1, alignSelf: 'stretch', background: T.line, margin: '2px 0' }} />
+                <button
+                  onClick={() => setRailOptions({ ...railOptions, electrified: !railOptions.electrified })}
+                  style={button({ active: !!railOptions.electrified, accent: T.station, compact: true })}
+                  title={`架線設備費 +¥${RAIL_COST * 0.5}/マス`}
+                >
+                  {railOptions.electrified ? '電化' : '非電化'}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* PM2: 車庫ツールでの列車購入時の動力方式選択(rules.electrification!=='none'のみ)。
+            軌間は車庫セルの軌間を自動継承する(useGameLogic.tsのbuyTrain)ため選択させない。 */}
+        {buildMode === 'depot' && gameRules.electrification !== 'none' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>購入する動力</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {([['electric', '電車'], ['diesel', '気動車']] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setPurchasePower(value)}
+                  style={button({ active: purchasePower === value, accent: T.depot, compact: true })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* PM2 Stage B: 改軌ツールの目的軌間選択(rules.gauge=trueのときのみツール自体が出る)。 */}
+        {buildMode === 'regauge' && gameRules.gauge && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>改軌先</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[...BASIC_GAUGES, ...(gameRules.extendedGauges ? EXTENDED_GAUGES : [])].map(g => (
+                <button
+                  key={g.value}
+                  onClick={() => setRegaugeTargetGauge(g.value)}
+                  style={button({ active: (regaugeTargetGauge ?? 1067) === g.value, accent: T.bridge, compact: true })}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div style={panel({ display: 'flex', gap: 4, padding: 5 })}>
-          {BUILD_TOOLS.map(tool => (
+          {BUILD_TOOLS.filter(tool => tool.mode !== 'regauge' || gameRules.gauge).map(tool => (
             <button
               key={tool.mode}
               onClick={() => setBuildMode(tool.mode)}

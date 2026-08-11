@@ -8,6 +8,8 @@ import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
 import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, type PlayMode } from './sim/gameRules';
+import type { RailBuildOptions } from './sim/construction';
+import type { RailGauge, TrainPower } from './types';
 import { T, button as themeButton } from './ui/theme';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
 import type { WebGpuTerrainLayerController, WebGpuUnavailableReason } from './render/webgpuLayer';
@@ -125,6 +127,11 @@ export default function App() {
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
   const [buildLevel, setBuildLevel] = useState<BuildLevel>(0);
+  // PM2: 線路ツールの軌間/電化選択、改軌ツールの目的軌間、車庫での購入動力。
+  // いずれもrules.gauge=false(ライト)の間はUIから触れられないため既定値のまま使われない。
+  const [railOptions, setRailOptions] = useState<RailBuildOptions>({ gauge: 1067 });
+  const [regaugeTargetGauge, setRegaugeTargetGauge] = useState<RailGauge | undefined>(1067);
+  const [purchasePower, setPurchasePower] = useState<TrainPower>('diesel');
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
@@ -209,6 +216,7 @@ export default function App() {
     stopLocation, setStopLocation,
     groups, createGroup, assignTrainToGroup, setGroupHeadway, setGroupMode,
     renameGroup, clearGroupSchedule, deleteGroup,
+    gameRules,
   } = useGameLogic();
 
   return (
@@ -243,7 +251,7 @@ export default function App() {
         isEditingSchedule={isEditingSchedule}
         simSpeed={simSpeed}
         money={money}
-        onCommitPath={commitPath}
+        onCommitPath={(path, mode, axisHint, level) => commitPath(path, mode, axisHint, level, railOptions, regaugeTargetGauge)}
         removeSignal={removeSignal}
         onSimEvent={(event) => {
           if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
@@ -253,7 +261,7 @@ export default function App() {
           if (event.type === 'townGrowth') handleTownGrowth(event);
         }}
         onSelectTrain={setSelectedTrainId}
-        onBuyTrain={buyTrain}
+        onBuyTrain={(x, z) => buyTrain(x, z, purchasePower)}
         onAddSchedule={addSchedule}
         onSelectStation={selectStation}
         onPreviewChange={handlePreviewChange}
@@ -308,6 +316,13 @@ export default function App() {
         onRenameGroup={renameGroup}
         onClearGroupSchedule={clearGroupSchedule}
         onDeleteGroup={deleteGroup}
+        gameRules={gameRules}
+        railOptions={railOptions}
+        setRailOptions={setRailOptions}
+        regaugeTargetGauge={regaugeTargetGauge}
+        setRegaugeTargetGauge={setRegaugeTargetGauge}
+        purchasePower={purchasePower}
+        setPurchasePower={setPurchasePower}
       />
 
       {showStartupOptions && (

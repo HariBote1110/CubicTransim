@@ -38,7 +38,7 @@ import { WebGpuTrackNetwork } from './WebGpuTrackNetwork';
 import { WebGpuStations } from './WebGpuStations';
 import { WebGpuTrackExtras } from './WebGpuTrackExtras';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, TownData } from '../types';
+import type { CellData, TrainData, TrainGroupData, StationData, TownData } from '../types';
 import { carPositions } from '../sim/consist';
 import { toKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
@@ -96,7 +96,7 @@ interface GameSceneProps {
 
   onCommitPath: (
     path: { x: number; z: number }[],
-    mode: CellType | 'none' | 'remove' | 'signal' | 'raise' | 'lower',
+    mode: BuildMode,
     stationAxisHint?: StationAxis,
     level?: BuildLevel
   ) => void;

@@ -1,20 +1,20 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import {
   applyRailPath, applyStation, applyDepot, applySignal, applyElevatedPath, applyElevatedStation,
-  applyUndergroundPath, applyUndergroundStation,
+  applyUndergroundPath, applyUndergroundStation, applyRegaugePath,
   removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
 } from '../sim/construction';
-import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel, UndergroundLevel } from '../sim/construction';
+import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel, UndergroundLevel, RailBuildOptions } from '../sim/construction';
 import {
   STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
-  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit,
+  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
@@ -206,12 +206,17 @@ export const useGameLogic = () => {
   // 建設コストの算出・所持金チェック・課金もここで行う。
   const commitPath = (
     path: { x: number; z: number }[],
-    buildMode: CellType | 'none' | 'remove' | 'signal' | TerrainEditMode,
+    buildMode: CellType | 'none' | 'remove' | 'signal' | TerrainEditMode | 'regauge',
     // 駅設置(station)専用: ドラッグした向きから決まる軸のヒント。
     // 省略時はapplyStationが隣接セルから軸を推測する(なければ東西が既定)。
     stationAxisHint?: StationAxis,
     // 線路(rail)・駅(station)専用: 建設対象レベル(0=地平〜3)。省略時は0。
-    level: BuildLevel = 0
+    level: BuildLevel = 0,
+    // PM2: 線路(rail)専用の軌間/電化選択。rules.gauge=falseのUIからは常に省略される
+    // ため、既存の建設挙動は変わらない。
+    railOptions: RailBuildOptions = {},
+    // PM2 Stage B: 改軌(buildMode==='regauge')専用の目的軌間。
+    regaugeTargetGauge?: RailGauge
   ) => {
     if (path.length === 0) return;
 
@@ -301,8 +306,9 @@ export const useGameLogic = () => {
           cost = groundRampFlags
             ? costOfGroundPathWithRamps(path, field, groundRampFlags)
             : costOfPath('rail', path.length, path, field);
+          if (railOptions.electrified) cost += costOfElectrification(path.length);
           if (money < cost) return;
-          result = applyRailPath(state, path, field, townTileIndex);
+          result = applyRailPath(state, path, field, townTileIndex, railOptions);
         } else if (level > 0) {
           // 自由な高架線(旧'elevated')。坂・橋桁の内訳はconstruction.ts側の判定
           // (resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath)にそのまま
@@ -314,17 +320,36 @@ export const useGameLogic = () => {
           const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
           const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
           cost = costOfElevatedPath(rampCount, overpassCount);
+          if (railOptions.electrified) cost += costOfElectrification(path.length);
           if (money < cost) return;
-          result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTileIndex);
+          result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTileIndex, railOptions);
         } else {
           // P8a/P8c: 自由な地下線。design docの通り、坂(掘割)/地下線本体を区別せず
           // 経路の全セルへ一律のコスト倍率(UNDERGROUND_RAIL_COST_MULTIPLIER)を課す
           // (buildPreview.tsのcostOfUndergroundPathと同じ計算)。
           const undergroundLevel = level as UndergroundLevel;
           cost = costOfUndergroundPath(path.length);
+          if (railOptions.electrified) cost += costOfElectrification(path.length);
           if (money < cost) return;
-          result = applyUndergroundPath(state, path, field, undergroundLevel);
+          result = applyUndergroundPath(state, path, field, undergroundLevel, undefined, railOptions);
         }
+        break;
+      }
+      case 'regauge': {
+        // PM2 Stage B: 改軌。目的軌間が無ければ何もしない。列車が在線中のセルを含む
+        // 経路は全体がno-op(construction.tsのapplyRegaugePathが判定)。課金対象は
+        // 実際に軌間が変わったセル数のみ(buildPreview.tsと同じ規約)。
+        if (!regaugeTargetGauge) return;
+        const occupiedCells = new Set(worldRef.current.trains.map(t => toKey(t.x, t.z)));
+        const regauged = applyRegaugePath(state, path, regaugeTargetGauge, occupiedCells);
+        if (regauged.railMap === state.railMap) return;
+        const changedCellCount = path.filter(p => {
+          const key = toKey(p.x, p.z);
+          return railMap.get(key)?.gauge !== regauged.railMap.get(key)?.gauge;
+        }).length;
+        cost = costOfRegauge(changedCellCount);
+        if (money < cost) return;
+        result = regauged;
         break;
       }
       default:
