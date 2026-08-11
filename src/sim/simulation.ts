@@ -16,6 +16,7 @@ import { growTown, townServiceLevel, resolveTownSpawnTick } from './towns';
 import type { StationTransportInfo } from './towns';
 import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
 import { DEFAULT_GAME_RULES, isDeadSectionBoundary, type GameRules } from './gameRules';
+import { OVERLOAD_ACCEL_FACTOR, type FeedingIndex } from './feeding';
 import {
   pathPointAt, pathHeightAt, rampHeightAtPos, OVERPASS_HEIGHT,
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
@@ -218,6 +219,13 @@ export interface SimWorld {
    * (stepWorldの参照箇所は必ず`world.rules ?? DEFAULT_GAME_RULES`で読む)。
    */
   rules?: GameRules;
+  /**
+   * PM4: き電インフラの索引(sim/feeding.tsのbuildFeedingIndex)。useGameLogic.tsが
+   * railMap変化時にのみ再計算して鏡写しする(rulesと同じ同期パターン)。セーブ対象外
+   * (railMapから毎回導出できるため)。rules.electrification!=='feeding'のときは
+   * 誰も参照しない(挙動変更ゼロ)。
+   */
+  feeding?: FeedingIndex;
 }
 
 /**
@@ -630,7 +638,16 @@ const recordDeparture = (world: SimWorld, train: TrainData, rt: TrainRuntime): v
   world.groupDepartures.set(key, now);
 };
 
-const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: number, events: SimEvent[]) => {
+const stepTrain = (
+  world: SimWorld,
+  train: TrainData,
+  rt: TrainRuntime,
+  dt: number,
+  events: SimEvent[],
+  // PM4: き電区間ごとの在線数(電車のみ、tick開始時点でstepWorldが数えたもの)。
+  // rules.electrification!=='feeding'なら常にundefined。
+  feedingSectionCounts?: Map<string, number>
+) => {
   // グループに所属している列車はグループの運行表に従う(共有運行表)。
   const schedule = effectiveSchedule(train, world.groups ?? []);
   const targetStationId = schedule.length > 0 ? schedule[train.scheduleIndex % schedule.length] : null;
@@ -698,6 +715,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       rules,
       trainGauge: train.gauge ?? 1067,
       trainPower: train.power ?? 'diesel',
+      feeding: world.feeding,
     });
     let newPath = routeResult.path;
 
@@ -741,6 +759,7 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
           rules,
           trainGauge: train.gauge ?? 1067,
           trainPower: train.power ?? 'diesel',
+          feeding: world.feeding,
         });
         newPath = routeResult.path;
       }
@@ -941,12 +960,26 @@ const stepTrain = (world: SimWorld, train: TrainData, rt: TrainRuntime, dt: numb
       const nextCellForDeadSection = world.railMap.get(toKey(nextTile.x, nextTile.z));
       const inDeadSection = isDeadSectionBoundary(currentCellForDeadSection, nextCellForDeadSection);
 
+      // PM4: き電区間の在線数が容量を超えていれば、牽引力にOVERLOAD_ACCEL_FACTORを掛ける
+      // (電圧降下の離散近似、design decision 4「traction only」)。気動車・feeding未満の
+      // プレイモードでは常に1(無影響)。
+      let tractionFactor = 1;
+      if (world.feeding && feedingSectionCounts && train.power && train.power !== 'diesel') {
+        const sectionKey = world.feeding.sectionLoadKey(rt.grid.x, rt.grid.z, rt.grid.layer ?? 0);
+        if (sectionKey) {
+          const capacity = world.feeding.sectionCapacity(sectionKey);
+          const count = feedingSectionCounts.get(sectionKey) ?? 0;
+          if (count > capacity) tractionFactor = OVERLOAD_ACCEL_FACTOR;
+        }
+      }
+
       // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
       // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
       const accelMs2 = computeAcceleration(
         { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
         inDeadSection ? 'coasting' : 'accelerating',
-        DECEL_KMH_S
+        DECEL_KMH_S,
+        tractionFactor
       );
       rt.speedKmh = Math.min(releaseEnvelopeKmh, Math.max(0, rt.speedKmh + accelMs2 * 3.6 * dt));
     }
@@ -1124,6 +1157,25 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
     ensureRuntime(world, train);
   }
 
+  // PM4: き電区間ごとの在線数(電車のみ)を1tick分先に数えておく。容量超過の判定は
+  // 「そのtick開始時点の在線数」を使う(列車ごとに動かしながら数えると走行順で
+  // 結果が変わってしまうため、1パス目で固定してから2パス目のstepTrainへ渡す)。
+  const rules = world.rules ?? DEFAULT_GAME_RULES;
+  let feedingSectionCounts: Map<string, number> | undefined;
+  if (rules.electrification === 'feeding' && world.feeding) {
+    feedingSectionCounts = new Map();
+    const feeding = world.feeding;
+    for (const train of world.trains) {
+      if (train.status !== 'running') continue;
+      if (!train.power || train.power === 'diesel') continue;
+      const rt = world.runtimes.get(train.id);
+      if (!rt) continue;
+      const key = feeding.sectionLoadKey(rt.grid.x, rt.grid.z, rt.grid.layer ?? 0);
+      if (!key) continue;
+      feedingSectionCounts.set(key, (feedingSectionCounts.get(key) ?? 0) + 1);
+    }
+  }
+
   for (const train of world.trains) {
     if (train.status !== 'running') {
       const rt = world.runtimes.get(train.id);
@@ -1135,7 +1187,7 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
     }
 
     const rt = ensureRuntime(world, train);
-    stepTrain(world, train, rt, dt, events);
+    stepTrain(world, train, rt, dt, events, feedingSectionCounts);
   }
 
   return events;

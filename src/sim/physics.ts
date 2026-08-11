@@ -54,12 +54,16 @@ export function computeMassKg(spec: TrainSpec, cars: number, passengers: number)
  *   転がり抵抗・空気抵抗だけを差し引く。既存の'accelerating'の抵抗項をそのまま
  *   再利用しており、新しい減速モデルを追加したわけではない(design decision 4:
  *   「passive dragがあるならそれで減速、無いならゼロ加速度」に対応)。
+ * tractionFactor(PM4): き電区間の在線数が容量を超えたときの電圧降下の離散近似
+ * (feeding.tsのOVERLOAD_ACCEL_FACTOR)。牽引力(forceN)にだけ掛ける、既定1(無影響)。
+ * ブレーキ・惰行の抵抗項には掛けない(design decision 4「traction only」)。
  * 戻り値の単位は m/s²(braking/coastingは負値または0)。
  */
 export function computeAcceleration(
   input: AccelerationInput,
   mode: 'accelerating' | 'braking' | 'coasting',
-  fallbackDecelKmhS: number
+  fallbackDecelKmhS: number,
+  tractionFactor = 1
 ): number {
   if (mode === 'braking') {
     return -fallbackDecelKmhS / 3.6;
@@ -81,7 +85,7 @@ export function computeAcceleration(
   const maxTeN = spec.maxTractiveEffort * 1000;
 
   // F=P/v。停止付近(v→0)は発散するため、キックオフ牽引力(粘着限界)で代用する。
-  const forceN = speedMs < KICKOFF_SPEED_MS ? maxTeN : Math.min(maxTeN, powerW / speedMs);
+  const forceN = (speedMs < KICKOFF_SPEED_MS ? maxTeN : Math.min(maxTeN, powerW / speedMs)) * tractionFactor;
 
   const netForceN = forceN - resistanceN;
   return netForceN / massKg;

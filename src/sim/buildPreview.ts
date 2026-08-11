@@ -15,6 +15,7 @@ import {
   applyRailPathDetailed,
   applyStation,
   applyDepot,
+  applySubstation,
   applySignal,
   applyElevatedPath,
   applyElevatedStation,
@@ -267,6 +268,7 @@ export function evaluateBuild(
         : applyStation(state, path[path.length - 1], field, [], undefined, townTiles);
       break;
     case 'depot': result = applyDepot(state, path[path.length - 1], field, townTiles); break;
+    case 'substation': result = applySubstation(state, path[path.length - 1], field, townTiles); break;
     case 'rail': {
       if (elevated) {
         result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTiles, railOptions);

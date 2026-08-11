@@ -2,6 +2,7 @@ import { toKey, DIR, getVectorFromDir, getDirFromVector, getOppositeDir } from '
 import type { CellData, StationData, Level, RailGauge, TrainPower } from '../types';
 import { reservationKey } from './reservation';
 import { cellAllowsTrain, DEFAULT_GAME_RULES, type GameRules } from './gameRules';
+import type { FeedingIndex } from './feeding';
 
 export type Layer = 0 | Level;
 
@@ -86,6 +87,13 @@ export interface RouteQuery {
   rules?: GameRules;
   trainGauge?: RailGauge;
   trainPower?: TrainPower;
+  /**
+   * PM4: き電インフラの索引(sim/feeding.ts)。rules.electrification==='feeding'かつ
+   * 電車(trainPower!=='diesel')のときだけ、給電されていないセルへの進入を拒否する
+   * (design decision 3)。gameRules.tsは純粋関数のまま保つため、この索引は外から渡す。
+   * 省略時(feeding段階でない・indexが無い)は従来どおり判定しない。
+   */
+  feeding?: FeedingIndex;
 }
 
 const normalize = (x: number, z: number) => {
@@ -245,7 +253,7 @@ export function calculateRouteWithStop(
 ): RouteResult {
   const {
     start, prev: prevGrid, targetStationId: targetId, cars, stopLocation = 'middle',
-    rules = DEFAULT_GAME_RULES, trainGauge = 1067, trainPower = 'diesel',
+    rules = DEFAULT_GAME_RULES, trainGauge = 1067, trainPower = 'diesel', feeding,
   } = query;
 
   const targetSt = stations.get(targetId);
@@ -306,6 +314,14 @@ export function calculateRouteWithStop(
               // PM2: 軌間ミスマッチ・電車が非電化セルへ進入することを拒否する。
               // rules.gauge=false(ライト相当)・electrification='none'なら常にtrue。
               if (!cellAllowsTrain(targetCell, rules, trainGauge, trainPower)) continue;
+              // PM4: 給電段階(rules.electrification==='feeding')では、電車が給電されて
+              // いないセルへ進入することも拒否する(design decision 3)。気動車は対象外。
+              if (
+                rules.electrification === 'feeding' &&
+                trainPower !== 'diesel' &&
+                feeding &&
+                !feeding.isPowered(tx, tz, nextLayer)
+              ) continue;
               if (targetCell && targetCell.signalDir) {
                   const sv = getVectorFromDir(targetCell.signalDir);
                   const dv = { x: d.x, z: d.z };

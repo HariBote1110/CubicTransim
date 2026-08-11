@@ -5,7 +5,7 @@ import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import {
-  applyRailPath, applyStation, applyDepot, applySignal, applyElevatedPath, applyElevatedStation,
+  applyRailPath, applyStation, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
   applyUndergroundPath, applyUndergroundStation, applyRegaugePath,
   removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
 } from '../sim/construction';
@@ -21,6 +21,7 @@ import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN
 import type { TerrainProfile } from '../sim/terrainField';
 import { DEFAULT_GAME_RULES } from '../sim/gameRules';
 import type { GameRules } from '../sim/gameRules';
+import { buildFeedingIndex } from '../sim/feeding';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
 import { createEditedTerrainField, applyCornerEdit, buildEditBlockers, cornerDiffsFromField } from '../sim/terrainOverlay';
 
@@ -200,6 +201,26 @@ export const useGameLogic = () => {
     [towns, field, railMap]
   );
 
+  // PM4: き電インフラの索引。townTileIndexと同じ規律で、railMapが変わったときだけ
+  // 再計算する(変電所はrailMapのセルとして持つため、substations一覧もrailMapから
+  // 都度導出する)。rules.electrification!=='feeding'のときも常に計算はするが、
+  // stepWorld側がrules.electrificationを見て参照するかどうかを決めるため無害
+  // (低いプレイモードでは誰も参照しない=挙動変更ゼロ)。
+  const feedingIndex = useMemo(() => {
+    const substations: { x: number; z: number }[] = [];
+    for (const [key, cell] of railMap) {
+      if (cell.type === 'substation') {
+        const [x, z] = key.split(',').map(Number);
+        substations.push({ x, z });
+      }
+    }
+    return buildFeedingIndex(railMap, substations);
+  }, [railMap]);
+
+  useEffect(() => {
+    worldRef.current.feeding = feedingIndex;
+  }, [feedingIndex]);
+
   // --- Commit Path ---
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
   // ここでは現在の state を渡し、結果をまとめて setRailMap/setStations するだけの薄いラッパー。
@@ -283,6 +304,11 @@ export const useGameLogic = () => {
         cost = costOfPath('depot', path.length);
         if (money < cost) return;
         result = applyDepot(state, path[path.length - 1], field, townTileIndex);
+        break;
+      case 'substation':
+        cost = costOfPath('substation', path.length);
+        if (money < cost) return;
+        result = applySubstation(state, path[path.length - 1], field, townTileIndex);
         break;
       case 'rail': {
         if (level === 0) {
