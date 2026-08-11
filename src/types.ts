@@ -3,6 +3,19 @@ export type TrainType = 'commuter' | 'express';
 export type CellType = 'rail' | 'station' | 'depot';
 
 /**
+ * 軌間(mm)。PM2(progress/play-modes-plan.md)。基本ラインナップ(rules.gauge=true)は
+ * 1067(狭軌)と1435(標準軌)の2種。extendedGauges=trueのリアリスティックのみ
+ * 762(特殊狭軌)・1372(馬車軌間)を加えた4種を選べる。
+ */
+export type RailGauge = 762 | 1067 | 1372 | 1435;
+
+/** 建設時の既定軌間(狭軌)。省略されたセル・列車はこの値として扱う(rules.gauge=true時)。 */
+export const DEFAULT_GAUGE: RailGauge = 1067;
+
+/** 列車の動力方式(PM2)。気動車はどのセルでも走行可、電車は電化セルのみ。 */
+export type TrainPower = 'diesel' | 'electric';
+
+/**
  * 立体交差の層。正=高架(uppers[1..3]、高さL*OVERPASS_HEIGHT)、負=地下(P8a、
  * 地表から相対深さ|L|*OVERPASS_HEIGHT)。0は地平そのもの(CellData本体)であり
  * このunionには含めない。uppers/StationData.cells[].layer/ramp.baseはすべて
@@ -65,6 +78,15 @@ export interface CellData {
    * 桁側の高さに近いlevel2扱いにする)。
    */
   ramp?: { dir: number; level?: 1 | 2; base?: number };
+  /**
+   * 軌間(PM2)。省略時は「概念なし(rules.gauge=false)」または「1067mm扱い(rules.gauge=true)」
+   * のいずれか(呼び出し側がrules.gaugeを見て解釈する。gameRules.tsのeffectiveGauge参照)。
+   * 高架(uppers)・地下は本セルと軌間を共有する単純化とする(セル単位でしか持たない。
+   * 立体交差した別レベルの線路が異なる軌間を持つケースはPM2のスコープ外)。
+   */
+  gauge?: RailGauge;
+  /** 電化(PM2、簡略化: 直流前提のON/OFFのみ。交流・電圧はPM3以降)。省略時は非電化。 */
+  electrified?: boolean;
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
@@ -106,6 +128,10 @@ export interface TrainData {
   // 所属する運用グループのid。未所属(単独運用)はundefined。
   // グループに所属している間は schedule ではなくグループの運行表に従う。
   groupId?: string;
+  /** 軌間(PM2)。購入時に車庫セルの軌間を継承する。旧セーブ・rules.gauge=falseでは省略。 */
+  gauge?: RailGauge;
+  /** 動力方式(PM2)。省略時は気動車扱い(どこでも走行可)。 */
+  power?: TrainPower;
 }
 
 /**

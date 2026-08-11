@@ -13,6 +13,13 @@ export type Signalling = 's0' | 's1' | 's2' | 's3';
 export interface GameRules {
   /** 軌間の概念の有無。 */
   gauge: boolean;
+  /**
+   * 軌間の拡張ラインナップ(PM2、progress/play-modes-plan.md「軌間の決定事項」)。
+   * false(基本、ノーマル/アドバンスド既定): 1067(狭軌)・1435(標準軌)の2種のみ。
+   * true(リアリスティックのみ): 762(特殊狭軌)・1372(馬車軌間)を加えた4種。
+   * gauge=falseのときは無意味(軌間概念自体が無い)。
+   */
+  extendedGauges: boolean;
   /** 電化の段階。 */
   electrification: Electrification;
   /** 信号方式の段階(モード非依存の別軸)。 */
@@ -22,10 +29,10 @@ export interface GameRules {
 export type PlayMode = 'light' | 'normal' | 'advanced' | 'realistic';
 
 export const PLAY_MODE_PRESETS: Record<PlayMode, GameRules> = {
-  light: { gauge: false, electrification: 'none', signalling: 's0' },
-  normal: { gauge: true, electrification: 'modes', signalling: 's0' },
-  advanced: { gauge: true, electrification: 'boundaries', signalling: 's0' },
-  realistic: { gauge: true, electrification: 'feeding', signalling: 's0' },
+  light: { gauge: false, extendedGauges: false, electrification: 'none', signalling: 's0' },
+  normal: { gauge: true, extendedGauges: false, electrification: 'modes', signalling: 's0' },
+  advanced: { gauge: true, extendedGauges: false, electrification: 'boundaries', signalling: 's0' },
+  realistic: { gauge: true, extendedGauges: true, electrification: 'feeding', signalling: 's0' },
 };
 
 /** 新規ゲーム・旧セーブ読み込み時の既定ルール。現行仕様=ライトと定義する。 */
@@ -44,7 +51,41 @@ export const PLAY_MODE_LABELS: Record<PlayMode, string> = {
  */
 export function playModeOf(rules: GameRules): PlayMode | 'custom' {
   const mode = (Object.keys(PLAY_MODE_PRESETS) as PlayMode[]).find(
-    m => PLAY_MODE_PRESETS[m].gauge === rules.gauge && PLAY_MODE_PRESETS[m].electrification === rules.electrification
+    m =>
+      PLAY_MODE_PRESETS[m].gauge === rules.gauge &&
+      PLAY_MODE_PRESETS[m].extendedGauges === rules.extendedGauges &&
+      PLAY_MODE_PRESETS[m].electrification === rules.electrification
   );
   return mode ?? 'custom';
+}
+
+// --- PM2: 軌間・電化の静的可否判定 ------------------------------------------------
+// progress/play-modes-plan.mdの決定どおり、rules.gauge=falseのときは概念そのものが
+// 「無い」ため、以下の述語はすべて無条件でtrue(=許可)を返す(挙動変更ゼロを保証する)。
+
+import type { RailGauge, CellData, TrainPower } from '../types';
+import { DEFAULT_GAUGE } from '../types';
+
+/** セルの実効軌間。rules.gauge=falseなら概念が無いためDEFAULT_GAUGE固定。 */
+export function effectiveGauge(cell: CellData | undefined, rules: GameRules): RailGauge {
+  if (!rules.gauge) return DEFAULT_GAUGE;
+  return cell?.gauge ?? DEFAULT_GAUGE;
+}
+
+/** 2つの軌間が接続可能か(=同一軌間か)。rules.gauge=falseなら常にtrue。 */
+export function gaugesCompatible(a: RailGauge, b: RailGauge, rules: GameRules): boolean {
+  if (!rules.gauge) return true;
+  return a === b;
+}
+
+/** 列車がそのセルへ進入できるか(軌間+電化)。rules側の各段階に応じて短絡する。 */
+export function cellAllowsTrain(
+  cell: CellData | undefined,
+  rules: GameRules,
+  trainGauge: RailGauge,
+  trainPower: TrainPower
+): boolean {
+  if (rules.gauge && !gaugesCompatible(effectiveGauge(cell, rules), trainGauge, rules)) return false;
+  if (rules.electrification !== 'none' && trainPower === 'electric' && !cell?.electrified) return false;
+  return true;
 }

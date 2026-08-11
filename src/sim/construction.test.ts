@@ -1661,3 +1661,42 @@ describe('removePath: 高架撤去に伴う坂と地平接続の掃除', () => {
     expect(result.railMap.get(toKey(1, 0))!.ramp).toBeDefined();
   });
 });
+
+describe('applyRailPath: PM2 軌間(railOptions)', () => {
+  it('railOptions省略時は従来どおりgauge/electrifiedを持たないセルが敷かれる', () => {
+    const state = emptyState();
+    const result = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    expect(result.railMap.get(toKey(0, 0))!.gauge).toBeUndefined();
+    expect(result.railMap.get(toKey(0, 0))!.electrified).toBeUndefined();
+  });
+
+  it('railOptionsで指定した軌間・電化がセルに記録される', () => {
+    const state = emptyState();
+    const result = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { gauge: 1435, electrified: true });
+    expect(result.railMap.get(toKey(0, 0))!.gauge).toBe(1435);
+    expect(result.railMap.get(toKey(0, 0))!.electrified).toBe(true);
+    expect(result.railMap.get(toKey(1, 0))!.gauge).toBe(1435);
+  });
+
+  it('既存の異なる軌間のセルへは接続ビットを立てない(その隣接方向には繋がらない)', () => {
+    let state = emptyState();
+    // まず狭軌の単独セルを敷く
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: -1, z: 0 }], undefined, undefined, { gauge: 1067 });
+    // 標準軌の経路を(0,0)へ隣接させて延ばそうとする
+    const result = applyRailPath(state, [{ x: 1, z: 0 }, { x: 0, z: 0 }], undefined, undefined, { gauge: 1435 });
+    const originCell = result.railMap.get(toKey(0, 0))!;
+    // (0,0)は既に狭軌として存在するため軌間は変わらず、標準軌側(1,0)からの接続(東向き)は立たない
+    expect(originCell.gauge).toBe(1067);
+    expect(originCell.connections! & DIR.E).toBe(0);
+    // 一方、標準軌側の新規セル(1,0)自体は敷設される
+    expect(result.railMap.get(toKey(1, 0))!.gauge).toBe(1435);
+  });
+
+  it('同一軌間同士は従来どおり接続される', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: -1, z: 0 }], undefined, undefined, { gauge: 1067 });
+    const result = applyRailPath(state, [{ x: 1, z: 0 }, { x: 0, z: 0 }], undefined, undefined, { gauge: 1067 });
+    const originCell = result.railMap.get(toKey(0, 0))!;
+    expect(originCell.connections! & DIR.E).toBe(DIR.E);
+  });
+});

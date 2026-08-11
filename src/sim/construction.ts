@@ -1,5 +1,5 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TownData, Level } from '../types';
+import type { CellData, StationData, TownData, Level, RailGauge } from '../types';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
@@ -370,19 +370,41 @@ const cellFlagsForRole = (field: TerrainField, role: GroundRailCellRole, x: numb
   return { ...terrainFlags(field, x, z), tunnel: undefined };
 };
 
+// PM2: 建設中の軌間/電化。省略時は「概念に触れない」(gauge未指定=既存セルの値を保つ、
+// electrified未指定=既存セルの値を保つ)。呼び出し側がrules.gaugeを見ずとも、
+// 未指定のまま呼べば旧来のライト相当の挙動と完全に一致する。
+export interface RailBuildOptions {
+  gauge?: RailGauge;
+  electrified?: boolean;
+}
+
 const addConnectionToCell = (
   railMap: Map<string, CellData>,
   key: string,
   dir: number,
-  flags: Pick<CellData, 'bridge' | 'tunnel'>
+  flags: Pick<CellData, 'bridge' | 'tunnel'>,
+  options: RailBuildOptions = {}
 ): void => {
   const existing = railMap.get(key);
+  // PM2: 既存の線路セルと軌間が異なる場合は接続しない(この方向のビットを立てない)。
+  // 軌間は未指定=1067(狭軌)扱いで比較する。optionsが両方省略(=呼び出し側が
+  // 軌間概念に触れていない)なら、常に「既存セルの軌間」同士の比較(実質つねに一致)になり、
+  // 挙動は変わらない。
+  if (existing && existing.type === 'rail') {
+    const existingGauge = existing.gauge ?? 1067;
+    const newGauge = options.gauge ?? existingGauge;
+    if (existingGauge !== newGauge) return;
+  }
+  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
+    ...(options.gauge !== undefined ? { gauge: options.gauge } : {}),
+    ...(options.electrified !== undefined ? { electrified: options.electrified } : {}),
+  };
   if (!existing) {
-    railMap.set(key, { type: 'rail', connections: dir, ...flags });
+    railMap.set(key, { type: 'rail', connections: dir, ...flags, ...gaugeElectrifiedPatch });
   } else if (existing.type !== 'rail') {
     railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir });
   } else {
-    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...flags });
+    railMap.set(key, { ...existing, connections: (existing.connections || 0) | dir, ...flags, ...gaugeElectrifiedPatch });
   }
 };
 
@@ -409,7 +431,9 @@ export function applyRailPathDetailed(
   field: TerrainField = EMPTY_FIELD,
   // 町タイル索引(sim/townTiles.tsのbuildTownTileIndex)。省略時は町タイル無し扱い。
   // 家タイルを通る経路はno-op(道路タイルは踏切として通過できる)。
-  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  // PM2: 軌間/電化。省略時は既存挙動と完全に同一(gaugeElectrifiedPatchが空になる)。
+  railOptions: RailBuildOptions = {}
 ): RailPathApplyResult {
   // 家タイルの上には地平の線路を敷けない(高架のみ通過可)。経路のどこか1セルでも
   // 家に抵触すれば建設全体をno-opにする(部分建設で町を壊さないため)。
@@ -454,10 +478,10 @@ export function applyRailPathDetailed(
     const dir = getDirFromVector(dx, dz);
     const oppDir = getOppositeDir(dir);
 
-    addConnectionToCell(railMap, currKey, dir, cellFlagsForRole(field, plan[i], curr.x, curr.z));
+    addConnectionToCell(railMap, currKey, dir, cellFlagsForRole(field, plan[i], curr.x, curr.z), railOptions);
     if (railMap.get(currKey)?.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
 
-    addConnectionToCell(railMap, nextKey, oppDir, cellFlagsForRole(field, plan[i + 1], next.x, next.z));
+    addConnectionToCell(railMap, nextKey, oppDir, cellFlagsForRole(field, plan[i + 1], next.x, next.z), railOptions);
     if (railMap.get(nextKey)?.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
 
     const checkDepotNeighbours = (px: number, pz: number) => {
@@ -475,9 +499,10 @@ export function applyRailPath(
   state: ConstructionState,
   path: Pos[],
   field: TerrainField = EMPTY_FIELD,
-  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  railOptions: RailBuildOptions = {}
 ): ConstructionState {
-  return applyRailPathDetailed(state, path, field, townTiles);
+  return applyRailPathDetailed(state, path, field, townTiles, railOptions);
 }
 
 /**

@@ -230,6 +230,8 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
     demand: new Map(data.demand),
     townDensity: data.townDensity ?? 'normal',
     terrainProfile: data.terrainProfile ?? 'normal',
-    rules: data.rules ?? DEFAULT_GAME_RULES,
+    // PM2: extendedGaugesはv17後期(PM1)〜PM2直前のセーブに存在しない可能性があるため、
+    // rulesオブジェクト自体はあってもフィールド単位でfalse(基本ラインナップ)を補う。
+    rules: data.rules ? { ...data.rules, extendedGauges: data.rules.extendedGauges ?? false } : DEFAULT_GAME_RULES,
   };
 }
