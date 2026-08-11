@@ -1,0 +1,367 @@
+# 立体交差(sim層のみ)
+
+## 2026-07-28 追記: 自動高架(直角に敷くと自動でupperになる仕様)を廃止し、橋方式にした
+
+以下の「決定」節に書かれている「直交する線路を敷くと自動的にupper(立体交差)になる」
+仕様は**廃止した**。理由は、この仕様だと平面上で線路が直角に交わる
+**ダイヤモンドクロッシング**を作れなくなるため(直角に敷いた瞬間に必ず
+立体交差化されてしまい、平面のまま交差させる選択肢が無かった)。
+
+新仕様はTTD/OpenTTD流の「橋」方式:
+- 直角(あるいはどんな角度)に線路を敷いても、常に地平の`connections`へOR
+  するだけになった(`construction.classifyConnectionPlacement`・
+  `canMergeSmoothly`・`popcount`は削除。`addConnectionToCell`は単純にORするだけの
+  実装に戻した)。直角に交差する線路は4方向接続を持つ1セル(ダイヤモンド
+  クロッシング)になり、`pathfinding.ts`の急カーブ制限(内積0.5未満は移動不可、
+  `calculateRouteWithStop`内)によって直進のみ通過可能・直角には曲がれない
+  (`pathfinding.test.ts`の「平面交差(ダイヤモンドクロッシング)の経路探索」で確認)。
+- 立体交差(`CellData.upper`)は`construction.applyBridge(state, path, terrain)`で
+  明示的に架ける「橋」でのみ作られるようになった。ドラッグの始点・終点セルが
+  **橋台**(地平の通常線路。既存線路があれば接続を足すだけ)、間のセルが
+  **橋桁**(`upper.connections`にのみ軸方向の接続を持ち、地平の`connections`は
+  一切変更しない)になる。
+- 建設可否: 始点〜終点が8方向直線上に等間隔で並んでいること(`getDirFromVector`+
+  `getVectorFromDir`で刻み幅を求め、全セルがその直線上にあるか検証)、
+  全長(`path.length`、橋台含む)が`MIN_BRIDGE_LENGTH=3`以上
+  `MAX_BRIDGE_LENGTH=10`(`construction.ts`で定義、`economy.ts`が再エクスポート)
+  以下、橋桁セルが駅・車庫でないこと、橋桁セルに既に`upper`が無いこと(二重架け
+  禁止)、橋台セルが水域・山岳でないこと。いずれか1つでも該当すればstateをそのまま
+  返すno-op。橋桁の下(地平)は線路・水域・山岳・空地、何であっても関知しない。
+- コスト: `economy.costOfPath('bridge', ...)`は、pathの両端2セルを橋台
+  (`RAIL_COST`)、残りを橋桁(`RAIL_COST × OVERPASS_COST_MULTIPLIER`)として計算
+  する(橋台・橋桁の内訳をpathの位置だけから機械的に決めている)。
+  `evaluateBuild`はbridgeモード時に`applyBridge`のdry runで成立可否を判定し、
+  成立時のみ`overpassCells`(橋桁セル数)を返す。
+- 撤去: `removePath`で橋桁セル(`upper`があり、かつ地平の`connections`も
+  独立して存在する=下に別の地平線路が通っている)をpath指定で撤去すると、
+  `upper`だけを`undefined`にして地平の線路は残す。隣接セルの接続ビットを
+  掃除する既存ロジックについても、掃除した結果`upper.connections`が0になったら
+  `upper`プロパティ自体を`undefined`にするよう調整した(以前は
+  `{ connections: 0 }`という空のupperが残っていた)。
+- UI: `GameUI.tsx`の`BUILD_TOOLS`に「橋」(ショートカット`7`、コスト表記
+  `¥400/マス`=`RAIL_COST(100)×OVERPASS_COST_MULTIPLIER(4)`)を追加した。
+  色は`ui/theme.ts`に`T.bridge`トークンを追加して経由させている。建設
+  フィードバックの表示文言は「立体交差 N(4倍)」から「橋桁 N(4倍)」に変更した。
+- `CellData.bridge?: boolean`(水上を渡る線路の見た目・コスト倍率フラグ)と
+  `CellData.upper`(立体交差=橋桁)は名前が紛らわしいが別物、という点を
+  `types.ts`のコメントに明記した。
+
+### 迷った点・妥協した点
+
+- 橋のコスト計算(`costOfPath('bridge', ...)`)は「pathの先頭・末尾2セルが
+  橋台」という位置だけの機械的な判定にしている。`applyBridge`の実際の
+  建設可否判定(直線チェック・駅車庫チェック等)とは独立した簡易計算のため、
+  no-opになるはずのpathを渡した場合でもコスト自体は計算できてしまう
+  (実際の課金は`evaluateBuild`/`commitPath`側で`applyBridge`の結果が
+  no-opなら0円のまま、という既存の「変化が無ければ課金しない」仕組みに
+  乗っているため実害は無い)。
+- 橋の下を通る地平線路との「混線しない」ことの確認は、pathfinding.tsの
+  既存の層解決ロジック(`resolveEntryLayer`)がそのまま使えたため、
+  橋固有の追加実装は不要だった(橋も立体交差の一種であり、層の概念に
+  差はないため)。
+- 橋台セル自体が既に駅・車庫だった場合の扱いは明示的な禁止ルールが
+  仕様に無かったため、既存の`addConnectionToCell`の挙動(駅・車庫セルへの
+  線路接続は既存の`connections`へORするだけ)にそのまま委ねている。
+
+## 決定(旧仕様、履歴として残す。上記の追記により実質廃止)
+- `CellData.upper?: { connections: number }` を追加し、地平(`connections`)と別の
+  第2の線路を1セルに持てるようにした。列車には層を持たせない。「そのセルに
+  どちら向きで入ったか」(進入方向の逆ビットが地平/upperのどちらのconnectionsに
+  立っているか)から一意に決まるため、TrainRuntimeやセーブデータに層フィールドを
+  増やす必要がない。
+- 経路(`{x,z}`)には `layer?: 0 | 1` を任意で持たせる。地平は省略(undefined)のまま
+  にして、既存テストの `toEqual` がそのまま通るようにした(jest/vitestの`toEqual`は
+  undefinedプロパティを「無い」のと同一視するため)。
+- `pathfinding.ts`: BFSの各ノードが「今いる層」を保持し、その層の`connections`
+  だけを使って移動先候補を出す。隣セルへ移るときは
+  `resolveEntryLayer(railMap, next, curr)` で進入方向の逆ビットから相手セルの層を
+  解決する。どちらの層にもビットが無ければ移動不可(nextLayer=null)。
+  BFSのvisitedキーは `x,z:layer` にして、同じセルを異なる層で2回訪問できるように
+  した(交差点そのものは1回しか通らないが、visited管理としては層ごとに別ノード)。
+- `reservation.ts`: `reservationKey`が層込みのキーを返す(地平は従来通り`"x,z"`、
+  高架は`"x,z:u"`)。これにより地平と高架が別の閉塞資源になり、交差する2列車が
+  同時にすれ違える。`isSafeWaitingPoint`は`upper`を持つセル(交差セル)を常に
+  safe waiting point対象から外した(高架の上で停止させない)。
+- `construction.ts`: `applyRailPath`が新方向を敷くとき、既存の`connections`の
+  どれとも「なだらかに繋がらない」(方向ベクトルの内積の絶対値が0.5未満)なら
+  `connections`ではなく`upper.connections`へ入れる
+  (`classifyConnectionPlacement`)。絶対値を使うのは、`connections`のビットが
+  「セルからその隣へ track が伸びている向き」を表す無方向集合であり、直進継続は
+  正反対のビット同士(内積-1)になるのが普通だから(素の内積だとまっすぐ延長する
+  だけで立体交差になってしまう)。駅・車庫セルは常に地平へ合流し立体交差にしない。
+  既に`upper`があるセルへさらに繋ぐ場合はupper側の合流可否だけを見て、
+  どちらとも繋がらなければno-op(3層は作らない)。`removePath`は地平・高架両方の
+  connectionsビットを掃除する。
+- `economy.ts` / `buildPreview.ts`: `OVERPASS_COST_MULTIPLIER = 4`を追加。
+  `costOfPath`に`railMap`を渡すと、内部で`construction.applyRailPathDetailed`
+  (dry run)を呼んでどのセルが立体交差になるか判定し、そのセルだけ
+  `RAIL_COST × 4`にする。`evaluateBuild`はrailモードのときだけ`railMap`を渡す。
+- `simulation.ts` / `trackPath.ts`: `trackPath.OVERPASS_HEIGHT = 1.2`を追加。
+  `TrainRuntime`内部で使うGrid型に`layer?: 0 | 1`を足し、`renderPos.y`を
+  `0.5 + (layer===1 ? OVERPASS_HEIGHT : 0)`相当にした。セル遷移中
+  (progressが0→1へ進む間)は`interpHeightForLayer`で区間内を線形補間し、
+  高さが飛ばないようにしている。立体交差は基本1セルだけの短い区間なので、
+  補間区間もそのぶん短い(急な上下になる)。
+- `consist.ts`: `CarPosition`に`y`フィールドを追加。編成内の全車両で
+  `rt.renderPos.y`を共用する簡略化(pathHistoryに層を持たせていないため、
+  車両ごとに正確な高さは出せない)。立体交差が1セルの短い区間である前提のもとでは
+  実用上気にならない近似としている。より精密にしたい場合はpathHistoryへ層を
+  追加してconsist.tsを拡張すること。
+
+## 代替案として検討したもの
+- 列車(TrainRuntime)に`layer`フィールドを直接持たせる案は採用しなかった。
+  「進入方向から一意に決まる」という性質があるため、セーブ不要な派生値として
+  都度計算できるほうがシンプルで、セーブ互換の考慮も増えないため。
+- 立体交差の判定基準を内積の符号付きの値(0.5以上)にする案は、直進継続(正反対の
+  ビット、内積-1)まで「なだらかに繋がらない」と誤判定してしまうため不採用。
+  絶対値を取ることで「直進・浅い曲がり」は合流、「直交・鋭い交差」は立体交差、
+  という直感通りの境界(60°)になる。
+
+## 制約・注意点(描画側が知っておくべきこと)
+- **高架セルの判別方法**: `CellData.upper !== undefined`。`upper.connections`が
+  高架側の接続ビット。
+- **経路セルのlayer**: `pathfinding.calculateRouteWithStop`が返す`RouteResult.path`
+  の各要素に`layer?: 0 | 1`が付く(地平はundefined、高架は1)。
+- **列車のyの求め方**: `TrainRuntime.renderPos.y`をそのまま使えばよい(sim層側で
+  高さ込みの値になっている)。`consist.carPositions()`の戻り値にも`y`が付くように
+  なったが、編成内は一律の高さ(近似)である点に注意。
+- 8方向グリッド(45°刻み)と内積閾値0.5(=60°)の組み合わせでは、「地平ともupperとも
+  合流できない(blocked)」状態は、ground軸とupper軸が非退化(互いに平行でない)な
+  通常の交差では原理的にほぼ到達しない(2つの非平行軸は必ず全8方向のどれかと
+  60°以内で重なるため)。`classifyConnectionPlacement`の`blocked`分岐は
+  将来的な拡張(例: より細かい角度分解能)や異常系に備えた防御的な実装として残して
+  いる。construction.test.tsのblocked相当のテストは、railMapを手動編集して
+  片方向だけの`upper`を作る形で再現している。
+- 信号の向き判定(`signalDir`)は層を区別していない(既存のまま)。立体交差の
+  高架側に信号を置く運用は今回のスコープ外。
+
+## 描画
+
+- `render/trackGeometry.ts`: `layTrackAlong`/`buildCellTrackParts` に `originY` を追加した。
+  中心線の定義(境界点→セル中心(制御点)→境界点の2次ベジェ)は一切変えず、
+  バラスト・レール・枕木の生成後に `originY` ぶんだけ y へ加算しているだけなので、
+  `trackPath.ts` の走行線とずれない。`originY = OVERPASS_HEIGHT` を渡せば高架側になる。
+  併せて `buildOverpassSupportParts()` を追加し、セル全域を覆う桁(デッキ、
+  `DECK_SIZE=0.94` の板)とセル中心付近の橋脚(円柱、下端が地面・上端がデッキ下面)を
+  1セルぶん生成できるようにした。橋脚は末広がりのテーパー(上半径 < 下半径)にして
+  ローポリの模型っぽさを出している。
+- `components/TrackNetwork.tsx`: `railMap` を走査するとき `cell.upper` があれば、
+  地平の部品に加えて `buildCellTrackParts(cell.upper.connections, x, z, OVERPASS_HEIGHT)` と
+  `buildOverpassSupportParts(x, z, OVERPASS_HEIGHT)` の結果も同じ配列に集約し、
+  最後に `mergeAndDispose()` でマテリアルごとに1つのジオメトリへマージしている
+  (地平と高架で線路のドローコールは共有、桁・橋脚だけ2つ増える=合計5ドローコール)。
+  index付き(Box/Cylinder)しか使っていないので `mergeAndDispose` の非index化は
+  実質素通りだが、将来他の形状を混ぜる可能性に備えてそのまま使っている。
+- `render/palette.ts`: 桁・橋脚用に `overpassDeck` / `overpassPier` の色とマテリアルを追加した
+  (既存のバラスト・線路と馴染むよう彩度を落としたグレー系)。
+- 列車の高さ: `DynamicTrain.tsx` は先頭車を `runtime.renderPos.y` で配置していたが、
+  2両目以降は `CAR_Y = 0.5` 固定になっていた(高架を無視するバグ)。
+  `carPositions()` が返す `pos.y`(sim層で計算済み)を使うように修正し、
+  編成全体が高架の高さに追従するようにした。JSXの初期position(useFrameが
+  一度も走る前の値)は地平の既定値のまま `INITIAL_CAR_Y = 0.5` としている。
+- `sim/buildPreview.ts` / `components/GameUI.tsx`: `evaluateBuild` が
+  `construction.applyRailPathDetailed` の `overpassCells` をそのまま件数として
+  `BuildPreview.overpassCells` に返すようにし、`BuildFeedback` に
+  「立体交差 N(4倍)」の表示を追加した(橋・隧道の表示に倣った形)。
+
+### 動作検証で分かったこと・妥協点
+
+- Browser ツールの `left_click_drag`(マウスイベント相当)は `GameScene.tsx` の
+  `onPointerDown`/`onPointerMove`/`onPointerUp`(React Three Fiberのポインタイベント)を
+  確実には発火させず、ドラッグでの線路敷設がうまく確定しないことがあった。
+  検証時は `window.__debugWorld` 相当の仕組みを一時的に拡張し(`setRailMap` などを
+  一時的に `window` へ公開して直接 `railMap`/`stations`/`trains` を組み立てる)、
+  十字の立体交差と3両編成の列車を用意して確認した。検証用のコードは確認後に
+  すべて元に戻している(`src/hooks/useGameLogic.ts` に差分は残っていない)。
+- 実機確認では、十字の立体交差で地平・高架それぞれの線路の上に桁と橋脚が
+  正しく描画され、列車が高架に差し掛かると `renderPos.y` に追従して滑らかに
+  持ち上がり、通過後は滑らかに降りることを確認した。
+- 妥協点: `consist.ts` の設計判断どおり、連結車両の y は編成一律(先頭車と同じ
+  `renderPos.y`)の近似値である。高架の区間は1セルと短いため、編成が高架へ
+  差し掛かる/降りる瞬間は後方車両だけがまだ地平の高さのまま(または逆に
+  高架の高さのまま)に見える一瞬が生じる(実機確認のスクリーンショットでも
+  最後尾が地平に先に着地し、直前の車両が僅かに浮いて見える瞬間があった)。
+  見た目上は編成全体がほぼ同じ高さで動くため実用上気にならない範囲だが、
+  より精密にしたい場合は `pathHistory` に層を持たせて `consist.ts` を拡張する
+  必要がある(既存の制約セクションに記載済みの想定どおり)。
+- 高架と地平が同一セルで重なる見た目については、桁(デッキ)がバラストの
+  底面にちょうど接するよう高さを合わせているため、地平の線路とは
+  `OVERPASS_HEIGHT`(1.2)ぶん明確に離れて見え、重なりや貫通は生じない。
+
+## 2026-07-28 追記2: 橋桁下の幽霊線路の原因特定と、橋台の「坂」化
+
+ユーザーから「桁の下になぜか線路が出てくる、坂も作れていない」との再指摘。
+
+### 幽霊線路の実際の原因(仮説どおりだった)
+
+`render/trackGeometry.ts` の `buildCellTrackParts` は、`connections === 0` の
+セルに対して**南北方向の直線1本ぶんのプレースホルダー**を返す実装になっていた
+(コメントには「建設プレビューなど」向けとあった)。ところが `applyBridge` は
+橋桁(中間セル)の地平 `connections` から橋の軸ビットを取り除くため、
+何も無い平地に架けた橋や、橋と直交する線路の下では、地平の `connections` が
+**ちょうど0になる**。`components/TrackNetwork.tsx` は `railMap` の全セルに対して
+無条件に `buildCellTrackParts(data.connections ?? 0, x, z)` を呼んでいたため、
+このプレースホルダー(南北の短い直線)が桁の真下に実際に描画されてしまっていた。
+仮説どおりで、それ以外の原因は無かった。
+
+直し方:
+- `buildCellTrackParts` は `connections === 0` のとき何も生成しない(空を返す)よう変更。
+  プレビュー(`components/RailBlock.tsx`)側で表示していた南北のプレースホルダーは、
+  `connections=0` のときに呼び出し側で明示的に `DIR.N | DIR.W` ではなく
+  `DIR.N | DIR.S` を渡すよう変更し、見た目を維持した(buildCellTrackParts自体の
+  「未接続は何も描かない」という契約を汚さないため)。
+- `TrackNetwork.tsx` 側でも、坂(ramp)の軸ビットを地平の平坦な部品生成から除外する
+  処理のついでに、二重の安全策として `flatConnections`(rampの軸ビットを除いた
+  connections)を明示的に計算してから渡すようにした。
+- `render/trackGeometry.test.ts` を新規作成し、`connections=0` で空になること・
+  通常の接続では従来どおり生成されることをテストした。
+
+### 橋台を「坂」にした(設計どおり実装)
+
+- `types.ts`: `CellData.ramp?: { dir: number }` を追加。`dir` は登り方向
+  (桁のあるupperセル側へ向かう8方向ビット)。橋台セルは従来どおり地平の
+  `connections` を持ったまま、この情報が付く。
+- `construction.ts`: `applyBridge` が橋台セル(`path[0]`・`path`末尾)に
+  `ramp: { dir }` を設定するようにした(始点は桁の方向、終点はその逆=始点側)。
+  `removePath` は、橋台セルごと撤去されれば `railMap.delete` で自然に消える。
+  さらに、隣接セルの接続ビットを掃除するループで「消したビットがちょうど
+  そのセルの `ramp.dir` と一致する」場合は `ramp` も消すようにした(桁だけ
+  部分的に撤去されて橋台が孤立した場合に、坂の情報が残留しないようにするため)。
+- 高さの解決(`sim/simulation.ts`): 従来の `heightForLayer(layer)` / 
+  `interpHeightForLayer(fromLayer, toLayer, t)` を、`railMap` のセルを見て
+  高さを返す `cellCentreHeight(railMap, x, z, layer)` / `interpCellHeight(...)`
+  に置き換えた。高さは「地平0 / 坂(ramp)は`OVERPASS_HEIGHT/2` / 高架
+  (`layer===1`)は`OVERPASS_HEIGHT`」とし、セル中心どうしを線形補間するだけで
+  地平→坂→桁→坂→地平が2セルかけてなめらかに繋がる設計にした。
+  `consist.ts` の `carPositions` はもともと `rt.renderPos.y` を編成全体で
+  共用する実装だったため、この置き換えだけで自動的に坂にも追従する
+  (コメントの関数名参照だけ更新した)。
+- 描画(`render/trackGeometry.ts`):
+  - `layTrackAlong` を、各点が `y`(省略時0)を持てるように一般化した。
+    2点の `y` が異なる区間では、水平方向のyaw回転に加えて `rotateX(pitch)`
+    (`pitch = -atan2(dy, horizLen)`)で縦方向にも傾けてからyaw回転する。
+    全点 `y=0` のときは `pitch=0` の no-op になるため、既存の平坦な呼び出し
+    (通常の地平線路・高架の桁上)の挙動は一切変わらない。
+    枕木も同様に区間ごとのpitchを計算して傾けている。
+  - `buildRampTrackParts(dir, originX, originZ, rampHeight)` を追加。
+    境界オフセット(`BOUNDARY_OFFSETS`)は正反対の方向どうしで必ず点対称
+    (例: Nは`(0,-0.5)`、Sは`(0,0.5)`)という性質を使い、低い側の境界点は
+    高い側の符号を反転するだけで求めている。低い側 `y=0` → 高い側
+    `y=rampHeight` の2点だけを `layTrackAlong` に渡し、バラスト・レール・
+    枕木を斜めに登る形で生成する(バラストも敷く=盛土の見た目)。
+  - `buildRampAbutmentPart(dir, x, z, rampHeight)` を追加。低い側で高さ0、
+    桁側で `rampHeight` に達するくさび(三角柱)を `makeWedgeGeometry` で
+    生成し、`rotateY` で軸方向に向ける。頂点はインデックス無しで積んで
+    いるので面ごとにフラットシェーディングされ、既存のBox製パーツと
+    ローポリの見た目が揃う。
+  - `components/TrackNetwork.tsx`: セルに `ramp` があれば、橋の軸ビットを
+    地平の平坦な部品から除外して代わりに `buildRampTrackParts` で描き、
+    `buildRampAbutmentPart` のくさびを追加する。旧来の「段差の直方体擁壁」
+    ロジック(`buildBridgeAbutmentPart`)は、`ramp` を持たない橋台(旧セーブ)
+    にのみ引き続き適用されるよう、`data.ramp?.dir === bit` の方向はスキップ
+    するガードを追加した。
+
+### 動作検証で分かったこと
+
+- 一時的なデバッグフック(`App.tsx` に `window.__setRailMap` /
+  `__setStations` / `__setTrains` を仕込む)で、`applyBridge` 相当のデータ
+  (橋台=ramp付き、橋桁=upper、地平connectionsから軸ビットを除去済み)を
+  直接 railMap に反映し、以下3構図をブラウザで実機スクリーンショット確認した。
+  1. 何も無い平地に架けた橋
+  2. 別方向(南北)の地平線路を跨ぐ橋
+  3. 既に東西の直線が敷いてある区間の上に架けた橋
+  いずれも桁の下に幽霊の線路は無く、両端が斜めの坂(くさび状の擁壁つき)で
+  地面に取り付いていることを確認した。検証用のフックは確認後にすべて削除し、
+  `git diff` で `App.tsx` に差分が残っていないことを確認した。
+- 列車を1本走らせ `window.__dbgStep(0.1, 1)` を繰り返して `renderPos.y` を
+  サンプリングしたところ、地平(0.5)→坂(1.1)→桁(1.7)→坂(1.1)→地平(0.5)と
+  段差なく変化し、1tickあたりの最大変化量は約0.05(dt=0.1sでの最大値、
+  600tick中)で、跳びは確認されなかった。
+- 妥協した点: 坂の勾配は `OVERPASS_HEIGHT=1.2` を2セル(斜辺長1.0〜1.414)で
+  登る設計上、見た目の傾斜角はかなり急(directによって40°〜50°程度)になる。
+  実物の鉄道橋のアプローチ盛土としては非現実的に急だが、セル単位のグリッド
+  ゲームでこれ以上緩やかにするには坂を複数セルに分割する必要があり、
+  今回のスコープ外(既存のOVERPASS_HEIGHT・2セル設計を変えない)とした。
+  くさび状の擁壁も単純な三角柱(側面が平ら)で、実際の盛土のような曲面や
+  法面の表現はしていない。
+
+## 2026-07-28 追記: 橋(applyBridge)の見た目をガーダー橋らしく作り直した
+
+ユーザーから「橋がおかしい(桁の下に地平の線路が二重に見える・桁が太いスラブ・
+橋脚が全セルに立つ・橋台に取り付きが無い・高架にバラストが敷かれている)」との
+指摘を受け、sim層とrender層の両方を修正した。
+
+### sim層: 橋桁の下の地平connectionsを橋の軸だけ取り除く
+
+- 既存の直線区間の上に同じ向きの橋を架けると、橋桁(`upper`)と地平の
+  `connections`が同じ軸で重なって残り、桁の下に線路がぶら下がって二重に
+  見えていた。`construction.ts`の`applyBridge`で、橋桁になる中間セルの
+  地平`connections`から**橋の軸ビット(`dir | oppDir`)だけ**を取り除くように
+  修正した(`connections & ~axisBits`)。交差する別方向のビット(平面交差)は
+  そのまま残る。取り除いた結果0になったセルも`connections: 0`のまま残す
+  (セル自体は消さない)。
+- `construction.test.ts`に「橋桁の下に同じ軸の地平線路がある場合、地平
+  connectionsから橋の軸ビットが消え、交差する別方向は残る」テストを追加した。
+
+### render層: 桁・橋脚・橋台をガーダー橋らしく作り直した
+
+- `render/trackGeometry.ts`
+  - `buildCellTrackParts`/`layTrackAlong`に`withBallast`引数を追加した。
+    `false`を渡すとバラストの箱を生成せず、枕木とレールだけを置く。
+    高架側の線路(桁の上)はこれで呼ぶことで、桁の上に砂利が浮いて
+    見える見た目を解消した。
+  - `buildOverpassSupportParts`は`connections`(橋桁の`upper.connections`)を
+    受け取るようにし、セル全域を覆う太いスラブではなく、境界点A→境界点Bへ
+    真っすぐ渡す細長い板(`DECK_WIDTH = BALLAST_WIDTH * 0.82`、
+    `DECK_THICKNESS = 0.08`)を1セルぶん生成するようにした。境界点は
+    `trackPath.ts`の中心線と同じ定義(`BOUNDARY_OFFSETS`)なので、レールの
+    真下から桁がずれない。隣接セルの桁は同じ境界点を共有するため、
+    セルをまたいで連続した1本の桁に見える。
+  - 橋脚は`shouldPlacePier(x, z, dir)`で間引くようにした。橋の軸方向の
+    ベクトル`(dx, dz)`(1マス分、直交なら`dx²+dz²=1`、斜めなら`=2`)に沿った
+    整数インデックス`idx = round((x*dx + z*dz) / (dx²+dz²))`の偶奇で判定する。
+    隣接セルは必ず`idx`が1違うので、軸が斜めでも(x, zどちらかが変化しない
+    軸でも)必ず交互になる。半径も`PIER_RADIUS = 0.045`まで細くした。
+  - 橋台(bridge head)には新関数`buildBridgeAbutmentPart`で擁壁を1つ置く。
+    橋台セルは「`upper`を持つセルに隣接していて自分は`upper`を持たない
+    線路セル」として描画側(`TrackNetwork.tsx`)で判定し、隣が橋桁である
+    方向`dirTowardBridge`と橋台セルの座標を渡す。地平の高さ(y=0)から
+    隣接する橋桁セルの桁下面(`originY - DECK_THICKNESS`)までを埋める箱を、
+    2セルの境界点を中心に生成する。
+- `components/TrackNetwork.tsx`
+  - 高架側のパーツ生成を`buildCellTrackParts(..., false)`(バラスト無し)に
+    変更した。
+  - `buildOverpassSupportParts`の呼び出しに`data.upper.connections`を渡す
+    ようにした(桁の軸・橋脚間引きの判定に必要なため)。
+  - `upper`を持たない線路セルを走査するとき、8方向のうち`connections`に
+    立っているビットぶんだけ隣接セルを見て、隣が橋桁(`upper`があり、かつ
+    その`upper.connections`が自分側を向くビットを持つ)なら
+    `buildBridgeAbutmentPart`を呼んで擁壁ジオメトリを1つ追加する。
+    橋台の擁壁は`overpassPier`マテリアル(既存のパレット、コンクリート寄りの
+    グレー)を流用して描いている。
+
+### 動作検証で分かったこと
+
+- `window.__setRailMap`相当の一時デバッグフック(App.tsxへの一時的な追加、
+  確認後にすべて元に戻した)で railMap を直接組み立て、以下3構図を実機で
+  スクリーンショット確認した。
+  1. 何も無い平地に架けた橋
+  2. 別方向(南北)の地平線路を跨ぐ橋(平面交差のビットは保持されたまま)
+  3. 既に東西の直線線路が敷いてある区間の上に架けた橋(問題1の再現構図)
+- 構図1と3を並べて見比べたところ、見た目に差が無いことを確認した(3で
+  地平の線路が二重にぶら下がる問題が解消している)。
+- 細い桁がセルをまたいで連続し、中央のセルだけに細い橋脚が1本立ち、
+  両端に橋台の擁壁ブロックがあって桁が宙で途切れずに地面へ取り付いている
+  ことを確認した。橋の上のレール・枕木にはバラスト(砂利)が無いことも
+  確認した。
+- 検証中、Browserペインのタブが2回連続でreloadを挟んだ直後に
+  `THREE.WebGLRendererContext Lost`になり真っ黒(実際には何も描画されない
+  空の画面)になる事象があった。新しいタブを開き直すことで回避できた
+  (アプリ側のバグではなく検証環境側の問題と判断)。
+- 妥協した点: 橋台の擁壁ブロックは単純な直方体(`BoxGeometry`)で、末広がりの
+  台形などにはしていない。ローポリの模型トーンでは直方体でも「擁壁」として
+  違和感が無かったため、シンプルな形状で済ませた。また、橋脚の間引きは
+  「軸方向のセルインデックスの偶奇」という機械的な規則であり、橋の長さが
+  偶数か奇数かによっては橋台のすぐ隣のセルにも橋脚が立つことがある
+  (橋台の擁壁と橋脚が近接して見える場合がある)。見た目上は破綻しないため
+  そのままにしている。

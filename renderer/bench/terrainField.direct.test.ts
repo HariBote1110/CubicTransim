@@ -1,0 +1,62 @@
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+import { createTerrainField } from '../../src/sim/terrainField';
+import type { TerrainProfile } from '../../src/sim/canonicalNoise';
+import { TERRAIN_PROFILES } from '../../src/sim/canonicalNoise';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const RENDERER_ROOT = path.resolve(HERE, '..');
+const DUMP_BIN = path.join(RENDERER_ROOT, 'target', 'release', 'dump');
+const TMP = path.join(RENDERER_ROOT, '.tmp', 'direct-terrain-field');
+
+const SEED = 0x1234_5678;
+const HALF_EXTENT = 8192;
+const COUNT = 1_000_000;
+
+/**
+ * Direct bridge test: the production TypeScript terrainField implementation is loaded
+ * by Vitest (not copied/reimplemented here), while the Rust reference emits the exact
+ * same deterministic one-million coordinate sequence.  Compare all 1,000,000 returned
+ * corner heights byte-for-byte.
+ */
+const compareProfile = (profile: TerrainProfile): void => {
+  fs.mkdirSync(TMP, { recursive: true });
+  const rustPath = path.join(TMP, `rust-heights-${profile}.bin`);
+
+  const rust = spawnSync(
+    DUMP_BIN,
+    [String(SEED), String(COUNT), String(HALF_EXTENT), rustPath, profile],
+    { encoding: 'utf8' },
+  );
+  expect(rust.error).toBeUndefined();
+  expect(rust.status, `${rust.stderr}\n${rust.stdout}`).toBe(0);
+
+  const expected = fs.readFileSync(rustPath);
+  expect(expected.byteLength).toBe(COUNT);
+
+  const field = createTerrainField(SEED, HALF_EXTENT, profile);
+  const actual = Buffer.allocUnsafe(COUNT);
+  let state = 0x6d2b_79f5 >>> 0;
+  const span = HALF_EXTENT * 2 + 1;
+  for (let i = 0; i < COUNT; i++) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    const x = (state % span) - HALF_EXTENT;
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    const z = (state % span) - HALF_EXTENT;
+    actual[i] = field.cornerHeightAt(x, z);
+  }
+
+  expect(Buffer.compare(actual, expected), profile).toBe(0);
+};
+
+describe('production terrainField.ts ↔ Rust terrain core', () => {
+  for (const profile of TERRAIN_PROFILES) {
+    it(`matches cornerHeightAt byte-for-byte for 1,000,000 deterministic points (${profile} profile)`, () => {
+      compareProfile(profile);
+    }, 60_000);
+  }
+});

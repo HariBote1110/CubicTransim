@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+_to_delete/
+screenshots/
+
+# Rust レンダラーのビルド成果物(wasm-pack の出力先。コミットしない)
+renderer/target/
+public/renderer/

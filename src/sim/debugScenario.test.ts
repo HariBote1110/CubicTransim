@@ -1,0 +1,24 @@
+import { describe, expect, it } from 'vitest';
+import { toKey } from '../utils';
+import { createDebugScenario } from './debugScenario';
+
+describe('createDebugScenario', () => {
+  it('坂・高架・安全に往復する1編成を含む起動時確認用の世界を作る', () => {
+    const scenario = createDebugScenario();
+
+    expect(scenario.stations.size).toBe(2);
+    expect(scenario.trains).toHaveLength(1);
+    expect(Array.from(scenario.railMap.values()).some(cell => !!cell.ramp)).toBe(true);
+    expect(Array.from(scenario.railMap.values()).some(cell => !!cell.uppers?.[1])).toBe(true);
+    expect(scenario.trains.every(train => train.schedule.length === 2)).toBe(true);
+  });
+
+  it('編成長のための余地がある駅外の線路から走り始める', () => {
+    const scenario = createDebugScenario();
+
+    expect(scenario.trains.map(train => train.x)).toEqual([-5]);
+    for (const train of scenario.trains) {
+      expect(scenario.railMap.get(toKey(train.x, train.z))?.type).toBe('rail');
+    }
+  });
+});

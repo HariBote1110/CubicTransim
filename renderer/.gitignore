@@ -1,0 +1,15 @@
+/target/
+**/.tmp/
+**/.cargo-home/
+**/.home/
+
+web/node_modules/
+web/dist/
+web/pkg/
+web/.chrome-libs/
+web/.deb-cache/
+
+bench/*.bin
+bench/*.rgba
+bench/*.png
+bench/results/
