@@ -621,7 +621,14 @@ function applyGroundPathWithElevatedConnect(
       continue;
     }
 
-    const rampDir = rampDirFor(role.side, prevDir, nextDir);
+    // rampDirFor()は「アンカー/経路内側のどちらへ向くか」を高架(base>=0)基準で
+    // 決めており、その向きは高架では常に高さの高い側(桁側)と一致する。だが地下
+    // (base<0)では地表に近い側(=base+1側)がこの高い側にあたり、それは
+    // rampDirForの言う「経路内側(アンカーの反対)」とは逆になるため、base<0の
+    // ときだけ向きを反転させて「高さの高い側」に揃える(buildRampTrackParts側の
+    // dir解釈=高い側、というレンダラーとの契約に合わせる)。
+    const rampDirRaw = rampDirFor(role.side, prevDir, nextDir);
+    const rampDir = role.base < 0 ? getOppositeDir(rampDirRaw) : rampDirRaw;
     const existing = railMap.get(key);
     const merged = orIntoBaseLevel(existing, role.base, axisBits);
     railMap.set(key, {
@@ -1378,7 +1385,10 @@ export function applyUndergroundPath(
       if (role.base === -1) {
         merged = { ...merged, connections: (merged.connections ?? 0) | bits };
       }
-      const rampDir = rampDirFor(role.side, prevDir, nextDir);
+      // applyGroundPathWithElevatedConnectと同じ理由(上のコメント参照)で、
+      // base<0の坂だけdirを反転させて「高さの高い側」に揃える。
+      const rampDirRaw = rampDirFor(role.side, prevDir, nextDir);
+      const rampDir = role.base < 0 ? getOppositeDir(rampDirRaw) : rampDirRaw;
       railMap.set(key, {
         ...merged,
         type: merged.type ?? 'rail',
