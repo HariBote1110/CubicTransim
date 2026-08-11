@@ -30,10 +30,10 @@ export interface DebugScenarioWorld {
   field?: TerrainField;
   /**
    * fieldをcornerDiffsへ焼き出す範囲を絞る(sim/terrainOverlay.tsのcornerDiffsFromField
-   * 参照)。省略時はマップ全域。z方向に依存しない手組み地形(尾根など)で、実際に
-   * 線路が通る周辺だけに絞ることで、wgpu側のタイル生成がコーナー座標の絶対値が
-   * 大きい範囲まで書き出すと標高を正しく反映しなくなる不具合(progress/
-   * openttd-tunnel-portals.md参照)を回避する。
+   * 参照)。省略時はマップ全域。wgpuレンダラー側に反映不具合があるという過去の疑いは
+   * 調査の結果否定された(progress/wgpu-corner-override-z-investigation.md参照)。
+   * この項目自体は転送量を減らす最適化として残しており、大きなマップで狭い範囲にしか
+   * 地形が無いシナリオを組む場合などに使う。
    */
   fieldBounds?: CornerDiffsBounds;
   /** 通常の乱数地形を使いたい場合、worldSeedをこの値に差し替える(cornerDiffsはクリアされる)。 */
@@ -135,11 +135,24 @@ function buildTunnelScenario(): DebugScenarioWorld {
   // 「トンネルが必要な山」に見えなかった。尾根の中心(x=0)を頂点に、両端(|x|>=3)で
   // 標高0まで直線的に落ちる山型(三角形断面、頂点標高3)にして、実際に隆起した
   // シルエットとして視認できるようにする。RIDGE_HALF_WIDTH(=2)の外側は必ず0。
+  // R4末〜v0.5.0-Alpha-8f: 以前はcornerHeightAtがzに依存しない(全z共通の帯状の尾根)
+  // 実装だったため、cornerDiffsFromFieldがマップ全域(z=-halfExtent..halfExtent+1)へ
+  // 書き出すオーバーレイが極端に大きくなり、それを「wgpuレンダラーが|z|の大きい範囲を
+  // 正しく反映しない不具合」と誤診してfieldBoundsで転送範囲をz=-4..4へ絞る回避策を
+  // 入れていた。progress/wgpu-corner-override-z-investigation.mdの調査(ネイティブ・
+  // wasm双方でオーバーレイ適用経路がバイト単位で一致することを確認)により、
+  // レンダラー側に不具合は無く、「zに依存しない長い尾根が等角投影で平坦に見える」
+  // 光学的な誤診断だったと判明した。ここでは尾根自体をz依存の局所的な丘にして
+  // (|z|<=4のみ隆起、それ以遠は平地)、fieldBoundsの回避策なしでも
+  // 実際に山らしいシルエットになるようにする。
   const RIDGE_PEAK_HEIGHT = 3;
-  const cornerHeightAt = (x: number): number =>
-    Math.max(0, RIDGE_PEAK_HEIGHT - Math.abs(Math.round(x)));
+  const RIDGE_Z_HALF_WIDTH = 4;
+  const cornerHeightAt = (x: number, z: number): number =>
+    Math.abs(Math.round(z)) <= RIDGE_Z_HALF_WIDTH
+      ? Math.max(0, RIDGE_PEAK_HEIGHT - Math.abs(Math.round(x)))
+      : 0;
   const field: TerrainField = {
-    cornerHeightAt: (x) => cornerHeightAt(x),
+    cornerHeightAt: (x, z) => cornerHeightAt(x, z),
     cellCornerHeights: (x) => (isRidge(Math.round(x)) ? [1, 1, 1, 0] : [0, 0, 0, 0]),
     cellHeightAt: () => 0,
     terrainTypeAt: (x) => (isRidge(Math.round(x)) ? 'mountain' : 'grass'),
@@ -154,14 +167,10 @@ function buildTunnelScenario(): DebugScenarioWorld {
     railMap: state.railMap,
     stations: state.stations,
     field,
-    // R4末: 尾根はzに依存しない(全z共通)ため、cornerDiffsFromFieldがマップ全域
-    // (z=-halfExtent..halfExtent+1)へ書き出すと、wgpuレンダラーがコーナー座標の
-    // 絶対値が大きい範囲まで含むオーバーレイをタイル生成へ正しく反映できなくなる
-    // 不具合(ブラウザ実機で確認、根本原因はrenderer/renderer_wgpu側)を踏む。
-    // ブラウザ実機での二分探索で、|z|がおよそ5を超えると症状が再現し、4以内なら
-    // 安定して正しく反映されることを確認したため、実際に線路が通るz=0の周辺
-    // (z=-4..4)だけに絞る。
-    fieldBounds: { x0: -8, x1: 9, z0: -4, z1: 4 },
+    // 尾根自体がz依存(|z|<=4のみ隆起)になったため、cornerDiffsFromFieldがマップ全域
+    // へ書き出しても|z|が大きい範囲は最初からheight=0(diffなし)で、転送量・描画結果
+    // ともに問題は起きない。fieldBoundsによる転送範囲の絞り込みは不要(調査経緯は
+    // progress/wgpu-corner-override-z-investigation.md参照)。
     trains: [
       {
         id: 'debug-tunnel',
