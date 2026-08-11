@@ -1,6 +1,11 @@
 import type { LineMode } from './sim/groups';
 export type TrainType = 'commuter' | 'express';
-export type CellType = 'rail' | 'station' | 'depot';
+/**
+ * 'substation'(変電所、PM4)は車庫と同じくrailMapのセル1つとして持つ(専用のMapを
+ * 別途作らない)。電化railセルに8近傍で隣接する空セルにのみ設置できる
+ * (construction.tsのapplySubstation参照)。
+ */
+export type CellType = 'rail' | 'station' | 'depot' | 'substation';
 
 /**
  * 軌間(mm)。PM2(progress/play-modes-plan.md)。基本ラインナップ(rules.gauge=true)は

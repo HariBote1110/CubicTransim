@@ -6,6 +6,7 @@ import {
   applyRailPathDetailed,
   applyStation,
   applyDepot,
+  applySubstation,
   applySignal,
   applyBridge,
   applyElevatedPath,
@@ -320,6 +321,37 @@ describe('applyDepot（特性テスト・バグ修正）', () => {
     const cell = result.railMap.get(toKey(0, 0))!;
     expect(cell.type).toBe('station');
     expect(result.stations.size).toBe(stationCountBefore);
+  });
+});
+
+describe('applySubstation（PM4・特性テスト）', () => {
+  it('電化railセルに隣接する空セルには変電所を設置できる', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { electrified: 'dc' });
+    const result = applySubstation(state, { x: 0, z: 1 });
+    expect(result.railMap.get(toKey(0, 1))?.type).toBe('substation');
+  });
+
+  it('電化されていないrailセルにしか隣接しない場所には設置できない(no-op)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const result = applySubstation(state, { x: 0, z: 1 });
+    expect(result.railMap).toBe(state.railMap);
+  });
+
+  it('電化railから孤立した空セルには設置できない(no-op)', () => {
+    const state = emptyState();
+    const result = applySubstation(state, { x: 5, z: 5 });
+    expect(result.railMap).toBe(state.railMap);
+  });
+
+  it('既存セル(駅等)の上には設置できない(no-op)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { electrified: 'dc' });
+    state = applyStation(state, { x: 0, z: 1 });
+    const before = state.railMap;
+    const result = applySubstation(state, { x: 0, z: 1 });
+    expect(result.railMap).toBe(before);
   });
 });
 

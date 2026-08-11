@@ -811,6 +811,46 @@ export function applyDepot(
   return { railMap, stations: state.stations };
 }
 
+const NEIGHBOUR_OFFSETS: Pos[] = [
+  { x: 0, z: -1 }, { x: 1, z: -1 }, { x: 1, z: 0 }, { x: 1, z: 1 },
+  { x: 0, z: 1 }, { x: -1, z: 1 }, { x: -1, z: 0 }, { x: -1, z: -1 },
+];
+
+/** posの8近傍(または本セル)に電化railセルが1つでもあるか(PM4: 変電所の設置条件)。 */
+const hasAdjacentElectrifiedRail = (railMap: Map<string, CellData>, pos: Pos): boolean => {
+  const self = railMap.get(toKey(pos.x, pos.z));
+  if (self && (self.type === 'rail' || self.type === 'station') && self.electrified) return true;
+  return NEIGHBOUR_OFFSETS.some(d => {
+    const cell = railMap.get(toKey(pos.x + d.x, pos.z + d.z));
+    return !!cell && (cell.type === 'rail' || cell.type === 'station') && !!cell.electrified;
+  });
+};
+
+/**
+ * 変電所(PM4)。車庫と同じくrailMapのセル1つとして持つ。設置条件は車庫と同様
+ * (平地・空セル・町タイルでないこと)に加え、電化railセルへ8近傍で隣接する
+ * (またはそのセル自身が電化railである)ことを要求する(design decision 1)。
+ */
+export function applySubstation(
+  state: ConstructionState,
+  pos: Pos,
+  field: TerrainField = EMPTY_FIELD,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ConstructionState {
+  const key = toKey(pos.x, pos.z);
+  const existing = state.railMap.get(key);
+
+  if (!isBuildableGround(field, pos.x, pos.z)) return state;
+  if (townTileAt(townTiles, pos.x, pos.z)) return state;
+  if (existing) return state;
+  if (!hasAdjacentElectrifiedRail(state.railMap, pos)) return state;
+
+  const railMap = new Map(state.railMap);
+  railMap.set(key, { type: 'substation' });
+
+  return { railMap, stations: state.stations };
+}
+
 export function applySignal(
   state: ConstructionState,
   path: Pos[],

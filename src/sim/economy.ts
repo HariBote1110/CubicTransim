@@ -88,6 +88,8 @@ export const RAIL_COST = 100; // 1セルあたり(平地)
 export const STATION_COST = 1_000;
 export const DEPOT_COST = 2_000;
 export const SIGNAL_COST = 200;
+// PM4: 変電所。車庫より高価(¥8,000、値は「あったら楽しい」判断)。
+export const SUBSTATION_COST = 8_000;
 export const TRAIN_COST = 5_000; // 新造時(2両編成)の価格
 export const CAR_COST = 2_000; // 増結1両あたり
 export const CAR_REFUND = 1_000; // 解結1両あたりの払い戻し
@@ -187,7 +189,7 @@ export const ACCIDENT_PENALTY = 5_000;
 // 'bridge'は旧・固定長橋の後方互換用(applyBridgeが薄いラッパーとして残っているため)。
 // 高架専用ツール('elevated'/'elevated-station')は廃止し、'rail'/'station'がlevel引数
 // (buildPreview.ts参照)に従って高架を建設する形に統合した。
-export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal' | 'bridge';
+export type ConstructionMode = 'rail' | 'station' | 'depot' | 'signal' | 'bridge' | 'substation';
 
 // 自由な高架線(applyElevatedPath)のコスト。坂になるセルはRAIL_COST、橋桁(高架)に
 // なるセルはRAIL_COST×OVERPASS_COST_MULTIPLIER。内訳(rampCount/overpassCount)は
@@ -319,6 +321,8 @@ export function costOfPath(
       return STATION_COST;
     case 'depot':
       return DEPOT_COST;
+    case 'substation':
+      return SUBSTATION_COST;
     case 'signal':
       return SIGNAL_COST;
     default:
