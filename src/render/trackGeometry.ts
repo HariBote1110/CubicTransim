@@ -21,6 +21,7 @@ import { DIR, getOppositeDir, getVectorFromDir } from '../utils';
 import { angleFromVector } from './palette';
 import { mergeAndDispose } from './mergeGeometry';
 import { rampHeightAtPos } from '../sim/trackPath';
+import { DEFAULT_GAUGE, type RailGauge } from '../types';
 
 // 各方向ビットに対応する「セル中心→隣接セルとの境界点」までのベクトル。
 // 上下左右は辺の中点(距離0.5)、斜めは隣接セルと接する角(距離√2/2)。
@@ -58,6 +59,14 @@ const JOIN_OVERLAP = 0.02;
 // 分岐線を本線へ合流させる位置。本線のセル端まで曲げると不自然な大きなS字になるため、
 // セル内でポイントらしく収束させる。
 const TURNOUT_JOIN_RATIO = 0.35;
+
+// --- 軌間(PM2)による見た目のスケール ---
+// gauge省略(=概念なし/旧セーブ)は必ずスケール1.0=従来どおりの定数そのものになる
+// (byte-identicalの無回帰要件)。中心線(sim/trackPath.ts)は軌間を一切見ないので、
+// ここで変えるのはレール間隔と枕木幅だけで、列車の走行位置はずれない。
+function gaugeScaleFactor(gauge?: RailGauge): number {
+  return gauge === undefined ? 1 : gauge / DEFAULT_GAUGE;
+}
 
 export interface TrackParts {
   ballast: THREE.BufferGeometry[];
@@ -186,9 +195,13 @@ const layTrackAlong = (
   originX: number,
   originZ: number,
   originY = 0,
-  withBallast = true
+  withBallast = true,
+  gauge?: RailGauge
 ): void => {
   if (points.length < 2) return;
+  const scale = gaugeScaleFactor(gauge);
+  const railSpacing = RAIL_SPACING * scale;
+  const sleeperWidth = SLEEPER_WIDTH * scale;
 
   // --- セグメントごとにバラストとレールを置く ---
   for (let i = 0; i < points.length - 1; i++) {
@@ -221,7 +234,7 @@ const layTrackAlong = (
 
     for (const side of [-1, 1]) {
       const rail = new THREE.BoxGeometry(RAIL_WIDTH, RAIL_HEIGHT, len);
-      rail.translate((side * RAIL_SPACING) / 2, 0, 0);
+      rail.translate((side * railSpacing) / 2, 0, 0);
       rail.rotateX(pitch);
       rail.rotateY(rotY);
       rail.translate(cx, cy + RAIL_TOP - RAIL_HEIGHT / 2, cz);
@@ -256,7 +269,7 @@ const layTrackAlong = (
         const dir = norm(b.x - a.x, b.z - a.z);
         const pitch = horizLen > 1e-6 ? -Math.atan2(by - ay, horizLen) : 0;
 
-        const sleeper = new THREE.BoxGeometry(SLEEPER_WIDTH, SLEEPER_HEIGHT, SLEEPER_THICKNESS);
+        const sleeper = new THREE.BoxGeometry(sleeperWidth, SLEEPER_HEIGHT, SLEEPER_THICKNESS);
         sleeper.rotateX(pitch);
         sleeper.rotateY(angleFromVector(dir.x, dir.z));
         sleeper.translate(originX + px, originY + py + SLEEPER_TOP - SLEEPER_HEIGHT / 2, originZ + pz);
@@ -281,13 +294,14 @@ export function buildCellTrackParts(
   originX = 0,
   originZ = 0,
   originY = 0,
-  withBallast = true
+  withBallast = true,
+  gauge?: RailGauge
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
 
   const routes = buildTrackCentreLines(connections);
   for (const route of routes) {
-    layTrackAlong(parts, route, originX, originZ, originY, withBallast);
+    layTrackAlong(parts, route, originX, originZ, originY, withBallast, gauge);
   }
   return parts;
 }
@@ -307,7 +321,8 @@ export function buildGroundInclineTrackParts(
   originX = 0,
   originZ = 0,
   lowY = 0,
-  highY = 0
+  highY = 0,
+  gauge?: RailGauge
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
   const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
@@ -317,7 +332,7 @@ export function buildGroundInclineTrackParts(
     { x: low.x, z: low.z, y: lowY },
     { x: high.x, z: high.z, y: highY },
   ];
-  layTrackAlong(parts, points, originX, originZ, 0, true);
+  layTrackAlong(parts, points, originX, originZ, 0, true, gauge);
   return parts;
 }
 
@@ -346,7 +361,8 @@ export function buildRampTrackParts(
   posHigh = 0,
   segments = RAMP_CURVE_SEGMENTS,
   // 坂の下側レベル(base〜base+1段を登る)。省略時0=地平〜レベル1の従来どおりの坂。
-  base = 0
+  base = 0,
+  gauge?: RailGauge
 ): TrackParts {
   const parts: TrackParts = { ballast: [], sleepers: [], rails: [] };
   const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
@@ -367,7 +383,7 @@ export function buildRampTrackParts(
   // バラスト(砂利)は地平に接する坂(base=0)だけに敷く。base>=1の坂は空中に
   // 架かる桁の上なので、砂利が宙に浮いて見えないよう枕木とレールだけを描く
   // (高架の桁上の線路(buildCellTrackPartsのwithBallast=false)と同じ扱い)。
-  layTrackAlong(parts, points, originX, originZ, 0, base === 0);
+  layTrackAlong(parts, points, originX, originZ, 0, base === 0, gauge);
   return parts;
 }
 
@@ -523,7 +539,7 @@ const firstDirBit = (connections: number): number => {
  * 交互配置が崩れて二重橋脚や連続した欠落が出るため。直線の組が無いカーブでは、
  * 従来どおり最初の接続ビット(=いずれかの隣接直線区間の軸と一致する)を使う。
  */
-const pierAxisBit = (connections: number): number => {
+export const pierAxisBit = (connections: number): number => {
   for (const bit of DIR_BITS) {
     if ((connections & bit) && (connections & getOppositeDir(bit))) return bit;
   }
@@ -648,6 +664,88 @@ export function buildUndergroundOpeningPart(dir: number, x = 0, z = 0): Undergro
   };
 
   return { pit, wallA: makeWall(1), wallB: makeWall(-1) };
+}
+
+// --- 架線(catenary、電化区間の見た目)(PM2 follow-up) ---
+// ポールを毎セルに立てるとセル数千規模で頂点が破綻するため、間引き判定
+// (shouldPlacePierと同じ「軸に沿った整数インデックスの剰余」方式)で数セルおきに
+// 1本だけ立てる。電線は間引かず全セルの中心線に沿って敷く(ポールが疎でも
+// 線が途切れないように)。地下は呼び出し側(railGeometry.ts)が呼ばないことで
+// スコープ外にする(第三軌条の見た目は未実装、progress/play-modes-plan.md参照)。
+const CATENARY_POLE_SPACING = 3;
+const CATENARY_MAST_WIDTH = 0.05;
+const CATENARY_MAST_HEIGHT = 0.55;
+const CATENARY_ARM_LENGTH = 0.22;
+const CATENARY_ARM_THICKNESS = 0.05;
+const CATENARY_WIRE_HEIGHT = 0.5;
+const CATENARY_WIRE_THICKNESS = 0.03;
+const CATENARY_OFFSET = BALLAST_WIDTH / 2 + 0.12;
+
+export interface CatenaryParts {
+  masts: THREE.BufferGeometry[];
+  wires: THREE.BufferGeometry[];
+}
+
+/** shouldPlacePierと同じ間引き方式。軸方向のセル整数インデックスがCATENARY_POLE_SPACINGの倍数の位置だけポールを立てる。 */
+export function shouldPlaceCatenaryMast(x: number, z: number, dir: number): boolean {
+  const { x: dx, z: dz } = getVectorFromDir(dir);
+  const normSq = dx * dx + dz * dz || 1;
+  const idx = Math.round((x * dx + z * dz) / normSq);
+  return ((idx % CATENARY_POLE_SPACING) + CATENARY_POLE_SPACING) % CATENARY_POLE_SPACING === 0;
+}
+
+/** 中心線に沿って細い電線パーツを敷く(layDeckAlongの架線版)。 */
+const layWireAlong = (wires: THREE.BufferGeometry[], points: TrackPoint[], x: number, z: number, originY: number): void => {
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const length = Math.hypot(dx, dz);
+    if (length < 1e-6) continue;
+    const wire = new THREE.BoxGeometry(CATENARY_WIRE_THICKNESS, CATENARY_WIRE_THICKNESS, length + JOIN_OVERLAP * 2);
+    wire.rotateY(angleFromVector(dx / length, dz / length));
+    wire.translate(x + (a.x + b.x) / 2, originY + CATENARY_WIRE_HEIGHT, z + (a.z + b.z) / 2);
+    wires.push(wire);
+  }
+};
+
+/**
+ * 電化セル1つぶんの架線(電線+間引き済みポール)を、セル中心を原点とした
+ * ワールド座標(x, z)で生成する。connectionsが0なら何も生成しない。
+ * originYを渡すと高架のぶん持ち上げられる(桁の上に立つポールとして扱う)。
+ */
+export function buildCatenaryParts(connections: number, x = 0, z = 0, originY = 0): CatenaryParts {
+  const masts: THREE.BufferGeometry[] = [];
+  const wires: THREE.BufferGeometry[] = [];
+  if (connections === 0) return { masts, wires };
+
+  for (const route of buildTrackCentreLines(connections)) {
+    layWireAlong(wires, route, x, z, originY);
+  }
+
+  const dir = pierAxisBit(connections);
+  if (shouldPlaceCatenaryMast(x, z, dir)) {
+    const { x: dx, z: dz } = getVectorFromDir(dir);
+    const len = Math.hypot(dx, dz) || 1;
+    // 軸に直交する向きへポールを線路脇へ逃がす。
+    const px = -dz / len;
+    const pz = dx / len;
+    const mx = x + px * CATENARY_OFFSET;
+    const mz = z + pz * CATENARY_OFFSET;
+
+    const mast = new THREE.BoxGeometry(CATENARY_MAST_WIDTH, CATENARY_MAST_HEIGHT, CATENARY_MAST_WIDTH);
+    mast.translate(mx, originY + CATENARY_MAST_HEIGHT / 2, mz);
+    masts.push(mast);
+
+    const rotY = angleFromVector(dx / len, dz / len);
+    const arm = new THREE.BoxGeometry(CATENARY_ARM_LENGTH, CATENARY_ARM_THICKNESS, CATENARY_ARM_THICKNESS);
+    arm.rotateY(rotY);
+    arm.translate(mx - px * (CATENARY_ARM_LENGTH / 2), originY + CATENARY_MAST_HEIGHT - CATENARY_ARM_THICKNESS / 2, mz - pz * (CATENARY_ARM_LENGTH / 2));
+    masts.push(arm);
+  }
+
+  return { masts, wires };
 }
 
 /** 部品配列をマージして1つのジオメトリにする(空なら null)。 */
