@@ -7,6 +7,9 @@ import {
   buildArchOutline,
   buildHeadwallOutline,
   PORTAL_TOTAL_DEPTH,
+  computeWingWallPlacements,
+  WING_WALL_LENGTH,
+  WING_WALL_HEIGHT_RATIO,
 } from './tunnelPortalGeometry';
 
 describe('classifyPortalCorners', () => {
@@ -117,5 +120,42 @@ describe('buildHeadwallOutline', () => {
     const zeroYPoints = points.filter(p => Math.abs(p.y) < 1e-9);
     // 壁の左右の足元2点+開口の左右の足元2点で、少なくとも4点はy=0にある。
     expect(zeroYPoints.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('computeWingWallPlacements', () => {
+  it('左右2枚が壁の左右端(±wallWidth/2)から山側(-Z)へ向けて対称に生成される', () => {
+    const wallWidth = 1.0;
+    const wallHeight = 0.62;
+    const frontZ = -0.02;
+    const [right, left] = computeWingWallPlacements(wallWidth, wallHeight, frontZ);
+
+    // 起点(壁前面の左右端)はx=±wallWidth/2、z=frontZに一致する。
+    expect(right.cornerX).toBeCloseTo(wallWidth / 2, 10);
+    expect(left.cornerX).toBeCloseTo(-wallWidth / 2, 10);
+    expect(right.cornerZ).toBeCloseTo(frontZ, 10);
+    expect(left.cornerZ).toBeCloseTo(frontZ, 10);
+
+    // 左右対称(x方向の向きが逆、z方向の向きは同じ=どちらも山側)。
+    expect(right.dirX).toBeCloseTo(-left.dirX, 10);
+    expect(right.dirZ).toBeCloseTo(left.dirZ, 10);
+    expect(right.dirZ).toBeLessThan(0); // 山側(-Z)へ向く
+
+    // 右側は+x寄り、左側は-x寄りへ張り出す(内側に折れ込まない)。
+    expect(right.dirX).toBeGreaterThan(0);
+    expect(left.dirX).toBeLessThan(0);
+  });
+
+  it('翼壁の高さは本体の壁より低い(WING_WALL_HEIGHT_RATIO倍)', () => {
+    const wallHeight = 0.62;
+    const [right] = computeWingWallPlacements(1.0, wallHeight, 0);
+    expect(right.height).toBeCloseTo(wallHeight * WING_WALL_HEIGHT_RATIO, 10);
+    expect(right.height).toBeLessThan(wallHeight);
+  });
+
+  it('翼壁の長さはWING_WALL_LENGTHに一致する', () => {
+    const [right, left] = computeWingWallPlacements(1.0, 0.62, 0);
+    expect(right.length).toBe(WING_WALL_LENGTH);
+    expect(left.length).toBe(WING_WALL_LENGTH);
   });
 });
