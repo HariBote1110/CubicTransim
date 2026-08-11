@@ -78,6 +78,55 @@ export const PORTAL_TOTAL_DEPTH = 1.0;
 export const PORTAL_BODY_DEPTH =
   PORTAL_TOTAL_DEPTH - HEADWALL_EMBED_DEPTH - PORTAL_WALL_THICKNESS / 2 - PORTAL_MOUTH_CAP_DEPTH;
 
+// --- 翼壁(wing wall) ---
+// 「石造ヘッドウォール+アーチ開口+中実ボディ」だけだと壁が単なる直方体に見え、
+// ユーザーから「適当に黒枠が生えてるだけ」との指摘を受けた。実際の鉄道トンネル坑口は
+// 正面壁の左右から山側(斜面)へ斜めに張り出す低い翼壁(ハの字に開く擁壁)を持ち、
+// これが「斜面を切り開いて壁を築いた」という掘削の説得力を生む。ここでは壁の高さより
+// 低く・短い板状の翼壁を、壁前面の左右端から山側(-Z)へ角度をつけて配置する。
+export const WING_WALL_LENGTH = 0.4;
+export const WING_WALL_THICKNESS = 0.06;
+export const WING_WALL_HEIGHT_RATIO = 0.55;
+/** 翼壁がまっすぐ山側(-Z)から外側へ開く角度(ラジアン)。ハの字に開く量。 */
+export const WING_WALL_SPLAY_ANGLE = Math.PI / 6;
+
+export interface WingWallPlacement {
+  /** 翼壁の起点(壁前面の左右端)のローカルX座標。 */
+  cornerX: number;
+  /** 翼壁の起点のローカルZ座標(壁前面と同じ)。 */
+  cornerZ: number;
+  /** 翼壁が伸びる方向の単位ベクトル(ローカルXZ平面)。 */
+  dirX: number;
+  dirZ: number;
+  length: number;
+  height: number;
+  thickness: number;
+}
+
+/**
+ * ヘッドウォール前面の左右端から山側(-Z)へハの字に開く翼壁2枚の配置を求める。
+ * 戻り値は[右側(+X寄り), 左側(-X寄り)]の順。壁の高さ・厚みはヘッドウォールより
+ * ひとまわり抑え、正面のアーチが主役であることを保つ。
+ */
+export function computeWingWallPlacements(
+  wallWidth: number,
+  wallHeight: number,
+  frontFaceZ: number,
+): [WingWallPlacement, WingWallPlacement] {
+  const halfWidth = wallWidth / 2;
+  const height = wallHeight * WING_WALL_HEIGHT_RATIO;
+  const mk = (side: 1 | -1): WingWallPlacement => ({
+    cornerX: side * halfWidth,
+    cornerZ: frontFaceZ,
+    dirX: side * Math.sin(WING_WALL_SPLAY_ANGLE),
+    dirZ: -Math.cos(WING_WALL_SPLAY_ANGLE),
+    length: WING_WALL_LENGTH,
+    height,
+    thickness: WING_WALL_THICKNESS,
+  });
+  return [mk(1), mk(-1)];
+}
+
 export interface PortalHeadwall {
   /** ヘッドウォールの高さ(world Y単位)。切り口を覆うのに十分な高さを保証する。 */
   height: number;
