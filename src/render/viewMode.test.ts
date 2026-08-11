@@ -15,9 +15,13 @@ describe('isUndergroundView: 選択レベルから地下ビューかどうかを
 });
 
 describe('undergroundBucketOf: 地下コンテンツをどのバケットへ入れるか', () => {
-  it('地上ビューでは、どの深さの地下もゴースト(薄く透ける)になる', () => {
-    expect(undergroundBucketOf(-1, false, 0)).toBe('ghost');
-    expect(undergroundBucketOf(-3, false, 2)).toBe('ghost');
+  // R4末: 地上ビューの地下線ゴーストが「ごちゃごちゃして見づらい」というユーザー
+  // フィードバックを受け、地上ビューの地下線(このバケットの対象=線路)は完全非表示
+  // (hidden)にした。駅ホームのゴースト表示(Alpha-4cの発見容易性維持)はこの関数を
+  // 経由しない別経路(WebGpuStations.tsx)なので、この変更の影響を受けない。
+  it('地上ビューでは、どの深さの地下も非表示(hidden)になる', () => {
+    expect(undergroundBucketOf(-1, false, 0)).toBe('hidden');
+    expect(undergroundBucketOf(-3, false, 2)).toBe('hidden');
   });
   it('地下ビュー中は、選択中の深さだけbright', () => {
     expect(undergroundBucketOf(-1, true, -1)).toBe('bright');
