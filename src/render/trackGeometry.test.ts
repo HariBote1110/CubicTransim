@@ -2,9 +2,61 @@ import { describe, it, expect } from 'vitest';
 import { DIR } from '../utils';
 import {
   buildCellTrackParts, buildRampTrackParts, buildRampAbutmentPart, buildTrackCentreLines,
-  buildOverpassSupportParts, buildUndergroundOpeningPart,
+  buildOverpassSupportParts, buildUndergroundOpeningPart, buildCatenaryParts,
 } from './trackGeometry';
 import { rampHeightAtPos, rampSegmentPositions } from '../sim/trackPath';
+
+const positionsOf = (geoms: { getAttribute(name: string): { array: ArrayLike<number> } | null }[]): number[] =>
+  geoms.flatMap(g => Array.from(g.getAttribute('position')!.array));
+
+describe('buildCellTrackParts: gauge省略時は従来どおりのジオメトリ(byte-identical)', () => {
+  it('gauge未指定と旧来のシグネチャ(gauge引数なし)で同一のposition配列になる', () => {
+    const withoutArg = buildCellTrackParts(DIR.N | DIR.S, 1, 2, 0, true);
+    const withUndefined = buildCellTrackParts(DIR.N | DIR.S, 1, 2, 0, true, undefined);
+    expect(positionsOf(withUndefined.rails)).toEqual(positionsOf(withoutArg.rails));
+    expect(positionsOf(withUndefined.sleepers)).toEqual(positionsOf(withoutArg.sleepers));
+    expect(positionsOf(withUndefined.ballast)).toEqual(positionsOf(withoutArg.ballast));
+  });
+});
+
+describe('buildCellTrackParts: gaugeでレール間隔・枕木幅が変わる', () => {
+  it('762(狭)は1435(標準)よりレール間隔が狭い', () => {
+    const narrow = buildCellTrackParts(DIR.N | DIR.S, 0, 0, 0, true, 762);
+    const standard = buildCellTrackParts(DIR.N | DIR.S, 0, 0, 0, true, 1435);
+    const railX = (g: { getAttribute(name: string): { array: ArrayLike<number> } | null }) =>
+      Math.abs(g.getAttribute('position')!.array[0]);
+    expect(railX(narrow.rails[0])).toBeLessThan(railX(standard.rails[0]));
+  });
+
+  it('gauge指定時はballast/sleepersの本数がgauge省略時と変わらない(幅だけが変化する)', () => {
+    const plain = buildCellTrackParts(DIR.N | DIR.S, 0, 0, 0, true);
+    const gauged = buildCellTrackParts(DIR.N | DIR.S, 0, 0, 0, true, 762);
+    expect(gauged.sleepers.length).toBe(plain.sleepers.length);
+    expect(gauged.rails.length).toBe(plain.rails.length);
+    expect(gauged.ballast.length).toBe(plain.ballast.length);
+  });
+});
+
+describe('buildCatenaryParts: 電化区間の架線ポール・電線', () => {
+  it('接続が無いセルは何も生成しない', () => {
+    const parts = buildCatenaryParts(0);
+    expect(parts.masts.length).toBe(0);
+    expect(parts.wires.length).toBe(0);
+  });
+
+  it('直線区間は電線を生成し、間引き位置(3セルおき)ではポールも生成する', () => {
+    // 原点(0,0)はセル整数インデックス0なのでポール設置セルになる。
+    const parts = buildCatenaryParts(DIR.N | DIR.S, 0, 0);
+    expect(parts.wires.length).toBeGreaterThan(0);
+    expect(parts.masts.length).toBeGreaterThan(0);
+  });
+
+  it('間引き対象外のセルではポールを生成しない(電線のみ)', () => {
+    const parts = buildCatenaryParts(DIR.E | DIR.W, 1, 0);
+    expect(parts.wires.length).toBeGreaterThan(0);
+    expect(parts.masts.length).toBe(0);
+  });
+});
 
 describe('buildCellTrackParts: connections が 0 のセル', () => {
   it('何も生成しない(applyBridgeが作る「地平connectionsが0の橋桁下セル」に幽霊の線路を描かせないため)', () => {
