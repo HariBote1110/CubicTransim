@@ -249,4 +249,23 @@ describe('buildUndergroundOpeningPart: 掘割ランプの地表開口(P8b)', () 
     const cx5 = (at50.pit.boundingBox!.min.x + at50.pit.boundingBox!.max.x) / 2;
     expect(cx5 - cx0).toBeCloseTo(5, 5);
   });
+
+  // R4末: 地形メッシュは坑口・開口の有無に関わらず常に不透明な連続面のまま
+  // (terrainOverlayで実際に掘り下げない限り、そのセルは必ずy=0の面で覆われる)。
+  // pitがy<0にあると、上から見て必ず地形に隠れて完全に不可視になる不具合があった
+  // (ブラウザ実機で確認、underground-view-opening-invisible参照)。pit/wallとも
+  // 地表面(y=0)以上の高さに置くことで、地形に隠れず必ず見えるようにする。
+  it('pitはy座標がすべて0以上になる(地形の下に沈めて隠れさせない)', () => {
+    const { pit } = buildUndergroundOpeningPart(DIR.N, 0, 0)!;
+    pit.computeBoundingBox();
+    expect(pit.boundingBox!.min.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it('wallA/wallBはy座標がすべて0以上になる(半分埋まった状態にしない)', () => {
+    const { wallA, wallB } = buildUndergroundOpeningPart(DIR.N, 0, 0)!;
+    wallA.computeBoundingBox();
+    wallB.computeBoundingBox();
+    expect(wallA.boundingBox!.min.y).toBeGreaterThanOrEqual(0);
+    expect(wallB.boundingBox!.min.y).toBeGreaterThanOrEqual(0);
+  });
 });
