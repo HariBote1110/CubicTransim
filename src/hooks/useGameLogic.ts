@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
@@ -363,13 +363,18 @@ export const useGameLogic = () => {
     }));
   };
 
-  const buyTrain = (x: number, z: number) => {
+  // PM2: powerは購入UIから選ぶ(省略時=気動車)。軌間は車庫セルの軌間を自動で継承する
+  // (rules.gaugeが有効な場合のみ。無効時はgauge概念が無いためundefinedのまま=旧来どおり)。
+  const buyTrain = (x: number, z: number, power: TrainPower = 'diesel') => {
     if (money < TRAIN_COST) return;
+    const depotCell = worldRef.current.railMap.get(toKey(x, z));
     const newTrain: TrainData = {
         id: Math.random().toString(36).substr(0, 4),
         x, z,
         schedule: [], scheduleIndex: 0, status: 'stored',
         cars: 2,
+        ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? 1067 } : {}),
+        ...(gameRules.electrification !== 'none' ? { power } : {}),
     };
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);

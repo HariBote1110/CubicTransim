@@ -1,6 +1,57 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
-状態: **PM1 実装済み**（器のみ・挙動変更ゼロ）。2026-08-11 の設計会話を基に作成、同日PM1着手。
+状態: **PM2 部分実装済み**（sim層の静的可否判定が中心。UI・改軌ツール・本番経路探索への
+配線は未着手、詳細は下記実装メモ参照）。2026-08-11 の設計会話を基に作成、同日PM1着手。
+
+## 実装メモ（PM2、2026-08-11）
+
+- `src/types.ts`: `RailGauge`型(`762|1067|1372|1435`)・`DEFAULT_GAUGE`(1067)・
+  `TrainPower`型(`'diesel'|'electric'`)を新設。`CellData`に`gauge?`/`electrified?`、
+  `TrainData`に`gauge?`/`power?`を追加(すべてoptional・省略時は旧来どおり)。
+  高架(uppers)・地下は本セルと軌間を共有する単純化とし、立体交差した別レベルの線路が
+  異なる軌間を持つケースはPM2のスコープ外とした。
+- `src/sim/gameRules.ts`: `GameRules`へ`extendedGauges: boolean`を追加(基本ラインナップ
+  =false、リアリスティックのみtrue)。`playModeOf`もこのフィールドの一致を見るよう拡張。
+  `effectiveGauge`/`gaugesCompatible`/`cellAllowsTrain`の3つの純関数を実装。
+  いずれも`rules.gauge===false`なら概念が無いものとして無条件でtrue(許可)を返す
+  短絡を持ち、「ライトモードは挙動変更ゼロ」を型レベルではなくロジックレベルで保証する。
+- `src/sim/construction.ts`: `addConnectionToCell`に`RailBuildOptions`
+  (`{gauge?, electrified?}`)を追加。既存の線路セルと軌間が異なる場合はその方向の
+  接続ビットを立てない(セル自体は敷設される。「軌間の違う線路は繋がらない」という
+  仕様をコネクションレベルで表現)。`applyRailPathDetailed`/`applyRailPath`に
+  `railOptions`引数を追加(省略時は空オブジェクト=既存挙動と完全一致)。
+- `src/sim/pathfinding.ts`: `RouteQuery`に`rules`/`trainGauge`/`trainPower`を追加。
+  BFSの隣接セル探索で`cellAllowsTrain`を呼び、軌間ミスマッチと電化必須セルへの
+  気動車以外の進入を拒否する。省略時は`DEFAULT_GAME_RULES`(ライト相当)に短絡。
+- `src/sim/economy.ts`: `ELECTRIFICATION_COST_MULTIPLIER = 0.5`(架線設備費、
+  線路本体の+50%/セル、値は「あったら楽しい」判断)と`costOfElectrification`を追加。
+- `src/sim/buildPreview.ts`: `evaluateBuild`に`railOptions`引数を追加。地平
+  (level 0)のrail建設のみ、electrified指定時に架線設備費を上乗せし、
+  gauge/electrifiedをそのまま`applyRailPathDetailed`へ橋渡しする(UIに条件を
+  書き写さない既存規約どおり)。
+- `src/hooks/useGameLogic.ts`: `buyTrain`に`power`引数(既定'diesel')を追加。
+  `rules.gauge`が有効なら購入位置(車庫セル)の軌間を新造列車へ自動継承する。
+- 永続化: `CellData`/`TrainData`は既存の「Mapを丸ごとentries配列でシリアライズ」に
+  乗るため、persistence.ts側の変更は`rules.extendedGauges`のフィールド単位デフォルト
+  補完のみで済んだ。**v18への版上げは不要**。
+
+### 未着手・次段への持ち越し(スコープ外として明示的に見送った項目)
+
+- **高架/地下へのgauge配線**: `applyElevatedPath`/`applyUndergroundPath`は
+  `RailBuildOptions`を受け取らない。地平のrailのみgauge/electrifiedが効く。
+- **simulation.ts本番経路探索への配線**: `SimWorld`に`rules`が乗っていない
+  (PM1の設計判断どおり、rulesはReact state止まりでworldRefには乗せていない)ため、
+  `stepWorld`が呼ぶ`calculateRouteWithStop`は`rules`/`trainGauge`/`trainPower`を
+  渡していない。pathfinding.ts自体の述語とAPIは完成しているので、次段で
+  `SimWorld`に`rules`を足すか、呼び出し側で列車の`gauge`/`power`とReactの
+  `gameRules`を引き回せば配線できる。
+- **Stage B(改軌ツール)**: 未実装。既存線路の軌間を変換する建設操作
+  (セルに列車が在線していれば失敗、既に目的軌間のセルはスキップ、demolish+rebuildより
+  安いコスト)は次段で着手する。
+- **Stage C(UI)**: 未実装。軌間セレクタ(基本2種/拡張4種)・電化トグル・改軌ボタン・
+  列車購入時の動力選択UIはまだ無い。sim層のAPI(railOptions/buyTrainのpower引数)は
+  用意済みなので、GameUI.tsxからそれらを呼ぶ配線だけが残っている。
+- **描画差**: 軌間・架線の見た目の違いはスコープ外(元のタスク定義どおり)。
 
 ## 実装メモ（PM1、2026-08-11）
 
