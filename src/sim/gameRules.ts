@@ -102,7 +102,7 @@ export function cellAllowsTrain(
   if (rules.electrification === 'none' || trainPower === 'diesel') return true;
 
   const system = electrificationOf(cell);
-  if (!system) return trainPower === 'diesel'; // ここには来ないが型のため明示
+  if (!system) return false;
 
   // 'modes'段階はUIが'ac'を書き込まないため、trainPowerも'electric'(=直流専用)しか
   // 存在しない前提だが、念のため'boundaries'以上と同じ判定式を使い回す。

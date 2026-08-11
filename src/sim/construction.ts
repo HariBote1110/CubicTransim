@@ -375,7 +375,8 @@ const cellFlagsForRole = (field: TerrainField, role: GroundRailCellRole, x: numb
 // 未指定のまま呼べば旧来のライト相当の挙動と完全に一致する。
 export interface RailBuildOptions {
   gauge?: RailGauge;
-  electrified?: boolean;
+  /** PM3: 'modes'段階のUIは常に'dc'を書く。'ac'は'boundaries'以上でのみ選べる。 */
+  electrified?: 'dc' | 'ac' | boolean;
 }
 
 const addConnectionToCell = (

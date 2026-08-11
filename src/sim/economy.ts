@@ -1,7 +1,7 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
 import { toKey } from '../utils';
-import type { CellData, PlatformDoorType, TownData } from '../types';
+import type { CellData, PlatformDoorType, TownData, TrainPower } from '../types';
 import type { TerrainField } from './terrainField';
 import { applyRailPathDetailed, resolveGroundRailPlan, MAX_BRIDGE_LENGTH, type GroundRailCellRole } from './construction';
 import { SLOPE_RAIL_COST_MULTIPLIER } from './slopes';
@@ -111,6 +111,19 @@ export function costOfTerrainEdit(cellSteps: number): number {
 // 同一の1セルあたり単価とする、電化設備費を線路本体のコストと分離した単純化)。
 export function costOfElectrification(cellCount: number): number {
   return cellCount * RAIL_COST * ELECTRIFICATION_COST_MULTIPLIER;
+}
+
+// PM3: 交流専用車は直流車+20%、交直流両用車は+50%(値は「あったら楽しい」判断、
+// progress/play-modes-plan.md PM3。実物同様、交流は車両側が複雑・高価になる)。
+export const AC_TRAIN_PRICE_MULTIPLIER = 1.2;
+export const ACDC_TRAIN_PRICE_MULTIPLIER = 1.5;
+
+// PM3: 動力方式ごとの新造価格。'electric'(直流専用)/'diesel'はTRAIN_COSTのまま、
+// 'electric-ac'/'electric-acdc'は上記倍率を掛ける。
+export function trainCostFor(power: TrainPower): number {
+  if (power === 'electric-ac') return Math.round(TRAIN_COST * AC_TRAIN_PRICE_MULTIPLIER);
+  if (power === 'electric-acdc') return Math.round(TRAIN_COST * ACDC_TRAIN_PRICE_MULTIPLIER);
+  return TRAIN_COST;
 }
 
 // PM2 Stage B: 改軌(既存線路の軌間変換)1セルあたりの費用。撤去(無料)+再敷設
