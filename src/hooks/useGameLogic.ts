@@ -88,6 +88,7 @@ export function applyRestoredWorldState(restored: RestoredWorld, setters: Restor
   setters.setTerrainProfile(restored.terrainProfile);
   setters.setGameRules(restored.rules);
   setters.setWorldSeed(restored.seed);
+  setters.setHalfExtent(restored.halfExtent);
   setters.setCornerDiffs(restored.cornerDiffs);
   setters.setDebugFieldOverride(null);
   setters.setCurrentLedger(restored.currentLedger);
