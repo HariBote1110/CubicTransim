@@ -243,4 +243,53 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored).not.toBeNull();
     expect(restored!.rules).toEqual(DEFAULT_GAME_RULES);
   });
+
+});
+
+describe('persistence: PM3 交直流電化(dc/ac)のラウンドトリップ', () => {
+  it('railMapのelectrified: \'dc\'/\'ac\'がJSON経由で往復する', () => {
+    const railMap = new Map<string, CellData>([
+      ['0,0', { type: 'rail', connections: 1, electrified: 'dc' }],
+      ['1,0', { type: 'rail', connections: 1, electrified: 'ac' }],
+    ]);
+    const saveData = serialiseWorld(
+      railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.railMap.get('0,0')?.electrified).toBe('dc');
+    expect(restored!.railMap.get('1,0')?.electrified).toBe('ac');
+  });
+
+  it('legacyのelectrified: true(PM2以前のセーブ)は\'dc\'として読み込む', () => {
+    const railMap = new Map<string, CellData>([
+      ['0,0', { type: 'rail', connections: 1, electrified: true }],
+    ]);
+    const saveData = serialiseWorld(
+      railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.railMap.get('0,0')?.electrified).toBe('dc');
+  });
+
+  it('TrainDataのpower: \'electric-ac\'/\'electric-acdc\'がJSON経由で往復する', () => {
+    const trains: TrainData[] = [
+      { id: 'a', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'stored', cars: 2, power: 'electric-ac' },
+      { id: 'b', x: 1, z: 1, schedule: [], scheduleIndex: 0, status: 'stored', cars: 2, power: 'electric-acdc' },
+    ];
+    const saveData = serialiseWorld(
+      new Map(), new Map(), trains, new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.trains.find(t => t.id === 'a')?.power).toBe('electric-ac');
+    expect(restored!.trains.find(t => t.id === 'b')?.power).toBe('electric-acdc');
+  });
 });

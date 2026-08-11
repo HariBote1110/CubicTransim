@@ -209,8 +209,17 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
   const towns = data.towns.map((town, i) => (town.name ? town : { ...town, name: fallbackTownName(i) }));
   const trains = data.trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
 
+  // PM3: legacyのelectrified:true(v17前期〜PM2)は「直流」を意味するため、
+  // 'dc'へ正規化して読み込む。'ac'/'dc'の文字列はそのまま、undefinedもそのまま。
+  const railMap = new Map(
+    data.railMap.map(([key, cell]) => [
+      key,
+      cell.electrified === true ? { ...cell, electrified: 'dc' as const } : cell,
+    ])
+  );
+
   return {
-    railMap: new Map(data.railMap),
+    railMap,
     stations,
     trains,
     runtimes,
