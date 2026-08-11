@@ -6,6 +6,8 @@
 // level は 0=地平、正=高架(uppers[L])、負=地下(uppers[-L])。selectedLevel は建設レベル
 // 選択(GameUIのbuildLevel)で、地下ビューが有効なとき「今どの深さを見ているか」を兼ねる。
 
+import { MESH_LAYER_CLASS } from './webgpuLayer';
+
 /** 選択中のレベルが地下(負)かどうか。これが地下ビューへ入る唯一の条件。 */
 export function isUndergroundView(selectedLevel: number): boolean {
   return selectedLevel < 0;
@@ -49,4 +51,13 @@ export const UNDERGROUND_RENDER_ORDER = 10;
 export function isLevelDimmed(level: number, undergroundView: boolean, selectedLevel: number): boolean {
   if (!undergroundView) return false;
   return level !== selectedLevel;
+}
+
+/**
+ * 建設プレビュー(ゴースト表示)のメッシュ描画クラスを、セル群の最小y座標から選ぶ。
+ * 地下(y<0)を含むプレビューは undergroundGhost(深度Always+αブレンド)で描かないと
+ * 地形に隠れて見えなくなる(progress/参照)。地上のプレビューは従来通り translucent。
+ */
+export function previewMeshLayerClass(minY: number): number {
+  return minY < 0 ? MESH_LAYER_CLASS.undergroundGhost : MESH_LAYER_CLASS.translucent;
 }
