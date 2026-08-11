@@ -24,6 +24,42 @@ describe('buildRailNetworkGeometry: 地平のみのセル', () => {
   });
 });
 
+describe('buildRailNetworkGeometry: gauge省略時はbyte-identical', () => {
+  it('gaugeフィールドを持たないセルは、旧セーブと同じposition配列を生成する', () => {
+    const legacy = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S }],
+    ]);
+    const withUndefinedGauge = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, gauge: undefined }],
+    ]);
+    const geoLegacy = buildRailNetworkGeometry(legacy, field, false, 0);
+    const geoUndef = buildRailNetworkGeometry(withUndefinedGauge, field, false, 0);
+    expect(Array.from(geoUndef.surface.rails!.getAttribute('position')!.array))
+      .toEqual(Array.from(geoLegacy.surface.rails!.getAttribute('position')!.array));
+    expect(Array.from(geoUndef.surface.sleepers!.getAttribute('position')!.array))
+      .toEqual(Array.from(geoLegacy.surface.sleepers!.getAttribute('position')!.array));
+  });
+});
+
+describe('buildRailNetworkGeometry: electrified区間の架線', () => {
+  it('electrified:trueのセルはcatenaryにマスト/電線を生成する', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, electrified: true }],
+    ]);
+    const geo = buildRailNetworkGeometry(railMap, field, false, 0);
+    expect(geo.catenary.wires).not.toBeNull();
+  });
+
+  it('electrifiedでないセルはcatenaryを生成しない', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S }],
+    ]);
+    const geo = buildRailNetworkGeometry(railMap, field, false, 0);
+    expect(geo.catenary.wires).toBeNull();
+    expect(geo.catenary.masts).toBeNull();
+  });
+});
+
 describe('buildRailNetworkGeometry: 高架桁(uppers)', () => {
   it('レベル1の桁セルはsurfaceに枕木・レール・支柱/桁を生成する(バラストは敷かない)', () => {
     const railMap = new Map<string, CellData>([
