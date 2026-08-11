@@ -911,3 +911,58 @@ describe('calculateRoute: PM2 軌間・電化', () => {
     expect(allowed).toEqual([{ x: 1, z: 0 }]);
   });
 });
+
+describe('PM4: き電(feeding)段階の給電判定', () => {
+  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const };
+
+  it('feeding段階で電車は給電されていないセルへ進入できない', () => {
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, electrified: 'dc' });
+    railMap.set(toKey(1, 0), { ...railMap.get(toKey(1, 0))!, electrified: 'dc', type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    // feeding索引を渡さない(=変電所が無いのと同じ)場合はrules.electrification==='feeding'
+    // でもfeeding未指定なら判定しない(短絡)ため、明示的にpoweredをfalseにするダミー索引を渡す。
+    const noPowerIndex = {
+      isPowered: () => false,
+      sectionLoadKey: () => 'sectionA',
+      sectionCapacity: () => 0,
+    };
+    const blocked = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+      rules: REALISTIC_RULES, trainGauge: 1067, trainPower: 'electric', feeding: noPowerIndex,
+    });
+    expect(blocked).toEqual([]);
+
+    const poweredIndex = {
+      isPowered: () => true,
+      sectionLoadKey: () => 'sectionA',
+      sectionCapacity: () => 3,
+    };
+    const allowed = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+      rules: REALISTIC_RULES, trainGauge: 1067, trainPower: 'electric', feeding: poweredIndex,
+    });
+    expect(allowed).toEqual([{ x: 1, z: 0 }]);
+  });
+
+  it('feeding段階でも気動車は給電に関係なく進入できる', () => {
+    const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }];
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, electrified: 'dc' });
+    railMap.set(toKey(1, 0), { ...railMap.get(toKey(1, 0))!, electrified: 'dc', type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 1, z: 0 }], center: { x: 1, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const noPowerIndex = { isPowered: () => false, sectionLoadKey: () => 'sectionA', sectionCapacity: () => 0 };
+
+    const allowed = calculateRoute(railMap, stations, noOccupied, noReserved, {
+      start: { x: 0, z: 0 }, prev: null, targetStationId: 'stA', cars: 1,
+      rules: REALISTIC_RULES, trainGauge: 1067, trainPower: 'diesel', feeding: noPowerIndex,
+    });
+    expect(allowed).toEqual([{ x: 1, z: 0 }]);
+  });
+});

@@ -14,6 +14,24 @@ describe('computeAcceleration', () => {
     expect(full).toBeLessThan(empty);
   });
 
+  it('PM4: tractionFactorは牽引力(加速度)だけを弱める(既定1は無影響)', () => {
+    const full = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 30 }, 'accelerating', 20);
+    const defaulted = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 30 }, 'accelerating', 20, 1);
+    const overloaded = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 30 }, 'accelerating', 20, 0.5);
+    expect(defaulted).toBeCloseTo(full, 10);
+    expect(overloaded).toBeLessThan(full);
+  });
+
+  it('PM4: tractionFactorはbraking/coastingモードには影響しない(traction only)', () => {
+    const brakeNormal = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 30 }, 'braking', 20, 1);
+    const brakeOverloaded = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 30 }, 'braking', 20, 0.5);
+    expect(brakeOverloaded).toBe(brakeNormal);
+
+    const coastNormal = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 30 }, 'coasting', 20, 1);
+    const coastOverloaded = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 30 }, 'coasting', 20, 0.5);
+    expect(coastOverloaded).toBe(coastNormal);
+  });
+
   it('速度上昇にともなって加速度が逓減する', () => {
     const a0 = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 10 }, 'accelerating', 20);
     const a1 = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 50 }, 'accelerating', 20);

@@ -1510,3 +1510,58 @@ describe('stepWorld: PM3 交直流デッドセクション', () => {
     expect(sawBoundaryCoast).toBe(true);
   });
 });
+
+describe('stepWorld: PM4 き電区間の容量超過ペナルティ', () => {
+  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const };
+
+  it('セクションの在線数が容量を超えると電車の加速が鈍る(OVERLOAD_ACCEL_FACTOR)', () => {
+    const dt = 0.1;
+
+    const overloadedLine = buildStraightLine(30, 'stOver');
+    for (const cell of overloadedLine.railMap.values()) cell.electrified = 'dc';
+    const overloadedTrain = makeTrain({ id: 'tOver', schedule: ['stOver'], power: 'electric' });
+    const overloadedWorld = makeWorld(overloadedLine.railMap, overloadedLine.stations, [overloadedTrain]);
+    overloadedWorld.rules = REALISTIC_RULES;
+    overloadedWorld.feeding = {
+      isPowered: () => true,
+      sectionLoadKey: () => 'S',
+      sectionCapacity: () => 0, // 常に容量0=在線1本でも超過
+    };
+    runTicks(overloadedWorld, dt, 20);
+    const overloadedRt = overloadedWorld.runtimes.get('tOver')!;
+
+    const normalLine = buildStraightLine(30, 'stNormal');
+    for (const cell of normalLine.railMap.values()) cell.electrified = 'dc';
+    const normalTrain = makeTrain({ id: 'tNormal', schedule: ['stNormal'], power: 'electric' });
+    const normalWorld = makeWorld(normalLine.railMap, normalLine.stations, [normalTrain]);
+    normalWorld.rules = REALISTIC_RULES;
+    normalWorld.feeding = {
+      isPowered: () => true,
+      sectionLoadKey: () => 'S',
+      sectionCapacity: () => 99, // 容量に余裕がある=超過しない
+    };
+    runTicks(normalWorld, dt, 20);
+    const normalRt = normalWorld.runtimes.get('tNormal')!;
+
+    expect(overloadedRt.speedKmh).toBeLessThan(normalRt.speedKmh);
+  });
+
+  it('気動車は容量超過の影響を受けない', () => {
+    const dt = 0.1;
+    const line = buildStraightLine(30, 'stDiesel');
+    const dieselTrain = makeTrain({ id: 'tDiesel', schedule: ['stDiesel'], power: 'diesel' });
+    const dieselWorld = makeWorld(line.railMap, line.stations, [dieselTrain]);
+    dieselWorld.rules = REALISTIC_RULES;
+    dieselWorld.feeding = { isPowered: () => true, sectionLoadKey: () => 'S', sectionCapacity: () => 0 };
+    runTicks(dieselWorld, dt, 20);
+    const dieselRt = dieselWorld.runtimes.get('tDiesel')!;
+
+    const baselineLine = buildStraightLine(30, 'stBaseline');
+    const baselineTrain = makeTrain({ id: 'tBaseline', schedule: ['stBaseline'] });
+    const baselineWorld = makeWorld(baselineLine.railMap, baselineLine.stations, [baselineTrain]);
+    runTicks(baselineWorld, dt, 20);
+    const baselineRt = baselineWorld.runtimes.get('tBaseline')!;
+
+    expect(dieselRt.speedKmh).toBeCloseTo(baselineRt.speedKmh, 5);
+  });
+});

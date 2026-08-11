@@ -293,3 +293,20 @@ describe('persistence: PM3 交直流電化(dc/ac)のラウンドトリップ', (
     expect(restored!.trains.find(t => t.id === 'b')?.power).toBe('electric-acdc');
   });
 });
+
+describe('persistence: PM4 変電所(substation)のラウンドトリップ', () => {
+  it('type: \'substation\'のセルはrailMapの他のセルと同じくJSON経由で往復する(専用フィールドは不要)', () => {
+    const railMap = new Map<string, CellData>([
+      ['0,0', { type: 'rail', connections: 1, electrified: 'dc' }],
+      ['0,1', { type: 'substation' }],
+    ]);
+    const saveData = serialiseWorld(
+      railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.railMap.get('0,1')?.type).toBe('substation');
+  });
+});
