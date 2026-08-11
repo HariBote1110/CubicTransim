@@ -56,8 +56,6 @@ export interface RailNetworkGeometry {
   undergroundBright: MergedTrackParts;
   /** 地下ビュー中、選択中レベル以外の地下線(暗く描く)。 */
   undergroundDim: MergedTrackParts;
-  /** 地上ビュー: 地形の上へ薄く透かして重ねる地下線(全レベル合算)。 */
-  undergroundGhost: MergedTrackParts;
   /** 通常表示のみ: 掘割ランプの地表開口の暗い穴(pit)。擁壁とは別色で焼くため分離。 */
   openingPits: THREE.BufferGeometry | null;
   /** 通常表示のみ: 掘割ランプの地表開口の擁壁(retaining wall)。坑口のヘッドウォールと
@@ -76,10 +74,13 @@ export interface RailNetworkGeometry {
  * 別バケットで管理する。地下ビュー中は、選択中のレベルに一致する地下だけ通常輝度
  * (bright)、それ以外の地下は暗く半透明(dim)で描く。
  *
- * 0.5.0-Alpha-4c: 地上ビューでも地下線をゴースト(undergroundGhost、地形の上へ薄く
- * 重ねる)として出すようになった。以前は地上ビューで地下を一切描かず、掘割の開口
- * だけを出していたため、地下にしかない路線・駅が地上ビューで完全に消えていた。
- * 掘割の開口(地表に開いた穴)は地上ビューでのみ従来どおり出す。
+ * 0.5.0-Alpha-4c〜Alpha-8dでは地上ビューでも地下線をゴースト(地形の上へ薄く重ねる)
+ * として出していたが、ユーザーから「地上ビューの地下線ゴーストがごちゃごちゃして
+ * 見づらい」との報告を受け、Alpha-8eで地上ビューの地下線は完全に非表示にした
+ * (viewMode.tsのundergroundBucketOfが'hidden'を返す)。地下にしかない駅の発見容易性
+ * (Alpha-4cの元々の動機)は、線路とは独立した駅ホームのゴースト表示(WebGpuStations.tsx、
+ * この関数の範囲外)で引き続き担保する。掘割の開口(地表に開いた穴)は地上ビューでのみ
+ * 従来どおり出す(地表の構造物であり、地下線そのものではないため対象外)。
  */
 export function buildRailNetworkGeometry(
   railMap: Map<string, CellData>,
@@ -93,14 +94,14 @@ export function buildRailNetworkGeometry(
 
   const undergroundBright: TrackParts = emptyTrackParts();
   const undergroundDim: TrackParts = emptyTrackParts();
-  const undergroundGhost: TrackParts = emptyTrackParts();
   const openingPits: THREE.BufferGeometry[] = [];
   const openingWalls: THREE.BufferGeometry[] = [];
   const catenary: CatenaryParts = { masts: [], wires: [] };
   const catenaryAc: CatenaryParts = { masts: [], wires: [] };
 
-  const bucketOf = (bucket: UndergroundBucket): TrackParts =>
-    bucket === 'bright' ? undergroundBright : bucket === 'dim' ? undergroundDim : undergroundGhost;
+  // 'hidden'(地上ビューの地下線)はどのバケットへも入れない=一切描かない。
+  const bucketOf = (bucket: UndergroundBucket): TrackParts | null =>
+    bucket === 'bright' ? undergroundBright : bucket === 'dim' ? undergroundDim : null;
 
   // 地下ランプ(base<0)は base〜base+1 の1段を繋ぐので、選択レベルがどちらかの端に
   // 一致すればbright扱いにする(undergroundBucketOfへ渡す「実質のレベル」を作る)。
@@ -163,21 +164,22 @@ export function buildRailNetworkGeometry(
           }
         }
       } else {
-        // 地下の坂(掘割)。地下ビューではbright/dim、地上ビューではゴーストへ入れる。
+        // 地下の坂(掘割)。地下ビューではbright/dim、地上ビューでは非表示(hidden、
+        // bucket=null)。開口(pit/wall)は地表の構造物なので線路の可視性と独立に出す。
         const bucket = bucketOf(
           undergroundBucketOf(rampBucketLevel(base), undergroundView, selectedLevel),
         );
-        bucket.sleepers.push(...rampParts.sleepers);
-        bucket.rails.push(...rampParts.rails);
-        if (base === -1) {
-          bucket.ballast.push(...rampParts.ballast);
-          if (!undergroundView) {
-            // 地上ビューでは地表に開いた穴(暗いpit+擁壁)も従来どおり出す。
-            const opening = buildUndergroundOpeningPart(data.ramp.dir, x, z);
-            if (opening) {
-              openingPits.push(opening.pit);
-              openingWalls.push(opening.wallA, opening.wallB);
-            }
+        if (bucket) {
+          bucket.sleepers.push(...rampParts.sleepers);
+          bucket.rails.push(...rampParts.rails);
+          if (base === -1) bucket.ballast.push(...rampParts.ballast);
+        }
+        if (base === -1 && !undergroundView) {
+          // 地上ビューでは地表に開いた穴(暗いpit+擁壁)も従来どおり出す。
+          const opening = buildUndergroundOpeningPart(data.ramp.dir, x, z);
+          if (opening) {
+            openingPits.push(opening.pit);
+            openingWalls.push(opening.wallA, opening.wallB);
           }
         }
       }
@@ -211,8 +213,10 @@ export function buildRailNetworkGeometry(
       } else {
         const upperParts = buildCellTrackParts(upperConnections, x, z, originY, false);
         const bucket = bucketOf(undergroundBucketOf(level, undergroundView, selectedLevel));
-        bucket.sleepers.push(...upperParts.sleepers);
-        bucket.rails.push(...upperParts.rails);
+        if (bucket) {
+          bucket.sleepers.push(...upperParts.sleepers);
+          bucket.rails.push(...upperParts.rails);
+        }
       }
     }
 
@@ -252,11 +256,6 @@ export function buildRailNetworkGeometry(
       ballast: mergeParts(undergroundDim.ballast),
       sleepers: mergeParts(undergroundDim.sleepers),
       rails: mergeParts(undergroundDim.rails),
-    },
-    undergroundGhost: {
-      ballast: mergeParts(undergroundGhost.ballast),
-      sleepers: mergeParts(undergroundGhost.sleepers),
-      rails: mergeParts(undergroundGhost.rails),
     },
     openingPits: mergeParts(openingPits),
     openingWalls: mergeParts(openingWalls),

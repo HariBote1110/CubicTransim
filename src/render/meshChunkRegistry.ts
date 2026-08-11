@@ -17,7 +17,6 @@ export const MESH_CHUNK_NAMESPACE = {
   railSurface: 0x3000_0000,
   railUndergroundBright: 0x3100_0000,
   railUndergroundDim: 0x3200_0000,
-  railUndergroundGhost: 0x3300_0000,
   station: 0x4000_0000,
   stationUndergroundBright: 0x4100_0000,
   stationUndergroundDim: 0x4200_0000,

@@ -11,8 +11,12 @@
 // 一致する bright を layerClass=underground(1、深度無視・常時フル輝度)、それ以外の
 // dim を layerClass=translucent(2、alpha≈0.3相当)で描く。
 //
-// 0.5.0-Alpha-4c: 地上ビューでは地下線を layerClass=undergroundGhost(3、深度無視+
-// αブレンド)で薄く重ねる(以前は何も描かず、地下だけの路線が地上ビューで消えていた)。
+// 0.5.0-Alpha-4c〜Alpha-8dでは地上ビューで地下線を layerClass=undergroundGhost で
+// 薄く重ねていたが、「地上ビューの地下線ゴーストがごちゃごちゃして見づらい」との
+// ユーザーフィードバックを受け、Alpha-8eで地上ビューの地下線は完全に非表示にした
+// (viewMode.tsのundergroundBucketOfが'hidden'を返し、buildRailNetworkGeometryが
+// undergroundBright/undergroundDimのどちらにも入れない)。駅ホームのゴースト表示は
+// WebGpuStations.tsx側の独立した経路なので影響を受けない。
 
 import React, { useCallback, useMemo } from 'react';
 import type { CellData } from '../types';
@@ -35,13 +39,10 @@ interface Props {
 
 /** 地下の非選択レベルを近似する半透明の不透明度(0..255)。three.jsのopacity 0.3相当。 */
 const UNDERGROUND_DIM_ALPHA = Math.round(0.3 * 255);
-/** 地上ビューで地下を透かすゴーストの不透明度。退役したDIMMED_MATERIALSと同じ0.3。 */
-const UNDERGROUND_GHOST_ALPHA = Math.round(0.3 * 255);
 
 const SURFACE_KEY = 'surface';
 const UNDERGROUND_BRIGHT_KEY = 'undergroundBright';
 const UNDERGROUND_DIM_KEY = 'undergroundDim';
-const UNDERGROUND_GHOST_KEY = 'undergroundGhost';
 
 export const WebGpuTrackNetwork: React.FC<Props> = ({
   layerRef, railMap, field, undergroundView = false, selectedLevel = 0,
@@ -75,14 +76,6 @@ export const WebGpuTrackNetwork: React.FC<Props> = ({
         { geometry: geometry.undergroundBright.rails, colour: PALETTE.railSteel },
       ]);
     }
-    if (key === UNDERGROUND_GHOST_KEY) {
-      const options = { alpha: UNDERGROUND_GHOST_ALPHA };
-      return bakeGeometries([
-        { geometry: geometry.undergroundGhost.ballast, colour: PALETTE.ballast, options },
-        { geometry: geometry.undergroundGhost.sleepers, colour: PALETTE.sleeper, options },
-        { geometry: geometry.undergroundGhost.rails, colour: PALETTE.railSteel, options },
-      ]);
-    }
     if (key === UNDERGROUND_DIM_KEY) {
       const options = { alpha: UNDERGROUND_DIM_ALPHA };
       return bakeGeometries([
@@ -96,7 +89,7 @@ export const WebGpuTrackNetwork: React.FC<Props> = ({
 
   // surfaceは常にsurfaceクラス、bright/dimはlayerClassが違うのでチャンクidの
   // 名前空間内で描画クラスを分ける必要がある。useMeshChunkFeederはlayerClassを
-  // 1回しか受け取れないため、3つの独立したフィーダとして呼び出す。
+  // 1回しか受け取れないため、独立したフィーダとして呼び出す。
   useMeshChunkFeeder({
     layerRef,
     namespace: MESH_CHUNK_NAMESPACE.railSurface,
@@ -118,13 +111,5 @@ export const WebGpuTrackNetwork: React.FC<Props> = ({
     buildChunk,
     layerClass: MESH_LAYER_CLASS.translucent,
   });
-  useMeshChunkFeeder({
-    layerRef,
-    namespace: MESH_CHUNK_NAMESPACE.railUndergroundGhost,
-    desiredKeys: undergroundView ? [] : [UNDERGROUND_GHOST_KEY],
-    buildChunk,
-    layerClass: MESH_LAYER_CLASS.undergroundGhost,
-  });
-
   return null;
 };

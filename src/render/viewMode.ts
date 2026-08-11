@@ -14,24 +14,30 @@ export function isUndergroundView(selectedLevel: number): boolean {
 }
 
 /**
- * 地下コンテンツ(線路・駅ホーム)の描画バケット。
+ * 地下コンテンツ(線路)の描画バケット。
  *
  * - 'bright' 地下ビューで選択中の深さ。通常輝度・不透明(layerClass=underground)
  * - 'dim'    地下ビューで選択中でない深さ。薄い半透明(layerClass=translucent)
- * - 'ghost'  地上ビュー。地形の上へ薄く重ねる透けた表示(layerClass=undergroundGhost)
+ * - 'hidden' 地上ビュー。何も描かない
  *
- * 0.5.0-Alpha-4c以前は地上ビューで地下を一切描かなかったため、地下にしかない駅が
- * 地上ビューで完全に消滅して見つけられなくなっていた(ユーザー報告)。地上ビューでは
- * ゴーストとして必ず出す。
+ * 0.5.0-Alpha-4c〜Alpha-8dでは地上ビューの地下線を「ゴースト」(地形の上へ薄く
+ * 重ねる透けた表示)として出していたが、ユーザーから「地上ビューの地下線ゴーストが
+ * ごちゃごちゃして見づらい」との報告を受け、Alpha-8eで地上ビューの地下線は完全に
+ * 非表示(hidden)にした。
+ *
+ * 駅の発見容易性(Alpha-4cの元々の動機: 地下にしかない駅が地上ビューで消えて見つから
+ * ない)は、駅ホームだけの別経路(WebGpuStations.tsx、この関数を経由しない)で
+ * ゴースト表示を維持することで引き続き担保する。この関数の呼び出し元は
+ * railGeometry.ts(線路)だけなので、この変更は線路の可視性だけに影響する。
  */
-export type UndergroundBucket = 'bright' | 'dim' | 'ghost';
+export type UndergroundBucket = 'bright' | 'dim' | 'hidden';
 
 export function undergroundBucketOf(
   level: number,
   undergroundView: boolean,
   selectedLevel: number,
 ): UndergroundBucket {
-  if (!undergroundView) return 'ghost';
+  if (!undergroundView) return 'hidden';
   return level === selectedLevel ? 'bright' : 'dim';
 }
 
