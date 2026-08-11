@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { DIR } from '../utils';
+import type * as THREE from './geom';
 import {
   buildCellTrackParts, buildRampTrackParts, buildRampAbutmentPart, buildTrackCentreLines,
   buildOverpassSupportParts, buildUndergroundOpeningPart, buildCatenaryParts,
 } from './trackGeometry';
 import { rampHeightAtPos, rampSegmentPositions } from '../sim/trackPath';
 
-const positionsOf = (geoms: { getAttribute(name: string): { array: ArrayLike<number> } | null }[]): number[] =>
-  geoms.flatMap(g => Array.from(g.getAttribute('position')!.array));
+const positionsOf = (geoms: THREE.BufferGeometry[]): number[] =>
+  geoms.flatMap(g => Array.from(g.getAttribute('position')!.array as ArrayLike<number>));
 
 describe('buildCellTrackParts: gauge省略時は従来どおりのジオメトリ(byte-identical)', () => {
   it('gauge未指定と旧来のシグネチャ(gauge引数なし)で同一のposition配列になる', () => {
@@ -23,8 +24,8 @@ describe('buildCellTrackParts: gaugeでレール間隔・枕木幅が変わる',
   it('762(狭)は1435(標準)よりレール間隔が狭い', () => {
     const narrow = buildCellTrackParts(DIR.N | DIR.S, 0, 0, 0, true, 762);
     const standard = buildCellTrackParts(DIR.N | DIR.S, 0, 0, 0, true, 1435);
-    const railX = (g: { getAttribute(name: string): { array: ArrayLike<number> } | null }) =>
-      Math.abs(g.getAttribute('position')!.array[0]);
+    const railX = (g: THREE.BufferGeometry) =>
+      Math.abs((g.getAttribute('position')!.array as ArrayLike<number>)[0]);
     expect(railX(narrow.rails[0])).toBeLessThan(railX(standard.rails[0]));
   });
 

@@ -12,8 +12,8 @@ import { DIR, fromKey, getOppositeDir } from '../utils';
 import {
   buildBridgeAbutmentPart, buildCellTrackParts, buildGroundInclineTrackParts, buildOverpassSupportParts,
   mergeParts, buildRampTrackParts, buildRampAbutmentPart, buildRampPierPart, shouldPlacePier,
-  buildUndergroundOpeningPart,
-  type TrackParts, type SupportParts,
+  buildUndergroundOpeningPart, buildCatenaryParts,
+  type TrackParts, type SupportParts, type CatenaryParts,
 } from './trackGeometry';
 import {
   OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL, rampHeightAtPos, rampSegmentPositions,
@@ -59,6 +59,8 @@ export interface RailNetworkGeometry {
   undergroundGhost: MergedTrackParts;
   /** 通常表示のみ: 掘割ランプの地表開口(暗い穴+擁壁)。 */
   openings: THREE.BufferGeometry | null;
+  /** electrified区間の架線(地平・高架のみ。地下は対象外)。 */
+  catenary: { masts: THREE.BufferGeometry | null; wires: THREE.BufferGeometry | null };
 }
 
 /**
@@ -87,6 +89,7 @@ export function buildRailNetworkGeometry(
   const undergroundDim: TrackParts = emptyTrackParts();
   const undergroundGhost: TrackParts = emptyTrackParts();
   const openings: THREE.BufferGeometry[] = [];
+  const catenary: CatenaryParts = { masts: [], wires: [] };
 
   const bucketOf = (bucket: UndergroundBucket): TrackParts =>
     bucket === 'bright' ? undergroundBright : bucket === 'dim' ? undergroundDim : undergroundGhost;
@@ -109,16 +112,24 @@ export function buildRailNetworkGeometry(
     const renderHeight = railRenderHeight(field, data, x, z);
     if (renderHeight.kind === 'incline') {
       const inclineParts = buildGroundInclineTrackParts(
-        renderHeight.dir, x, z, renderHeight.lowY, renderHeight.highY,
+        renderHeight.dir, x, z, renderHeight.lowY, renderHeight.highY, data.gauge,
       );
       surface.ballast.push(...inclineParts.ballast);
       surface.sleepers.push(...inclineParts.sleepers);
       surface.rails.push(...inclineParts.rails);
     } else {
-      const parts = buildCellTrackParts(flatConnections, x, z, renderHeight.y);
+      const parts = buildCellTrackParts(flatConnections, x, z, renderHeight.y, true, data.gauge);
       surface.ballast.push(...parts.ballast);
       surface.sleepers.push(...parts.sleepers);
       surface.rails.push(...parts.rails);
+
+      // 架線は地平の平坦区間だけに敷く(坂・傾斜は対象外。スコープを絞って
+      // ジオメトリの増加を抑える判断。progress/play-modes-plan.md参照)。
+      if (data.electrified && flatConnections !== 0) {
+        const cat = buildCatenaryParts(flatConnections, x, z, renderHeight.y);
+        catenary.masts.push(...cat.masts);
+        catenary.wires.push(...cat.wires);
+      }
     }
 
     if (data.ramp) {
@@ -171,13 +182,19 @@ export function buildRailNetworkGeometry(
       const originY = level * OVERPASS_HEIGHT;
 
       if (level > 0) {
-        const upperParts = buildCellTrackParts(upperConnections, x, z, originY, false);
+        const upperParts = buildCellTrackParts(upperConnections, x, z, originY, false, data.gauge);
         surface.sleepers.push(...upperParts.sleepers);
         surface.rails.push(...upperParts.rails);
 
         const support = buildOverpassSupportParts(upperConnections, x, z, originY);
         supports.piers.push(...support.piers);
         supports.decks.push(...support.decks);
+
+        if (data.electrified) {
+          const cat = buildCatenaryParts(upperConnections, x, z, originY);
+          catenary.masts.push(...cat.masts);
+          catenary.wires.push(...cat.wires);
+        }
       } else {
         const upperParts = buildCellTrackParts(upperConnections, x, z, originY, false);
         const bucket = bucketOf(undergroundBucketOf(level, undergroundView, selectedLevel));
@@ -229,5 +246,9 @@ export function buildRailNetworkGeometry(
       rails: mergeParts(undergroundGhost.rails),
     },
     openings: mergeParts(openings),
+    catenary: {
+      masts: mergeParts(catenary.masts),
+      wires: mergeParts(catenary.wires),
+    },
   };
 }

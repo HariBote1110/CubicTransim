@@ -33,6 +33,10 @@ export const PALETTE = {
   undergroundPit: '#14140f',
   undergroundWall: '#736a5c',
 
+  // --- 架線(electrified区間、PM2 follow-up) ---
+  catenaryMast: '#4a4d52',
+  catenaryWire: '#2e3033',
+
   // --- 駅 ---
   platform: '#d8d5cd',
   platformSide: '#b9b5ab',
