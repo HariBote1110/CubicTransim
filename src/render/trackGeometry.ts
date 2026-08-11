@@ -623,11 +623,21 @@ export function buildBridgeAbutmentPart(
 // --- 掘割ランプの地表開口(P8b) ---
 // 通常表示(地下ビューでない)では地下線そのものは隠すが、地表と地下を繋ぐ掘割
 // ランプの浅い側(地平に接する側、ramp.base===-1)のセルだけは、地表に「四角い暗い
-// 穴+短い擁壁」を出す(design memo: カットアウェイは採用せず、ジオラマ的な
+// 床+短い擁壁」を出す(design memo: カットアウェイは採用せず、ジオラマ的な
 // 「開口部の書き割り」で地下への入口を示す)。
-const OPENING_PIT_DEPTH = 0.3;
+//
+// R4末: 当初pit(床)をy<0(地表の下)に沈めていたが、地形メッシュはterrainOverlayで
+// 実際に掘り下げない限り常にy=0の不透明な連続面のままなので、上から見ると必ず
+// 地形に隠れて完全に不可視になる不具合があった(tunnelPortalGeometry.tsの坑口が
+// 「地形を一切変形させず、構造物を斜面から張り出させる」方針に倣ったのと同じ理由。
+// progress/openttd-tunnel-portals.md Alpha-31a参照)。pit/wallともy>=0の範囲に
+// 収め、地形に埋もれず必ず見えるようにした。
 const OPENING_PIT_WIDTH = 0.62;
+/** 暗い床の厚み。地表からわずかに持ち上げるだけで、実際に掘り下げはしない。 */
+const OPENING_PIT_HEIGHT = 0.03;
 const OPENING_WALL_THICKNESS = 0.07;
+/** 擁壁の高さ。地表からしっかり立ち上げ、掘割の切り通しらしく見せる。 */
+const OPENING_WALL_HEIGHT = 0.3;
 const OPENING_WALL_OFFSET = 0.34;
 
 export interface UndergroundOpeningParts {
@@ -638,7 +648,8 @@ export interface UndergroundOpeningParts {
 
 /**
  * dir(ランプの登り方向=地表側を向くビット)のセル(x,z)に、掘割の開口部を1つ生成する。
- * pitはセルの奥行き方向いっぱいに沈んだ暗い床、wallA/wallBはその両脇に立つ低い擁壁。
+ * pitはセルの奥行き方向いっぱいの暗い床(地表すれすれ)、wallA/wallBはその両脇に
+ * 地表から立ち上がる擁壁。
  */
 export function buildUndergroundOpeningPart(dir: number, x = 0, z = 0): UndergroundOpeningParts | null {
   const high = BOUNDARY_OFFSETS.find(o => o.bit === dir);
@@ -651,15 +662,14 @@ export function buildUndergroundOpeningPart(dir: number, x = 0, z = 0): Undergro
   const px = -uz;
   const pz = ux;
 
-  const pit = new THREE.BoxGeometry(OPENING_PIT_WIDTH, OPENING_PIT_DEPTH, 0.96);
+  const pit = new THREE.BoxGeometry(OPENING_PIT_WIDTH, OPENING_PIT_HEIGHT, 0.96);
   pit.rotateY(rotY);
-  pit.translate(x, -OPENING_PIT_DEPTH / 2 - 0.01, z);
+  pit.translate(x, OPENING_PIT_HEIGHT / 2, z);
 
-  const wallHeight = OPENING_PIT_DEPTH + 0.04;
   const makeWall = (side: number): THREE.BufferGeometry => {
-    const wall = new THREE.BoxGeometry(OPENING_WALL_THICKNESS, wallHeight, 0.96);
+    const wall = new THREE.BoxGeometry(OPENING_WALL_THICKNESS, OPENING_WALL_HEIGHT, 0.96);
     wall.rotateY(rotY);
-    wall.translate(x + px * side * OPENING_WALL_OFFSET, -wallHeight / 2 + 0.03, z + pz * side * OPENING_WALL_OFFSET);
+    wall.translate(x + px * side * OPENING_WALL_OFFSET, OPENING_WALL_HEIGHT / 2, z + pz * side * OPENING_WALL_OFFSET);
     return wall;
   };
 

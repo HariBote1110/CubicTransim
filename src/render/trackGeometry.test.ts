@@ -265,7 +265,7 @@ describe('buildUndergroundOpeningPart: 掘割ランプの地表開口(P8b)', () 
     const { wallA, wallB } = buildUndergroundOpeningPart(DIR.N, 0, 0)!;
     wallA.computeBoundingBox();
     wallB.computeBoundingBox();
-    expect(wallA.boundingBox!.min.y).toBeGreaterThanOrEqual(0);
-    expect(wallB.boundingBox!.min.y).toBeGreaterThanOrEqual(0);
+    expect(wallA.boundingBox!.min.y).toBeGreaterThanOrEqual(-1e-6);
+    expect(wallB.boundingBox!.min.y).toBeGreaterThanOrEqual(-1e-6);
   });
 });
