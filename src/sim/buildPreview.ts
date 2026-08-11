@@ -8,7 +8,8 @@
 // 高架ツール(旧'elevated'/'elevated-station')は廃止し、通常の'rail'/'station'が
 // levelパラメータ(0=地平〜3)に従う形に統合した。level===0のときは従来の
 // applyRailPath/applyStationと完全に同一の判定になる(回帰させないための最重要制約)。
-import type { CellData, StationData } from '../types';
+import type { CellData, StationData, RailGauge } from '../types';
+import { toKey } from '../utils';
 import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel } from './construction';
 import {
   applyRailPathDetailed,
@@ -19,6 +20,7 @@ import {
   applyElevatedStation,
   applyUndergroundPath,
   applyUndergroundStation,
+  applyRegaugePath,
   removePath,
   resolveElevatedPathEnd,
   pickElevatedConnection,
@@ -29,14 +31,18 @@ import {
   LAYERED_RAIL_MIN_PATH_CELLS,
   type GroundRailPlanFailureReason,
 } from './construction';
-import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, costOfRegauge, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
 import type { RailBuildOptions } from './construction';
 import type { TerrainField } from './terrainField';
 import type { EditedTerrainField } from './terrainOverlay';
 import { applyCornerEdit, type EditBlockers } from './terrainOverlay';
 import type { TownTileIndex } from './townTiles';
 
-export type BuildMode = ConstructionMode | 'remove' | 'raise' | 'lower';
+// PM2 Stage B: 改軌ツール。既存のConstructionMode('rail'等)とは別に、UI側の
+// ツール切替(BuildMode)にだけ足す(construction.tsのapplyRegaugePathは
+// costOfPathの汎用dispatchに乗せず専用に扱うため、economy.tsのConstructionModeへは
+// 加えない)。
+export type BuildMode = ConstructionMode | 'remove' | 'raise' | 'lower' | 'regauge';
 
 export type BuildBlockReason =
   | 'ok'
@@ -99,12 +105,39 @@ export function evaluateBuild(
   // PM2: 軌間/電化。地平・高架・地下いずれのrail建設にも反映する(construction.tsの
   // applyRailPathDetailed/applyElevatedPath/applyUndergroundPathすべてがrailOptionsを
   // 受け取る)。高架/地下は「セル単位で1つの軌間を共有する」単純化(レベル別に持たない)。
-  railOptions: RailBuildOptions = {}
+  railOptions: RailBuildOptions = {},
+  // PM2 Stage B: 改軌ツール('regauge'モードのときのみ参照)。targetGauge省略時は
+  // 改軌不能(no-effect)。occupiedCellsは列車が在線中のセル(toKey形式)の集合。
+  regauge?: { targetGauge: RailGauge; occupiedCells?: Set<string> }
 ): BuildPreview {
   const empty: BuildPreview = {
     mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0, level,
   };
   if (path.length === 0) return empty;
+
+  // PM2 Stage B: 改軌。実際の改軌ロジック(construction.tsのapplyRegaugePath)へ
+  // そのまま問い合わせ、「変化が無ければ同一参照」の規約で可否を判定する(他のapply系と同じ規約)。
+  if (mode === 'regauge') {
+    if (!regauge) return { ...empty, cellCount: path.length };
+    const state: ConstructionState = { railMap, stations };
+    const result = applyRegaugePath(state, path, regauge.targetGauge, regauge.occupiedCells ?? new Set());
+    const effective = result.railMap !== state.railMap;
+    // 課金対象は「実際に軌間が変わったセル数」。既に目的軌間だったセルは無料でスキップされる
+    // ため、変化したセルだけをapply結果から数え直す(UI側にルールを書き写さないため)。
+    const changedCellCount = effective
+      ? path.filter(p => {
+          const key = toKey(p.x, p.z);
+          return railMap.get(key)?.gauge !== result.railMap.get(key)?.gauge;
+        }).length
+      : 0;
+    const cost = costOfRegauge(changedCellCount);
+    return {
+      ...empty,
+      cellCount: effective ? changedCellCount : path.length,
+      cost,
+      reason: !effective ? 'no-effect' : cost > money ? 'insufficient-funds' : 'ok',
+    };
+  }
 
   // 地形編集(盛土/切土)。実際の編集ロジック(terrainOverlay.tsのapplyCornerEdit)へ
   // そのまま問い合わせ、「変化が無ければ同一参照」の規約で可否を判定する。

@@ -113,6 +113,17 @@ export function costOfElectrification(cellCount: number): number {
   return cellCount * RAIL_COST * ELECTRIFICATION_COST_MULTIPLIER;
 }
 
+// PM2 Stage B: 改軌(既存線路の軌間変換)1セルあたりの費用。撤去(無料)+再敷設
+// (RAIL_COST)より安くする「あったら楽しい」判断で、RAIL_COSTの60%とした
+// (60円/セル、100円で作り直すより確実に得だが工事費として実感できる程度の割引)。
+export const REGAUGE_COST_PER_CELL = RAIL_COST * 0.6;
+
+// 改軌のコスト。cellCountは実際に軌間が変わったセル数(construction.tsの
+// applyRegaugePathが確定させたもの。既に目的軌間のセルは無料でスキップされ課金対象外)。
+export function costOfRegauge(cellCount: number): number {
+  return cellCount * REGAUGE_COST_PER_CELL;
+}
+
 // 水上は「橋」、山岳は「トンネル」としてRAIL_COSTに乗算する倍率
 export const BRIDGE_COST_MULTIPLIER = 5;
 export const TUNNEL_COST_MULTIPLIER = 8;

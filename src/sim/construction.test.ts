@@ -12,6 +12,7 @@ import {
   applyElevatedStation,
   applyUndergroundPath,
   applyUndergroundStation,
+  applyRegaugePath,
   removePath,
   nextStationName,
   resolveElevatedPathEnd,
@@ -1735,5 +1736,64 @@ describe('applyRailPath: PM2 軌間(railOptions)', () => {
       expect(cell.gauge).toBe(762);
       expect(cell.electrified).toBe(true);
     }
+  });
+});
+
+describe('applyRegaugePath: PM2 Stage B 改軌ツール', () => {
+  it('既存の狭軌区間を標準軌へ変換する', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }], undefined, undefined, { gauge: 1067 });
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const result = applyRegaugePath(state, path, 1435);
+    for (const p of path) {
+      expect(result.railMap.get(toKey(p.x, p.z))!.gauge).toBe(1435);
+    }
+  });
+
+  it('電化フラグは変更しない', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { gauge: 1067, electrified: true });
+    const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], 1435);
+    expect(result.railMap.get(toKey(0, 0))!.electrified).toBe(true);
+    expect(result.railMap.get(toKey(1, 0))!.electrified).toBe(true);
+  });
+
+  it('既に目的軌間のセルはスキップされる(全セルが既に目的軌間ならno-op)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { gauge: 1435 });
+    const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], 1435);
+    expect(result).toBe(state);
+  });
+
+  it('一部だけ既に目的軌間でも、他のセルが変わっていれば適用される', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { gauge: 1067 });
+    state = applyRailPath(state, [{ x: 1, z: 0 }, { x: 2, z: 0 }], undefined, undefined, { gauge: 1435 });
+    const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }], 1435);
+    expect(result.railMap.get(toKey(0, 0))!.gauge).toBe(1435);
+    expect(result.railMap.get(toKey(2, 0))!.gauge).toBe(1435);
+  });
+
+  it('経路上に線路の無いセルがあれば全体がno-op', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { gauge: 1067 });
+    const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }], 1435);
+    expect(result).toBe(state);
+  });
+
+  it('列車が在線しているセルが1つでもあれば全体がno-op', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }], undefined, undefined, { gauge: 1067 });
+    const occupied = new Set([toKey(1, 0)]);
+    const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }], 1435, occupied);
+    expect(result).toBe(state);
+  });
+
+  it('駅・車庫セルは対象外(no-op)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { gauge: 1067 });
+    state = applyStation(state, { x: 1, z: 0 }, undefined, []);
+    const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], 1435);
+    expect(result).toBe(state);
   });
 });

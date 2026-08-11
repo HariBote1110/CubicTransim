@@ -13,6 +13,7 @@ import {
   TERRAIN_EDIT_COST,
   UNDERGROUND_RAIL_COST_MULTIPLIER,
   UNDERGROUND_STATION_COST,
+  REGAUGE_COST_PER_CELL,
 } from './economy';
 import { applyElevatedPath, applyUndergroundPath, applyRailPath } from './construction';
 import type { TerrainField } from './terrainField';
@@ -502,5 +503,46 @@ describe('evaluateBuild: PM2 軌間・電化', () => {
     // (1,0)は新規セルとして敷かれるため'ok'(no-effectにはならない)。
     // 実際に(0,0)⇔(1,0)間の接続ビットが立たないことはconstruction.test.tsで確認済み。
     expect(p.reason).toBe('ok');
+  });
+});
+
+describe('evaluateBuild: PM2 Stage B 改軌', () => {
+  it('regauge引数省略時はno-effect', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const laid = applyRailPath({ railMap, stations }, [{ x: 0, z: 0 }, { x: 1, z: 0 }], field, new Map(), { gauge: 1067 });
+    const p = evaluateBuild('regauge', [{ x: 0, z: 0 }, { x: 1, z: 0 }], laid.railMap, laid.stations, field, 100_000);
+    expect(p.reason).toBe('no-effect');
+  });
+
+  it('狭軌→標準軌の改軌はcellCount×REGAUGE_COST_PER_CELLで見積もられる', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const laid = applyRailPath({ railMap, stations }, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }], field, new Map(), { gauge: 1067 });
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('regauge', path, laid.railMap, laid.stations, field, 100_000, 0, new Map(), undefined, {}, { targetGauge: 1435 });
+    expect(p.reason).toBe('ok');
+    expect(p.cellCount).toBe(3);
+    expect(p.cost).toBe(3 * REGAUGE_COST_PER_CELL);
+  });
+
+  it('既に目的軌間の区間はno-effect', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const laid = applyRailPath({ railMap, stations }, [{ x: 0, z: 0 }, { x: 1, z: 0 }], field, new Map(), { gauge: 1435 });
+    const p = evaluateBuild('regauge', [{ x: 0, z: 0 }, { x: 1, z: 0 }], laid.railMap, laid.stations, field, 100_000, 0, new Map(), undefined, {}, { targetGauge: 1435 });
+    expect(p.reason).toBe('no-effect');
+  });
+
+  it('在線中のセルを含む区間はno-effect', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const laid = applyRailPath({ railMap, stations }, [{ x: 0, z: 0 }, { x: 1, z: 0 }], field, new Map(), { gauge: 1067 });
+    const occupiedCells = new Set([toKey(1, 0)]);
+    const p = evaluateBuild('regauge', [{ x: 0, z: 0 }, { x: 1, z: 0 }], laid.railMap, laid.stations, field, 100_000, 0, new Map(), undefined, {}, { targetGauge: 1435, occupiedCells });
+    expect(p.reason).toBe('no-effect');
+  });
+
+  it('資金不足ならinsufficient-funds', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const laid = applyRailPath({ railMap, stations }, [{ x: 0, z: 0 }, { x: 1, z: 0 }], field, new Map(), { gauge: 1067 });
+    const p = evaluateBuild('regauge', [{ x: 0, z: 0 }, { x: 1, z: 0 }], laid.railMap, laid.stations, field, 1, 0, new Map(), undefined, {}, { targetGauge: 1435 });
+    expect(p.reason).toBe('insufficient-funds');
   });
 });

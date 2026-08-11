@@ -1684,3 +1684,41 @@ export function removePath(state: ConstructionState, path: Pos[]): ConstructionS
 
   return { railMap, stations };
 }
+
+/**
+ * PM2 Stage B: 改軌(既存の自線路の軌間を変換する)。progress/play-modes-plan.mdの
+ * 「軌間の決定事項」どおり、demolish+rebuild(撤去は無料+RAIL_COST/セル)より安い
+ * REGAUGE_COST_PER_CELL/セルの単価にする(economy.ts参照)。
+ *
+ * - pathの各セルは既存の地平rail(type==='rail')でなければ全体がno-op(参照を維持)。
+ *   駅・車庫・立体交差(uppers)は対象外(単純化)。
+ * - occupiedCellsに含まれるセル(列車が在線中)が1つでもあれば全体がno-op。
+ * - 既に目的軌間のセルは変更しない(無料でスキップ)。1つも変わらなければno-op。
+ * - 電化(electrified)は変更しない(軌間だけを変える)。
+ */
+export function applyRegaugePath(
+  state: ConstructionState,
+  path: Pos[],
+  targetGauge: RailGauge,
+  occupiedCells: Set<string> = new Set()
+): ConstructionState {
+  for (const p of path) {
+    const key = toKey(p.x, p.z);
+    const cell = state.railMap.get(key);
+    if (!cell || cell.type !== 'rail') return state;
+    if (occupiedCells.has(key)) return state;
+  }
+
+  const railMap = new Map(state.railMap);
+  let changed = false;
+  for (const p of path) {
+    const key = toKey(p.x, p.z);
+    const cell = railMap.get(key)!;
+    const currentGauge = cell.gauge ?? 1067;
+    if (currentGauge === targetGauge) continue;
+    railMap.set(key, { ...cell, gauge: targetGauge });
+    changed = true;
+  }
+  if (!changed) return state;
+  return { railMap, stations: state.stations };
+}
