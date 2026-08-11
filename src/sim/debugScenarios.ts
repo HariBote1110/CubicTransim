@@ -115,8 +115,15 @@ function buildMultiLevelScenario(): DebugScenarioWorld {
 function buildTunnelScenario(): DebugScenarioWorld {
   const RIDGE_HALF_WIDTH = 2;
   const isRidge = (x: number): boolean => Math.abs(x) <= RIDGE_HALF_WIDTH;
+  // R4末: wgpuレンダラーはseed+halfExtentからしか地形を作れないため、この手組みfieldは
+  // useGameLogic.loadDebugScenario が cornerDiffsFromField 経由でオーバーレイ差分へ
+  // 焼き直して転送する(その変換はcornerHeightAtだけを読む)。以前はcornerHeightAtが
+  // 常に0を返しており、cellCornerHeights/terrainTypeAtが表現する尾根と矛盾していたため、
+  // 転送後の地形が完全に平坦になり、ブラウザで山が一切描画されない不具合になっていた。
+  // cornerHeightAtも尾根の位置(x=-2..2)で標高1を返すようにし、矛盾を解消する。
+  const cornerHeightAt = (x: number): number => (isRidge(Math.round(x)) ? 1 : 0);
   const field: TerrainField = {
-    cornerHeightAt: () => 0,
+    cornerHeightAt: (x) => cornerHeightAt(x),
     cellCornerHeights: (x) => (isRidge(Math.round(x)) ? [1, 1, 1, 0] : [0, 0, 0, 0]),
     cellHeightAt: () => 0,
     terrainTypeAt: (x) => (isRidge(Math.round(x)) ? 'mountain' : 'grass'),
