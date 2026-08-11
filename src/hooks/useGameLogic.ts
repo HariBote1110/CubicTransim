@@ -3,7 +3,7 @@ import { toKey } from '../utils';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
-import type { SaveData } from '../sim/persistence';
+import type { SaveData, RestoredWorld } from '../sim/persistence';
 import {
   applyRailPath, applyStation, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
   applyUndergroundPath, applyUndergroundStation, applyRegaugePath,
@@ -50,6 +50,50 @@ const ACCIDENT_POLL_INTERVAL_MS = 500;
 export interface AccidentNotice {
   trainId: string;
   stationId: string;
+}
+
+/** loadGameがReact stateへ反映するsetter群(useGameLogic.loadGame.test.tsから直接検証できるように分離)。 */
+export interface RestoredWorldSetters {
+  setRailMap: (v: Map<string, CellData>) => void;
+  setStations: (v: Map<string, StationData>) => void;
+  setTrains: (v: TrainData[]) => void;
+  setMoney: (v: number) => void;
+  setLoan: (v: number) => void;
+  setTowns: (v: TownData[]) => void;
+  setTownDensity: (v: TownDensity) => void;
+  setTerrainProfile: (v: TerrainProfile) => void;
+  setGameRules: (v: GameRules) => void;
+  setWorldSeed: (v: number) => void;
+  setHalfExtent: (v: number) => void;
+  setCornerDiffs: (v: CornerDiffs) => void;
+  setDebugFieldOverride: (v: TerrainField | null) => void;
+  setCurrentLedger: (v: MonthlyLedger) => void;
+  setLedgerHistory: (v: MonthlyLedger[]) => void;
+  setStopLocation: (v: 'near' | 'middle' | 'far') => void;
+  setGroups: (v: TrainGroupData[]) => void;
+}
+
+/**
+ * セーブ復元(RestoredWorld)をReact stateのsetter群へ反映する。loadGameから抽出した純粋な処理。
+ * worldRef側の同期(runtimes/waiting/clockなど)はここには含まない。
+ */
+export function applyRestoredWorldState(restored: RestoredWorld, setters: RestoredWorldSetters): void {
+  setters.setRailMap(restored.railMap);
+  setters.setStations(restored.stations);
+  setters.setTrains(restored.trains);
+  setters.setMoney(restored.money);
+  setters.setLoan(restored.loan);
+  setters.setTowns(restored.towns);
+  setters.setTownDensity(restored.townDensity);
+  setters.setTerrainProfile(restored.terrainProfile);
+  setters.setGameRules(restored.rules);
+  setters.setWorldSeed(restored.seed);
+  setters.setCornerDiffs(restored.cornerDiffs);
+  setters.setDebugFieldOverride(null);
+  setters.setCurrentLedger(restored.currentLedger);
+  setters.setLedgerHistory(restored.ledgerHistory);
+  setters.setStopLocation(restored.stopLocation);
+  setters.setGroups(restored.groups);
 }
 
 export const useGameLogic = () => {
@@ -689,22 +733,12 @@ export const useGameLogic = () => {
       return;
     }
 
-    setRailMap(restored.railMap);
-    setStations(restored.stations);
-    setTrains(restored.trains);
-    setMoney(restored.money);
-    setLoan(restored.loan);
-    setTowns(restored.towns);
-    setTownDensity(restored.townDensity);
-    setTerrainProfile(restored.terrainProfile);
-    setGameRules(restored.rules);
-    setWorldSeed(restored.seed);
-    setCornerDiffs(restored.cornerDiffs);
-    setDebugFieldOverride(null);
-    setCurrentLedger(restored.currentLedger);
-    setLedgerHistory(restored.ledgerHistory);
-    setStopLocation(restored.stopLocation);
-    setGroups(restored.groups);
+    applyRestoredWorldState(restored, {
+      setRailMap, setStations, setTrains, setMoney, setLoan, setTowns,
+      setTownDensity, setTerrainProfile, setGameRules, setWorldSeed, setHalfExtent,
+      setCornerDiffs, setDebugFieldOverride, setCurrentLedger, setLedgerHistory,
+      setStopLocation, setGroups,
+    });
 
     // runtimes/waiting は DynamicTrain/StationLabel が Map インスタンスを参照し続けているため、
     // 差し替えず中身だけ入れ替える。clockも同様にworldRef上のオブジェクトを直接更新する。
