@@ -118,6 +118,19 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
     expect(field.cornerHeightAt(-3, 0)).toBe(0);
   });
 
+  // progress/wgpu-corner-override-z-investigation.md: wgpuレンダラー側のバイト単位検証
+  // (ネイティブ・ブラウザ双方)により、|z|が大きい範囲でオーバーレイが反映されない
+  // という不具合は存在しないことが判明した。z=-4..4へ絞るfieldBoundsの回避策は
+  // 不要になったため、尾根自体をz依存の局所的な丘にして撤去する。
+  it('山岳トンネル: cornerHeightAtは|z|>4で0に落ちる局所的な丘になり、fieldBoundsは使わない', () => {
+    const world = scenario('mountain-tunnel').build();
+    const field = world.field!;
+    expect(field.cornerHeightAt(0, 0)).toBe(3);
+    expect(field.cornerHeightAt(0, 4)).toBe(3);
+    expect(field.cornerHeightAt(0, 10)).toBe(0);
+    expect(world.fieldBounds).toBeUndefined();
+  });
+
   it('単線行き違い: 信号3基と対向2列車を持つ', () => {
     const world = scenario('passing-loop').build();
     const signals = Array.from(world.railMap.values()).filter(c => c.signalDir !== undefined);
