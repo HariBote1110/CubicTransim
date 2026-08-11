@@ -20,6 +20,7 @@ import { bakeGeometries, type BakedMeshChunk } from '../render/bakedMesh';
 import { mergeAndDispose } from '../render/mergeGeometry';
 import { MESH_LAYER_CLASS } from '../render/webgpuLayer';
 import type { WebGpuTerrainLayerController } from '../render/webgpuLayer';
+import { previewMeshLayerClass } from '../render/viewMode';
 import type { WebGpuLayerRef } from './WebGpuTerrainLayer';
 
 /** 半透明ボックスの不透明度(classicの meshBasicMaterial opacity=0.45 と同じ)。 */
@@ -96,6 +97,10 @@ const buildBoxChunk = (cells: readonly PreviewGhostCell[]): BakedMeshChunk | nul
 const signatureOf = (cells: readonly PreviewGhostCell[]): string =>
   cells.map(c => `${c.x},${c.y.toFixed(3)},${c.z},${c.colour}`).join('|');
 
+/** セル群の最小y座標(空なら0)。地下(y<0)を含むかどうかの層クラス判定に使う。 */
+const minYOf = (cells: readonly PreviewGhostCell[]): number =>
+  cells.length === 0 ? 0 : Math.min(...cells.map(c => c.y));
+
 export const WebGpuBuildPreview: React.FC<Props> = ({ layerRef, cells, dragCell, gridCentre = null }) => {
   const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
   const lastPreviewSigRef = useRef<string>('');
@@ -114,20 +119,24 @@ export const WebGpuBuildPreview: React.FC<Props> = ({ layerRef, cells, dragCell,
       lastGridSigRef.current = '';
     }
 
-    const previewSig = signatureOf(cells);
+    // 地下(y<0)を含むプレビューは undergroundGhost で描く(地形に隠れないよう深度Always)。
+    // 建設レベル切替で層クラスが変わりうるので、署名にも含めて再アップロードを促す。
+    const previewLayerClass = previewMeshLayerClass(minYOf(cells));
+    const previewSig = `${signatureOf(cells)}#${previewLayerClass}`;
     if (controllerChanged || previewSig !== lastPreviewSigRef.current) {
       lastPreviewSigRef.current = previewSig;
       const chunk = buildBoxChunk(cells);
-      if (chunk) controller.uploadMeshChunk(PREVIEW_CHUNK_ID, MESH_LAYER_CLASS.translucent, chunk);
+      if (chunk) controller.uploadMeshChunk(PREVIEW_CHUNK_ID, previewLayerClass, chunk);
       else controller.removeMeshChunk(PREVIEW_CHUNK_ID);
     }
 
     const dragCells = dragCell ? [dragCell] : [];
-    const dragSig = signatureOf(dragCells);
+    const dragLayerClass = previewMeshLayerClass(minYOf(dragCells));
+    const dragSig = `${signatureOf(dragCells)}#${dragLayerClass}`;
     if (controllerChanged || dragSig !== lastDragSigRef.current) {
       lastDragSigRef.current = dragSig;
       const chunk = buildBoxChunk(dragCells);
-      if (chunk) controller.uploadMeshChunk(DRAG_CHUNK_ID, MESH_LAYER_CLASS.translucent, chunk);
+      if (chunk) controller.uploadMeshChunk(DRAG_CHUNK_ID, dragLayerClass, chunk);
       else controller.removeMeshChunk(DRAG_CHUNK_ID);
     }
 
