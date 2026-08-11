@@ -1,8 +1,70 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
-状態: **PM3 実装済み**（PM2の軌間・電化(modes)に加え、'boundaries'段階の交直流電化
-[dc/ac]・デッドセクション惰行・交流/交直流車の可否判定と購入・架線の交流色分けまで完了）。
-2026-08-11 の設計会話を基に作成、同日PM1着手。0.5.0-Alpha-7aでPM3完了。
+状態: **PM4 実装済み**（PM3の交直流電化(boundaries)に加え、'feeding'段階の
+変電所・き電区間・給電判定・容量超過ペナルティまで完了。リアリスティックモードの
+電化「全部盛り」計画は本PM4で最後の階層まで到達した）。
+2026-08-11 の設計会話を基に作成、同日PM1着手。0.5.0-Alpha-7aでPM3完了、
+0.5.0-Alpha-8aでPM4完了。
+
+## 実装メモ（PM4、0.5.0-Alpha-8a）
+
+- **設計判断: 変電所は車庫と同じくrailMapのセル1つとして持つ**（`CellType`に
+  `'substation'`を追加しただけ）。専用のMap/配列を新設しなかったため、
+  セーブスキーマの版上げ（当初の想定はv18）は不要だった——`railMap`は既存の
+  「Mapを丸ごとentries配列でシリアライズ」の仕組みにそのまま乗るため。
+  タスク定義時点の「おそらくv18」という見積りは、この設計判断（車庫パターンの
+  完全踏襲）によって実際には不要になった、という点をここに明記しておく。
+- `src/sim/feeding.ts`（新設）: `buildFeedingIndex(railMap, substations)`が
+  純粋関数として`FeedingIndex`（`isPowered`/`sectionLoadKey`/`sectionCapacity`）を
+  返す。き電区間（同一系統dc/acの電化railセルの連結成分、地平connectionsのみを
+  辿るBFS）ごとに、隣接する変電所からの多始点BFSで給電範囲
+  （`DC_FEED_RANGE_CELLS=48`/`AC_FEED_RANGE_CELLS=160`、変電所隣接セルを距離0とした
+  ホップ数）を判定する。セクション容量は接続する変電所数×`SUBSTATION_CAPACITY_TRAINS`
+  （=3）。**高架・地下（level!==0）は本PM4のスコープ外**とし、`isPowered`は常にtrue・
+  `sectionLoadKey`は常にnullを返す単純化にした（follow-up）。
+- `src/sim/construction.ts`: `applySubstation`を車庫の`applyDepot`と対称な形で実装。
+  平地・空セル・非町タイルであることに加え、8近傍（またはセル自身）に電化railが
+  あることを要求する。`SUBSTATION_COST=¥8,000`（`economy.ts`）。
+- `src/sim/pathfinding.ts`: `RouteQuery`に`feeding?: FeedingIndex`を追加。BFSの
+  隣接セル探索で`rules.electrification==='feeding' && trainPower!=='diesel' && feeding`
+  のときだけ`feeding.isPowered(tx,tz,nextLayer)`を追加チェックする。`gameRules.ts`
+  自体は無改造（純粋関数のまま、feeding索引は呼び出し側が渡す設計、design decision 3
+  どおり）。
+- `src/sim/physics.ts`: `computeAcceleration`に`tractionFactor=1`引数を追加。
+  牽引力（forceN）にのみ乗算し、ブレーキ・惰行（coasting）には影響しない
+  （design decision 4「traction only」）。
+- `src/sim/simulation.ts`: `SimWorld`へ`feeding?: FeedingIndex`を追加
+  （`rules`と同じくReact側が鏡写しする、セーブ対象外の派生キャッシュ）。
+  `stepWorld`が電車の在線数をtick開始時点で1パス先に数えて`feedingSectionCounts`
+  （`Map<sectionKey, count>`）を作り、`stepTrain`へ渡す。各列車の加速分岐で
+  自セクションの容量超過を判定し、超過時は`OVERLOAD_ACCEL_FACTOR=0.5`を
+  `tractionFactor`として渡す。気動車（`power==='diesel'`または未設定）は対象外。
+- `src/hooks/useGameLogic.ts`: `feedingIndex`を`useMemo(() => buildFeedingIndex(...), [railMap])`
+  で持つ（`townTileIndex`と同じ規律、railMap変化時のみ再計算）。substations一覧は
+  railMapを走査して`type==='substation'`のセルから毎回導出する。
+  `worldRef.current.feeding`へ`useEffect`で鏡写しする。
+- UI: `GameUI.tsx`に「変電所」ツールボタン（キー'0'、`rules.electrification==='feeding'`
+  のときのみ表示、改軌ツールと同じ表示条件の規約）を追加。`GameScene.tsx`は
+  変電所を駅・車庫・信号と同じ単一セル配置モードとして扱う。
+- 描画: `render/substationGeometry.ts`（新設）が変圧器の箱+碍子3本のシンプルな
+  メッシュを生成する（車庫と同じ「9メッシュ程度の固定形状」の方針）。
+  `WebGpuTrackExtras.tsx`・`meshChunkRegistry.ts`（`substation: 0x9000_0000`名前空間）・
+  `palette.ts`（`substationBody`/`substationTransformer`/`substationInsulator`）へ配線。
+  `railGeometry.ts`/`townTiles.ts`の`type==='depot'`判定に`'substation'`も加え、
+  線路描画の対象外・町タイルの占有判定を車庫と揃えた。
+- ブラウザ実機（リアリスティックモード、小マップ）で、変電所ツールボタンの表示・
+  電化DC線路の建設・変電所の設置（`window.__debugWorld.railMap`に
+  `{type:'substation'}`セルが載ることを確認）・`window.__debugWorld.feeding`が
+  設置した区間の全セルを`isPowered:true`として報告すること・変電所メッシュの
+  描画をスクリーンショットで確認した。ノーマルモードでは`改軌`ツールは出るが
+  `変電所`ツールは出ないことも確認した。`npm run test`（1056件、うち1件は
+  無関係な既存の性能タイミングテストの単発flakeで再実行後green）・
+  `npm run build`ともgreen。
+- **残るfollow-up**: 高架・地下のき電（本PM4は地平のみ、design decision通り
+  スコープ外として明示）、変電所の選択/検査UI（「コストがかかるならスキップ可」の
+  指示どおり未実装）、き電区間・給電範囲の可視化オーバーレイ（design decision 5で
+  明示的にスコープ外）。これでPM1〜PM4（電化の「全部盛り」計画）は完了し、
+  リアリスティックモード固有の目玉機能が出揃った。
 
 ## 実装メモ（PM3、0.5.0-Alpha-7a）
 
@@ -259,13 +321,13 @@ interface GameRules {
 
 ## 実装フェーズ（案）
 
-| フェーズ | 内容 | リスク |
-| :--- | :--- | :--- |
-| PM1 | `GameRules` 型・フラグ集合の骨組み、セーブ拡張、モード選択UI。**現行仕様＝ライトと定義するだけ**で挙動変更なし | 小 |
-| PM2 | 軌間 + 電化方式（modes）。建設時の方式選択、pathfinding/建設可否の静的述語（通れる/通れない） | 中 |
-| PM3 | 境界（boundaries）。デッドセクション、車両の対応電源、惰行通過 | 中 |
-| PM4 | き電（feeding）。変電所の建設物、き電区間の索引、容量超過ペナルティ | 大 |
-| PM5 | 信号方式の別軸選択（詳細は別メモで設計） | — |
+| フェーズ | 内容 | リスク | 状態 |
+| :--- | :--- | :--- | :--- |
+| PM1 | `GameRules` 型・フラグ集合の骨組み、セーブ拡張、モード選択UI。**現行仕様＝ライトと定義するだけ**で挙動変更なし | 小 | 完了 |
+| PM2 | 軌間 + 電化方式（modes）。建設時の方式選択、pathfinding/建設可否の静的述語（通れる/通れない） | 中 | 完了 |
+| PM3 | 境界（boundaries）。デッドセクション、車両の対応電源、惰行通過 | 中 | 完了 |
+| PM4 | き電（feeding）。変電所の建設物、き電区間の索引、容量超過ペナルティ | 大 | 完了 |
+| PM5 | 信号方式の別軸選択（詳細は別メモで設計） | — | 未着手 |
 
 - PM1 から着手する。挙動変更ゼロでモードの器だけ入るため、リスクが最小。
 - 1・2階層（modes/boundaries）は静的な可否判定（construction.ts / pathfinding.ts の述語追加）で済む。
