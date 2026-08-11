@@ -1,8 +1,8 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
 状態: **PM2 実装済み**（軌間・電化(modes)の静的可否判定、本番経路探索への配線、
-高架/地下への配線、Stage B改軌ツール、Stage C UIまで完了。残る follow-up は
-軌間・架線の描画差のみ）。2026-08-11 の設計会話を基に作成、同日PM1着手。
+高架/地下への配線、Stage B改軌ツール、Stage C UI、軌間・架線の描画差まで完了）。
+2026-08-11 の設計会話を基に作成、同日PM1着手。
 
 ## 実装メモ（PM2、2026-08-11）
 
@@ -70,7 +70,36 @@
   無改造)。ブラウザ実機(ノーマルモード)で軌間/電化UI・改軌ボタンの表示条件・
   トグル操作を確認済み。
 - **残る follow-up**: 軌間・架線の見た目の違い(描画差)のみ。元のタスク定義どおり
-  スコープ外として据え置く。
+  スコープ外として据え置く。→ 0.5.0-Alpha-6bで着手・完了(下記)。
+
+### 追記(PM2描画差、0.5.0-Alpha-6b)
+
+- **軌間の見た目**: `render/trackGeometry.ts`の`layTrackAlong`に`gauge?: RailGauge`引数を
+  追加し、`gaugeScaleFactor(gauge)`(=`gauge/DEFAULT_GAUGE`、gauge省略時は1)でレール間隔
+  (`RAIL_SPACING`)と枕木幅(`SLEEPER_WIDTH`)をスケールする。中心線(sim/trackPath.ts)は
+  一切変更していないので、列車の走行位置・当たり判定はずれない。`buildCellTrackParts`/
+  `buildGroundInclineTrackParts`/`buildRampTrackParts`にgauge引数を追加して橋渡しし、
+  `railGeometry.ts`の各呼び出し箇所へ`data.gauge`をそのまま渡す。無回帰要件(gauge省略時は
+  従来とbyte-identical)はスケール1.0のとき`定数 * 1 === 定数`(浮動小数点演算として等価)に
+  なる設計で満たし、`trackGeometry.test.ts`/`railGeometry.test.ts`にgauge省略時の
+  position配列一致テストを追加して確認した。ブラウザ実機(ノーマルモード、標準軌1435 vs
+  基本ラインナップの狭軌1067)で幅の違いを目視確認済み(762は`rules.extendedGauges`が
+  必要なためリアリスティックのみ)。
+- **架線(catenary)**: `trackGeometry.ts`に`buildCatenaryParts(connections, x, z, originY)`
+  を新設。ポール(マスト+腕木、シンプルな箱ジオメトリ)は`shouldPlacePier`と同じ「軸方向の
+  セル整数インデックスの剰余」方式で3セルおきに間引き(`CATENARY_POLE_SPACING=3`)、電線
+  (細い箱)は間引かず中心線に沿って全セルへ敷く。`railGeometry.ts`は地平の平坦区間
+  (`flatConnections`)と高架(uppers level>0)の`data.electrified`セルだけを対象にした
+  (坂・傾斜は対象外、スコープを絞ってジオメトリの増加を抑える判断)。**地下は呼ばない**
+  (第三軌条の見た目は未実装、地下ビューでの表現は今後の課題として残す)。色は
+  `palette.ts`に`catenaryMast`/`catenaryWire`を追加。`WebGpuTrackNetwork.tsx`の
+  surfaceチャンクへ`geometry.catenary.masts`/`.wires`を追加しただけで、
+  `buildChunk`のuseCallback依存配列(`[geometry]`)はそのまま(geometryオブジェクト自体が
+  railMap変化のたびに再計算されるため、既存の変更検知の仕組みに乗る)。
+- ブラウザ実機(ノーマルモード)で、標準軌+電化のセルにポール・電線が、狭軌+非電化の
+  隣接セルには何も出ないことを確認。ライトモードの新規ゲームでは軌間・電化のUIごと
+  出現せず、線路の見た目も従来どおり(架線・幅変化なし)であることも確認した。
+  `npm run test`(1023件)・`npm run build`ともgreen。
 
 ## 実装メモ（PM1、2026-08-11）
 
