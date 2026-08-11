@@ -21,6 +21,7 @@ import {
 import { railRenderHeight } from '../sim/slopes';
 import { ALL_LEVELS } from '../sim/construction';
 import { undergroundBucketOf, type UndergroundBucket } from './viewMode';
+import { electrificationOf } from '../sim/gameRules';
 
 // 高架のレベル1〜MAX_ELEVATED_LEVELを走査するための配列([1,2,3])。
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
@@ -59,8 +60,10 @@ export interface RailNetworkGeometry {
   undergroundGhost: MergedTrackParts;
   /** 通常表示のみ: 掘割ランプの地表開口(暗い穴+擁壁)。 */
   openings: THREE.BufferGeometry | null;
-  /** electrified区間の架線(地平・高架のみ。地下は対象外)。 */
+  /** electrified区間の架線(地平・高架のみ。地下は対象外)。直流(またはlegacy true)区間。 */
   catenary: { masts: THREE.BufferGeometry | null; wires: THREE.BufferGeometry | null };
+  /** PM3: 交流電化区間の架線(色調のみdcと異なる。palette.tsのcatenaryMastAc/catenaryWireAc)。 */
+  catenaryAc: { masts: THREE.BufferGeometry | null; wires: THREE.BufferGeometry | null };
 }
 
 /**
@@ -90,6 +93,7 @@ export function buildRailNetworkGeometry(
   const undergroundGhost: TrackParts = emptyTrackParts();
   const openings: THREE.BufferGeometry[] = [];
   const catenary: CatenaryParts = { masts: [], wires: [] };
+  const catenaryAc: CatenaryParts = { masts: [], wires: [] };
 
   const bucketOf = (bucket: UndergroundBucket): TrackParts =>
     bucket === 'bright' ? undergroundBright : bucket === 'dim' ? undergroundDim : undergroundGhost;
@@ -127,8 +131,9 @@ export function buildRailNetworkGeometry(
       // ジオメトリの増加を抑える判断。progress/play-modes-plan.md参照)。
       if (data.electrified && flatConnections !== 0) {
         const cat = buildCatenaryParts(flatConnections, x, z, renderHeight.y);
-        catenary.masts.push(...cat.masts);
-        catenary.wires.push(...cat.wires);
+        const bucket = electrificationOf(data) === 'ac' ? catenaryAc : catenary;
+        bucket.masts.push(...cat.masts);
+        bucket.wires.push(...cat.wires);
       }
     }
 
@@ -192,8 +197,9 @@ export function buildRailNetworkGeometry(
 
         if (data.electrified) {
           const cat = buildCatenaryParts(upperConnections, x, z, originY);
-          catenary.masts.push(...cat.masts);
-          catenary.wires.push(...cat.wires);
+          const bucket = electrificationOf(data) === 'ac' ? catenaryAc : catenary;
+          bucket.masts.push(...cat.masts);
+          bucket.wires.push(...cat.wires);
         }
       } else {
         const upperParts = buildCellTrackParts(upperConnections, x, z, originY, false);
@@ -249,6 +255,10 @@ export function buildRailNetworkGeometry(
     catenary: {
       masts: mergeParts(catenary.masts),
       wires: mergeParts(catenary.wires),
+    },
+    catenaryAc: {
+      masts: mergeParts(catenaryAc.masts),
+      wires: mergeParts(catenaryAc.wires),
     },
   };
 }

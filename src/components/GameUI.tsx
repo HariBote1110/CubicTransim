@@ -27,7 +27,7 @@ import type { EditedTerrainField } from '../sim/terrainOverlay';
 import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
-import { REGAUGE_COST_PER_CELL } from '../sim/economy';
+import { REGAUGE_COST_PER_CELL, trainCostFor } from '../sim/economy';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -515,11 +515,11 @@ export const GameUI: React.FC<GameUIProps> = ({
                 </button>
               ))}
             </div>
-            {gameRules.electrification !== 'none' && (
+            {gameRules.electrification !== 'none' && gameRules.electrification === 'modes' && (
               <>
                 <div style={{ width: 1, alignSelf: 'stretch', background: T.line, margin: '2px 0' }} />
                 <button
-                  onClick={() => setRailOptions({ ...railOptions, electrified: !railOptions.electrified })}
+                  onClick={() => setRailOptions({ ...railOptions, electrified: railOptions.electrified ? undefined : 'dc' })}
                   style={button({ active: !!railOptions.electrified, accent: T.station, compact: true })}
                   title={`架線設備費 +¥${RAIL_COST * 0.5}/マス`}
                 >
@@ -527,10 +527,36 @@ export const GameUI: React.FC<GameUIProps> = ({
                 </button>
               </>
             )}
+            {/* PM3: boundaries以上は直流/交流を区別する三択(非電化/直流/交流)。 */}
+            {gameRules.electrification !== 'none' && gameRules.electrification !== 'modes' && (
+              <>
+                <div style={{ width: 1, alignSelf: 'stretch', background: T.line, margin: '2px 0' }} />
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {([
+                    [undefined, '非電化'],
+                    ['dc', '直流'],
+                    ['ac', '交流'],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={label}
+                      onClick={() => setRailOptions({ ...railOptions, electrified: value })}
+                      style={button({
+                        active: value === undefined ? !railOptions.electrified : railOptions.electrified === value,
+                        accent: T.station, compact: true,
+                      })}
+                      title={value ? `架線設備費 +¥${RAIL_COST * 0.5}/マス` : undefined}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
-        {/* PM2: 車庫ツールでの列車購入時の動力方式選択(rules.electrification!=='none'のみ)。
+        {/* PM2/PM3: 車庫ツールでの列車購入時の動力方式選択(rules.electrification!=='none'のみ)。
+            交流/交直流はrules.electrificationが'boundaries'以上のときのみ選べる(design decision 2)。
             軌間は車庫セルの軌間を自動継承する(useGameLogic.tsのbuyTrain)ため選択させない。 */}
         {buildMode === 'depot' && gameRules.electrification !== 'none' && (
           <div style={panel({
@@ -538,11 +564,16 @@ export const GameUI: React.FC<GameUIProps> = ({
           })}>
             <span style={{ color: T.textMuted }}>購入する動力</span>
             <div style={{ display: 'flex', gap: 4 }}>
-              {([['electric', '電車'], ['diesel', '気動車']] as const).map(([value, label]) => (
+              {([
+                ['electric', '電車'],
+                ...(gameRules.electrification !== 'modes' ? [['electric-ac', '交流電車'], ['electric-acdc', '交直流電車']] as const : []),
+                ['diesel', '気動車'],
+              ] as const).map(([value, label]) => (
                 <button
                   key={value}
                   onClick={() => setPurchasePower(value)}
                   style={button({ active: purchasePower === value, accent: T.depot, compact: true })}
+                  title={`¥${trainCostFor(value).toLocaleString()}`}
                 >
                   {label}
                 </button>

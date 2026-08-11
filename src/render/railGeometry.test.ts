@@ -58,6 +58,25 @@ describe('buildRailNetworkGeometry: electrified区間の架線', () => {
     expect(geo.catenary.wires).toBeNull();
     expect(geo.catenary.masts).toBeNull();
   });
+
+  it('PM3: electrified:"ac"のセルはcatenaryAcバケットへ、"dc"はcatenaryバケットへ振り分ける', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, electrified: 'dc' }],
+      [toKey(1, 0), { type: 'rail', connections: DIR.N | DIR.S, electrified: 'ac' }],
+    ]);
+    const geo = buildRailNetworkGeometry(railMap, field, false, 0);
+    expect(geo.catenary.wires).not.toBeNull();
+    expect(geo.catenaryAc.wires).not.toBeNull();
+  });
+
+  it('PM3: 全セルdcならcatenaryAcは空のまま', () => {
+    const railMap = new Map<string, CellData>([
+      [toKey(0, 0), { type: 'rail', connections: DIR.N | DIR.S, electrified: 'dc' }],
+    ]);
+    const geo = buildRailNetworkGeometry(railMap, field, false, 0);
+    expect(geo.catenaryAc.wires).toBeNull();
+    expect(geo.catenaryAc.masts).toBeNull();
+  });
 });
 
 describe('buildRailNetworkGeometry: 高架桁(uppers)', () => {

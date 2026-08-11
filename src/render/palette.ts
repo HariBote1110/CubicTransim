@@ -36,6 +36,10 @@ export const PALETTE = {
   // --- 架線(electrified区間、PM2 follow-up) ---
   catenaryMast: '#4a4d52',
   catenaryWire: '#2e3033',
+  // PM3: 交流区間はわずかに青みがかった色調にして、直流(上記グレー)との境界が
+  // 目視で分かるようにする(design decision 5、デッドセクション自体の専用表現はスコープ外)。
+  catenaryMastAc: '#454b5a',
+  catenaryWireAc: '#28303e',
 
   // --- 駅 ---
   platform: '#d8d5cd',

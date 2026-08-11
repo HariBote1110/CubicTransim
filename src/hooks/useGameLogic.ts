@@ -14,7 +14,7 @@ import {
   STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
-  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
+  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge, trainCostFor,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
@@ -399,7 +399,10 @@ export const useGameLogic = () => {
   // PM2: powerは購入UIから選ぶ(省略時=気動車)。軌間は車庫セルの軌間を自動で継承する
   // (rules.gaugeが有効な場合のみ。無効時はgauge概念が無いためundefinedのまま=旧来どおり)。
   const buyTrain = (x: number, z: number, power: TrainPower = 'diesel') => {
-    if (money < TRAIN_COST) return;
+    // PM3: 交流/交直流車は価格が異なる(economy.tsのtrainCostFor)。
+    // rules.electrification==='none'ならpower自体を持たせないので常にdiesel価格になる。
+    const cost = gameRules.electrification !== 'none' ? trainCostFor(power) : TRAIN_COST;
+    if (money < cost) return;
     const depotCell = worldRef.current.railMap.get(toKey(x, z));
     const newTrain: TrainData = {
         id: Math.random().toString(36).substr(0, 4),
@@ -412,8 +415,8 @@ export const useGameLogic = () => {
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);
     setIsEditingSchedule(false);
-    setMoney(m => m - TRAIN_COST);
-    setCurrentLedger(l => ({ ...l, construction: l.construction + TRAIN_COST }));
+    setMoney(m => m - cost);
+    setCurrentLedger(l => ({ ...l, construction: l.construction + cost }));
   };
 
   // ★追加: 増結(車庫在籍中の列車のみ想定。running中はGameUI側でボタンを非表示にする)。
