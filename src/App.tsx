@@ -9,7 +9,7 @@ import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
 import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, type PlayMode, type Signalling } from './sim/gameRules';
 import type { RailBuildOptions } from './sim/construction';
-import type { RailGauge, TrainPower, SignalKind } from './types';
+import type { RailGauge, TrainPower, SignalKind, TrainProtection } from './types';
 import { T, button as themeButton } from './ui/theme';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
 import type { WebGpuTerrainLayerController, WebGpuUnavailableReason } from './render/webgpuLayer';
@@ -59,11 +59,11 @@ const PLAY_MODE_OPTIONS: { label: string; value: PlayMode; hint: string }[] = (
 ).map(mode => ({ label: PLAY_MODE_LABELS[mode], value: mode, hint: PLAY_MODE_HINTS[mode] }));
 
 // 信号方式の選択肢(progress/signalling-plan.md)。プレイモードとは独立した別軸。
-// S3は未実装のためここには出さない(選んでもS0/S1/S2だけがUIから触れる)。
 const SIGNALLING_OPTIONS: { label: string; value: Signalling; hint: string }[] = [
   { label: 'おまかせ', value: 's0', hint: '信号機の設置は不要。移動閉塞で自動的に間隔が詰まる(既定)' },
   { label: '固定閉塞', value: 's1', hint: '信号機で区切った区間だけが閉塞になる。単線行き違いを自分で設計する' },
   { label: '信号種別', value: 's2', hint: '信号に場内・出発・閉塞の役割がつく。駅構内配線の設計が意味を持つ' },
+  { label: '保安装置', value: 's3', hint: 'ATS-S/ATS-P/ATC/CBTCを敷設する。上位装置ほど信号冒進を確実に防げる。CBTCは移動閉塞を投資で取り戻す' },
 ];
 
 /**
@@ -143,6 +143,7 @@ export default function App() {
   // S2: 信号ツールで置く信号の種別選択。rules.signalling!=='s2'の間はUIから触れられない。
   const [signalKind, setSignalKind] = useState<SignalKind>('block');
   const [purchasePower, setPurchasePower] = useState<TrainPower>('diesel');
+  const [purchaseProtection, setPurchaseProtection] = useState<TrainProtection | undefined>(undefined);
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
@@ -273,7 +274,7 @@ export default function App() {
           if (event.type === 'townGrowth') handleTownGrowth(event);
         }}
         onSelectTrain={setSelectedTrainId}
-        onBuyTrain={(x, z) => buyTrain(x, z, purchasePower)}
+        onBuyTrain={(x, z) => buyTrain(x, z, purchasePower, purchaseProtection)}
         onAddSchedule={addSchedule}
         onSelectStation={selectStation}
         onPreviewChange={handlePreviewChange}
@@ -334,6 +335,8 @@ export default function App() {
         regaugeTargetGauge={regaugeTargetGauge}
         setRegaugeTargetGauge={setRegaugeTargetGauge}
         purchasePower={purchasePower}
+        purchaseProtection={purchaseProtection}
+        setPurchaseProtection={setPurchaseProtection}
         setPurchasePower={setPurchasePower}
         signalKind={signalKind}
         setSignalKind={setSignalKind}
@@ -417,7 +420,7 @@ export default function App() {
                   {PLAY_MODE_OPTIONS.find(opt => opt.value === selectedPlayMode)?.hint}
                 </p>
                 <p style={{ color: '#b9c3cc', lineHeight: 1.55, marginTop: 0 }}>信号方式</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: T.gap, marginBottom: 4 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: T.gap, marginBottom: 4 }}>
                   {SIGNALLING_OPTIONS.map(opt => (
                     <button
                       key={opt.value}

@@ -1,5 +1,5 @@
 import { toKey } from '../utils';
-import type { CellData, StationData, TrainData, TrainGroupData, TownData, Level } from '../types';
+import type { CellData, StationData, TrainData, TrainGroupData, TownData, Level, TrainProtection } from '../types';
 import type { TerrainField } from './terrainField';
 import {
   buildServiceGraph,
@@ -44,6 +44,8 @@ import {
   monthIndexOf,
   yearMonthOfIndex,
   dayIndexOf,
+  SPAD_CHANCE,
+  weakerProtection,
 } from './economy';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
@@ -180,6 +182,11 @@ export interface TrainRuntime {
   // 失速から救援されたあと、先頭がデッドセクションを完全に抜けるまで牽引力を持たせる
   // (「全力で抜けきるまで」のフラグ)。区間を抜けるとstepTrainがfalseへ戻す。
   stallRecovered?: boolean;
+  // S3(保安装置)のSPAD(信号冒進)判定ラッチ。閉塞境界での待機に入った信号セルの
+  // キー(toKey)を記録し、同じ信号への「進入待ち」の間は再判定しない(1approachにつき
+  // 1回)。待機が解消(予約成功)したらundefinedへ戻し、次に別の信号で待ったときに
+  // また判定できるようにする。セーブ対象外(他の走行状態フィールドと同様)。
+  spadCheckedFor?: string;
 }
 
 /** 車内の旅客の塊。alightAtで降りて、そこが目的地でなければ乗り換える。 */
@@ -295,7 +302,10 @@ const cohortsAt = (world: SimWorld, stationId: string): PassengerCohort[] => {
 export type SimEvent =
   | { type: 'arrive'; trainId: string; scheduleIndex: number }
   | { type: 'income'; trainId: string; amount: number; passengers: number }
-  | { type: 'accident'; trainId: string; stationId: string; penalty: number }
+  // kind='spad'はS3の信号冒進(progress/signalling-plan.md)。省略時(=undefined)は
+  // 従来どおりの駅の人身事故。stationIdはspadでは駅ではなく信号の位置ラベルを入れる
+  // (AccidentNotice表示のフォールバック=stations.get(id)が無ければそのまま文字列表示)。
+  | { type: 'accident'; trainId: string; stationId: string; penalty: number; kind?: 'spad' }
   // PM3フォローアップ: デッドセクション失速からの救援(1回だけ課金)。
   | { type: 'stallRescue'; trainId: string; penalty: number }
   | { type: 'monthEnd'; year: number; month: number }
@@ -414,30 +424,40 @@ const entrySignalKindFor = (
   return cell.signalKind ?? 'block';
 };
 
+// S3のCBTC移動閉塞(Effect B)判定用: segmentの全セルが保安装置'cbtc'を敷設済みか。
+// 1セルでも欠ければfalse(=固定閉塞の判定へフォールバック)。
+const segmentAllCbtc = (world: SimWorld, segment: Grid[]): boolean =>
+  segment.every(p => world.railMap.get(toKey(p.x, p.z))?.protection === 'cbtc');
+
 // PBS予約の取得・延長。route[0..reservedEndIndex]が予約済み区間になる。
 // - reservedEndIndexが-1(未取得)なら、次のsafe waiting pointまでの区間取得を試みる
 // - 取得済みで、予約末端までの残り距離が制動距離+マージン以内に近づいたら、
 //   さらに次のsafe waiting pointまでの延長を試みる(失敗時は現状維持=末端で待機)
 // S1(固定閉塞)のとき、segmentが他列車の占有する未占有でないブロックへ踏み込むなら
-// trueを返す(=このセグメントは予約してはいけない)。rules.signalling!=='s1'/'s2'、または
+// trueを返す(=このセグメントは予約してはいけない)。rules.signalling!=='s1'/'s2'/'s3'、または
 // ブロック索引が無ければ常にfalse(=S0と同じ、制約なし)。
 // S2(信号の種別)ではS1と同じブロック全体判定を使うが、entryKind==='home'(場内信号を
 // くぐって入る)のときだけ例外にする: ホーム越しに入るブロックはトラック単位(=セル単位)の
 // 排他で足りるとみなし、ブロック全体の占有チェックを外す。実際のセル排他はtryReserveが
 // 別途保証するため、「自分のセグメントのセルが他列車のセルと重ならない限り入線できる」
 // という per-track occupancy がそのまま実現できる(複数ホームを持つ駅構内の同時進入)。
+// S3(保安装置)はS2の判定をそのまま含んだ上で(「S3はS2挙動を包含する」設計どおり)、
+// Effect B(CBTC移動閉塞)を追加する: segmentの全セルとtrainProtectionがともに'cbtc'なら
+// ブロック全体判定を丸ごとバイパスしてfalse(=S0と同じ、セル単位の排他のみ)を返す。
 const blocksSegmentEntry = (
   world: SimWorld,
   rules: GameRules,
   trainId: string,
   segment: Grid[],
-  entryKind?: CellData['signalKind']
+  entryKind?: CellData['signalKind'],
+  trainProtection?: TrainProtection
 ): boolean => {
   if (!world.blocks) return false;
   if (rules.signalling === 's1') {
     return blocksOccupiedByOthers(world.reservations, world.blocks, segment, trainId);
   }
-  if (rules.signalling === 's2') {
+  if (rules.signalling === 's2' || rules.signalling === 's3') {
+    if (rules.signalling === 's3' && trainProtection === 'cbtc' && segmentAllCbtc(world, segment)) return false;
     if (entryKind === 'home') return false;
     return blocksOccupiedByOthers(world.reservations, world.blocks, segment, trainId);
   }
@@ -451,7 +471,48 @@ const blocksSegmentEntry = (
 // S1(固定閉塞)では、セグメントが跨ぐブロックが他列車に占有されている場合、
 // tryReserve自体は成功しうる(セル単位の排他はS0と同じ)としても、ここで先に弾いて
 // 予約を取らせない。これにより「信号(=ブロック境界)の手前で待つ」挙動になる。
-const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime, rules: GameRules) => {
+// S3: 停止信号への進入待ちに入った瞬間(=このtickで初めてblocksSegmentEntryがtrueに
+// なった信号)にだけ、SPAD(信号冒進)を1回判定する。rt.spadCheckedForで同じ信号への
+// 待機中の再判定を防ぐ(1approachにつき1回のラッチ)。有効な保安装置は地上(track)と
+// 車上(train)の弱い方(weakerProtection)。信号セルが無い(entryKindがundefined、
+// =閉塞境界ではあるが信号を経由しない安全点由来)場合は判定しない。
+const evaluateSpadOnce = (
+  world: SimWorld,
+  rules: GameRules,
+  train: TrainData,
+  rt: TrainRuntime,
+  signalGrid: Grid | undefined,
+  entryKind: CellData['signalKind'] | undefined,
+  events: SimEvent[]
+): void => {
+  if (rules.signalling !== 's3') return;
+  if (!signalGrid || entryKind === undefined) return;
+  const signalKey = toKey(signalGrid.x, signalGrid.z);
+  if (rt.spadCheckedFor === signalKey) return; // 同じ信号への待機中はこのapproachで判定済み
+  rt.spadCheckedFor = signalKey;
+
+  const trackProtection = world.railMap.get(signalKey)?.protection;
+  const effective = weakerProtection(trackProtection, train.protection);
+  const chance = SPAD_CHANCE[effective];
+  if (world.rng() < chance) {
+    rt.haltRemaining = ACCIDENT_HALT_DURATION;
+    events.push({
+      type: 'accident',
+      trainId: train.id,
+      stationId: `信号 (${signalGrid.x}, ${signalGrid.z})`,
+      penalty: ACCIDENT_PENALTY,
+      kind: 'spad',
+    });
+  }
+};
+
+const ensureReservation = (
+  world: SimWorld,
+  train: TrainData,
+  rt: TrainRuntime,
+  rules: GameRules,
+  events: SimEvent[]
+) => {
   if (rt.route.length === 0) return;
   if (!world.reservations) world.reservations = new Map();
 
@@ -465,10 +526,12 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime, 
       : findSafeSegmentEnd(world.railMap, rt.route, 0);
     const segment = rt.route.slice(0, idx + 1);
     const entryKind = entrySignalKindFor(world, rt, 0);
-    if (blocksSegmentEntry(world, rules, train.id, segment, entryKind)) {
+    if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection)) {
       rt.debugStatus = 'Waiting for block to clear...';
+      evaluateSpadOnce(world, rules, train, rt, rt.route[0], entryKind, events);
       return;
     }
+    rt.spadCheckedFor = undefined;
     if (tryReserve(world.reservations, train.id, segment)) {
       rt.reservedEndIndex = idx;
     } else if (inDepot) {
@@ -492,7 +555,11 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime, 
   const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, rt.reservedEndIndex + 1);
   const segment = rt.route.slice(rt.reservedEndIndex + 1, nextIdx + 1);
   const entryKind = entrySignalKindFor(world, rt, rt.reservedEndIndex + 1);
-  if (blocksSegmentEntry(world, rules, train.id, segment, entryKind)) return; // ブロックが空くまで現在の末端で待機
+  if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection)) {
+    evaluateSpadOnce(world, rules, train, rt, rt.route[rt.reservedEndIndex + 1], entryKind, events);
+    return; // ブロックが空くまで現在の末端で待機
+  }
+  rt.spadCheckedFor = undefined;
   if (tryReserve(world.reservations, train.id, segment)) {
     rt.reservedEndIndex = nextIdx;
   }
@@ -891,7 +958,7 @@ const stepTrain = (
   // PBS予約の取得・延長を試みる(取得済み区間の末端が制動距離+マージン以内に
   // 近づいたら、次のsafe waiting pointまでの延長を試みる)。
   // PM2: rules省略時(旧セーブ・デバッグシナリオ)はDEFAULT_GAME_RULES(ライト相当)に短絡する。
-  ensureReservation(world, train, rt, world.rules ?? DEFAULT_GAME_RULES);
+  ensureReservation(world, train, rt, world.rules ?? DEFAULT_GAME_RULES, events);
 
   if (rt.reservedEndIndex < 0) {
     // 次のsafe waiting pointまでの区間がまだ1つも予約できていない

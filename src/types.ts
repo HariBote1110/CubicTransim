@@ -39,6 +39,13 @@ export type TerrainType = 'water' | 'mountain';
 /** S2(信号の種別)における信号の役割。'block'=閉塞信号(既定・従来どおり)。 */
 export type SignalKind = 'block' | 'home' | 'departure';
 
+/**
+ * S3(保安装置、progress/signalling-plan.md)。未設定(undefined)は無防備を意味する。
+ * ATS-Sは警報のみ(確認扱いで通過できる=冒進を完全には防げない)、ATS-P/ATCは
+ * パターン照査で自動ブレーキ、CBTCは無線移動閉塞(S0と同じ挙動を投資で勝ち取る)。
+ */
+export type TrainProtection = 'ats-s' | 'ats-p' | 'atc' | 'cbtc';
+
 export interface CellData {
   type: CellType;
   connections?: number;
@@ -112,6 +119,12 @@ export interface CellData {
    * ときのみUIから書き込まれる。
    */
   electrified?: 'dc' | 'ac' | boolean;
+  /**
+   * S3(保安装置)。このセルに敷設された地上設備。信号セル(signalDir)と同じセルに
+   * 乗る想定(場内・出発などの信号機に保安装置が付帯する、という現実の対応関係)。
+   * 未設定=無防備。sim/simulation.tsのSPAD判定・CBTC移動閉塞判定が参照する。
+   */
+  protection?: TrainProtection;
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
@@ -157,6 +170,8 @@ export interface TrainData {
   gauge?: RailGauge;
   /** 動力方式(PM2)。省略時は気動車扱い(どこでも走行可)。 */
   power?: TrainPower;
+  /** S3(保安装置)。車上装置。未設定=無防備。sim/gameRules.ts参照。 */
+  protection?: TrainProtection;
 }
 
 /**

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower, SignalKind } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower, SignalKind, TrainProtection } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND, SUBSTATION_COST,
@@ -27,7 +27,7 @@ import type { EditedTerrainField } from '../sim/terrainOverlay';
 import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
-import { REGAUGE_COST_PER_CELL, trainCostFor } from '../sim/economy';
+import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST } from '../sim/economy';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -52,6 +52,15 @@ const SIGNAL_KIND_OPTIONS: { value: SignalKind; label: string; hint: string }[] 
   { value: 'block', label: '閉塞', hint: 'ブロック全体の占有で他列車の進入を止める(既定)' },
   { value: 'home', label: '場内', hint: '同じブロック内でも、自分の経路セルが他列車と重ならなければ進入できる(駅構内向け)' },
   { value: 'departure', label: '出発', hint: '停車中はこの先を予約しない。発車後は先のブロックが空くまで待つ' },
+];
+
+// S3: 保安装置の選択肢(progress/signalling-plan.md)。
+const PROTECTION_OPTIONS: { value: TrainProtection | undefined; label: string; hint: string }[] = [
+  { value: undefined, label: 'なし', hint: '無防備。信号冒進(SPAD)の確率が最も高い' },
+  { value: 'ats-s', label: 'ATS-S', hint: `警報のみ(確認で通過できる)。地上設備 +¥${PROTECTION_COST['ats-s']}/マス` },
+  { value: 'ats-p', label: 'ATS-P', hint: `パターン照査で自動ブレーキ。地上設備 +¥${PROTECTION_COST['ats-p']}/マス` },
+  { value: 'atc', label: 'ATC', hint: `車内信号・段階速度制御。地上設備 +¥${PROTECTION_COST.atc}/マス` },
+  { value: 'cbtc', label: 'CBTC', hint: `無線移動閉塞。地上設備 +¥${PROTECTION_COST.cbtc}/マス。車上装置も揃えば移動閉塞になる` },
 ];
 
 interface GameUIProps {
@@ -123,6 +132,9 @@ interface GameUIProps {
   // S2: 信号(signal)ツール専用の種別選択。rules.signalling==='s2'のときだけUIに出す。
   signalKind: SignalKind;
   setSignalKind: (kind: SignalKind) => void;
+  // S3: 車庫(depot)ツールで列車を購入するときの保安装置選択。rules.signalling==='s3'のみ。
+  purchaseProtection: TrainProtection | undefined;
+  setPurchaseProtection: (protection: TrainProtection | undefined) => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -184,6 +196,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   onClearGroupSchedule, onDeleteGroup,
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
   purchasePower, setPurchasePower, signalKind, setSignalKind,
+  purchaseProtection, setPurchaseProtection,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
@@ -473,7 +486,9 @@ export const GameUI: React.FC<GameUIProps> = ({
               background: 'rgba(153, 27, 27, 0.92)', border: '1px solid rgba(255,255,255,0.22)',
               padding: '8px 14px', fontSize: 12.5, fontWeight: 700, color: '#fff',
             })}>
-              ⚠ {stations.get(a.stationId)?.name ?? a.stationId} で人身事故 — 運転見合わせ中
+              {a.kind === 'spad'
+                ? `⚠ ${a.stationId} で信号冒進(SPAD) — 運転見合わせ中`
+                : `⚠ ${stations.get(a.stationId)?.name ?? a.stationId} で人身事故 — 運転見合わせ中`}
             </div>
           ))}
         </div>
@@ -591,6 +606,27 @@ export const GameUI: React.FC<GameUIProps> = ({
           </div>
         )}
 
+        {/* S3: 保安装置の選択(線路ツール、rules.signalling==='s3'のときのみ)。 */}
+        {buildMode === 'rail' && gameRules.signalling === 's3' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>保安装置</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {PROTECTION_OPTIONS.map(opt => (
+                <button
+                  key={opt.label}
+                  onClick={() => setRailOptions({ ...railOptions, protection: opt.value })}
+                  style={button({ active: railOptions.protection === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* PM2/PM3: 車庫ツールでの列車購入時の動力方式選択(rules.electrification!=='none'のみ)。
             交流/交直流はrules.electrificationが'boundaries'以上のときのみ選べる(design decision 2)。
             軌間は車庫セルの軌間を自動継承する(useGameLogic.tsのbuyTrain)ため選択させない。 */}
@@ -609,9 +645,30 @@ export const GameUI: React.FC<GameUIProps> = ({
                   key={value}
                   onClick={() => setPurchasePower(value)}
                   style={button({ active: purchasePower === value, accent: T.depot, compact: true })}
-                  title={`¥${trainCostFor(value).toLocaleString()}`}
+                  title={`¥${trainCostForProtected(value, gameRules.signalling === 's3' ? purchaseProtection : undefined).toLocaleString()}`}
                 >
                   {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* S3: 車庫ツールでの列車購入時の保安装置選択(rules.signalling==='s3'のときのみ)。 */}
+        {buildMode === 'depot' && gameRules.signalling === 's3' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>保安装置</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {PROTECTION_OPTIONS.map(opt => (
+                <button
+                  key={opt.label}
+                  onClick={() => setPurchaseProtection(opt.value)}
+                  style={button({ active: purchaseProtection === opt.value, accent: T.depot, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
                 </button>
               ))}
             </div>

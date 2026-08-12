@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
@@ -11,10 +11,11 @@ import {
 } from '../sim/construction';
 import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel, UndergroundLevel, RailBuildOptions } from '../sim/construction';
 import {
-  STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
+  STARTING_MONEY, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
-  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge, trainCostFor,
+  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
+  trainCostForProtected, costOfProtection,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
@@ -51,6 +52,8 @@ const ACCIDENT_POLL_INTERVAL_MS = 500;
 export interface AccidentNotice {
   trainId: string;
   stationId: string;
+  /** S3の信号冒進(SPAD)通知か。省略時は従来どおりの駅の人身事故。 */
+  kind?: 'spad';
 }
 
 export const useGameLogic = () => {
@@ -347,6 +350,7 @@ export const useGameLogic = () => {
             ? costOfGroundPathWithRamps(path, field, groundRampFlags)
             : costOfPath('rail', path.length, path, field);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyRailPath(state, path, field, townTileIndex, railOptions);
         } else if (level > 0) {
@@ -361,6 +365,7 @@ export const useGameLogic = () => {
           const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
           cost = costOfElevatedPath(rampCount, overpassCount);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTileIndex, railOptions);
         } else {
@@ -370,6 +375,7 @@ export const useGameLogic = () => {
           const undergroundLevel = level as UndergroundLevel;
           cost = costOfUndergroundPath(path.length);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyUndergroundPath(state, path, field, undergroundLevel, undefined, railOptions);
         }
@@ -438,10 +444,12 @@ export const useGameLogic = () => {
 
   // PM2: powerは購入UIから選ぶ(省略時=気動車)。軌間は車庫セルの軌間を自動で継承する
   // (rules.gaugeが有効な場合のみ。無効時はgauge概念が無いためundefinedのまま=旧来どおり)。
-  const buyTrain = (x: number, z: number, power: TrainPower = 'diesel') => {
+  const buyTrain = (x: number, z: number, power: TrainPower = 'diesel', protection?: TrainProtection) => {
     // PM3: 交流/交直流車は価格が異なる(economy.tsのtrainCostFor)。
     // rules.electrification==='none'ならpower自体を持たせないので常にdiesel価格になる。
-    const cost = gameRules.electrification !== 'none' ? trainCostFor(power) : TRAIN_COST;
+    // S3: 保安装置の車上装置分の倍率(trainCostForProtected)をさらに乗算合成する。
+    // rules.signalling!=='s3'ならprotection自体を渡さないUIになるので常に基準額のまま。
+    const cost = trainCostForProtected(gameRules.electrification !== 'none' ? power : 'diesel', protection);
     if (money < cost) return;
     const depotCell = worldRef.current.railMap.get(toKey(x, z));
     const newTrain: TrainData = {
@@ -451,6 +459,7 @@ export const useGameLogic = () => {
         cars: 2,
         ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? 1067 } : {}),
         ...(gameRules.electrification !== 'none' ? { power } : {}),
+        ...(gameRules.signalling === 's3' && protection ? { protection } : {}),
     };
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);
@@ -657,7 +666,7 @@ export const useGameLogic = () => {
   const handleAccident = (event: Extract<SimEvent, { type: 'accident' }>) => {
     setMoney(m => m - event.penalty);
     setCurrentLedger(l => ({ ...l, accidents: l.accidents + event.penalty }));
-    setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId }]);
+    setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId, kind: event.kind }]);
   };
 
   // PM3フォローアップ: デッドセクション失速からの救援コスト(1回だけ課金)。

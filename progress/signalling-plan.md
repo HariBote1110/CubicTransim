@@ -1,6 +1,6 @@
 # 信号システム計画（別軸選択・段階制）
 
-状態: **S0はPM1(2026-08-11)時点で既定として正式に運用中。S1は0.5.0-Alpha-10aで実装済み。S2は0.5.0-Alpha-12aで実装済み。S3は計画段階（未実装）**。
+状態: **S0はPM1(2026-08-11)時点で既定として正式に運用中。S1は0.5.0-Alpha-10aで実装済み。S2は0.5.0-Alpha-12aで実装済み。S3は0.5.0-Alpha-13aで実装済み**。
 プレイモード計画（play-modes-plan.md の PM5）の詳細設計。2026-08-11 の設計会話を基に作成。
 PM3(0.5.0-Alpha-7a)でこの節を追記: `rules.signalling`は既定値`'s0'`のまま4プリセット
 全てで揃っており（gameRules.ts）、現行の予約(PBS)＋制動距離ベースの移動閉塞システム
@@ -168,6 +168,76 @@ S1(固定閉塞)の上位互換として、信号にkindを付けS1の判定を�
   ダンプで検証。描画チャンクはReact側railMap stateから作られるため、worldRef直接注入では
   画面には反映されない——これは`__debugWorld`注入の既知の制約であり、シミュレーション
   ロジックの検証はrutimesダンプで十分に行える)。
+
+## S3実装済み(0.5.0-Alpha-13a)
+
+S2(信号の種別)の上位互換として、「S2の判定をそのまま含み、CBTC(移動閉塞)のときだけ
+ブロック全体判定をバイパスする」形で実装した(S1→S2と同じ「述語を差し替える」設計を継承)。
+
+- **選択UI**: 信号方式行に「保安装置」(s3)を追加(`App.tsx`の`SIGNALLING_OPTIONS`、
+  グリッドを2列→4列に変更)。
+- **地上設備**: `CellData.protection?: 'ats-s' | 'ats-p' | 'atc' | 'cbtc'`(`types.ts`)。
+  信号セル(`signalDir`)と同じセルに乗る想定(現実の信号機と保安装置の対応関係)。
+  未設定は無防備。線路ツールがアクティブかつ`rules.signalling==='s3'`のときだけ、
+  GameUIに保安装置選択行(なし/ATS-S/ATS-P/ATC/CBTC)を表示する(`軌間`行と同じスタイル)。
+  `construction.ts`の`RailBuildOptions.protection`を、地平・高架・地下・坂の全ての
+  セル生成パス(`addConnectionToCell`と`applyGroundPathWithElevatedConnect`/
+  `applyElevatedPath`/`applyUndergroundPath`の各`gaugeElectrifiedPatch`)へ
+  gauge/electrifiedと同じ「省略時は既存セルの値を保つ」規約で伝播させた。
+  建設コストは`economy.ts`の`PROTECTION_COST`(ATS-S ¥10・ATS-P ¥30・ATC ¥60・CBTC ¥100、
+  いずれも/マス)を`costOfProtection`で加算する(`useGameLogic.ts`の3箇所、電化コスト加算と
+  同じ並び)。
+- **車上装置**: `TrainData.protection?: TrainProtection`。車庫ツールが
+  `rules.signalling==='s3'`のときだけ保安装置選択行を表示し、`buyTrain`が
+  `trainCostForProtected(power, protection)`(`economy.ts`)で価格を決める。
+  `PROTECTION_TRAIN_PRICE_MULTIPLIER`(ATS-S×1.05・ATS-P×1.15・ATC×1.30・CBTC×1.50)を
+  動力方式ごとの基準額(`trainCostFor`、AC/ACDC倍率込み)へさらに乗算合成する
+  (交流用CBTC車ならAC倍率×CBTC倍率が両方乗る)。
+- **Effect A: SPAD(信号冒進)**: `simulation.ts`の`ensureReservation`が
+  `blocksSegmentEntry`でtrueを返した(=停止信号への進入待ちに入った)瞬間、
+  `evaluateSpadOnce`を呼ぶ。`rt.spadCheckedFor`(待機中の信号セルキー)で
+  「同じ信号への待機中は1回しか判定しない」ラッチを実装し、待機が解消して
+  次の予約に進んだら`undefined`へ戻す(次の別signalでまた判定できるようにする)。
+  有効な保安装置は`economy.ts`の`weakerProtection(trackProtection, trainProtection)`
+  (地上・車上のうち弱い方、未設定は'none'扱い)。確率テーブル`SPAD_CHANCE`は
+  none 2%・ATS-S 0.5%・ATS-P/ATC/CBTC 0%(ATS-Sは警報のみで確認通過できてしまう、
+  という設計意図どおり)。RNGは既存の事故システム(`progress/accidents-and-platform-doors.md`)
+  と同じ`world.rng()`(本番`Math.random`、テストは固定値関数を注入)をそのまま使い回した
+  (「stepWorldにRNGが無ければハッシュ導出」という代替案は不要だった。既に事故システムが
+  `SimWorld.rng`を持っていたため)。当たった場合は既存の事故イベントパス
+  (`SimEvent`の`accident`型、`rt.haltRemaining = ACCIDENT_HALT_DURATION`・
+  `ACCIDENT_PENALTY`の賠償)をそのまま再利用し、`kind: 'spad'`で駅の人身事故と区別できる
+  よう型を拡張した(`stationId`には駅名の代わりに信号の座標ラベルを入れ、
+  `AccidentNotice`のバナー表示側で`kind`を見てメッセージを分岐する)。
+- **Effect B: CBTC移動閉塞**: `blocksSegmentEntry`に`rules.signalling==='s3'`の分岐を追加。
+  列車の保安装置が`'cbtc'`、かつこれから予約しようとしているセグメントの全セルが
+  `protection==='cbtc'`(`segmentAllCbtc`)なら、S2のブロック全体判定を丸ごとバイパスして
+  `false`を返す(=S0と同じ、`tryReserve`のセル単位排他のみが効く)。1セルでも無防備・
+  他方式が混じっていれば通常のS2判定(ブロック全体占有チェック、`entryKind==='home'`の
+  例外込み)にフォールバックする。「S0とS3-CBTCは挙動が同じだが意味が違う」という
+  当初計画どおり、投資(地上+車上のCBTC化)によって移動閉塞を"取り戻す"形になっている。
+- **s0/s1/s2は無変更**: `blocksSegmentEntry`のs1/s2分岐、既存のS1/S2テストは変更していない
+  (`rules.signalling==='s3'`の分岐は既存分岐の後に独立して追加した)。
+- **テスト**: `signalling-s3.test.ts`。(1)無防備同士でのSPAD発生+1approachにつき1回のラッチ、
+  (2)ATS-P同士ならSPAD確率0で事故が起きない、(3)weaker-ofの検証(地上ATCでも車上が
+  無防備なら無防備扱いでSPADしうる)、(4)`weakerProtection`/`SPAD_CHANCE`の純関数テスト、
+  (5)全セル+両列車CBTCならブロック全体判定をバイパスして2列車が同一ブロックへ
+  同時進入できる(S1テストと同型の経由駅つきレイアウトで、両方が同時に区間内側にいる
+  瞬間を観測)、(6)CBTC区間でなければS3でもS1/S2と同じくブロック全体排他になる、
+  (7)地上/車上コスト定数の検証、の9ケースを固定した。
+- **ブラウザ実機確認**: 新規ゲームで信号方式=保安装置を選択→線路ツールに保安装置行
+  (なし/ATS-S/ATS-P/ATC/CBTC)が出ることを確認、CBTCを選んで線路を敷設し
+  `__debugWorld.railMap`の該当セルに`protection:"cbtc"`が付くこと・追加費用が
+  加算されること(4マス×(¥100+¥100)=¥800)を確認、車庫ツールでも同じ保安装置行が
+  出ることを確認した。
+- **既知の制約・follow-up**:
+  - 既存の保安装置セルへ後から保安装置だけを変更する「アップグレードツール」は
+    実装していない(改軌ツールと同じパターンを流用できる見込みだが、選択肢が
+    増えるとUIが煩雑になるため今回は見送った)。現状は敷設時にしか選べない。
+  - `evaluateSpadOnce`は`entryKind`(信号の種別)がある場合のみ判定する。安全点が
+    駅・車庫・行き止まりのみで信号セルを経由しない待機(=閉塞境界にそもそも信号機が
+    無いケース)ではSPAD自体を判定しない設計にした(現実の信号冒進は「信号機を
+    冒進する」行為であり、信号の無い待機に適用する概念ではないため)。
 
 ## 未決定事項
 

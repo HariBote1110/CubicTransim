@@ -1,7 +1,7 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
 import { toKey } from '../utils';
-import type { CellData, PlatformDoorType, TownData, TrainPower } from '../types';
+import type { CellData, PlatformDoorType, TownData, TrainPower, TrainProtection } from '../types';
 import type { TerrainField } from './terrainField';
 import { applyRailPathDetailed, resolveGroundRailPlan, MAX_BRIDGE_LENGTH, type GroundRailCellRole } from './construction';
 import { SLOPE_RAIL_COST_MULTIPLIER } from './slopes';
@@ -185,6 +185,69 @@ export const ACCIDENT_DOOR_MODIFIER = {
 } as const;
 export const ACCIDENT_HALT_DURATION = 60; // シミュレーション秒
 export const ACCIDENT_PENALTY = 5_000;
+
+// S3(保安装置、progress/signalling-plan.md)。地上設備の1セルあたり追加コスト
+// (敷設した信号セルのみ課金。線路本体・信号本体のコストとは別建て)。
+export const PROTECTION_COST: Record<TrainProtection, number> = {
+  'ats-s': 10,
+  'ats-p': 30,
+  atc: 60,
+  cbtc: 100,
+};
+
+// S3: 車上装置の価格倍率。基準額(trainCostForの結果)に掛ける。AC/ACDCの倍率とは
+// 乗算で合成する(=交流用CBTC車なら AC_TRAIN_PRICE_MULTIPLIER × 1.5、のように積み上がる)。
+export const PROTECTION_TRAIN_PRICE_MULTIPLIER: Record<TrainProtection, number> = {
+  'ats-s': 1.05,
+  'ats-p': 1.15,
+  atc: 1.3,
+  cbtc: 1.5,
+};
+
+// S3: 信号冒進(SPAD)の発生確率。停止信号への進入待ちに入った瞬間、1回だけ判定する
+// (progress/signalling-plan.mdの「事故システムと接続する」設計どおり)。ATS-Sは
+// 警報のみ(確認扱いで通過できてしまう)ため完全には防げない。ATS-P/ATC/CBTCは
+// パターン照査・移動閉塞のため確実に止まる=0%とする。
+export const SPAD_CHANCE: Record<'none' | TrainProtection, number> = {
+  none: 0.02,
+  'ats-s': 0.005,
+  'ats-p': 0,
+  atc: 0,
+  cbtc: 0,
+};
+
+// S3: 保安装置の強さの順位(弱いほど小さい)。ATS-P/ATCはSPAD確率が同じ(0%)なので
+// 順位が同着でも判定結果には影響しない。「弱い方」判定(weakerProtection)専用。
+const PROTECTION_RANK: Record<'none' | TrainProtection, number> = {
+  none: 0,
+  'ats-s': 1,
+  'ats-p': 2,
+  atc: 2,
+  cbtc: 3,
+};
+
+/** 地上設備と車上装置のうち弱い方(=effective protection)を返す。未設定は'none'扱い。 */
+export function weakerProtection(
+  a: TrainProtection | undefined,
+  b: TrainProtection | undefined
+): 'none' | TrainProtection {
+  const an = a ?? 'none';
+  const bn = b ?? 'none';
+  return PROTECTION_RANK[an] <= PROTECTION_RANK[bn] ? an : bn;
+}
+
+// S3: 動力方式の価格(trainCostFor)に保安装置の倍率を乗算合成する。
+export function trainCostForProtected(power: TrainPower, protection?: TrainProtection): number {
+  const base = trainCostFor(power);
+  if (!protection) return base;
+  return Math.round(base * PROTECTION_TRAIN_PRICE_MULTIPLIER[protection]);
+}
+
+// S3: 保安装置を選んだ場合の地上設備の追加費用(建設セル数×単価)。
+export function costOfProtection(cellCount: number, protection?: TrainProtection): number {
+  if (!protection) return 0;
+  return cellCount * PROTECTION_COST[protection];
+}
 
 // 'bridge'は旧・固定長橋の後方互換用(applyBridgeが薄いラッパーとして残っているため)。
 // 高架専用ツール('elevated'/'elevated-station')は廃止し、'rail'/'station'がlevel引数
