@@ -1,6 +1,6 @@
-# 透視投影カメラ(乗客視点)実装メモ — D1/D2スパイク
+# 透視投影カメラ(乗客視点)実装メモ — D1/D2/D3スパイク
 
-状態: **D1・D2スパイクとも完了**(`feature/perspective-camera` ブランチ、`main`未マージ)。
+状態: **D1・D2・D3スパイクとも完了**(`feature/perspective-camera` ブランチ、`main`未マージ)。
 `progress/play-modes-plan.md` の「遠い将来の夢(絵空事メモ)」節にある乗客視点構想を、
 案B(クォータービューとは完全に別経路の透視投影パス)として最小実装した。
 
@@ -259,3 +259,102 @@ D1では「距離しきい値(8セル)を超えたら焼き直す」だけだっ
   (特急など)では地平線側のフェードが早く見える可能性があり、将来チューニングの
   余地がある。
 - 性能ゲート(層A/層B)は引き続き未実施(D1メモのTODOのまま)。
+
+## D3実装メモ(運転台視点・HUD)
+
+D2の乗客視点(客席)に、運転台視点(cab)とHUDオーバーレイを追加した。
+
+### 運転台視点(mode='cab')
+
+`computeRiderCamera(world, trainId, mode)` に第3引数 `mode: 'passenger' | 'cab'`
+(既定'passenger')を追加しただけ。'cab'のときはeyeを進行方向(`head.heading`、
+carPositionsの先頭車のもの)へ`CAB_FORWARD_OFFSET`(0.5、視覚調整値)だけ前へ出す。
+高さ・注視点(look)の式はpassengerと共通。カーブの計算は増えていない
+(headingの外挿という既存の仕組みをそのまま使うだけ)。`riderState`に`mode`
+フィールドを追加し、D2と同じ「モジュール単位フラグ(真実源)+ Reactステート
+(App.tsxのridingMode、UI再レンダリング用)」の二重管理を踏襲した。
+
+列車インスペクタの乗車ボタンは「乗車(客席)」「運転台」の2ボタンに分けた
+(`GameUI.tsx`のTrainInspector)。乗車中の側のボタンを押すと降車、もう片方を
+押すと(降車せずに)そのモードへ切り替わる。Esc・右上オーバーレイの「降車」は
+D2と同じくモード問わず効く。
+
+### HUD(`src/components/CabHud.tsx` + `src/render/cabHud.ts`)
+
+`computeCabHud(world, trainId)`(純関数、Vitestで検証済み)が以下を1回で計算する。
+**sim層(simulation.ts)のロジック・テーブルは一切変更していない**(タスク仕様の
+「no sim changes」を厳守。増やしたのは`distanceAlongRouteTo`/`distanceToStopPoint`
+というstepTrainの内部ヘルパー2つを`export`しただけ——可視性の変更のみで、
+呼び出し側の挙動もシグネチャも無改造)。
+
+- **speedKmh**: `runtimes.get(trainId).speedKmh` をそのまま。
+- **speedLimitKmh(制限速度)**: `simulation.ts`の`MAX_SPEED_KMH`をそのまま返す。
+  このゲームには軌道等級(trackClasses)別の速度テーブルはまだ存在しない
+  (`grep`で確認済み)ため、taskが想定していた「rail-weight cap」は該当なし——
+  唯一存在する速度上限定数を再利用することで「テーブルを複製しない」方針を
+  満たした。
+- **次の停止点までの距離**: stepTrainの速度制御(simulation.ts 815〜836行)と
+  **同じ分類**(`reservedEndIndex`が経路末尾まで届いていれば'station'扱いで
+  `distanceToStopPoint(rt)`、そうでなければ次のsafe waiting pointまでの
+  `distanceAlongRouteTo(rt, rt.reservedEndIndex)`)を、export した2関数を呼ぶだけで
+  再現している。この分類自体(3行のif/else)はstepTrainのローカル変数の中にしか
+  無く「no sim changes」の制約下ではsim側から公開しようが無いため、cabHud.ts側で
+  同じ3行を再掲した(コメントで両者の対応を明記)。距離計算そのもの(弧長積分)は
+  100%再利用で重複していない。
+- **次信号の現示**: 経路(`rt.route`)を先頭から`NEXT_SIGNAL_LOOKAHEAD_CELLS`(20)
+  セルだけ走査し、`signalDir`を持つ最初のセル(index=i)を探す。
+  `rt.reservedEndIndex >= i` なら開通(green、その信号の先まで予約が届いている)、
+  そうでなければ停止(red)。信号が見つからなければnull(HUDには「なし」を出す)。
+  s1/s2/s3という信号方式の段階は`gameRules.ts`にフラグとしては存在するが、
+  実装(PM1のdesign decision)として**どのモードでもコードは無分岐**——このゲームの
+  信号・閉塞は「PBS予約+safe waiting point」という単一の仕組みで動いている
+  (progress/signalling-plan.mdにS0=既定仕様として明記済み)。そのためHUDの
+  信号現示も`rules.signalling`を見ずに、実際に置かれた信号セルと予約状態だけから
+  求める(将来s1〜s3が実装されても、この仕組みの上に乗る限り無改造で動く見込み)。
+- **デッドセクション予告**: 現在地から`DEAD_SECTION_LOOKAHEAD_CELLS`(10、タスク
+  仕様どおり)セル先までの隣接セル対それぞれに`gameRules.ts`の
+  `isDeadSectionBoundary`(既存の純関数、PM3で実装済み)を適用し、1つでもtrueなら
+  警告チップを出す。
+
+`CabHud.tsx`はこの`computeCabHud`を150ms間隔でポーリングしてDOM(`ui/theme.ts`の
+`panel`/トークン経由)へ表示するだけの薄いコンポーネント。sim層への書き込みは無い。
+`GameScene.tsx`が`ridingMode==='cab'`のときだけマウントする。
+
+### DOMラベルの乗車中非表示
+
+`GameLabels`(駅名・列車速度ツールチップ)は`hidden`propを既に持っていたので、
+`hidden={farViewHidden || !!ridingTrainId}`を足すだけで済んだ(客席・運転台の
+どちらでも隠れる)。D2メモに記載した「凍結されたisoカメラで投影しており位置が
+合わない」問題への対処として、非表示にする方を選んだ(タスク指示どおり
+「simple conditional unmount」)。透視投影でラベル位置を再計算する対応は
+follow-upのまま。
+
+### 検証結果
+
+- Vitest: `cabHud.test.ts`(10件、Red→Green)・`passengerView.test.ts`の追加テスト
+  (mode='cabのeyeオフセット、Red→Green)を含め`npm run test`は1081件green。
+- `npm run build`(tsc+vite)green。`cargo test`(renderer_wgpu)20件green
+  (D3もRust側を変更していないため無変化)。
+- ブラウザ実機(デバッグシナリオ「単線行き違い」`passing-loop`、信号3基):
+  東行き列車を選択→「運転台」ボタンで乗車。HUDに速度・制限速度(100)・
+  次の停止点までの距離・信号現示(赤丸+「次信号: 停止」)を確認。対向列車が
+  区間を空けるまで`__dbgStep`で進めると、信号現示が赤→緑(「次信号: 開通」)に
+  切り替わり、速度が減速→再加速することをスクリーンショットで確認(速度表示が
+  86km/h→93km/hへ変化、次の停止点までの距離も新しい安全点基準に更新された)。
+  「乗車(客席)」へ切り替えるとHUDが消え、視点が運転台よりわずかに後ろへ戻る
+  ことを確認(客席モードは無影響)。「降車」でクォータービューへ復帰し、
+  DOMラベル(駅名・列車速度ツールチップ)も元通り表示されることを確認した。
+  デッドセクション予告チップはブラウザ実機では未検証(タスク指示の
+  fallback「advanced-mode manual gameで手早く確認できなければ記録するだけでよい」
+  に従い、`cabHud.test.ts`の単体テスト2件(境界あり/なし)で仕様を固定するに留めた)。
+
+### 残るfollow-up
+
+- デッドセクション予告のブラウザ実機確認(アドバンスドモードで交直流境界を
+  実際に敷設しての確認)は未実施。単体テストでロジックは固定済み。
+- 次信号の現示は「予約が信号の先まで届いているか」の二値判定で、実際の閉塞方式
+  (s1固定閉塞/s2〜s3の段階的現示など、将来実装される信号灯の多段階現示)には
+  対応していない。将来s1〜s3を実装する際は、このHUD述語をそのまま使えるか
+  再検討が要る。
+- HUDのレイアウト(左下固定・幅220px)はブラウザの1回の実機確認のみで判断した
+  ざっくりしたもの。デザイン調整の余地がある。
