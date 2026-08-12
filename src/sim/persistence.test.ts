@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { CellData, StationData, TrainData, TownData } from '../types';
 import type { TrainRuntime } from './simulation';
-import { serialiseWorld, deserialiseWorld, emptyLedger } from './persistence';
+import { serialiseWorld, deserialiseWorld, emptyLedger, normaliseUndergroundRampDirs } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
 import type { CornerDiffs } from './terrainOverlay';
 import { DEFAULT_GAME_RULES, PLAY_MODE_PRESETS } from './gameRules';
+import { DIR } from '../utils';
 
 describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v15)', () => {
   it('railMap/stations/trains/runtimes/waiting/money/towns/seed/halfExtent/cornerDiffs/clock/台帳/stopLocation/運用グループ/借入残高/行き先つき待ち客 が JSON 経由でも復元できる', () => {
@@ -308,5 +309,72 @@ describe('persistence: PM4 変電所(substation)のラウンドトリップ', ()
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
     expect(restored).not.toBeNull();
     expect(restored!.railMap.get('0,1')?.type).toBe('substation');
+  });
+});
+
+describe('persistence: normaliseUndergroundRampDirs (地下ランプdir逆転の旧セーブ移行)', () => {
+  // base=-1の坂セル(0,0)。地表側(base+1===0)の隣接セルは(0,-1)=DIR.N方向で、
+  // その隣接セルの平面connectionsに戻り方向(S)のビットが立っていれば「地表側へ連続している」。
+  // 地下側の隣接セルは(0,1)=DIR.S方向で、uppers[-1].connectionsにN(戻り方向)ビットが
+  // 立っていれば「地下側へ連続している」。正しいdirは地表側=北(DIR.N)を指す。
+  const buildStructurallyCorrectMap = () => new Map<string, CellData>([
+    ['0,-1', { type: 'rail', connections: DIR.S }],
+    ['0,0', { type: 'rail', connections: 0, ramp: { dir: DIR.N, base: -1 } }],
+    ['0,1', { type: 'rail', connections: 0, uppers: { [-1]: { connections: DIR.N } } }],
+  ]);
+
+  it('旧形式(dirが地下側=逆方向を指す)は正しい向き(地表側)へ修正される', () => {
+    const railMap = buildStructurallyCorrectMap();
+    // 旧バグ: dirを反転させて地下側(S)を指す不正な状態を人工的に作る
+    railMap.set('0,0', { ...railMap.get('0,0')!, ramp: { dir: DIR.S, base: -1 } });
+    const result = normaliseUndergroundRampDirs(railMap);
+    expect(result.get('0,0')?.ramp?.dir).toBe(DIR.N);
+  });
+
+  it('新形式(dirが既に地表側を指す)はそのまま(参照レベルでも内容不変)', () => {
+    const railMap = buildStructurallyCorrectMap();
+    const before = railMap.get('0,0');
+    const result = normaliseUndergroundRampDirs(railMap);
+    expect(result.get('0,0')?.ramp?.dir).toBe(DIR.N);
+    expect(result.get('0,0')).toEqual(before);
+  });
+
+  it('曖昧なケース(両側とも地表側らしく見える/どちらも見えない)は変更しない', () => {
+    // 両隣接セルとも「地表側へ連続している」条件を満たす(北も南もconnections/upperで
+    // 戻りビットが立っている)ため、構造的に判別不能。dirはそのまま残す。
+    const railMap = new Map<string, CellData>([
+      ['0,-1', { type: 'rail', connections: DIR.S }],
+      ['0,0', { type: 'rail', connections: 0, ramp: { dir: DIR.S, base: -1 } }],
+      // 地下側であるはずの(0,1)にも誤って地表相当のconnectionsを持たせ、両方が
+      // 「地表側条件」を満たしてしまう曖昧ケースを作る。
+      ['0,1', { type: 'rail', connections: DIR.N }],
+    ]);
+    const result = normaliseUndergroundRampDirs(railMap);
+    expect(result.get('0,0')?.ramp?.dir).toBe(DIR.S);
+  });
+
+  it('rampを持たないセル・base>=0の坂セルには影響しない', () => {
+    const railMap = new Map<string, CellData>([
+      ['5,5', { type: 'rail', connections: DIR.N }],
+      ['6,6', { type: 'rail', connections: 0, ramp: { dir: DIR.N, base: 1 } }],
+    ]);
+    const before5 = railMap.get('5,5');
+    const before6 = railMap.get('6,6');
+    const result = normaliseUndergroundRampDirs(railMap);
+    expect(result.get('5,5')).toEqual(before5);
+    expect(result.get('6,6')).toEqual(before6);
+  });
+
+  it('deserialiseWorldはロード時にrailMapへこの正規化を適用する', () => {
+    const railMap = buildStructurallyCorrectMap();
+    railMap.set('0,0', { ...railMap.get('0,0')!, ramp: { dir: DIR.S, base: -1 } });
+    const saveData = serialiseWorld(
+      railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.railMap.get('0,0')?.ramp?.dir).toBe(DIR.N);
   });
 });
