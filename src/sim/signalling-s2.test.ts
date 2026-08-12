@@ -229,4 +229,69 @@ describe('S2信号の種別', () => {
     const rtA = world.runtimes.get('A')!;
     expect(rtA.trail.some(c => c.x >= 10)).toBe(true);
   });
+
+  // H3: home信号がブロック全体占有チェックを無条件でバイパスすると、単線区間の両端に
+  // home信号を置いただけで対向列車が中央で向かい合って恒久デッドロックする
+  // (progress/review-play-modes-branch.md H3)。
+  // stW1(0,0) -- sigA(1,0,home,E) -- interior(2..8,0、stFarはx=8) -- sigB(9,0,home,W) -- stW2(10,0)
+  // trainAはstFar(interior内、sigBの手前)を目指し、trainBはstNear(interior内、sigAの手前)を
+  // 目指す。どちらも相手側の信号は跨がないが、interior経路はほぼ全域で重なる
+  // (単線を対向で使う状況の最小再現)。
+  it('単線区間の両端home信号は、対向列車を中央でデッドロックさせず入口で待たせる', () => {
+    const railMap = new Map<string, CellData>();
+    for (let x = 0; x < 10; x++) connect(railMap, { x, z: 0 }, { x: x + 1, z: 0 });
+
+    const sigAKey = toKey(1, 0);
+    railMap.set(sigAKey, { ...railMap.get(sigAKey)!, signalDir: DIR.E, signalKind: 'home' });
+    const sigBKey = toKey(9, 0);
+    railMap.set(sigBKey, { ...railMap.get(sigBKey)!, signalDir: DIR.W, signalKind: 'home' });
+
+    const w1Key = toKey(0, 0);
+    railMap.set(w1Key, { ...railMap.get(w1Key)!, type: 'station', stationId: 'stW1' });
+    const w2Key = toKey(10, 0);
+    railMap.set(w2Key, { ...railMap.get(w2Key)!, type: 'station', stationId: 'stW2' });
+    const farKey = toKey(8, 0);
+    railMap.set(farKey, { ...railMap.get(farKey)!, type: 'station', stationId: 'stFar' });
+    const nearKey = toKey(2, 0);
+    railMap.set(nearKey, { ...railMap.get(nearKey)!, type: 'station', stationId: 'stNear' });
+
+    const stations = new Map<string, StationData>([
+      ['stW1', { id: 'stW1', name: 'W1', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+      ['stW2', { id: 'stW2', name: 'W2', cells: [{ x: 10, z: 0 }], center: { x: 10, z: 0 }, platformDoors: 'none' }],
+      ['stFar', { id: 'stFar', name: 'Far', cells: [{ x: 8, z: 0 }], center: { x: 8, z: 0 }, platformDoors: 'none' }],
+      ['stNear', { id: 'stNear', name: 'Near', cells: [{ x: 2, z: 0 }], center: { x: 2, z: 0 }, platformDoors: 'none' }],
+    ]);
+
+    const trainA = makeTrain({ id: 'A', x: 0, z: 0, schedule: ['stFar'], scheduleIndex: 0 });
+    const trainB = makeTrain({ id: 'B', x: 10, z: 0, schedule: ['stNear'], scheduleIndex: 0 });
+    const world: SimWorld = {
+      railMap, stations, trains: [trainA, trainB], runtimes: new Map(), waiting: new Map(),
+      rng: () => 1, towns: [], rules: s2Rules, blocks: buildBlockIndex(railMap),
+    };
+
+    const dt = 0.1;
+    let aArrived = false;
+    let bArrived = false;
+    let sawOverlap = false;
+    for (let tick = 0; tick < 4000; tick++) {
+      const events: SimEvent[] = stepWorld(world, dt);
+      for (const e of events) {
+        if (e.type === 'arrive' && e.trainId === 'A') aArrived = true;
+        if (e.type === 'arrive' && e.trainId === 'B') bArrived = true;
+      }
+      const rtA = world.runtimes.get('A');
+      const rtB = world.runtimes.get('B');
+      if (rtA && rtB) {
+        const setA = new Set(rtA.trail.map(c => toKey(c.x, c.z)));
+        if (rtB.trail.some(c => setA.has(toKey(c.x, c.z)))) sawOverlap = true;
+      }
+      if (aArrived && bArrived) break;
+    }
+
+    // 中央でセルを取り合う恒久デッドロックにならず、両列車とも最終的に目的地へ着く。
+    expect(aArrived).toBe(true);
+    expect(bArrived).toBe(true);
+    // 単線なので、両列車の車体セルが同時に重なることは無い(=同時に中に入らない)。
+    expect(sawOverlap).toBe(false);
+  });
 });
