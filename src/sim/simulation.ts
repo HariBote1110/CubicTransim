@@ -634,6 +634,29 @@ const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
   return dist;
 };
 
+// M4: distanceAlongRouteTo(rt, i)をrt.route全域についてループで呼ぶと、1回の呼び出しが
+// O(i)なのでO(n²)になる(呼び出し元が3箇所あり合計O(3n²))。累積距離を1回のO(n)走査で
+// 前計算し、result[i] === distanceAlongRouteTo(rt, i) と一致する配列を返す。
+// 軌道(何キロレール)の速度上限判定3箇所(railApproachCapKmh・hardEnvelopeループ・
+// requiredDecelループ)がこれを共有する。
+const cumulativeRouteDistances = (rt: TrainRuntime): number[] => {
+  const route = rt.route;
+  const result: number[] = new Array(route.length);
+  if (route.length === 0) return result;
+  const first = route[0];
+  const currentTileGeoDist = Math.sqrt((first.x - rt.grid.x) ** 2 + (first.z - rt.grid.z) ** 2);
+  let dist = (1.0 - rt.progress) * (currentTileGeoDist * TILE_LENGTH);
+  result[0] = dist;
+  for (let i = 1; i < route.length; i++) {
+    const p = route[i];
+    const prevP = route[i - 1];
+    const dGeo = Math.sqrt((p.x - prevP.x) ** 2 + (p.z - prevP.z) ** 2);
+    dist += dGeo * TILE_LENGTH;
+    result[i] = dist;
+  }
+  return result;
+};
+
 // 軌道(何キロレール): 現在地から前方に見えている最も厳しいレール速度上限へ、
 // 今の位置からブレーキを掛け始めて間に合う速度(km/h)。既存の停止点向け制動曲線
 // (permittedSpeedKmh/brakingDistanceM)をそのまま使い回す。目標速度が0でない点だけが
@@ -647,7 +670,8 @@ const railApproachCapKmh = (
   rt: TrainRuntime,
   rules: GameRules,
   decelMs2: number,
-  jerkMs3: number
+  jerkMs3: number,
+  routeDistances: number[]
 ): number => {
   if (!rules.trackClasses) return Infinity;
   const currentCell = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
@@ -656,7 +680,7 @@ const railApproachCapKmh = (
     const cell = world.railMap.get(toKey(rt.route[i].x, rt.route[i].z));
     const cellCap = railWeightSpeedCapKmh(cell?.railWeight);
     if (!isFinite(cellCap)) continue;
-    const dist = Math.max(0, distanceAlongRouteTo(rt, i) - RAIL_CAP_APPROACH_MARGIN_M);
+    const dist = Math.max(0, routeDistances[i] - RAIL_CAP_APPROACH_MARGIN_M);
     const approach = permittedSpeedKmh(
       dist + brakingDistanceM(cellCap, decelMs2, jerkMs3),
       decelMs2,
@@ -1135,7 +1159,11 @@ const stepTrain = (
   // ための許容速度(km/h)。停止点への制動(target速度0)と同じ制動曲線を、target速度が
   // cap(≠0)である問題に一般化して適用する(railApproachCapKmhのdocコメント参照)。
   // rules.trackClasses=falseなら常にInfinity(無条件で無関係)。
-  const railCapKmh = railApproachCapKmh(world, rt, rules, serviceDecelMs2, BRAKE_JERK_MS3);
+  // M4: distanceAlongRouteTo(rt, i)をO(n)ループの中で毎回呼ぶとO(n²)になる箇所が
+  // 3つ(このrailApproachCapKmh・直後のhardEnvelopeループ・後方のrequiredDecelループ)
+  // あったため、累積距離を1回だけ前計算して共有する。
+  const routeDistances = cumulativeRouteDistances(rt);
+  const railCapKmh = railApproachCapKmh(world, rt, rules, serviceDecelMs2, BRAKE_JERK_MS3, routeDistances);
 
   // ブレーキ指令のしきい値。「今ブレーキを緩解している状態から、ジャークで常用最大まで
   // 立ち上げて停止する」のに必要な距離を織り込んだ包絡線。これを超えたら制動に入る。
@@ -1159,7 +1187,7 @@ const stepTrain = (
       const cell = world.railMap.get(toKey(rt.route[i].x, rt.route[i].z));
       const cap = railWeightSpeedCapKmh(cell?.railWeight);
       if (!isFinite(cap)) continue;
-      const dist = Math.max(0, distanceAlongRouteTo(rt, i) - RAIL_CAP_APPROACH_MARGIN_M);
+      const dist = Math.max(0, routeDistances[i] - RAIL_CAP_APPROACH_MARGIN_M);
       const capMs = cap / 3.6;
       const hard = Math.sqrt(Math.max(0, capMs * capMs + 2 * serviceDecelMs2 * dist)) * 3.6;
       hardEnvelopeKmh = Math.min(hardEnvelopeKmh, hard);
@@ -1226,7 +1254,7 @@ const stepTrain = (
         const cell = world.railMap.get(toKey(rt.route[i].x, rt.route[i].z));
         const cap = railWeightSpeedCapKmh(cell?.railWeight);
         if (!isFinite(cap)) continue;
-        const dist = Math.max(0, distanceAlongRouteTo(rt, i) - RAIL_CAP_APPROACH_MARGIN_M);
+        const dist = Math.max(0, routeDistances[i] - RAIL_CAP_APPROACH_MARGIN_M);
         if (dist <= 1e-6) continue;
         const capMs = cap / 3.6;
         if (speedMs <= capMs) continue;
