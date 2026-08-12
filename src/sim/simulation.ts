@@ -396,16 +396,52 @@ const buildBlockedSet = (world: SimWorld, selfId: string): Set<string> => {
   return blocked;
 };
 
+// このセグメントの先頭(route[startIdx]、= 直前のsafe waiting pointの次のセル)が信号
+// セルであれば、そのsignalKindを返す。isSafeWaitingPointの規則上、区切られたセグメントは
+// 必ず「信号セルそのもの」から始まるか、信号を経由しない安全点(駅・車庫・行き止まり)から
+// 始まるかのどちらかなので、これがそのセグメントへ「くぐって入る」信号になる。
+// 信号が無ければundefined(=閉塞信号扱いに準ずる)。s0/s1配下では呼び出し側が種別を
+// 見ないため未使用。
+const entrySignalKindFor = (
+  world: SimWorld,
+  rt: TrainRuntime,
+  startIdx: number
+): CellData['signalKind'] | undefined => {
+  const point = rt.route[startIdx];
+  if (!point) return undefined;
+  const cell = world.railMap.get(toKey(point.x, point.z));
+  if (!cell?.signalDir) return undefined;
+  return cell.signalKind ?? 'block';
+};
+
 // PBS予約の取得・延長。route[0..reservedEndIndex]が予約済み区間になる。
 // - reservedEndIndexが-1(未取得)なら、次のsafe waiting pointまでの区間取得を試みる
 // - 取得済みで、予約末端までの残り距離が制動距離+マージン以内に近づいたら、
 //   さらに次のsafe waiting pointまでの延長を試みる(失敗時は現状維持=末端で待機)
 // S1(固定閉塞)のとき、segmentが他列車の占有する未占有でないブロックへ踏み込むなら
-// trueを返す(=このセグメントは予約してはいけない)。rules.signalling!=='s1'、または
+// trueを返す(=このセグメントは予約してはいけない)。rules.signalling!=='s1'/'s2'、または
 // ブロック索引が無ければ常にfalse(=S0と同じ、制約なし)。
-const blocksSegmentEntry = (world: SimWorld, rules: GameRules, trainId: string, segment: Grid[]): boolean => {
-  if (rules.signalling !== 's1' || !world.blocks) return false;
-  return blocksOccupiedByOthers(world.reservations, world.blocks, segment, trainId);
+// S2(信号の種別)ではS1と同じブロック全体判定を使うが、entryKind==='home'(場内信号を
+// くぐって入る)のときだけ例外にする: ホーム越しに入るブロックはトラック単位(=セル単位)の
+// 排他で足りるとみなし、ブロック全体の占有チェックを外す。実際のセル排他はtryReserveが
+// 別途保証するため、「自分のセグメントのセルが他列車のセルと重ならない限り入線できる」
+// という per-track occupancy がそのまま実現できる(複数ホームを持つ駅構内の同時進入)。
+const blocksSegmentEntry = (
+  world: SimWorld,
+  rules: GameRules,
+  trainId: string,
+  segment: Grid[],
+  entryKind?: CellData['signalKind']
+): boolean => {
+  if (!world.blocks) return false;
+  if (rules.signalling === 's1') {
+    return blocksOccupiedByOthers(world.reservations, world.blocks, segment, trainId);
+  }
+  if (rules.signalling === 's2') {
+    if (entryKind === 'home') return false;
+    return blocksOccupiedByOthers(world.reservations, world.blocks, segment, trainId);
+  }
+  return false;
 };
 
 // PBS予約の取得・延長。route[0..reservedEndIndex]が予約済み区間になる。
@@ -428,7 +464,8 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime, 
       ? findDepartureSegmentEnd(world.railMap, rt.route)
       : findSafeSegmentEnd(world.railMap, rt.route, 0);
     const segment = rt.route.slice(0, idx + 1);
-    if (blocksSegmentEntry(world, rules, train.id, segment)) {
+    const entryKind = entrySignalKindFor(world, rt, 0);
+    if (blocksSegmentEntry(world, rules, train.id, segment, entryKind)) {
       rt.debugStatus = 'Waiting for block to clear...';
       return;
     }
@@ -454,7 +491,8 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime, 
 
   const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, rt.reservedEndIndex + 1);
   const segment = rt.route.slice(rt.reservedEndIndex + 1, nextIdx + 1);
-  if (blocksSegmentEntry(world, rules, train.id, segment)) return; // ブロックが空くまで現在の末端で待機
+  const entryKind = entrySignalKindFor(world, rt, rt.reservedEndIndex + 1);
+  if (blocksSegmentEntry(world, rules, train.id, segment, entryKind)) return; // ブロックが空くまで現在の末端で待機
   if (tryReserve(world.reservations, train.id, segment)) {
     rt.reservedEndIndex = nextIdx;
   }

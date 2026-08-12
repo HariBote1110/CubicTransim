@@ -36,12 +36,21 @@ export type Level = -3 | -2 | -1 | 1 | 2 | 3;
 // 地形。平地は既定値のため Map には載せず、terrainField.tsのterrainTypeAt()が'grass'を返す。
 export type TerrainType = 'water' | 'mountain';
 
+/** S2(信号の種別)における信号の役割。'block'=閉塞信号(既定・従来どおり)。 */
+export type SignalKind = 'block' | 'home' | 'departure';
+
 export interface CellData {
   type: CellType;
   connections?: number;
   stationId?: string;
   rotation?: number;
   signalDir?: number;
+  /**
+   * S2(信号の種別、progress/signalling-plan.md)での信号の役割。未設定(または'block')は
+   * 従来どおりの閉塞信号として扱う。s0/s1配下では常に無視され、全信号が閉塞境界として
+   * 振る舞う(sim/simulation.tsのblocksSegmentEntry)。
+   */
+  signalKind?: SignalKind;
   // ★追加: 水上の橋・山岳のトンネル(描画用のフラグ)。costOfPathの倍率とは別に、
   // applyRailPathがterrainを見て設定する。
   // 注意: この`bridge`は「水上を渡る線路の見た目・コスト倍率」を表すフラグであり、
