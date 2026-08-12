@@ -1645,6 +1645,42 @@ describe('stepWorld: 軌道(何キロレール) — 前方のレール速度上�
   });
 });
 
+describe('M1: 非常制動分岐(hardEnvelopeKmh超過)はrules.trackClassesで囲われているべき', () => {
+  it('trackClasses=false(ライト等)でも、予約末端手前で速度超過ならbrakeDecelMs2が瞬時に常用最大へ飛ばず、ジャーク制限で立ち上げる', () => {
+    const railMap = buildRailMap(Array.from({ length: 4 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(3, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 3, z: 0 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+    // rules未設定 = DEFAULT_GAME_RULES(trackClasses:false)。
+
+    // 予約末端が目前(30m先)まで縮んでいるのに速度90km/hのまま、というhardEnvelope
+    // 超過状態を直接作る(距離的にhardEnvelopeKmhは約65km/hになり、90km/hはこれを超える)。
+    // 予約末端の先(route[1]=(2,0))を他列車'ghost'が予約済みにして、ensureReservationが
+    // このtickで先へ延長してしまわないようにする(=予約末端が縮んだまま、という状況の再現)。
+    world.runtimes.set('t1', {
+      id: 't1', grid: { x: 0, z: 0 }, prevGrid: null, progress: 0, speedKmh: 90,
+      route: [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }], reservedEndIndex: 0,
+      trail: [{ x: 0, z: 0 }], pathHistory: [{ x: 0, z: 0 }],
+      stopRemaining: 0, waitTimer: 0, debugStatus: '',
+      renderPos: { x: 0, y: 0.5, z: 0 }, renderTarget: null,
+      passengers: 0, lastStopStationId: null, haltRemaining: 0,
+      stopProgress: 1, brakeDecelMs2: 0, braking: false,
+    });
+    world.reservations = new Map([[toKey(2, 0), 'ghost']]);
+
+    stepWorld(world, 0.1);
+    const rt = world.runtimes.get('t1')!;
+    const serviceDecelMs2 = DECEL_KMH_S / 3.6;
+    // 修正前(M1のバグ)はbrakeDecelMs2がserviceDecelMs2へ瞬時に飛ぶ。
+    // 修正後はrampDecel(ジャーク制限)で立ち上げるため、1tick目はそれより小さい。
+    expect(rt.brakeDecelMs2!).toBeLessThan(serviceDecelMs2 - 1e-9);
+  });
+});
+
 describe('H4: occupiedCellKeysFromRuntimes(改軌のno-op判定に使う在線セル集合)', () => {
   it('TrainData.x/zではなく、走行中の実位置(rt.grid/rt.route)を含む', () => {
     const railMap = buildRailMap(Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 })));
