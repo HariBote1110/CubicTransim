@@ -25,6 +25,8 @@ export interface ManualDriveState {
   trainId: string;
   notch: ManualNotch;
   difficulty: ManualDifficulty;
+  /** この乗車(乗車中〜降車まで)の運転成績の累計。simulation.tsが停車のたびに加算する。 */
+  tally: ManualRideTally;
 }
 
 /** ノッチを1段階だけ強く/弱くする。両端(EB/P5)でクランプする。 */
