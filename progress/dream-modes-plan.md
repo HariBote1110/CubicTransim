@@ -1,6 +1,6 @@
-# 透視投影カメラ(乗客視点)実装メモ — D1スパイク
+# 透視投影カメラ(乗客視点)実装メモ — D1/D2スパイク
 
-状態: **D1スパイク完了**(`feature/perspective-camera` ブランチ、`main`未マージ)。
+状態: **D1・D2スパイクとも完了**(`feature/perspective-camera` ブランチ、`main`未マージ)。
 `progress/play-modes-plan.md` の「遠い将来の夢(絵空事メモ)」節にある乗客視点構想を、
 案B(クォータービューとは完全に別経路の透視投影パス)として最小実装した。
 
@@ -138,3 +138,124 @@ draw のタイル機構やコンピュートシェーダには一切触れてい
 - Rust側 `perspective::aabb_visible_persp` は境界ケース(視錐台の角を斜めに
   横切るAABBを偽陽性判定する)がある保守的判定。オーバードローは許容範囲
   (メッシュチャンク数は少ない)と判断し、厳密な分離軸判定は導入していない。
+
+## D2実装メモ(乗客視点UI・カメラ追従)
+
+D1で作った透視パス(setCameraPerspective/setCameraMode)の上に、実際に列車を選んで
+「乗る」UIとカメラ追従を実装した。`window.__perspectiveDebug`(D1のデバッグフック)は
+そのまま残してあり、乗車(riderState)より優先度が低い(乗車中はriderStateが勝つ)。
+
+### カメラ数学の再利用
+
+`src/render/passengerView.ts` の `computeRiderCamera(world, trainId)` が全て:
+
+- `sim/consist.ts` の `carPositions(rt, 1, 1.0, world.railMap, world.terrainField)` を
+  呼び、先頭車(1両だけ)の位置(x/y/z)と進行方向(heading、単位ベクトル)を得る。
+  **カーブそのものの再実装はしていない**——carPositionsが列車描画のために持つ
+  「前後の台車位置(弧長±BOGIE_HALF_SPACING)から求めた向き」をそのまま使う。
+  勾配・高架(OVERPASS_HEIGHT)・地下(負のlayer)の高さも、carPositions内部の
+  `trackCentreHeight`(railMap/terrainFieldを渡したときだけ有効)がそのまま面倒を見る
+  ので、列車の描画位置(WebGpuTrains.tsx)と乗客視点のy座標は完全に同じ式から来る。
+- `eye = [head.x, head.y + PASSENGER_EYE_HEIGHT(1.6), head.z]`
+- `look = eye + head.heading * PASSENGER_LOOK_AHEAD(9)`(headingをそのまま外挿する
+  だけ。headingはcarPositionsの前後台車サンプリングで既に滑らかなので、外挿点も
+  カーブ進入・脱出でカクつかない)
+- 補間・平滑化は一切行わない(毎フレームその場の状態から組み立て直す)。折り返し・
+  車庫への瞬間移動でも、次のフレームで新しい位置がそのまま出るだけなので前フレームを
+  引きずらず自然にスナップする(ブラウザ実機で反転区間を確認、カメラが破綻せず
+  向きだけ入れ替わることを確認した)。
+- `computeRiderCamera`は純関数(sim/consist.tsのcarPositionsのみに依存)なので
+  Vitestで直接テストできる(`passengerView.test.ts`)。TDD Red→Greenで実装した。
+
+### 乗車状態の設計: 二重管理(モジュール単位フラグ + Reactステート)
+
+D1の`perspectiveDebugState`と同じ設計判断を踏襲した:
+
+- **真実源**: `riderState.trainId`(`passengerView.ts`のモジュール単位ミュータブル
+  フラグ)。`WebGpuTerrainLayer.tsx`のWebGpuRenderDriver(フレームループのrenderフェーズ)
+  と`GameScene.tsx`のチャンク可視範囲計算(フレームループのcameraフェーズ)が、
+  Reactの再レンダリングを経由せず**毎フレーム直接読む**。列車は毎tick動くので、
+  Reactステート経由(setState→再レンダリング)だと余計なコストとラグが乗る。
+- **UI用の鏡写し**: `App.tsx`の`ridingTrainId`(Reactステート)。乗車/降車ボタンの
+  ラベル・「降車」オーバーレイの表示切替・入力レイヤーのpointerEvents無効化など、
+  **JSXが読む必要がある**部分だけがこちらを参照する。`handleBoardTrain`/
+  `handleAlightTrain`が両方を同時に更新する。
+
+### チャンク供給(D1で積み残していた課題への対応)
+
+`picking.ts`の`chunkViewFromCamera`はクォータービューのカメラ(centreX/centreZ/zoom)
+から可視範囲を求める、iso専用の関数。乗車中はそのカメラ供給自体を止めている
+(D1の設計どおり)ので、`chunkViewFromCamera`をそのまま使うと可視チャンクが
+乗車開始地点で固定されたままになり、列車が離れるとメッシュ(木・線路・駅など)が
+供給されなくなる。
+
+対処は「最小限の正しいアプローチ」(タスク指示どおり): `GameScene.tsx`の
+既存のチャンク追跡ループ(`useFrameLoop(FRAME_ORDER.camera, ...)`、既存の
+`ChunkView`仕組みをそのまま使う)に分岐を追加し、乗車中は
+`{ targetCell: 視点セル(round(eye.x), round(eye.z)), viewRadiusCells:
+PASSENGER_CHUNK_VIEW_RADIUS_CELLS(=48、D1の地形メッシュ半径と同じ) }`を
+`setChunkView`へ渡すだけにした。既存の変更検知(targetCell/viewRadiusCellsが
+同じならstate更新しない)・`CHUNK_VIEW_INTERVAL_MS`スロットルもそのまま効く。
+`WebGpuScenery`/`WebGpuTrackNetwork`/`WebGpuStations`等のフィーダは`chunkView`
+propを経由するだけなので、フィーダ側は無改造で済んだ。
+
+### 地形メッシュの再構築タイミング
+
+D1では「距離しきい値(8セル)を超えたら焼き直す」だけだったが、D2で「乗車開始
+(=モード切替)の瞬間は距離に関わらず即座に焼き直したい」という要求が増えた
+(乗車直後にD1時代の古い視点位置のメッシュが一瞬見えるのを避ける)。
+`WebGpuRenderDriver`に`prevActiveKeyRef`(直前フレームの透視ソース、
+`'ride:<id>' | 'debug' | null`)を追加し、これが変化したフレームは無条件で
+`needsRebake = true`にした。同じ仕組みで、透視パスを抜けた瞬間
+(降車・デバッグexit・乗車中の列車消失)にも地形メッシュチャンクを外す
+(D1で見つけた「クォータービューに透視用メッシュが残留する」不具合の再発防止)。
+
+### 入力ブロック・降車導線
+
+- `GameScene.tsx`の入力レイヤー(`data-testid="game-input-layer"`)へ
+  `pointerEvents: ridingTrainId ? 'none' : 'auto'`を付けるだけ(乗車は「眺めるだけ」の
+  ビューモードなので、建設・選択などの入力を丸ごと無効化する。専用のブロッカーdivは
+  作らず、入力レイヤー自体を無効化する最小実装にした)。
+- 降車導線は3つ: (1) 列車インスペクタの「降車」ボタン(乗車中は「乗車」ボタンが
+  差し替わる)、(2) 右上の「乗車中: 列車○○ [降車]」オーバーレイ(`GameScene.tsx`が
+  `ridingTrainId`があるときだけ描画)、(3) Escキー(`GameUI.tsx`の既存の
+  グローバルkeydownハンドラに`ridingTrainId`があれば降車を割り込ませた)。
+- 乗車中の列車がワールドから消えた場合(到着後の回収など): フレームレベルでは
+  `WebGpuRenderDriver`が`computeRiderCamera`がnullを返した時点で`riderState.trainId`
+  を即座にクリアする(描画が破綻しないように)。React側の表示(`ridingTrainId`)は
+  `GameUI.tsx`の既存の低頻度ポーリング(400ms、乗客数などと同じ間隔)に相乗りして
+  追随させる。
+
+### 地下
+
+`eye.y < 0`のときD1のクリアカラー分岐(空色→ほぼ黒)がそのまま効くので、地下走行中は
+自動的に暗い画面になる。トンネル壁のジオメトリはD1と同じくスコープ外(このplayモード
+プロファイルではまだ十分な視覚情報にならないため、D2以降の課題として据え置く)。
+
+### 検証結果
+
+- Vitest: `passengerView.test.ts`(2件、Red→Green)を含め`npm run test`は1070件green。
+- `npm run build`(tsc+vite)green。`cargo test`(renderer_wgpu)20件green
+  (D2はRust側を変更していないため無変化)。
+- ブラウザ実機(デバッグシナリオ「坂・高架・往復列車」`slopes-elevated-shuttle`):
+  列車をクリックして選択→列車インスペクタの「乗車」ボタンをクリックして乗車、
+  `__webgpuStats.meshChunks`が増加(透視地形メッシュが乗る)・
+  `instancedDrawCalls`が透視パスのインスタンス描画に切り替わることを確認。
+  地平→坂→高架(layer=1、renderPos.y上昇)→地平の一往復をスクリーンショットで確認
+  (地形が透視パースで奥へ収束し、駅舎・線路・木が正しく描画された)。折り返し
+  (進行方向反転)の前後でカメラが破綻せず向きだけ滑らかに入れ替わることを確認。
+  右上の「降車」ボタンをクリックして退出し、クォータービューが乗車前と同一の見た目
+  (残留メッシュ無し、パネルが元の「乗車」ボタン表示)に戻ることを確認した。
+
+### 残るfollow-up(D2で新たに見つかった/据え置いたもの)
+
+- DOMラベルオーバーレイ(`LabelOverlay.tsx`、駅名・列車速度ツールチップ)は
+  `webGpuCameraStateRef`(iso投影)を経由しており、乗車中はこの状態を更新していない
+  (D1の設計を踏襲)ため、ラベルは乗車開始時点の画面位置に取り残される。実害は無い
+  (単に見た目が乗車前の位置のままなだけ)が、乗客視点の没入感を上げるなら
+  「乗車中はラベルオーバーレイを隠す」か「透視投影でラベル位置を再計算する」かの
+  どちらかの対応をD3以降で検討する。
+- 乗車中のフォグ半径・地形メッシュ半径(48セル)は静的な定数のまま。高速で長い直線
+  (特急など)では地平線側のフェードが早く見える可能性があり、将来チューニングの
+  余地がある。
+- 性能ゲート(層A/層B)は引き続き未実施(D1メモのTODOのまま)。
