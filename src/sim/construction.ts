@@ -54,28 +54,52 @@ const inferStationAxis = (railMap: Map<string, CellData>, x: number, z: number):
   return 'ew';
 };
 
-// axisHint(ドラッグ方向のヒント)がそのセルの実状と矛盾しないかを検証する。
-// - 対象セルが既存の線路/駅として何の接続も持たない(真っさらな空セル)場合は、
-//   衝突しようがないのでヒントをそのまま信用する(駅スタブの初期方向を決めるのに必要)。
-// - 既に何らかの接続を持つセルの場合は、ヒントの軸方向に実在の隣接線路/駅セルが
-//   無ければヒントを信用しない。ヒントはポインタのドラッグ量(mousedown→mouseup)の
-//   差分から作る雑な推測値でしかなく、既存の直線区間を単にクリックしただけでも
-//   1セル分のブレで直交方向のヒントが立ってしまうことがある。それをそのまま
-//   connectionsへORすると、実在しない直交接続が混入し、ホームが線路と直交して
-//   描画される(ユーザー報告の不具合の根本原因)。一方、十字乗換駅のように実際に
-//   直交する線路へ向けて意図的にドラッグしたケースはヒント方向に本物の隣接セルが
-//   あるので、この検証を通過して従来通りcrossを形成できる。
-const axisHintIsSupported = (
+// OpenTTD式の駅方向指定: プレイヤーが明示したaxis('ns'/'ew')が、隣接する既存の
+// 「線路(rail)セルのみ」の接続と矛盾していないかを判定する純粋関数。
+// axisはもはやドラッグ方向からの推測ヒントではなく権威的な選択なので、矛盾する
+// 場所には黒く拒否する(以前のように黙って実際のconnectionsへ差し替えたりしない)。
+//
+// 判定対象を『rail』セルだけに絞るのは、隣接する既存『station』セルとの通常の
+// 併合(同軸拡張)・十字乗換駅の形成(直交する既存駅セルへ隣接するだけの延伸)を
+// 妨げないため(それらは別の分岐で正しく処理される)。
+//
+// - onAxisDirs(axisの方向、'ew'ならE/W): その方向の隣接セルが線路で、駅セルへ戻る
+//   方向のビットを持たず、かつ他のビットを持つ場合 → その線路は別の向きへ折れて
+//   いる(駅の軸を素直に延長していない)ので矛盾とみなす。
+// - perpDirs(axisと直交する方向、'ew'ならN/S): その方向の隣接セルが線路で、駅セルへ
+//   戻る方向のビットを持つ場合 → 通過線が駅の側面へ直接食い込んでいる(側面からの
+//   接続=OpenTTDでは許されない構図)ので矛盾とみなす。
+export const stationAxisConflict = (
   railMap: Map<string, CellData>,
-  x: number,
-  z: number,
-  ownConnections: number,
-  hint: StationAxis
+  pos: Pos,
+  axis: 'ns' | 'ew'
 ): boolean => {
-  if (ownConnections === 0) return true;
-  if (hint === 'ns') return hasRailOrStationCell(railMap, x, z - 1) || hasRailOrStationCell(railMap, x, z + 1);
-  if (hint === 'ew') return hasRailOrStationCell(railMap, x - 1, z) || hasRailOrStationCell(railMap, x + 1, z);
-  return true; // 'cross' を明示指定するのは稀な直接呼び出しのみなので無条件に許可する
+  const onAxisDirs = axis === 'ew' ? [DIR.E, DIR.W] : [DIR.N, DIR.S];
+  const perpDirs = axis === 'ew' ? [DIR.N, DIR.S] : [DIR.E, DIR.W];
+
+  const railNeighbour = (dir: number): CellData | undefined => {
+    const v = getVectorFromDir(dir);
+    const cell = railMap.get(toKey(pos.x + v.x, pos.z + v.z));
+    return cell && cell.type === 'rail' ? cell : undefined;
+  };
+
+  for (const dir of onAxisDirs) {
+    const cell = railNeighbour(dir);
+    if (!cell) continue;
+    const conns = cell.connections ?? 0;
+    const backDir = getOppositeDir(dir);
+    if (conns !== 0 && (conns & backDir) === 0) return true;
+  }
+
+  for (const dir of perpDirs) {
+    const cell = railNeighbour(dir);
+    if (!cell) continue;
+    const conns = cell.connections ?? 0;
+    const backDir = getOppositeDir(dir);
+    if ((conns & backDir) !== 0) return true;
+  }
+
+  return false;
 };
 
 // field省略時は空field(=すべて平地)扱いにする。既存呼び出し・既存テストとの互換のため。
@@ -312,6 +336,7 @@ export type BuildFailureReason =
   | 'ramp-conflict'
   | 'needs-adjacent-electrified-rail'
   | 'needs-rail'
+  | 'station-axis-mismatch'
   | GroundRailPlanFailureReason;
 
 /**
@@ -751,6 +776,14 @@ export function applyStationDetailed(
     return { ...state, failure: 'ramp-conflict' };
   }
 
+  // axisはプレイヤーの明示選択(権威的)。'ns'/'ew'を指定した場合は、隣接する
+  // 既存の線路との矛盾(側面食い込み・折れた線路への直結)を厳格にチェックする
+  // (stationAxisConflictのdocコメント参照)。'cross'を直接渡す稀な呼び出しや、
+  // axis省略(従来通り隣接構造から推測する呼び出し)はこのチェックの対象外。
+  if (axis && axis !== 'cross' && stationAxisConflict(state.railMap, pos, axis)) {
+    return { ...state, failure: 'station-axis-mismatch' };
+  }
+
   const neighbours = [
     { x: pos.x + 1, z: pos.z },
     { x: pos.x - 1, z: pos.z },
@@ -774,14 +807,10 @@ export function applyStationDetailed(
     if (cell && cell.type === 'station') pushId(cell.stationId ?? null);
   }
 
-  // 軸(axis)は明示的に渡されればそれを使い、省略時は隣接する既存の線路・駅から推測する
-  // (何も無ければ東西を既定にする)。ただし既存の接続を持つセルに対しては、
-  // ヒントの軸方向に実在の隣接構造が無い限りヒントを採用しない(axisHintIsSupported)。
-  const ownConnections = existingBeforeUpdate && (existingBeforeUpdate.type === 'rail' || existingBeforeUpdate.type === 'station')
-    ? (existingBeforeUpdate.connections ?? 0)
-    : 0;
-  const trustedAxis = axis && axisHintIsSupported(state.railMap, pos.x, pos.z, ownConnections, axis) ? axis : undefined;
-  const resolvedAxis: StationAxis = trustedAxis ?? inferStationAxis(state.railMap, pos.x, pos.z);
+  // 軸(axis)はプレイヤーの明示選択を権威的にそのまま使う(上のstationAxisConflictで
+  // 矛盾は既に排除済み)。省略時のみ、従来通り隣接する既存の線路・駅から推測する
+  // (何も無ければ東西を既定にする)。
+  const resolvedAxis: StationAxis = axis ?? inferStationAxis(state.railMap, pos.x, pos.z);
   const newBits = axisBitsFor(resolvedAxis);
 
   // 既に駅セルで、統合すべき別の駅IDが周囲に無い場合:
@@ -872,6 +901,68 @@ export function applyStation(
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
 ): ConstructionState {
   const result = applyStationDetailed(state, pos, field, towns, axis, townTiles);
+  return result.failure ? state : result;
+}
+
+// OpenTTD式のドラッグ駅建設: 1回のドラッグ操作で軸方向に並んだ複数セルを
+// まとめて建設できる上限セル数。線路(rail)のような自由な長さは許さず、
+// ホーム長として妥当な範囲に留める(既存の類似定数が無かったため新設)。
+export const MAX_STATION_DRAG_CELLS = 8;
+
+/**
+ * ドラッグで軸方向に並んだ複数セルへ、1つの駅としてまとめて設置する詳細版。
+ * セルごとにapplyStationDetailedを順番に適用するだけで、直前に設置したセルは
+ * 次のセルから見て「隣接する既存駅セル」になるため、applyStationDetailed既存の
+ * 併合ロジック(involvedIds)が自然に全セルを同一駅IDへ寄せる(専用のID共有機構は
+ * 不要)。
+ *
+ * - 'occupied'(既にそのセルが同軸で設置済み)はドラッグの重ね塗りとして無視して続行する。
+ * - それ以外の失敗(水域・軸矛盾など)は「その場所には建設できない」という強い理由
+ *   なので、経路全体をno-opにして呼び出し側へそのまま伝える(部分的に成立した
+ *   見た目を残さないため。applyRailPathDetailedの経路全体no-op方針と揃える)。
+ */
+export function applyStationPathDetailed(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  towns: TownData[] = [],
+  axis?: StationAxis,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ApplyDetailedResult {
+  if (path.length === 0) return { ...state };
+  const clampedPath = path.slice(0, MAX_STATION_DRAG_CELLS);
+
+  let current: ConstructionState = state;
+  let anyEffective = false;
+  let hardFailure: BuildFailureReason | undefined;
+
+  for (const pos of clampedPath) {
+    const detailed = applyStationDetailed(current, pos, field, towns, axis, townTiles);
+    if (detailed.failure) {
+      if (detailed.failure !== 'occupied') {
+        hardFailure = detailed.failure;
+        break;
+      }
+      continue;
+    }
+    current = detailed;
+    anyEffective = true;
+  }
+
+  if (hardFailure) return { ...state, failure: hardFailure };
+  if (!anyEffective) return { ...state, failure: 'occupied' };
+  return current;
+}
+
+export function applyStationPath(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  towns: TownData[] = [],
+  axis?: StationAxis,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ConstructionState {
+  const result = applyStationPathDetailed(state, path, field, towns, axis, townTiles);
   return result.failure ? state : result;
 }
 

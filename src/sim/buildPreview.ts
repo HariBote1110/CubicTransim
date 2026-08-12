@@ -10,7 +10,7 @@
 // applyRailPath/applyStationと完全に同一の判定になる(回帰させないための最重要制約)。
 import type { CellData, StationData, RailGauge } from '../types';
 import { toKey } from '../utils';
-import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel } from './construction';
+import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel, StationAxis } from './construction';
 import {
   applyRailPathDetailed,
   applyStationDetailed,
