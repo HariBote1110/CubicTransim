@@ -11,9 +11,11 @@ import {
   isDeadSectionBoundary,
   effectiveRailWeight,
   axleLoadAllowed,
+  effectiveRailOptions,
   type GameRules,
 } from './gameRules';
 import type { CellData } from '../types';
+import type { RailBuildOptions } from './construction';
 
 describe('gameRules: プレイモードのプリセットと逆引き', () => {
   it('4モードのプリセットがplay-modes-plan.mdの定義どおり', () => {
@@ -203,5 +205,37 @@ describe('gameRules: 軌道(何キロレール・対荷重)', () => {
   it('cellAllowsTrainはtrackClasses=falseなら軸重を無視する', () => {
     const cell37: CellData = { type: 'rail', railWeight: 37 };
     expect(cellAllowsTrain(cell37, offRules, 1067, 'diesel', 999)).toBe(true);
+  });
+});
+
+describe('gameRules: effectiveRailOptions(H2 UI→construction境界での概念ストリップ)', () => {
+  const full: RailBuildOptions = { gauge: 1435, electrified: 'ac', protection: 'cbtc', railWeight: 60 };
+
+  it('リアリスティック(全概念あり)ではそのまま通す', () => {
+    expect(effectiveRailOptions(PLAY_MODE_PRESETS.realistic, full)).toEqual(full);
+  });
+
+  it('ライト(gauge無し・electrification無し・s0・trackClasses無し)はすべて剥がす', () => {
+    expect(effectiveRailOptions(PLAY_MODE_PRESETS.light, full)).toEqual({});
+  });
+
+  it('gauge概念が無ければgaugeだけ剥がす', () => {
+    const rules: GameRules = { ...PLAY_MODE_PRESETS.realistic, gauge: false };
+    expect(effectiveRailOptions(rules, full)).toEqual({ electrified: 'ac', protection: 'cbtc', railWeight: 60 });
+  });
+
+  it("electrification==='none'ならelectrifiedだけ剥がす", () => {
+    const rules: GameRules = { ...PLAY_MODE_PRESETS.realistic, electrification: 'none' };
+    expect(effectiveRailOptions(rules, full)).toEqual({ gauge: 1435, protection: 'cbtc', railWeight: 60 });
+  });
+
+  it("signalling!=='s3'ならprotectionだけ剥がす", () => {
+    const rules: GameRules = { ...PLAY_MODE_PRESETS.realistic, signalling: 's2' };
+    expect(effectiveRailOptions(rules, full)).toEqual({ gauge: 1435, electrified: 'ac', railWeight: 60 });
+  });
+
+  it('trackClasses=falseならrailWeightだけ剥がす', () => {
+    const rules: GameRules = { ...PLAY_MODE_PRESETS.realistic, trackClasses: false };
+    expect(effectiveRailOptions(rules, full)).toEqual({ gauge: 1435, electrified: 'ac', protection: 'cbtc' });
   });
 });
