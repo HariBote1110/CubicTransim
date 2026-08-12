@@ -1400,8 +1400,8 @@ describe('stepWorld: 立体交差の十字乗換駅(統合) 地平×高架の同
 });
 
 describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () => {
-  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
-  const ELECTRIFICATION_ONLY_RULES = { gauge: false, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
+  const ELECTRIFICATION_ONLY_RULES = { gauge: false, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
 
   it('電車は非電化区間では経路が見つからず停止したままになる', () => {
     const { railMap, stations } = buildStraightLine(6, 'stA');
@@ -1462,7 +1462,7 @@ describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () =
 });
 
 describe('stepWorld: PM3 交直流デッドセクション', () => {
-  const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const };
+  const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const, trackClasses: false };
 
   it('dc専用車はac区間を含む経路には進入できず停止したままになる', () => {
     const { railMap, stations } = buildStraightLine(6, 'stA');
@@ -1512,7 +1512,7 @@ describe('stepWorld: PM3 交直流デッドセクション', () => {
 });
 
 describe('stepWorld: PM4 き電区間の容量超過ペナルティ', () => {
-  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const };
+  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const, trackClasses: false };
 
   it('セクションの在線数が容量を超えると電車の加速が鈍る(OVERLOAD_ACCEL_FACTOR)', () => {
     const dt = 0.1;
@@ -1563,5 +1563,84 @@ describe('stepWorld: PM4 き電区間の容量超過ペナルティ', () => {
     const baselineRt = baselineWorld.runtimes.get('tBaseline')!;
 
     expect(dieselRt.speedKmh).toBeCloseTo(baselineRt.speedKmh, 5);
+  });
+});
+
+describe('stepWorld: 軌道(何キロレール) — 前方のレール速度上限に間に合うよう制動する', () => {
+  const TRACK_CLASS_RULES = {
+    gauge: true, extendedGauges: true, electrification: 'none' as const, signalling: 's0' as const, trackClasses: true,
+  };
+
+  it('60kg区間からMAX_SPEED_KMHまで加速した列車は、37kg区間(cap=70km/h)に入る前に70km/h以下へ減速し、以後も超過しない', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 150) railMap.set(key, { ...cell, railWeight: 37 });
+      else railMap.set(key, { ...cell, railWeight: 60 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = TRACK_CLASS_RULES;
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    let reachedCappedSection = false;
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x >= 150) {
+        // 制動が間に合っていること(70km/hを大きく超えて突入していない)。
+        expect(rt.speedKmh).toBeLessThanOrEqual(70 + 1e-6);
+        reachedCappedSection = true;
+      }
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(reachedCappedSection).toBe(true);
+  });
+
+  it('37kg区間全体で常に70km/hを超えない(区間内に入ってからの巡航速度も上限どおり)', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 100 && x < 200) railMap.set(key, { ...cell, railWeight: 37 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = TRACK_CLASS_RULES;
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x >= 100 && rt.grid.x < 200) {
+        expect(rt.speedKmh).toBeLessThanOrEqual(70 + 1e-6);
+      }
+      if (rt.stopRemaining > 0) break;
+    }
+  });
+
+  it('trackClasses=falseなら37kgのrailWeightがあっても速度上限を無視する(概念なし)', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 100) railMap.set(key, { ...cell, railWeight: 37 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    // world.rules未設定(旧セーブ相当) = DEFAULT_GAME_RULES(trackClasses:false)
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    let sawAbove70 = false;
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.speedKmh > 70 + 1e-6) sawAbove70 = true;
+      if (rt.stopRemaining > 0) break;
+    }
+    // MAX_SPEED_KMH(100)まで加速できる=軌道の概念が一切効いていない。
+    expect(sawAbove70).toBe(true);
   });
 });

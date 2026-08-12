@@ -82,8 +82,8 @@ const runTicks = (world: SimWorld, dt: number, count: number): SimEvent[] => {
   return events;
 };
 
-const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const };
-const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const, trackClasses: false };
+const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
 
 describe('デッドセクション失速(PM3フォローアップ)', () => {
   it('遅い進入(境界がすぐ隣、静止発進)は失速し、debugStatusに失速が現れる', () => {

@@ -1,5 +1,5 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TownData, Level, RailGauge, SignalKind, TrainProtection } from '../types';
+import type { CellData, StationData, TownData, Level, RailGauge, SignalKind, TrainProtection, RailWeight } from '../types';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
@@ -379,6 +379,8 @@ export interface RailBuildOptions {
   electrified?: 'dc' | 'ac' | boolean;
   /** S3: 保安装置。省略時は既存セルの値を保つ(gauge/electrifiedと同じ規約)。 */
   protection?: TrainProtection;
+  /** 軌道(何キロレール)。省略時は既存セルの値を保つ(gauge/electrifiedと同じ規約)。 */
+  railWeight?: RailWeight;
 }
 
 const addConnectionToCell = (
@@ -398,10 +400,11 @@ const addConnectionToCell = (
     const newGauge = options.gauge ?? existingGauge;
     if (existingGauge !== newGauge) return;
   }
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection'> = {
+  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection' | 'railWeight'> = {
     ...(options.gauge !== undefined ? { gauge: options.gauge } : {}),
     ...(options.electrified !== undefined ? { electrified: options.electrified } : {}),
     ...(options.protection !== undefined ? { protection: options.protection } : {}),
+    ...(options.railWeight !== undefined ? { railWeight: options.railWeight } : {}),
   };
   if (!existing) {
     railMap.set(key, { type: 'rail', connections: dir, ...flags, ...gaugeElectrifiedPatch });
@@ -617,10 +620,11 @@ function applyGroundPathWithElevatedConnect(
       const dir = role.side === 'start' ? nextDir : prevDir;
       const existing = railMap.get(key);
       const upperAtLevel = existing?.uppers?.[role.connectLevel as Level];
-      const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection'> = {
+      const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection' | 'railWeight'> = {
         ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
         ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
         ...(railOptions.protection !== undefined ? { protection: railOptions.protection } : {}),
+        ...(railOptions.railWeight !== undefined ? { railWeight: railOptions.railWeight } : {}),
       };
       railMap.set(key, {
         ...(existing ?? { type: 'rail' }),
@@ -643,10 +647,11 @@ function applyGroundPathWithElevatedConnect(
     const rampDir = role.base < 0 ? getOppositeDir(rampDirRaw) : rampDirRaw;
     const existing = railMap.get(key);
     const merged = orIntoBaseLevel(existing, role.base, axisBits);
-    const rampGaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection'> = {
+    const rampGaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection' | 'railWeight'> = {
       ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
       ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
       ...(railOptions.protection !== undefined ? { protection: railOptions.protection } : {}),
+      ...(railOptions.railWeight !== undefined ? { railWeight: railOptions.railWeight } : {}),
     };
     railMap.set(key, {
       ...merged,
@@ -1222,10 +1227,11 @@ export function applyElevatedPath(
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
   // PM2: セル単位で軌間/電化を共有するため、CellData本体(uppersの外側)へ付ける。
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection'> = {
+  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection' | 'railWeight'> = {
     ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
     ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
     ...(railOptions.protection !== undefined ? { protection: railOptions.protection } : {}),
+    ...(railOptions.railWeight !== undefined ? { railWeight: railOptions.railWeight } : {}),
   };
 
   for (let i = 0; i < path.length; i++) {
@@ -1358,10 +1364,11 @@ export function applyUndergroundPath(
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection'> = {
+  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified' | 'protection' | 'railWeight'> = {
     ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
     ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
     ...(railOptions.protection !== undefined ? { protection: railOptions.protection } : {}),
+    ...(railOptions.railWeight !== undefined ? { railWeight: railOptions.railWeight } : {}),
   };
 
   for (let i = 0; i < path.length; i++) {

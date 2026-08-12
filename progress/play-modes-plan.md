@@ -459,6 +459,34 @@ interface GameRules {
 - 表現は「同一き電区間の容量ペナルティ」と同じく離散近似でよい。
   軌道破壊の連続シミュレーションはやらない
 
+### 実装メモ(0.5.0-Alpha-14a、実装済み)
+
+- `GameRules.trackClasses`(realisticプリセットのみtrue)を追加。`CellData.railWeight?: 37|50|60`
+  (gaugeと同じ「省略時は概念なし/50kgN扱い」規約)、`TrainData.axleLoadT?: number`(動力方式から
+  購入時に導出、`physics.ts`の`AXLE_LOAD_T_BY_POWER`: diesel14t/electric・electric-ac12t/electric-acdc13t)。
+- 速度上限は`physics.ts`の`RAIL_WEIGHT_SPEED_CAP_KMH`(37→70km/h・50→110km/h・60→無制限)。
+  **停止点向けの制動曲線(`permittedSpeedKmh`/`brakingDistanceM`)をそのまま「目標速度が0でない
+  停止問題」へ一般化して再利用**した: 距離d先で目標速度targetに減速し終える制約を、
+  「距離 d + brakingDistanceM(target) 先で停止し終える」問題に変換して既存の式へ渡す
+  (`brakingDistanceM`は`permittedSpeedKmh`の逆関数なので数式が厳密に整合する)。
+  `simulation.ts`の`railApproachCapKmh`(release envelopeの追加項)・hardEnvelopeの
+  レール上限ループ・`rt.braking`中のrequiredDecel計算の3箇所に同じ一般化式を適用し、
+  現在セル(距離0)と前方の`rt.route`セルの両方をカバーする。1tickの移動が制動曲線の
+  想定距離を追い越して境界直後にわずかに超過する離散化誤差を避けるため、
+  `RAIL_CAP_APPROACH_MARGIN_M=5`を接近距離から差し引く安全マージンとして設けた。
+- 軸重は`gameRules.ts`の`axleLoadAllowed`/`RAIL_WEIGHT_AXLE_LIMIT_T`(37→12t・50→16t・60→無制限)。
+  `cellAllowsTrain`に軸重超過チェックを追加(gauge/electrificationと同じ短絡規約)。
+  pathfinding.tsの`RouteQuery.trainAxleLoadT`経由でBFSが軸重超過セルを迂回不能として拒否する。
+  現行の機関車クラス(14t以下)では60kgレール以外を選んでも即詰みにはならないが、将来
+  重量機関車を導入する余地としての枠組み。
+- コストは`economy.ts`の`RAIL_WEIGHT_COST_MULTIPLIER`(37→×0.8・50→×1.0・60→×1.3)。
+  `buildPreview.ts`/`useGameLogic.ts`の両方でrail建設コスト本体にだけ乗算し、
+  electrification/protectionの加算費(架線設備費・保安装置費)は倍率の対象外。
+- UI: 線路ツールに「レール種別」行を追加(`GameUI.tsx`、`rules.trackClasses`のときのみ表示)。
+  改軌ツールのようなレール種別変換ツールは未実装(follow-up)。
+- 描画: レール種別による見た目の違いは無し(意図的、follow-up)。
+- 保線費(摩耗)は計画どおり未実装(離散近似すら導入せず、follow-up)。
+
 ## 遠い将来の夢（絵空事メモ）
 
 3D自前レンダラーであることを活かした長期候補。**当面のスコープ外**だが、

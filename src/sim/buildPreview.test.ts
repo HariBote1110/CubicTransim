@@ -506,6 +506,37 @@ describe('evaluateBuild: PM2 軌間・電化', () => {
   });
 });
 
+describe('evaluateBuild: 軌道(何キロレール)のコスト倍率', () => {
+  it('railWeight省略時は50kgN扱い(1.0倍、従来どおりの平地コスト)', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000, 0, new Map(), undefined, {});
+    expect(p.cost).toBe(3 * RAIL_COST);
+  });
+
+  it('railWeight: 37は0.8倍(安価)', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000, 0, new Map(), undefined, { railWeight: 37 });
+    expect(p.cost).toBeCloseTo(3 * RAIL_COST * 0.8, 6);
+  });
+
+  it('railWeight: 60は1.3倍(高価)', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000, 0, new Map(), undefined, { railWeight: 60 });
+    expect(p.cost).toBeCloseTo(3 * RAIL_COST * 1.3, 6);
+  });
+
+  it('railWeightと電化を同時に選んだ場合、電化費は倍率の対象外で加算される', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000, 0, new Map(), undefined, { railWeight: 60, electrified: true });
+    // 60kgの本体費(1.3倍)+電化費(本体×0.5、電化は37/50/60の影響を受けない元単価基準)
+    expect(p.cost).toBeCloseTo(3 * RAIL_COST * 1.3 + 3 * RAIL_COST * 0.5, 6);
+  });
+});
+
 describe('evaluateBuild: PM2 Stage B 改軌', () => {
   it('regauge引数省略時はno-effect', () => {
     const { railMap, stations, field } = emptyMaps();

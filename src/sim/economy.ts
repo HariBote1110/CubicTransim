@@ -1,7 +1,7 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
 import { toKey } from '../utils';
-import type { CellData, PlatformDoorType, TownData, TrainPower, TrainProtection } from '../types';
+import type { CellData, PlatformDoorType, TownData, TrainPower, TrainProtection, RailWeight } from '../types';
 import type { TerrainField } from './terrainField';
 import { applyRailPathDetailed, resolveGroundRailPlan, MAX_BRIDGE_LENGTH, type GroundRailCellRole } from './construction';
 import { SLOPE_RAIL_COST_MULTIPLIER } from './slopes';
@@ -113,6 +113,20 @@ export function costOfTerrainEdit(cellSteps: number): number {
 // 同一の1セルあたり単価とする、電化設備費を線路本体のコストと分離した単純化)。
 export function costOfElectrification(cellCount: number): number {
   return cellCount * RAIL_COST * ELECTRIFICATION_COST_MULTIPLIER;
+}
+
+// 軌道(何キロレール、リアリスティックのみ)。重いレールほど高価にする。
+// 37kg(軽量・安価)/50kgN(標準・基準単価)/60kg(重量・高価)。線路本体の単価(baseCost)に
+// 乗算する倍率とし、electrification(架線設備費、加算)とは独立に扱う。
+export const RAIL_WEIGHT_COST_MULTIPLIER: Record<RailWeight, number> = {
+  37: 0.8,
+  50: 1.0,
+  60: 1.3,
+};
+
+/** レール種別のコスト倍率。省略時は50kgN(倍率1.0)。 */
+export function costMultiplierForRailWeight(weight?: RailWeight): number {
+  return RAIL_WEIGHT_COST_MULTIPLIER[weight ?? 50];
 }
 
 // PM3: 交流専用車は直流車+20%、交直流両用車は+50%(値は「あったら楽しい」判断、

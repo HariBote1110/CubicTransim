@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower, SignalKind, TrainProtection } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, RailWeight, TrainPower, SignalKind, TrainProtection } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND, SUBSTATION_COST,
@@ -45,6 +45,13 @@ const BASIC_GAUGES: { value: RailGauge; label: string }[] = [
 const EXTENDED_GAUGES: { value: RailGauge; label: string }[] = [
   { value: 762, label: '特殊狭軌' },
   { value: 1372, label: '馬車軌間' },
+];
+
+// 軌道(何キロレール): レール種別の選択肢(リアリスティックのみ)。
+const RAIL_WEIGHT_OPTIONS: { value: RailWeight; label: string; hint: string }[] = [
+  { value: 37, label: '37kg', hint: '軽量・安価(速度上限70km/h、許容軸重12t)。コスト×0.8' },
+  { value: 50, label: '50kgN', hint: '標準(速度上限110km/h、許容軸重16t)。コスト×1.0' },
+  { value: 60, label: '60kg', hint: '重量・高価(速度上限なし、軸重無制限)。コスト×1.3' },
 ];
 
 // S2: 信号種別の選択肢(progress/signalling-plan.md)。
@@ -603,6 +610,28 @@ export const GameUI: React.FC<GameUIProps> = ({
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {/* 軌道(何キロレール): レール種別の選択(線路ツール、rules.trackClasses=trueのときのみ)。
+            省略時は50kgN(DEFAULT_RAIL_WEIGHT)扱いなので既定選択も50kgNにしておく。 */}
+        {buildMode === 'rail' && gameRules.trackClasses && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>レール種別</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {RAIL_WEIGHT_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setRailOptions({ ...railOptions, railWeight: opt.value })}
+                  style={button({ active: (railOptions.railWeight ?? 50) === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

@@ -15,13 +15,14 @@ import {
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
-  trainCostForProtected, costOfProtection,
+  trainCostForProtected, costOfProtection, costMultiplierForRailWeight,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
 import type { TerrainProfile } from '../sim/terrainField';
 import { DEFAULT_GAME_RULES } from '../sim/gameRules';
 import type { GameRules } from '../sim/gameRules';
+import { AXLE_LOAD_T_BY_POWER } from '../sim/physics';
 import { buildFeedingIndex } from '../sim/feeding';
 import { buildBlockIndex } from '../sim/blocks';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
@@ -346,9 +347,9 @@ export const useGameLogic = () => {
             }
           }
           // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
-          cost = groundRampFlags
+          cost = (groundRampFlags
             ? costOfGroundPathWithRamps(path, field, groundRampFlags)
-            : costOfPath('rail', path.length, path, field);
+            : costOfPath('rail', path.length, path, field)) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
           if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
@@ -363,7 +364,7 @@ export const useGameLogic = () => {
           const plan = planElevatedPath(path.length, startEnd, endEnd, elevatedLevel);
           const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
           const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
-          cost = costOfElevatedPath(rampCount, overpassCount);
+          cost = costOfElevatedPath(rampCount, overpassCount) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
           if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
@@ -373,7 +374,7 @@ export const useGameLogic = () => {
           // 経路の全セルへ一律のコスト倍率(UNDERGROUND_RAIL_COST_MULTIPLIER)を課す
           // (buildPreview.tsのcostOfUndergroundPathと同じ計算)。
           const undergroundLevel = level as UndergroundLevel;
-          cost = costOfUndergroundPath(path.length);
+          cost = costOfUndergroundPath(path.length) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
           if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
@@ -460,6 +461,11 @@ export const useGameLogic = () => {
         ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? 1067 } : {}),
         ...(gameRules.electrification !== 'none' ? { power } : {}),
         ...(gameRules.signalling === 's3' && protection ? { protection } : {}),
+        // 軌道(何キロレール): 動力方式から軸重を導出する(physics.tsのAXLE_LOAD_T_BY_POWER)。
+        // trackClasses=falseなら概念が無いため付与しない(従来どおりの挙動)。
+        ...(gameRules.trackClasses
+          ? { axleLoadT: AXLE_LOAD_T_BY_POWER[gameRules.electrification !== 'none' ? power : 'diesel'] }
+          : {}),
     };
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);

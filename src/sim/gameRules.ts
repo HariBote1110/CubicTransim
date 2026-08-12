@@ -24,15 +24,21 @@ export interface GameRules {
   electrification: Electrification;
   /** 信号方式の段階(モード非依存の別軸)。 */
   signalling: Signalling;
+  /**
+   * 軌道(何キロレール・対荷重、progress/play-modes-plan.md「軌道」)の概念の有無。
+   * true(リアリスティックのみ): レール種別(37kg/50kgN/60kg)ごとに速度上限・許容軸重が
+   * 決まり、建設コストも変わる。false: 概念なし(旧セーブ・他モードは挙動変更ゼロ)。
+   */
+  trackClasses: boolean;
 }
 
 export type PlayMode = 'light' | 'normal' | 'advanced' | 'realistic';
 
 export const PLAY_MODE_PRESETS: Record<PlayMode, GameRules> = {
-  light: { gauge: false, extendedGauges: false, electrification: 'none', signalling: 's0' },
-  normal: { gauge: true, extendedGauges: false, electrification: 'modes', signalling: 's0' },
-  advanced: { gauge: true, extendedGauges: false, electrification: 'boundaries', signalling: 's0' },
-  realistic: { gauge: true, extendedGauges: true, electrification: 'feeding', signalling: 's0' },
+  light: { gauge: false, extendedGauges: false, electrification: 'none', signalling: 's0', trackClasses: false },
+  normal: { gauge: true, extendedGauges: false, electrification: 'modes', signalling: 's0', trackClasses: false },
+  advanced: { gauge: true, extendedGauges: false, electrification: 'boundaries', signalling: 's0', trackClasses: false },
+  realistic: { gauge: true, extendedGauges: true, electrification: 'feeding', signalling: 's0', trackClasses: true },
 };
 
 /** 新規ゲーム・旧セーブ読み込み時の既定ルール。現行仕様=ライトと定義する。 */
@@ -54,7 +60,8 @@ export function playModeOf(rules: GameRules): PlayMode | 'custom' {
     m =>
       PLAY_MODE_PRESETS[m].gauge === rules.gauge &&
       PLAY_MODE_PRESETS[m].extendedGauges === rules.extendedGauges &&
-      PLAY_MODE_PRESETS[m].electrification === rules.electrification
+      PLAY_MODE_PRESETS[m].electrification === rules.electrification &&
+      PLAY_MODE_PRESETS[m].trackClasses === rules.trackClasses
   );
   return mode ?? 'custom';
 }
@@ -63,8 +70,8 @@ export function playModeOf(rules: GameRules): PlayMode | 'custom' {
 // progress/play-modes-plan.mdの決定どおり、rules.gauge=falseのときは概念そのものが
 // 「無い」ため、以下の述語はすべて無条件でtrue(=許可)を返す(挙動変更ゼロを保証する)。
 
-import type { RailGauge, CellData, TrainPower } from '../types';
-import { DEFAULT_GAUGE } from '../types';
+import type { RailGauge, CellData, TrainPower, RailWeight } from '../types';
+import { DEFAULT_GAUGE, DEFAULT_RAIL_WEIGHT } from '../types';
 
 /** セルの実効軌間。rules.gauge=falseなら概念が無いためDEFAULT_GAUGE固定。 */
 export function effectiveGauge(cell: CellData | undefined, rules: GameRules): RailGauge {
@@ -96,9 +103,11 @@ export function cellAllowsTrain(
   cell: CellData | undefined,
   rules: GameRules,
   trainGauge: RailGauge,
-  trainPower: TrainPower
+  trainPower: TrainPower,
+  trainAxleLoadT?: number
 ): boolean {
   if (rules.gauge && !gaugesCompatible(effectiveGauge(cell, rules), trainGauge, rules)) return false;
+  if (!axleLoadAllowed(cell, rules, trainAxleLoadT)) return false;
   if (rules.electrification === 'none' || trainPower === 'diesel') return true;
 
   const system = electrificationOf(cell);
@@ -121,4 +130,34 @@ export function isDeadSectionBoundary(a: CellData | undefined, b: CellData | und
   const sa = electrificationOf(a);
   const sb = electrificationOf(b);
   return sa !== null && sb !== null && sa !== sb;
+}
+
+// --- 軌道(何キロレール・対荷重、progress/play-modes-plan.md「軌道」) ------------------
+
+/** セルの実効レール種別。rules.trackClasses=falseなら概念が無いためDEFAULT_RAIL_WEIGHT固定。 */
+export function effectiveRailWeight(cell: CellData | undefined, rules: GameRules): RailWeight {
+  if (!rules.trackClasses) return DEFAULT_RAIL_WEIGHT;
+  return cell?.railWeight ?? DEFAULT_RAIL_WEIGHT;
+}
+
+/**
+ * レール種別ごとの許容軸重(t)。この値を超える軸重の列車は入線不可(cellAllowsTrainが参照)。
+ * 60kgレールは無制限(現行の機関車クラスでは事実上効かない上限のため設けない)。
+ */
+export const RAIL_WEIGHT_AXLE_LIMIT_T: Record<RailWeight, number> = {
+  37: 12,
+  50: 16,
+  60: Infinity,
+};
+
+/** レールの許容軸重を超えていないか。rules.trackClasses=falseなら常にtrue。 */
+export function axleLoadAllowed(
+  cell: CellData | undefined,
+  rules: GameRules,
+  trainAxleLoadT: number | undefined
+): boolean {
+  if (!rules.trackClasses) return true;
+  if (trainAxleLoadT === undefined) return true;
+  const limit = RAIL_WEIGHT_AXLE_LIMIT_T[effectiveRailWeight(cell, rules)];
+  return trainAxleLoadT <= limit;
 }

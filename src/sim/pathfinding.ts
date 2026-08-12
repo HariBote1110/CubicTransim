@@ -79,6 +79,8 @@ export interface RouteQuery {
   rules?: GameRules;
   trainGauge?: RailGauge;
   trainPower?: TrainPower;
+  /** 軌道(何キロレール): 列車の軸重(t)。省略時はcellAllowsTrainが軸重判定をスキップする。 */
+  trainAxleLoadT?: number;
   /**
    * PM4: き電インフラの索引(sim/feeding.ts)。rules.electrification==='feeding'かつ
    * 電車(trainPower!=='diesel')のときだけ、給電されていないセルへの進入を拒否する
@@ -245,7 +247,7 @@ export function calculateRouteWithStop(
 ): RouteResult {
   const {
     start, prev: prevGrid, targetStationId: targetId, cars, stopLocation = 'middle',
-    rules = DEFAULT_GAME_RULES, trainGauge = 1067, trainPower = 'diesel', feeding,
+    rules = DEFAULT_GAME_RULES, trainGauge = 1067, trainPower = 'diesel', trainAxleLoadT, feeding,
   } = query;
 
   const targetSt = stations.get(targetId);
@@ -305,7 +307,7 @@ export function calculateRouteWithStop(
               const targetCell = railMap.get(toKey(tx, tz));
               // PM2: 軌間ミスマッチ・電車が非電化セルへ進入することを拒否する。
               // rules.gauge=false(ライト相当)・electrification='none'なら常にtrue。
-              if (!cellAllowsTrain(targetCell, rules, trainGauge, trainPower)) continue;
+              if (!cellAllowsTrain(targetCell, rules, trainGauge, trainPower, trainAxleLoadT)) continue;
               // PM4: 給電段階(rules.electrification==='feeding')では、電車が給電されて
               // いないセルへ進入することも拒否する(design decision 3)。気動車は対象外。
               if (

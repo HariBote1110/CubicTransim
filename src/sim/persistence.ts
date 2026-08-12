@@ -284,6 +284,9 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
     terrainProfile: data.terrainProfile ?? 'normal',
     // PM2: extendedGaugesはv17後期(PM1)〜PM2直前のセーブに存在しない可能性があるため、
     // rulesオブジェクト自体はあってもフィールド単位でfalse(基本ラインナップ)を補う。
-    rules: data.rules ? { ...data.rules, extendedGauges: data.rules.extendedGauges ?? false } : DEFAULT_GAME_RULES,
+    // 軌道(trackClasses)も同様に、この機能追加より前のセーブには存在しないため補う。
+    rules: data.rules
+      ? { ...data.rules, extendedGauges: data.rules.extendedGauges ?? false, trackClasses: data.rules.trackClasses ?? false }
+      : DEFAULT_GAME_RULES,
   };
 }

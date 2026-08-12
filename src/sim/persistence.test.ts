@@ -295,6 +295,39 @@ describe('persistence: PM3 交直流電化(dc/ac)のラウンドトリップ', (
   });
 });
 
+describe('persistence: 軌道(何キロレール)のラウンドトリップ', () => {
+  it('railMapのrailWeightとrules.trackClassesがJSON経由で往復する', () => {
+    const railMap = new Map<string, CellData>([
+      ['0,0', { type: 'rail', connections: 1, railWeight: 37 }],
+      ['1,0', { type: 'rail', connections: 1, railWeight: 60 }],
+    ]);
+    const rules = { ...PLAY_MODE_PRESETS.realistic };
+    const saveData = serialiseWorld(
+      railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map(), 'normal', 'normal', rules
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.railMap.get('0,0')?.railWeight).toBe(37);
+    expect(restored!.railMap.get('1,0')?.railWeight).toBe(60);
+    expect(restored!.rules.trackClasses).toBe(true);
+  });
+
+  it('trackClassesが無い旧セーブはfalse(概念なし)として読み込む', () => {
+    const saveData = serialiseWorld(
+      new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map(), 'normal', 'normal', DEFAULT_GAME_RULES
+    );
+    const raw = JSON.parse(JSON.stringify(saveData));
+    delete (raw.rules as { trackClasses?: boolean }).trackClasses;
+    const restored = deserialiseWorld(raw);
+    expect(restored).not.toBeNull();
+    expect(restored!.rules.trackClasses).toBe(false);
+  });
+});
+
 describe('persistence: PM4 変電所(substation)のラウンドトリップ', () => {
   it('type: \'substation\'のセルはrailMapの他のセルと同じくJSON経由で往復する(専用フィールドは不要)', () => {
     const railMap = new Map<string, CellData>([

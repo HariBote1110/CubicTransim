@@ -157,6 +157,35 @@ export function rampDecel(
   return currentMs2 + Math.sign(diff) * maxStep;
 }
 
+/**
+ * 軌道(何キロレール、progress/play-modes-plan.md「軌道」)のレール種別ごとの速度上限(km/h)。
+ * 制動曲線(permittedSpeedKmh/brakingDistanceM)がここを直接消費するため物理定数として
+ * physics.tsに置く(コスト・軸重はゲームルール寄りなのでeconomy.ts/gameRules.tsに分離)。
+ * 60kgレールは無制限(=線区の最高速度がそのまま上限になる)。
+ */
+export const RAIL_WEIGHT_SPEED_CAP_KMH: Record<37 | 50 | 60, number> = {
+  37: 70,
+  50: 110,
+  60: Infinity,
+};
+
+/** レール種別から速度上限を引く。省略(undefined)は50kgN扱い(呼び出し側の既定と揃える)。 */
+export function railWeightSpeedCapKmh(weight: 37 | 50 | 60 | undefined): number {
+  return RAIL_WEIGHT_SPEED_CAP_KMH[weight ?? 50];
+}
+
+/**
+ * 動力方式ごとの軸重(t、リアリスティックのみ)。購入時にTrainData.axleLoadTへ書き込む
+ * (economy.ts/useGameLogicの購入処理)。将来、機関車ごとに異なる軸重を持たせる余地がある
+ * ので定数テーブルはここで単純に動力方式にだけ紐づける。
+ */
+export const AXLE_LOAD_T_BY_POWER: Record<'diesel' | 'electric' | 'electric-ac' | 'electric-acdc', number> = {
+  diesel: 14,
+  electric: 12,
+  'electric-ac': 12,
+  'electric-acdc': 13,
+};
+
 // OpenTTD 1tick相当(約1/30秒)を単位に減衰を刻む。
 const OVERSPEED_TICK_S = 1 / 30;
 

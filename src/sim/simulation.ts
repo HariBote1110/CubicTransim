@@ -28,7 +28,7 @@ import { tryReserve, releaseCell, findSafeSegmentEnd, findDepartureSegmentEnd, r
 import { blocksOccupiedByOthers, type BlockIndex } from './blocks';
 import {
   computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
-  permittedSpeedKmh, rampDecel, brakingDistanceM, BRAKE_JERK_MS3,
+  permittedSpeedKmh, rampDecel, brakingDistanceM, BRAKE_JERK_MS3, railWeightSpeedCapKmh,
 } from './physics';
 import {
   PASSENGER_SPAWN_RATE,
@@ -57,6 +57,13 @@ export const DECEL_KMH_S = 20.0;
 // 信号・予約末端で「手前に止まる」ために使う。駅の停止位置には適用しない
 // (停止位置そのものを狙うのが正しく、マージンを引くと永遠に手前で漸近してしまう)。
 export const BRAKING_MARGIN_M = 0.5;
+
+// 軌道(何キロレール): レール速度上限への接近距離から差し引く安全マージン(m)。
+// 停止点向けのBRAKING_MARGIN_Mより大きく取る。停止(target=0)と違い速度上限への
+// 接近は「その場で止まれば帳尻が合う」余地が無く、1tickぶんの移動(speed×dt)が
+// 制動曲線の計算を追い越して境界を跨いだ直後にわずかに上限を超える離散化誤差が
+// 生じやすいため、その分の先読み余裕をあらかじめ距離から差し引いておく。
+export const RAIL_CAP_APPROACH_MARGIN_M = 5;
 // 停止点までの残距離がこの値以下になったら停車完了とみなす(m)。
 // 減速カーブは理論上有限時間で0に収束するが、dtが粗い場合に停止直前で
 // 極低速のまま刻み続けるのを防ぐスナップ。1セル=30mに対し十分小さい値にする。
@@ -580,6 +587,40 @@ const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
   return dist;
 };
 
+// 軌道(何キロレール): 現在地から前方に見えている最も厳しいレール速度上限へ、
+// 今の位置からブレーキを掛け始めて間に合う速度(km/h)。既存の停止点向け制動曲線
+// (permittedSpeedKmh/brakingDistanceM)をそのまま使い回す。目標速度が0でない点だけが
+// 通常の停止制御と異なるため、「距離d先で目標速度targetに減速し終える」を
+// 「(brakingDistanceM(target)を先取りした)距離 d + brakingDistanceM(target) 先で
+// 停止し終える」問題に還元して同じ式を適用する(brakingDistanceMはpermittedSpeedKmhの
+// 逆関数なので、この変換で数式が完全に整合する)。
+// rules.trackClasses=falseなら概念が無いため常にInfinity(呼び出し側でMAX_SPEED_KMHとminされる)。
+const railApproachCapKmh = (
+  world: SimWorld,
+  rt: TrainRuntime,
+  rules: GameRules,
+  decelMs2: number,
+  jerkMs3: number
+): number => {
+  if (!rules.trackClasses) return Infinity;
+  const currentCell = world.railMap.get(toKey(rt.grid.x, rt.grid.z));
+  let cap = railWeightSpeedCapKmh(currentCell?.railWeight);
+  for (let i = 0; i < rt.route.length; i++) {
+    const cell = world.railMap.get(toKey(rt.route[i].x, rt.route[i].z));
+    const cellCap = railWeightSpeedCapKmh(cell?.railWeight);
+    if (!isFinite(cellCap)) continue;
+    const dist = Math.max(0, distanceAlongRouteTo(rt, i) - RAIL_CAP_APPROACH_MARGIN_M);
+    const approach = permittedSpeedKmh(
+      dist + brakingDistanceM(cellCap, decelMs2, jerkMs3),
+      decelMs2,
+      jerkMs3,
+      0
+    );
+    cap = Math.min(cap, approach);
+  }
+  return cap;
+};
+
 // route[idx]へ入る区間(route[idx-1]→route[idx]、idx=0なら rt.grid→route[0])の長さ(m)
 const segmentLengthInto = (rt: TrainRuntime, idx: number): number => {
   const to = rt.route[idx];
@@ -869,6 +910,7 @@ const stepTrain = (
       rules,
       trainGauge: train.gauge ?? 1067,
       trainPower: train.power ?? 'diesel',
+      trainAxleLoadT: train.axleLoadT,
       feeding: world.feeding,
     });
     let newPath = routeResult.path;
@@ -913,6 +955,7 @@ const stepTrain = (
           rules,
           trainGauge: train.gauge ?? 1067,
           trainPower: train.power ?? 'diesel',
+          trainAxleLoadT: train.axleLoadT,
           feeding: world.feeding,
         });
         newPath = routeResult.path;
@@ -958,7 +1001,8 @@ const stepTrain = (
   // PBS予約の取得・延長を試みる(取得済み区間の末端が制動距離+マージン以内に
   // 近づいたら、次のsafe waiting pointまでの延長を試みる)。
   // PM2: rules省略時(旧セーブ・デバッグシナリオ)はDEFAULT_GAME_RULES(ライト相当)に短絡する。
-  ensureReservation(world, train, rt, world.rules ?? DEFAULT_GAME_RULES, events);
+  const rules = world.rules ?? DEFAULT_GAME_RULES;
+  ensureReservation(world, train, rt, rules, events);
 
   if (rt.reservedEndIndex < 0) {
     // 次のsafe waiting pointまでの区間がまだ1つも予約できていない
@@ -1040,17 +1084,40 @@ const stepTrain = (
   const margin = obstacleType === 'station' ? 0 : BRAKING_MARGIN_M;
   const usableDistance = Math.max(0, limitDistance - margin);
 
+  // 軌道(何キロレール): 前方(現在セル含む)のレール速度上限へ、今の位置から間に合う
+  // ための許容速度(km/h)。停止点への制動(target速度0)と同じ制動曲線を、target速度が
+  // cap(≠0)である問題に一般化して適用する(railApproachCapKmhのdocコメント参照)。
+  // rules.trackClasses=falseなら常にInfinity(無条件で無関係)。
+  const railCapKmh = railApproachCapKmh(world, rt, rules, serviceDecelMs2, BRAKE_JERK_MS3);
+
   // ブレーキ指令のしきい値。「今ブレーキを緩解している状態から、ジャークで常用最大まで
   // 立ち上げて停止する」のに必要な距離を織り込んだ包絡線。これを超えたら制動に入る。
   // 一度制動に入ると、実速度はこの包絡線より必ず上に留まる(既に込めているぶん有利なため)
   // ので、制動中に加速側へ戻って脈動することがない。
   const releaseEnvelopeKmh = Math.min(
     MAX_SPEED_KMH,
+    railCapKmh,
     permittedSpeedKmh(usableDistance, serviceDecelMs2, BRAKE_JERK_MS3, 0)
   );
   // ジャーク制限を無視した常用ブレーキの包絡線。絶対に超えてはならない上限で、
   // 終盤は sqrt(2ad) に従って有限時間で0へ収束する(=だらだらクロールしない)。
-  const hardEnvelopeKmh = Math.sqrt(2 * serviceDecelMs2 * usableDistance) * 3.6;
+  // 軌道の速度上限も同じ形の式(sqrt(target² + 2ad))で織り込み、より厳しい方を採る。
+  let hardEnvelopeKmh = Math.sqrt(2 * serviceDecelMs2 * usableDistance) * 3.6;
+  if (rules.trackClasses) {
+    // 現在セル自身の速度上限(距離0)。列車がまさに制限区間の中にいる場合はこれが効く
+    // (rt.routeは未通過の先のセルしか含まないため、現在セルはここで別途扱う必要がある)。
+    const currentCap = railWeightSpeedCapKmh(world.railMap.get(toKey(rt.grid.x, rt.grid.z))?.railWeight);
+    if (isFinite(currentCap)) hardEnvelopeKmh = Math.min(hardEnvelopeKmh, currentCap);
+    for (let i = 0; i < rt.route.length; i++) {
+      const cell = world.railMap.get(toKey(rt.route[i].x, rt.route[i].z));
+      const cap = railWeightSpeedCapKmh(cell?.railWeight);
+      if (!isFinite(cap)) continue;
+      const dist = Math.max(0, distanceAlongRouteTo(rt, i) - RAIL_CAP_APPROACH_MARGIN_M);
+      const capMs = cap / 3.6;
+      const hard = Math.sqrt(Math.max(0, capMs * capMs + 2 * serviceDecelMs2 * dist)) * 3.6;
+      hardEnvelopeKmh = Math.min(hardEnvelopeKmh, hard);
+    }
+  }
 
   if (limitDistance >= 9999) {
     rt.debugStatus = `Accelerating (${Math.round(rt.speedKmh)} km/h)`;
@@ -1082,6 +1149,14 @@ const stepTrain = (
     // 緩やかに落とす(applyOverspeedDecay)。
     rt.speedKmh = applyOverspeedDecay(rt.speedKmh, Math.min(releaseEnvelopeKmh, MAX_SPEED_KMH), dt);
     rt.brakeDecelMs2 = 0;
+  } else if (rt.speedKmh > hardEnvelopeKmh) {
+    // 軌道(何キロレール)の制動曲線(hardEnvelopeKmh)を超えている(前方のレール速度上限に
+    // 間に合わなくなった、または既に速度上限を超えたセルへ進んでしまった)場合も、
+    // 通常のブレーキラッチ(rt.braking)を待たず非常制動で追いつく(design: 停止点向けの
+    // hardEnvelope超過時の非常制動と同じ扱い)。
+    rt.speedKmh = Math.max(hardEnvelopeKmh, rt.speedKmh - EMERGENCY_DECEL_KMH_S * dt);
+    rt.brakeDecelMs2 = serviceDecelMs2;
+    rt.braking = true;
   } else if (rt.braking) {
     // 制動中。「常に常用最大で込める」のではなく、停止点でちょうど0になるのに必要な
     // 減速度 aReq = v²/(2d) を目標にし、ジャーク制限つきで追従させる(サーボ制御)。
@@ -1091,9 +1166,24 @@ const stepTrain = (
     // 必要ぶんだけ込めれば、ブレーキ開始から停止まで一定の当たりで滑らかに減速し、
     // 有限時間でちょうど停止点に着く。
     const speedMs = rt.speedKmh / 3.6;
-    const requiredDecelMs2 = usableDistance > 1e-6
+    let requiredDecelMs2 = usableDistance > 1e-6
       ? (speedMs * speedMs) / (2 * usableDistance)
       : serviceDecelMs2;
+    // 軌道(何キロレール): 前方のレール速度上限にも、ちょうど間に合う減速度で追従する
+    // (複数の制約のうち、最も強い減速を要求するものに従う)。
+    if (rules.trackClasses) {
+      for (let i = 0; i < rt.route.length; i++) {
+        const cell = world.railMap.get(toKey(rt.route[i].x, rt.route[i].z));
+        const cap = railWeightSpeedCapKmh(cell?.railWeight);
+        if (!isFinite(cap)) continue;
+        const dist = Math.max(0, distanceAlongRouteTo(rt, i) - RAIL_CAP_APPROACH_MARGIN_M);
+        if (dist <= 1e-6) continue;
+        const capMs = cap / 3.6;
+        if (speedMs <= capMs) continue;
+        const need = (speedMs * speedMs - capMs * capMs) / (2 * dist);
+        requiredDecelMs2 = Math.max(requiredDecelMs2, need);
+      }
+    }
     const desiredDecelMs2 = Math.min(serviceDecelMs2, requiredDecelMs2);
     rt.brakeDecelMs2 = rampDecel(rt.brakeDecelMs2 ?? 0, desiredDecelMs2, BRAKE_JERK_MS3, dt);
     let next = rt.speedKmh - rt.brakeDecelMs2 * 3.6 * dt;
