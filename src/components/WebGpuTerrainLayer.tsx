@@ -202,11 +202,17 @@ export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
       },
       exit() {
         perspectiveDebugState.active = false;
+        perspectiveDebugState.lastTerrainCentre = null;
+        // 透視パス専用の地形メッシュチャンクを外す。残したままだとクォータービューの
+        // Surfaceクラス描画(iso投影)にもそのまま乗ってしまい、地形の上に別の地形が
+        // 二重に(等角投影のずれた位置で)描かれてしまう。
+        layerRef.current?.removeMeshChunk(PERSPECTIVE_TERRAIN_CHUNK_ID);
       },
     };
     return () => {
       delete (window as any).__perspectiveDebug;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useFrameLoop(FRAME_ORDER.render, () => {
