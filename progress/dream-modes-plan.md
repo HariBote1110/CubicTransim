@@ -604,3 +604,59 @@ pointの種別しか分からない)ことに起因する。より精密にす�
   「プレイヤーが手動で信号を無視した」場合と「S3の自動運転が信号待ちに入った」場合を
   区別していない。手動運転はプレイヤーの意図的な行為なので、確率をS3より高くする
   (「わざと」やっている分、危険度を上げる)といった調整の余地がある。
+
+## マージ最終確認: 性能ゲート(D1レンダラー変更の回帰確認)と統合ブランチへの合流
+
+D1(透視投影パス追加)・renderer_wgpuのモジュール分割(lib.rsから
+edits.rs/mesh_pipeline.rs/meshes.rs/perspective.rs/projection.rs/wasm/*.rsへ分離)を
+含むため、`progress/quarterview-renderer-spec.md`が定める性能ゲート(層A/層B)を
+マージ前に再確認した。クォータービュー描画パス自体はバイト単位で無改造(D1のメモ参照)
+なので回帰は無い想定だが、実測で確認する。
+
+### 層B(Mac / Apple M4 / Metal、3回計測、`renderer/renderer_wgpu` の `layer_b_bench`
+release バイナリ、`cargo run --release --bin layer_b_bench -- <out.json>`)
+
+T1〜T7 のstrict閾値すべて3回とも全pass(T8はプロトタイプスコープ外、既定どおりpass:null)。
+
+- run1: T1 median 0.652ms/p99 1.289ms、T2 median 0.383ms/p99 0.984ms、T3 hitch 0/10260、
+  T4 median 2.443ms/p99 3.109ms、T5 hitch 0、T6 firstFrame 8.40ms、T7 median 0.0ms/p99 0.0ms。
+- run2: T1 median 0.651ms/p99 1.323ms、T2 median 0.384ms/p99 1.071ms、T3 hitch 0/10260、
+  T4 median 2.443ms/p99 3.092ms、T5 hitch 0、T6 firstFrame 6.20ms。
+- run3: T1 median 0.653ms/p99 1.353ms、T2 median 0.382ms/p99 1.087ms、T3 hitch 0/10260、
+  T4 median 2.439ms/p99 3.084ms、T5 hitch 0、T6 firstFrame 6.87ms。
+
+R4系の既存メモ(T1 median≈0.6〜0.65ms、T4 median≈2.4ms)と同じ数値帯で、D1の透視パス
+追加・モジュール分割による回帰は無いことを確認した。なお最初の実行は`-- --help`を
+出力先パス引数として渡してしまう操作ミス(バイナリの第1引数=出力JSONパスであり
+`--help`オプション自体は存在しない)で、その回だけzoom-roundtrip中に1フレームの
+ヒッチ(cpuMs max 265ms、システム側のスケジューリング由来と推測)を観測したため
+正式な計測から除外し、上記の3回はすべて出力パスを明示した回で撮り直した
+(ファイル`--help`は誤操作の産物として削除済み)。
+
+### 層A(VM・headless、`node renderer/bench/run-layer-a.mjs --browser-exact
+--check-ts-migration`)
+
+**このMac(層Bの実行環境)からは実行していない。** 層Aの定義(基準ベンチ環境=
+i5-13400F上のUbuntu Server VM、借用スライス、SwiftShader/Lavapipeソフトウェア
+ラスタライザ)は特定のVM環境そのものを指しており、このスクリプトを技術的にMac上で
+実行すること自体は可能でも、Metal(実GPU)バックエンドの結果になり層Aが厳格判定する
+「CPU側パイプラインとVM環境での挙動」の代わりにはならない(見せかけの計測になる)。
+このセッションにはそのVMへのアクセス手段が無いため、層Aは**未実施**として記録する。
+D1の変更(透視パス追加はコンピュート側のノイズ・タイル生成を触っていない、
+lib.rsのモジュール分割は関数の再配置のみで内容は不変)から、層AのA1〜A8が影響を
+受ける可能性は低いと考えられるが、これは推測であり実測ではない。次に層Aを回せる
+環境(VMアクセスがある回)で必ず確認すること。
+
+### 統合ブランチへの合流
+
+`git fetch origin`で確認したところ`origin/feature/stopping-and-diorama-visuals`は
+このブランチをフォークした時点(53bc17f)から動いていなかった。そのため
+`feature/perspective-camera`を`feature/stopping-and-diorama-visuals`へ統合する作業は
+コンフリクトの無い**fast-forward**だった(このworktreeでは元のfeature/perspective-camera
+ブランチが既にチェックアウト済みのため、一時ローカルブランチ
+`tmp-ffm-stopping-diorama`をorigin/feature/stopping-and-diorama-visualsから作成し、
+そこへfeature/perspective-cameraをfast-forwardマージしてから
+`git push origin tmp-ffm-stopping-diorama:feature/stopping-and-diorama-visuals`で反映、
+作業後に一時ブランチを削除した。force-pushは使っていない)。マージ後の状態で
+`npm run test`(1210件)・`npm run build`・`cargo test`(20件)・`npm run build:renderer`
+をすべて再実行しgreenを確認した。
