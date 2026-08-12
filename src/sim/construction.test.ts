@@ -5,9 +5,13 @@ import {
   applyRailPath,
   applyRailPathDetailed,
   applyStation,
+  applyStationDetailed,
   applyDepot,
+  applyDepotDetailed,
   applySubstation,
+  applySubstationDetailed,
   applySignal,
+  applySignalDetailed,
   applyBridge,
   applyElevatedPath,
   applyElevatedStation,
@@ -25,6 +29,7 @@ import {
   type ElevatedEndPlan,
   type ElevatedPathPlan,
   type BuildLevel,
+  type BuildFailureReason,
 } from './construction';
 import { fieldFromMaps } from './terrainField';
 import type { TerrainField } from './terrainField';
@@ -1882,5 +1887,147 @@ describe('applyRegaugePath: PM2 Stage B 改軌ツール', () => {
     state = applyStation(state, { x: 1, z: 0 }, undefined, []);
     const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], 1435);
     expect(result).toBe(state);
+  });
+});
+
+describe('applyStationDetailed/applyDepotDetailed/applySubstationDetailed/applySignalDetailed: 失敗理由(BuildFailureReason)', () => {
+  it('水域には駅を建てられずfailure:waterが返る', () => {
+    const state = emptyState();
+    const field: TerrainField = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(0, 0), 'water']]), 45);
+    const result = applyStationDetailed(state, { x: 0, z: 0 }, field);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('water');
+  });
+
+  it('非flatな地形には駅を建てられずfailure:not-flatが返る', () => {
+    const state = emptyState();
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: () => [0, 0, 0, 1],
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const result = applyStationDetailed(state, { x: 0, z: 0 }, field);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('not-flat');
+  });
+
+  it('既に駅があるセルにはfailure:occupiedが返る', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 0, z: 0 });
+    const result = applyStationDetailed(state, { x: 0, z: 0 });
+    // 同一駅IDへの再設置は真のno-op（バグ1/2対策）なのでoccupied扱い
+    expect(result.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('車庫セルの上にはfailure:occupiedが返る', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 0, z: 0 });
+    const result = applyStationDetailed(state, { x: 0, z: 0 });
+    expect(result.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('車庫は水域にはfailure:water、既存セルにはfailure:occupied', () => {
+    const state0 = emptyState();
+    const waterField: TerrainField = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(0, 0), 'water']]), 45);
+    const waterResult = applyDepotDetailed(state0, { x: 0, z: 0 }, waterField);
+    expect(waterResult.failure).toBe<BuildFailureReason>('water');
+
+    let state = emptyState();
+    state = applyDepot(state, { x: 1, z: 0 });
+    const occupiedResult = applyDepotDetailed(state, { x: 1, z: 0 });
+    expect(occupiedResult.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('変電所は電化railに隣接しない場所にfailure:needs-adjacent-electrified-rail', () => {
+    const state = emptyState();
+    const result = applySubstationDetailed(state, { x: 5, z: 5 });
+    expect(result.failure).toBe<BuildFailureReason>('needs-adjacent-electrified-rail');
+  });
+
+  it('変電所は既存セルの上にfailure:occupied', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { electrified: 'dc' });
+    state = applyStation(state, { x: 0, z: 1 });
+    const result = applySubstationDetailed(state, { x: 0, z: 1 });
+    expect(result.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('信号は線路・駅の無いセルにfailure:needs-rail', () => {
+    const state = emptyState();
+    const result = applySignalDetailed(state, [{ x: 0, z: 0 }]);
+    expect(result.failure).toBe<BuildFailureReason>('needs-rail');
+  });
+
+  it('信号は非flatなセルにfailure:not-flat', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: () => [0, 0, 0, 1],
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const result = applySignalDetailed(state, [{ x: 0, z: 0 }], field);
+    expect(result.failure).toBe<BuildFailureReason>('not-flat');
+  });
+
+  it('建設できる場合はfailureが付かない', () => {
+    const state = emptyState();
+    const result = applyStationDetailed(state, { x: 0, z: 0 });
+    expect(result.failure).toBeUndefined();
+  });
+});
+
+describe('applyRailPathDetailed: 失敗理由(BuildFailureReason)', () => {
+  const townTiles = new Map([[toKey(0, 0), { townId: 't1', kind: 'house' as const }]]);
+
+  it('家タイルを通る地平線路はfailure:house-tile', () => {
+    const state = emptyState();
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+    const result = applyRailPathDetailed(state, path, undefined, townTiles);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('house-tile');
+  });
+
+  it('既存の坂セルと干渉する経路はfailure:ramp-conflict', () => {
+    // 高架接続(buildPreview.test.tsの「浮いた高架の端への自動接続」と同型)で
+    // (2,0)/(3,0)を坂セルにし、その坂と直交する接続を追加してramp-conflictを起こす。
+    let state = emptyState();
+    state = applyElevatedPath(
+      state,
+      Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })),
+      undefined, 1
+    );
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+    const rampCell = state.railMap.get(toKey(2, 0));
+    expect(rampCell?.ramp).toBeDefined();
+    const result = applyRailPathDetailed(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }]);
+    expect(result.failure).toBe<BuildFailureReason>('ramp-conflict');
+  });
+
+  it('other-slopeなど地形都合の建設不可はGroundRailPlanFailureReasonがそのままfailureに入る', () => {
+    const state = emptyState();
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: (x) => {
+        const ix = Math.round(x);
+        if (ix === -1) return [2, 2, 2, 2];
+        if (ix === 0) return [2, 2, 1, 2];
+        return [2, 2, 2, 2];
+      },
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+    const result = applyRailPathDetailed(state, path, field);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('other-slope');
+  });
+
+  it('建設できる場合はfailureが付かない', () => {
+    const state = emptyState();
+    const result = applyRailPathDetailed(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    expect(result.failure).toBeUndefined();
   });
 });

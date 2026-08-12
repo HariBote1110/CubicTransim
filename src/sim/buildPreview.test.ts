@@ -577,3 +577,62 @@ describe('evaluateBuild: PM2 Stage B 改軌', () => {
     expect(p.reason).toBe('insufficient-funds');
   });
 });
+
+describe('evaluateBuild: 失敗理由(failure)の伝播', () => {
+  it('水域には駅を建てられずfailure:water', () => {
+    const { railMap, stations, terrain, field } = emptyMaps();
+    terrain.set(toKey(0, 0), 'water');
+    const p = evaluateBuild('station', [{ x: 0, z: 0 }], railMap, stations, field, 100_000);
+    expect(p.reason).toBe('no-effect');
+    expect(p.failure).toBe('water');
+  });
+
+  it('既に駅があるセルにはfailure:occupied', () => {
+    const { railMap, stations, field } = emptyMaps();
+    railMap.set(toKey(0, 0), { type: 'station', connections: DIR.E | DIR.W, stationId: 'st1' });
+    const p = evaluateBuild('station', [{ x: 0, z: 0 }], railMap, stations, field, 100_000);
+    expect(p.reason).toBe('no-effect');
+    expect(p.failure).toBe('occupied');
+  });
+
+  it('電化railに隣接しない変電所はfailure:needs-adjacent-electrified-rail', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('substation', [{ x: 5, z: 5 }], railMap, stations, field, 100_000);
+    expect(p.reason).toBe('no-effect');
+    expect(p.failure).toBe('needs-adjacent-electrified-rail');
+  });
+
+  it('線路の無いセルへの信号はfailure:needs-rail', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const p = evaluateBuild('signal', [{ x: 0, z: 0 }], railMap, stations, field, 100_000);
+    expect(p.reason).toBe('no-effect');
+    expect(p.failure).toBe('needs-rail');
+  });
+
+  it('地上レールのother-slopeはfailureにも同じ理由が入る(slopeIssueと一致)', () => {
+    const { railMap, stations } = emptyMaps();
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: (x) => {
+        const ix = Math.round(x);
+        if (ix === -1) return [2, 2, 2, 2];
+        if (ix === 0) return [2, 2, 1, 2];
+        return [2, 2, 2, 2];
+      },
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000);
+    expect(p.failure).toBe('other-slope');
+    expect(p.failure).toBe(p.slopeIssue);
+  });
+
+  it('建設できる場合はfailureが付かない', () => {
+    const { railMap, stations, field } = emptyMaps();
+    const path = [{ x: 0, z: 0 }, { x: 1, z: 0 }];
+    const p = evaluateBuild('rail', path, railMap, stations, field, 100_000);
+    expect(p.reason).toBe('ok');
+    expect(p.failure).toBeUndefined();
+  });
+});
