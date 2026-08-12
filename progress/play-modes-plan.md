@@ -62,9 +62,43 @@
   `npm run build`ともgreen。
 - **残るfollow-up**: 高架・地下のき電（本PM4は地平のみ、design decision通り
   スコープ外として明示）、変電所の選択/検査UI（「コストがかかるならスキップ可」の
-  指示どおり未実装）、き電区間・給電範囲の可視化オーバーレイ（design decision 5で
-  明示的にスコープ外）。これでPM1〜PM4（電化の「全部盛り」計画）は完了し、
+  指示どおり未実装）。これでPM1〜PM4（電化の「全部盛り」計画）は完了し、
   リアリスティックモード固有の目玉機能が出揃った。
+
+## PM4フォローアップ: き電区間の可視化オーバーレイ(0.5.0-Alpha-9b)
+
+- `src/render/feedingOverlay.ts`（新設）: `buildFeedingOverlayCells(railMap, feeding,
+  feedingSectionCounts?)`が純粋関数として、地平の電化rail/stationセルと変電所セルを
+  `{x, z, colourKind}`（`'powered'|'unpowered'|'overload'|'substation'`）へ塗り分ける。
+  非電化railセルは結果に含めない。Vitestで先にRed→Green（`feedingOverlay.test.ts`）。
+- `src/components/WebGpuFeedingOverlay.tsx`（新設）: `WebGpuBuildPreview.tsx`と同じ
+  「署名が変わったときだけメッシュチャンクを焼き直す」パターンで、`buildMode==='substation'`
+  のときだけ半透明の板を`MESH_LAYER_CLASS.translucent`チャンクとして供給する
+  （`rules.electrification==='feeding'`のときしか変電所ツール自体が出ないので、
+  専用トグルは持たせずbuildModeの条件だけで足りる、という指示どおりの設計）。
+  `GameScene.tsx`に`WebGpuBuildPreview`と並べてマウントした。
+- **overload(容量超過)tintは実装した**（当初「アクセスが侵襲的ならフォローアップに
+  回してよい」という指示だったが、実際には`SimWorld.feedingSectionCounts`を
+  `stepWorld`が既に1tick分先に数えていた値をそのまま鏡写しするだけで済み、侵襲的では
+  なかったため実装した）。`simulation.ts`の`stepWorld`内、容量超過ペナルティ判定用に
+  ローカルで数えていた`feedingSectionCounts`を`world.feedingSectionCounts = ...`で
+  1行だけ鏡写しする（セーブ対象外、デバッグ・オーバーレイ用の副産物）。
+- **実機検証で踏んだ罠(重要)**: 板を「地表すれすれ」の絶対y座標（例: y=0.035）に
+  置くと、`render/trackGeometry.ts`のバラスト（`BALLAST_HEIGHT=0.06`）・レール頭頂
+  （`RAIL_TOP=0.13`）という不透明ジオメトリに埋もれて完全に見えなくなる。板のyは
+  `RAIL_TOP`より上（実装は`0.13 + height/2 + 0.01`）へ持ち上げる必要がある。
+  さらに、地形が平坦でない地平セル（丘・自動トンネル区間）では、絶対y=0基準の板は
+  地形の中に埋もれる。`render/townGeometry.ts`等と同じ変換式
+  `field.cellHeightAt(x,z) * OVERPASS_HEIGHT`を高さオフセットとして加算する必要がある
+  （`WebGpuFeedingOverlay`に`field: TerrainField`propを追加）。どちらも実機スクリーン
+  ショットで初回は「オーバーレイのデータは正しいのに何も描画されない」という形で
+  露見した——純粋関数のテストだけでは検出できない、wgpu側の描画専用の罠。
+- ブラウザ実機（リアリスティックモード、小マップ、平坦地形）で確認: DC電化線路
+  （61セル）+変電所1棟を建設し、変電所ツール選択中は近傍(48セル以内)が緑
+  （`powered`）、48セルを超えた先が赤（`unpowered`）に塗り分くこと、変電所セル
+  自体が青い強調板になること、`選択`ツールへ切り替えるとオーバーレイが消えること
+  をスクリーンショットで確認した。`npm run test`（1084件）・`npm run build`とも
+  green。
 
 ## 実装メモ（PM3、0.5.0-Alpha-7a）
 
