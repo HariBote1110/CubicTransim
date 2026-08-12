@@ -6,6 +6,10 @@ import {
   applyRailPathDetailed,
   applyStation,
   applyStationDetailed,
+  applyStationPath,
+  applyStationPathDetailed,
+  MAX_STATION_DRAG_CELLS,
+  stationAxisConflict,
   applyDepot,
   applyDepotDetailed,
   applySubstation,
@@ -133,28 +137,28 @@ describe('applyStation（特性テスト）', () => {
     expect(cell.connections! & DIR.N).toBe(0);
   });
 
-  // バグ報告: 既存の東西線路上でクリック設置したのに、ドラッグ方向の誤差(軸ヒント)が
-  // 直交方向として拾われ、実在しない南北connectionsが混入してホームが線路と直交してしまう。
-  // ヒントより実際のconnections/隣接セルの構造を優先すべき。
-  it('既存の東西線路セルに南北ヒント付きで設置しても、実際の東西connectionsが優先される', () => {
+  // OpenTTD式の方向指定: axisはプレイヤーの明示選択であり、権威的な値として扱う。
+  // 既存の東西線路に南北軸を指定するのは「側面から食い込む」矛盾した指定なので、
+  // 以前のような黙った補正(ヒントを無視して実際のconnectionsを使う)ではなく、
+  // 明確な失敗理由付きでno-opにする。
+  it('既存の東西線路セルへ南北軸を明示指定すると、軸の矛盾でno-opになる', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }]);
-    // ドラッグの微妙なブレでaxis='ns'ヒントが渡ってしまうケースを再現
+    const before = state;
+    const detailed = applyStationDetailed(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    expect(detailed.failure).toBe('station-axis-mismatch');
     const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
-    const cell = result.railMap.get(toKey(0, 0))!;
-    expect(cell.connections).toBe(DIR.E | DIR.W);
-    expect(cell.connections! & DIR.N).toBe(0);
-    expect(cell.connections! & DIR.S).toBe(0);
+    expect(result).toBe(before);
   });
 
-  it('既存の南北線路セルに東西ヒント付きで設置しても、実際の南北connectionsが優先される', () => {
+  it('既存の南北線路セルへ東西軸を明示指定すると、軸の矛盾でno-opになる', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: 0, z: -1 }, { x: 0, z: 0 }, { x: 0, z: 1 }]);
+    const before = state;
+    const detailed = applyStationDetailed(state, { x: 0, z: 0 }, undefined, [], 'ew');
+    expect(detailed.failure).toBe('station-axis-mismatch');
     const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
-    const cell = result.railMap.get(toKey(0, 0))!;
-    expect(cell.connections).toBe(DIR.N | DIR.S);
-    expect(cell.connections! & DIR.E).toBe(0);
-    expect(cell.connections! & DIR.W).toBe(0);
+    expect(result).toBe(before);
   });
 
   // 十字乗換駅: 別々に建設された2つの駅が交差セルで1つに統合される
@@ -245,6 +249,87 @@ describe('applyStation（特性テスト）', () => {
     const after = result.railMap.get(toKey(0, 0))!;
     expect(after.type).toBe('rail');
     expect(after.ramp).toEqual(before.ramp);
+  });
+});
+
+describe('stationAxisConflict（駅軸と隣接線路の矛盾判定・純関数）', () => {
+  it('空セル周りでは矛盾しない', () => {
+    const state = emptyState();
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ew')).toBe(false);
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ns')).toBe(false);
+  });
+
+  it('東西軸の直線をそのまま延長する分には矛盾しない', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }]);
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ew')).toBe(false);
+  });
+
+  it('東西軸のon-axis隣接セルが東西へ戻らずに他へ折れていると矛盾する', () => {
+    let state = emptyState();
+    // (1,0)を東西軸の駅セルにしたい。しかし東隣(2,0)は南へ折れており、
+    // (1,0)へ戻る西方向のビットを持たない(=東西の直進を延長していない)。
+    state = applyRailPath(state, [{ x: 2, z: 0 }, { x: 2, z: 1 }]);
+    expect(stationAxisConflict(state.railMap, { x: 1, z: 0 }, 'ew')).toBe(true);
+  });
+
+  it('東西軸の南北隣に、駅セル側へ直進してくる線路があると側面食い込みで矛盾する', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: -1 }, { x: 0, z: 0 }]);
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ew')).toBe(true);
+  });
+
+  it('隣接する駅セル(rail以外)は矛盾判定の対象外(通常の駅併合を妨げない)', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
+    expect(stationAxisConflict(state.railMap, { x: 0, z: -1 }, 'ns')).toBe(false);
+  });
+});
+
+describe('applyStationPath（ドラッグによる複数セル駅建設）', () => {
+  it('軸方向に並んだ空セル3つのドラッグが1つの駅にまとまる', () => {
+    const state = emptyState();
+    const result = applyStationPath(
+      state,
+      [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }],
+      undefined, [], 'ew'
+    );
+    expect(result.stations.size).toBe(1);
+    const st = Array.from(result.stations.values())[0];
+    expect(st.cells).toHaveLength(3);
+    for (const p of [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]) {
+      const cell = result.railMap.get(toKey(p.x, p.z))!;
+      expect(cell.type).toBe('station');
+      expect(cell.stationId).toBe(st.id);
+      expect(cell.connections).toBe(DIR.E | DIR.W);
+    }
+  });
+
+  it('経路中に軸矛盾のセルがあると経路全体がno-opになる', () => {
+    let state = emptyState();
+    // (3,0)を通る南北の既存線路を用意し、そこへ東西軸のドラッグ経路を通す
+    state = applyRailPath(state, [{ x: 3, z: -1 }, { x: 3, z: 0 }, { x: 3, z: 1 }]);
+    const before = state;
+    const detailed = applyStationPathDetailed(
+      state,
+      [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }],
+      undefined, [], 'ew'
+    );
+    expect(detailed.failure).toBe('station-axis-mismatch');
+    const result = applyStationPath(
+      state,
+      [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }],
+      undefined, [], 'ew'
+    );
+    expect(result).toBe(before);
+  });
+
+  it('MAX_STATION_DRAG_CELLSを超える経路は上限までしか建設されない', () => {
+    const state = emptyState();
+    const longPath = Array.from({ length: MAX_STATION_DRAG_CELLS + 5 }, (_, i) => ({ x: i, z: 0 }));
+    const result = applyStationPath(state, longPath, undefined, [], 'ew');
+    const st = Array.from(result.stations.values())[0];
+    expect(st.cells).toHaveLength(MAX_STATION_DRAG_CELLS);
   });
 });
 
