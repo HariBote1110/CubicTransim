@@ -772,13 +772,33 @@ const SLOPE_ISSUE_MESSAGES: Record<NonNullable<BuildPreview['slopeIssue']>, stri
   'tunnel-exit-mismatch': 'トンネル出口の標高が合いません',
 };
 
+// 建設不可の具体理由(buildPreview.tsのfailure、construction.tsのBuildFailureReason)
+// ごとの表示文言。地上レールのother-slope等(GroundRailPlanFailureReason)は
+// SLOPE_ISSUE_MESSAGESと同じ文言をここにも持たせ、モードを問わず単一のマップで
+// 引けるようにする(値は意図的に重複させている。表示文言の一本化はしない=
+// 「slopeIssue専用の言い回し」を保つため)。
+const FAILURE_MESSAGES: Record<NonNullable<BuildPreview['failure']>, string> = {
+  water: '水面には建設できません',
+  'not-flat': '平らな地面が必要です',
+  'town-tile': '町のタイルには建設できません',
+  'house-tile': '家のあるタイルは通れません',
+  occupied: '他の構造物があります',
+  'ramp-conflict': '坂と干渉します',
+  'needs-adjacent-electrified-rail': '隣接する電化線路が必要です',
+  'needs-rail': '信号は線路の上に設置します',
+  'other-slope': SLOPE_ISSUE_MESSAGES['other-slope'],
+  'direction-blocked': SLOPE_ISSUE_MESSAGES['direction-blocked'],
+  'edge-discontinuous': SLOPE_ISSUE_MESSAGES['edge-discontinuous'],
+  'tunnel-exit-mismatch': SLOPE_ISSUE_MESSAGES['tunnel-exit-mismatch'],
+};
+
 // --- 建設フィードバック(コストと可否) ---
 const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string }> = ({
   preview, toolLabel,
 }) => {
   if (!preview || preview.cellCount === 0) return null;
 
-  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, slopeIssue } = preview;
+  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, failure } = preview;
   // 'incomplete-path'(高架/地下の線路でまだ1マスしか指していない)は建設不可ではなく
   // 「操作の途中」なので、警告色ではなく控えめな案内にする(0.5.0-Alpha-4c)。
   const tone =
@@ -789,7 +809,7 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
   const message =
     reason === 'insufficient-funds' ? '資金が足りません'
     : reason === 'incomplete-path' ? 'ドラッグして2マス以上の経路を指定してください'
-    : reason === 'no-effect' ? (slopeIssue ? SLOPE_ISSUE_MESSAGES[slopeIssue] : 'ここには建設できません')
+    : reason === 'no-effect' ? (failure ? FAILURE_MESSAGES[failure] : 'ここには建設できません')
     : null;
   const isElevatedRail = mode === 'rail' && level > 0;
 
