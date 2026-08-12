@@ -4,7 +4,7 @@ import type { CellData, StationData, TrainData } from '../types';
 import { stepWorld } from '../sim/simulation';
 import type { SimWorld } from '../sim/simulation';
 import {
-  computeRiderCamera, PASSENGER_EYE_HEIGHT, PASSENGER_LOOK_AHEAD,
+  computeRiderCamera, PASSENGER_EYE_HEIGHT, PASSENGER_LOOK_AHEAD, CAB_FORWARD_OFFSET,
 } from './passengerView';
 
 // D2: 乗客視点カメラの純関数テスト。sim/consist.ts の carPositions(曲線サンプリング)を
@@ -77,5 +77,38 @@ describe('computeRiderCamera (D2 乗客視点カメラ)', () => {
     expect(cam!.eye[2]).toBeCloseTo(rt.renderPos.z, 1);
     expect(cam!.look[0]).toBeCloseTo(cam!.eye[0] + PASSENGER_LOOK_AHEAD, 0);
     expect(cam!.look[2]).toBeCloseTo(cam!.eye[2], 1);
+  });
+
+  it("D3: mode='cab'では、eyeが進行方向へCAB_FORWARD_OFFSETぶん前に出る(高さは同じ)", () => {
+    const cells = Array.from({ length: 30 }, (_, i) => ({ x: i, z: 0 }));
+    const railMap = buildRailMap(cells);
+    const startKey = toKey(0, 0);
+    const endKey = toKey(29, 0);
+    railMap.set(startKey, { ...railMap.get(startKey)!, type: 'station', stationId: 'stA' });
+    railMap.set(endKey, { ...railMap.get(endKey)!, type: 'station', stationId: 'stB' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 0, z: 0 }], center: { x: 0, z: 0 }, platformDoors: 'none' }],
+      ['stB', { id: 'stB', name: 'B', cells: [{ x: 29, z: 0 }], center: { x: 29, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ x: 0, z: 0, schedule: ['stB'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    let passengerCam: ReturnType<typeof computeRiderCamera> = null;
+    let cabCam: ReturnType<typeof computeRiderCamera> = null;
+    for (let i = 0; i < 300; i++) {
+      stepWorld(world, 0.1);
+      const rt = world.runtimes.get('t1')!;
+      if (rt.grid.x < 10 || rt.grid.x > 20) continue;
+      passengerCam = computeRiderCamera(world, 't1', 'passenger');
+      cabCam = computeRiderCamera(world, 't1', 'cab');
+      break;
+    }
+    expect(passengerCam).not.toBeNull();
+    expect(cabCam).not.toBeNull();
+    // 直線+x方向を巡航中: 運転台のeyeはx方向へCAB_FORWARD_OFFSETぶん前、高さは同じ。
+    expect(cabCam!.eye[0]).toBeCloseTo(passengerCam!.eye[0] + CAB_FORWARD_OFFSET, 1);
+    expect(cabCam!.eye[1]).toBeCloseTo(passengerCam!.eye[1], 5);
+    // modeを省略すると'passenger'相当になる。
+    expect(computeRiderCamera(world, 't1')).toEqual(passengerCam);
   });
 });
