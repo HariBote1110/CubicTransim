@@ -7,7 +7,7 @@ import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
-import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, type PlayMode } from './sim/gameRules';
+import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, type PlayMode, type Signalling } from './sim/gameRules';
 import type { RailBuildOptions } from './sim/construction';
 import type { RailGauge, TrainPower } from './types';
 import { T, button as themeButton } from './ui/theme';
@@ -57,6 +57,13 @@ const PLAY_MODE_HINTS: Record<PlayMode, string> = {
 const PLAY_MODE_OPTIONS: { label: string; value: PlayMode; hint: string }[] = (
   Object.keys(PLAY_MODE_PRESETS) as PlayMode[]
 ).map(mode => ({ label: PLAY_MODE_LABELS[mode], value: mode, hint: PLAY_MODE_HINTS[mode] }));
+
+// 信号方式の選択肢(progress/signalling-plan.md)。プレイモードとは独立した別軸。
+// S2/S3は未実装のためここには出さない(選んでもS0/S1だけがUIから触れる)。
+const SIGNALLING_OPTIONS: { label: string; value: Signalling; hint: string }[] = [
+  { label: 'おまかせ', value: 's0', hint: '信号機の設置は不要。移動閉塞で自動的に間隔が詰まる(既定)' },
+  { label: '固定閉塞', value: 's1', hint: '信号機で区切った区間だけが閉塞になる。単線行き違いを自分で設計する' },
+];
 
 /**
  * R4d: WebGPU が使えないときの案内画面。three.js のフォールバックは廃止したので、
@@ -123,6 +130,7 @@ export default function App() {
   // 起動ダイアログの地形選択(既定は標準=normal)。マップサイズのボタンを押した時点の値を使う。
   const [selectedTerrainProfile, setSelectedTerrainProfile] = useState<TerrainProfile>('normal');
   const [selectedPlayMode, setSelectedPlayMode] = useState<PlayMode>('light');
+  const [selectedSignalling, setSelectedSignalling] = useState<Signalling>('s0');
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
@@ -338,7 +346,10 @@ export default function App() {
                       key={opt.label}
                       style={{ ...themeButton({ active: true }), width: '100%', textAlign: 'left' }}
                       onClick={() => {
-                        newGame(opt.halfExtent, selectedTownDensity, selectedTerrainProfile, PLAY_MODE_PRESETS[selectedPlayMode]);
+                        newGame(opt.halfExtent, selectedTownDensity, selectedTerrainProfile, {
+                          ...PLAY_MODE_PRESETS[selectedPlayMode],
+                          signalling: selectedSignalling,
+                        });
                         setShowStartupOptions(false);
                       }}
                     >
@@ -398,6 +409,25 @@ export default function App() {
                 </div>
                 <p style={{ color: T.textMuted, fontSize: 11, lineHeight: 1.5, marginTop: 0, marginBottom: T.gap }}>
                   {PLAY_MODE_OPTIONS.find(opt => opt.value === selectedPlayMode)?.hint}
+                </p>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55, marginTop: 0 }}>信号方式</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: T.gap, marginBottom: 4 }}>
+                  {SIGNALLING_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      style={{
+                        ...themeButton({ active: selectedSignalling === opt.value, compact: true }),
+                        width: '100%',
+                      }}
+                      onClick={() => setSelectedSignalling(opt.value)}
+                      title={opt.hint}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p style={{ color: T.textMuted, fontSize: 11, lineHeight: 1.5, marginTop: 0, marginBottom: T.gap }}>
+                  {SIGNALLING_OPTIONS.find(opt => opt.value === selectedSignalling)?.hint}
                 </p>
                 <button
                   style={{ ...themeButton(), width: '100%' }}

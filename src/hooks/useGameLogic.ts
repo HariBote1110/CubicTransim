@@ -22,6 +22,7 @@ import type { TerrainProfile } from '../sim/terrainField';
 import { DEFAULT_GAME_RULES } from '../sim/gameRules';
 import type { GameRules } from '../sim/gameRules';
 import { buildFeedingIndex } from '../sim/feeding';
+import { buildBlockIndex } from '../sim/blocks';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
 import { createEditedTerrainField, applyCornerEdit, buildEditBlockers, cornerDiffsFromField } from '../sim/terrainOverlay';
 
@@ -220,6 +221,15 @@ export const useGameLogic = () => {
   useEffect(() => {
     worldRef.current.feeding = feedingIndex;
   }, [feedingIndex]);
+
+  // S1: 固定閉塞のブロック索引。feedingIndexと同じ同期パターンで、railMapが
+  // 変わったときだけ再計算する。rules.signalling!=='s1'のときも常に計算はするが、
+  // stepWorld側が参照しないため無害(挙動変更ゼロ)。
+  const blockIndex = useMemo(() => buildBlockIndex(railMap), [railMap]);
+
+  useEffect(() => {
+    worldRef.current.blocks = blockIndex;
+  }, [blockIndex]);
 
   // --- Commit Path ---
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
