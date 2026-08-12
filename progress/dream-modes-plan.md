@@ -499,3 +499,108 @@ D1〜D3は`feature/perspective-camera`をmainlineの0.5.0-Alpha-8f相当から�
   保安装置選択UIと列車インスペクタの乗車(客席)/運転台ボタンの両方が問題なく
   機能すること、運転台HUDの制限速度がtrackClasses有効時にMAX_SPEED_KMH(100)
   ではなくレール種別の上限(110、既定50kgNレール)を表示することを確認した。
+
+## 実装メモ(D4 手動運転+難易度3段階、`feature/perspective-camera`ブランチ、0.5.0-Alpha-15a)
+
+状態: **D4完了**。手動運転する列車を1本選び(`SimWorld.manualDrive`、同時に1本まで)、
+かんたん(ATO)/ふつう(ATS-P常時)/むずかしい(実装備のみ)の3難易度で速度制御・
+信号無視(SPAD)・停車精度採点を実装した。新規`src/sim/manualDrive.ts`(ノッチ↔割合の
+対応表・かんたんの速度キャップ・むずかしいの保安装置有効判定・停車精度の許容誤差・
+SPAD強行の可否、いずれも純関数)を土台に、simulation.tsへ最小侵襲で配線した。
+
+### ノッチ
+
+マスコン(力行)P1〜P5、N、ブレーキB1〜B7、非常(EB)の14段。キーボード(↑↓・
+Space=EB)と画面ボタンの両対応(`CabHud.tsx`)。P1=20%〜P5=100%(既存の
+`computeAcceleration`の結果に掛ける割合)、B1=1/7〜B7=1.0(既存の`DECEL_KMH_S`相当に
+掛ける割合)、EBは既存の`EMERGENCY_DECEL_KMH_S`をそのまま使う。新しい力行・制動の
+物理モデルは持ち込んでいない(既存のphysics.ts/simulation.tsの定数を割合で薄めるだけ)。
+
+### stepTrainへの配線
+
+`SimWorld.manualDrive?: { trainId, notch, difficulty, tally }`を追加。stepTrain内の
+既存の速度制御(hardEnvelopeKmh/releaseEnvelopeKmhの計算は無改造で共有)に対し:
+
+- **かんたん(ATO)**: 既存の自動制御チェーンにノータッチ。`releaseEnvelopeKmh`の
+  `Math.min`にノッチ由来の速度キャップ(`easyModeSpeedCapKmh`)を1項追加しただけ。
+  停止点への減速・駅停車判定(`stopAtStation`)はすべて既存の自動運転と同一。
+- **ふつう/むずかしい**: 新設`applyManualSpeedControl`が既存のif/elseチェーン
+  (immediateBlock〜だらだら加速)を丸ごと置き換え、ノッチ由来の加速度をそのまま
+  積分する。保安装置による自動ブレーキは、既存の`hardEnvelopeKmh`(停止点・
+  trackClassesを織り込んだ絶対上限、無改造で再利用)を超えたときに介入する形で
+  実装。ふつうは常時介入、むずかしいは`equippedProtectionActive`(ATS-P/ATC/CBTC
+  装備時のみ、ATS-Sや未装備はfalse=SPAD確率テーブルで実際に守ってくれない強さと
+  揃えた)。物理的な衝突安全網(`immediateBlock`、他列車の直前占有)は難易度に
+  関わらず常に効く(=文字どおり他列車へめり込むことは無い)。
+- **むずかしいのSPAD**: `ensureReservation`の2箇所の`blocksSegmentEntry`判定に
+  `manualForcesEntry`を追加。保安装置が実際に効かない区間でプレイヤーが力行ノッチを
+  入れているときだけ判定結果を無視して予約を強行させ、`evaluateSpadOnce`
+  (force引数を追加、S3と同じ`SPAD_CHANCE`テーブルを共用)の確率判定に委ねる。
+  ただし物理的なセル予約(`tryReserve`)自体は常に効くため、他列車が実際に保有する
+  セルへ literally 重なることは無い(信号は無視できても、目の前の列車は避けられない
+  という設計)。
+
+### 停車精度スコア
+
+「距離ベースの±15m/±5m判定」は、この sim の移動モデル上、経路末尾(駅の停止点)への
+到着は常に幾何学的にスナップする(`arriveAt`到達判定、手動/自動で共通)ため、
+オーバーラン自体は起こり得ない。そこで「駅への進入中に速度がほぼ0まで落ちる
+(=プレイヤーが早めに完全停止してしまう、undershoot)」ことを唯一の失敗モードとして
+採点する設計にした。`obstacleType==='station'`かつ`rt.speedKmh`が
+`MANUAL_STOP_DETECT_KMH`未満に落ちた瞬間を1回だけ判定し(`distanceToStopPoint`を
+再利用)、`manualStop`イベントを発行してタリー(停車回数・合格回数・平均誤差・
+超過秒数・非常制動回数)へ加算する。既に停車を終えて発車待ちの状態から再度動き出し、
+最終的に幾何学的スナップで到着した場合も、undershootのスコアはそのまま残る
+(実運用の「一度停止したらそこがその回の停車」という判断に合わせた)。
+
+ブラウザ実機では、単線行き違いシナリオで信号待ちのため一時停止した直後に
+`obstacleType`が最終駅へ切り替わるタイミングと重なり、大きな誤差(数百m)が
+記録されるケースを確認した。これは想定内の既知の粗さで、「途中の信号待ちでの
+停止」と「駅への進入中の停止」を区別する情報がstepTrain側に無い(safe waiting
+pointの種別しか分からない)ことに起因する。より精密にするには、経路上の残り
+セル数が閾値以下(=本当に駅の直前)のときだけ採点する等の絞り込みがfollow-up候補。
+
+### UI(CabHud.tsx)
+
+運転台へ乗った直後、`world.manualDrive`がまだこの列車を指していなければ難易度
+ピッカー(かんたん/ふつう/むずかしい)を先に出す。選択するとD2/D3の`riderState`と
+同じパターンで`world.current.manualDrive`を直接書き換える(Reactステート経由だと
+ポーリング間隔ぶん遅れるため)。ノッチはキーボード(↑↓・Space)と画面ボタンの
+両対応、停車中(速度<1km/h)は「出発する」ボタンでP3ノッチへ、難易度バッジ、
+停車採点トースト、乗車タリーを表示する。降車時は`world.manualDrive`を`undefined`へ
+戻し自動運転へ復帰させる(ブラウザ実機で降車→`__debugWorld.manualDrive`が
+`undefined`に戻ることを確認済み)。
+
+### 検証結果
+
+- Vitest: `manualDrive.test.ts`(純関数26件)・`manualDriveIntegration.test.ts`
+  (stepWorld結合6件、かんたんの速度キャップ・ふつうの自動ブレーキ介入・むずかしいの
+  超過秒数記録・SPAD強行と保安装置装備時の非強行・停車精度イベント)・
+  `cabHud.test.ts`追加3件を含め、`npm run test`は1201件→**1210件**。
+  `npm run build`(tsc+vite)・`cargo test`(20件、Rust側は無変更)・
+  `npm run build:renderer`いずれもgreen。
+- ブラウザ実機(デバッグシナリオ「単線行き違い」): 運転台に乗車→難易度ピッカーで
+  「ふつう」選択→キーボード↑↑↑でノッチがN→P1→P2→P3に進むこと、駅接近中は
+  P3(力行)を入れていても自動ブレーキ(`hardEnvelopeKmh`超過の介入)で速度が
+  73km/h→30km/h前後まで落ちて停止点手前で待たされること(保護が働いた証跡)、
+  信号解放後に次信号表示が赤→緑に切り替わり再加速することを確認。
+  降車→再乗車で「かんたん」を選択し、P2ノッチ(MAX_SPEED_KMHの40%=40km/h)へ
+  設定すると、既存の自動制御がそのまま走りつつ速度がちょうど40km/hで頭打ちに
+  なることを確認(`__debugWorld.manualDrive.notch='P2'`のまま150tick進めても
+  `rt.speedKmh`が40を超えない)。むずかしいのSPAD強行(信号の先が保安装置未装備の
+  占有ブロックのとき、プレイヤーが力行を入れ続けると予約が強行され、確率で
+  `accident`イベント(`kind:'spad'`)が発火する挙動)と、保安装置(ATS-P)が
+  実際に装備されている場合はむずかしいでも強行しない挙動は、
+  `manualDriveIntegration.test.ts`の結合テストで固定した(ブラウザではデバッグ
+  シナリオがs0固定でブロック索引を持たないため、s1のセットアップが必要な同テストは
+  ユニット側の検証に委ねた)。
+
+### 残るfollow-up
+
+- 停車精度スコアの「途中停止 vs 駅進入中の停止」誤判定(上記)。
+- D5(ダイヤ遵守評価・報酬)は未着手のまま。
+- 経済との接続(タスク仕様どおり意図的に未接続。D5で検討)。
+- むずかしいのSPAD確率ロールは既存のS3のSPAD_CHANCEテーブルをそのまま流用しており、
+  「プレイヤーが手動で信号を無視した」場合と「S3の自動運転が信号待ちに入った」場合を
+  区別していない。手動運転はプレイヤーの意図的な行為なので、確率をS3より高くする
+  (「わざと」やっている分、危険度を上げる)といった調整の余地がある。
