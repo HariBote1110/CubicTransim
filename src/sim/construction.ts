@@ -93,10 +93,17 @@ const pathCrossesHouseTile = (townTiles: TownTileIndex, path: Pos[]): boolean =>
 // 「terrainTypeAt==='grass'」ではなく「コーナー標高がflat(4隅同値)かつ水域でない」で判定する。
 // mountain(標高1以上)というだけでは拒否しなくなった: 平坦な高原(4隅同値の高標高セル)には
 // 駅・車庫・信号を置ける(design doc 4.「mountain概念の廃止」)。水域は従来どおり常に不可。
-const isBuildableGround = (field: TerrainField, x: number, z: number): boolean => {
-  if (field.terrainTypeAt(x, z) === 'water') return false;
-  return canPlaceFlatStructure(slopeOf(field.cellCornerHeights(x, z)));
+// isBuildableGroundがfalseになる理由を区別して返す版。'water'/'not-flat'は
+// BuildFailureReason(下記)の値と揃える。UI向けの理由表示(GameUI.tsx)が
+// 「水面」と「坂・段差」を別文言で案内できるようにするため(P?タスク: 建設失敗理由の細分化)。
+const groundBlockReason = (field: TerrainField, x: number, z: number): 'water' | 'not-flat' | undefined => {
+  if (field.terrainTypeAt(x, z) === 'water') return 'water';
+  if (!canPlaceFlatStructure(slopeOf(field.cellCornerHeights(x, z)))) return 'not-flat';
+  return undefined;
 };
+
+const isBuildableGround = (field: TerrainField, x: number, z: number): boolean =>
+  groundBlockReason(field, x, z) === undefined;
 
 // 坂(ramp)セルは従来通り「標高0の地平」にしか置けない(高架/自由な高架線の坂は、
 // 地表からOVERPASS_HEIGHT単位で登る前提の描画・物理モデルなので、標高のある地面
@@ -278,6 +285,36 @@ export interface GroundRailPlanResult {
 }
 
 /**
+ * 建設が成立しなかった(apply系がno-opで同一参照を返した)ときの具体的な理由。
+ * 従来はBuildBlockReason:'no-effect'(buildPreview.ts)にすべて折り込まれ、UIは
+ * 一律「ここには建設できません」しか出せなかった。apply*Detailed系
+ * (applyStationDetailed/applyDepotDetailed/applySubstationDetailed/
+ * applySignalDetailed/applyRailPathDetailed)がこの理由を{state, failure}の形で
+ * 返すようにし、buildPreview.tsのBuildPreview.failureへそのまま伝える。
+ *
+ * - 'water'/'not-flat': groundBlockReasonが返す、駅・車庫・変電所・信号共通の
+ *   立地条件(水域/非flat)。旧来isBuildableGroundが一括でfalseにしていたものを分割した。
+ * - 'town-tile': 家・道路タイルへの設置(駅・車庫・変電所・信号共通)。
+ * - 'house-tile': 家タイルを通る地平の線路(applyRailPathDetailed)。町タイルの中でも
+ *   道路(踏切として通過可)とは区別する。
+ * - 'occupied': 既に何らかの構造物があるセルへの再設置(駅の重複設置・車庫上書き等)。
+ * - 'ramp-conflict': 既存の坂セルと異なる軸で交差する経路(pathConflictsWithExistingRamp)。
+ * - 'needs-adjacent-electrified-rail': 変電所が電化railに隣接していない。
+ * - 'needs-rail': 信号を線路・駅のないセルへ置こうとした。
+ * - GroundRailPlanFailureReasonの各値: 地上レールの地形都合(トンネル化不可等)。
+ */
+export type BuildFailureReason =
+  | 'water'
+  | 'not-flat'
+  | 'town-tile'
+  | 'house-tile'
+  | 'occupied'
+  | 'ramp-conflict'
+  | 'needs-adjacent-electrified-rail'
+  | 'needs-rail'
+  | GroundRailPlanFailureReason;
+
+/**
  * resolveGroundRailPlanの本体。UI向けに「なぜ建設できないか」も一緒に返す
  * (P7d)。resolveGroundRailPlan(既存のプレーンなAPI)はこの関数のplanだけを返す
  * 薄いラッパーにした(挙動は無改修)。
@@ -432,6 +469,8 @@ export interface RailPathApplyResult extends ConstructionState {
    * (evaluateBuild側でbridge専用に計算する)。
    */
   overpassCells: Set<string>;
+  /** no-op(railMapが元の参照のまま)になったときだけ設定される具体的な理由。 */
+  failure?: BuildFailureReason;
 }
 
 // applyRailPathの詳細版。overpassCellsは自動高架の廃止により常に空集合。
@@ -453,7 +492,7 @@ export function applyRailPathDetailed(
 ): RailPathApplyResult {
   // 家タイルの上には地平の線路を敷けない(高架のみ通過可)。経路のどこか1セルでも
   // 家に抵触すれば建設全体をno-opにする(部分建設で町を壊さないため)。
-  if (pathCrossesHouseTile(townTiles, path)) return { ...state, overpassCells: new Set() };
+  if (pathCrossesHouseTile(townTiles, path)) return { ...state, overpassCells: new Set(), failure: 'house-tile' };
 
   if (path.length >= 2) {
     const startEnd = pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[0]), 0);
@@ -471,14 +510,16 @@ export function applyRailPathDetailed(
 
   // 既存の坂セルへ、その軸と異なる方向の接続を追加してしまう経路はno-opにする
   // (坂セルを壊さないため。詳細はconflictsWithExistingRampのdocコメント参照)。
-  if (pathConflictsWithExistingRamp(state.railMap, path)) return { ...state, overpassCells: new Set() };
+  if (pathConflictsWithExistingRamp(state.railMap, path)) {
+    return { ...state, overpassCells: new Set(), failure: 'ramp-conflict' };
+  }
 
   // P7b: 勾配追従(flat/incline)で建設できないセルを、必要なら定高さのtunnelとして
   // 建設する計画を立てる。runの高さがterrain以下だったり坑口の標高が繋がらない場合は
   // nullになり、経路全体をno-opにする(部分建設で破綻した見た目を残さないため)。
-  const plan = resolveGroundRailPlan(field, path);
+  const { plan, reason: groundPlanFailure } = resolveGroundRailPlanDetailed(field, path);
   if (!plan) {
-    return { ...state, overpassCells: new Set() };
+    return { ...state, overpassCells: new Set(), failure: groundPlanFailure };
   }
 
   const railMap = new Map(state.railMap);
@@ -665,31 +706,41 @@ function applyGroundPathWithElevatedConnect(
   return { railMap, stations: state.stations, overpassCells: new Set() };
 }
 
-export function applyStation(
+export interface ApplyDetailedResult extends ConstructionState {
+  /** no-op(railMap/stationsが元の参照のまま)になったときだけ設定される具体的な理由。 */
+  failure?: BuildFailureReason;
+}
+
+/**
+ * applyStationの詳細版。UI向けに「なぜ建設できないか」も一緒に返す(既存のapplyStationは
+ * これのfailureを捨てる薄いラッパー)。
+ */
+export function applyStationDetailed(
   state: ConstructionState,
   pos: Pos,
   field: TerrainField = EMPTY_FIELD,
   towns: TownData[] = [],
   axis?: StationAxis,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
-): ConstructionState {
+): ApplyDetailedResult {
   const key = toKey(pos.x, pos.z);
   const existingBeforeUpdate = state.railMap.get(key);
 
   // 駅は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
-  if (!isBuildableGround(field, pos.x, pos.z)) {
-    return state;
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) {
+    return { ...state, failure: groundFailure };
   }
 
   // 町タイル(家・道路のどちらも)への設置は no-op。家は当然として、道路タイルに
   // 駅を建てると町の道路網が視覚上寸断されるため許可しない。
   if (townTileAt(townTiles, pos.x, pos.z)) {
-    return state;
+    return { ...state, failure: 'town-tile' };
   }
 
   // 車庫があるセルへの設置は従来通り no-op(車庫が消えないように)
   if (existingBeforeUpdate && existingBeforeUpdate.type === 'depot') {
-    return state;
+    return { ...state, failure: 'occupied' };
   }
 
   // 坂(ramp)セルへの設置も no-op。坂セルは直線の斜面専用
@@ -697,7 +748,7 @@ export function applyStation(
   // 「斜面+直交する平坦な接続」という描画できない壊れた状態になるため。
   // 同一参照を返すことで、buildPreview側は「効果なし=建設不可」と判定できる。
   if (existingBeforeUpdate?.ramp) {
-    return state;
+    return { ...state, failure: 'ramp-conflict' };
   }
 
   const neighbours = [
@@ -740,7 +791,7 @@ export function applyStation(
   if (crossingStationId && involvedIds.length <= 1) {
     const existingBits = existingBeforeUpdate!.connections ?? 0;
     if ((existingBits & newBits) === newBits) {
-      return state;
+      return { ...state, failure: 'occupied' };
     }
     const railMap = new Map(state.railMap);
     railMap.set(key, { ...existingBeforeUpdate!, connections: existingBits | newBits });
@@ -809,28 +860,44 @@ export function applyStation(
   return { railMap, stations };
 }
 
-export function applyDepot(
+// 既存呼び出し側(construction.test.ts等)は「no-opならstate自身の参照が返る」ことに
+// 依存しているため、失敗理由付きの新しいオブジェクトではなく元のstateをそのまま返す
+// (failureが付いたかどうかで判定し、参照の同一性を壊さない)。
+export function applyStation(
+  state: ConstructionState,
+  pos: Pos,
+  field: TerrainField = EMPTY_FIELD,
+  towns: TownData[] = [],
+  axis?: StationAxis,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ConstructionState {
+  const result = applyStationDetailed(state, pos, field, towns, axis, townTiles);
+  return result.failure ? state : result;
+}
+
+export function applyDepotDetailed(
   state: ConstructionState,
   pos: Pos,
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
-): ConstructionState {
+): ApplyDetailedResult {
   const key = toKey(pos.x, pos.z);
   const existing = state.railMap.get(key);
 
   // 車庫は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
-  if (!isBuildableGround(field, pos.x, pos.z)) {
-    return state;
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) {
+    return { ...state, failure: groundFailure };
   }
 
   // 町タイル(家・道路)への設置は no-op(applyStationと同じ理由)。
   if (townTileAt(townTiles, pos.x, pos.z)) {
-    return state;
+    return { ...state, failure: 'town-tile' };
   }
 
   // バグ1対策: 空セル以外への設置は no-op（駅の上に車庫を置いて駅を消してしまわないように）
   if (existing) {
-    return state;
+    return { ...state, failure: 'occupied' };
   }
 
   const railMap = new Map(state.railMap);
@@ -838,6 +905,16 @@ export function applyDepot(
   updateDepotRotation(railMap, pos.x, pos.z);
 
   return { railMap, stations: state.stations };
+}
+
+export function applyDepot(
+  state: ConstructionState,
+  pos: Pos,
+  field: TerrainField = EMPTY_FIELD,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ConstructionState {
+  const result = applyDepotDetailed(state, pos, field, townTiles);
+  return result.failure ? state : result;
 }
 
 const NEIGHBOUR_OFFSETS: Pos[] = [
@@ -861,19 +938,22 @@ const hasAdjacentElectrifiedRail = (railMap: Map<string, CellData>, pos: Pos): b
  * (平地・空セル・町タイルでないこと)に加え、電化railセルへ8近傍で隣接する
  * (またはそのセル自身が電化railである)ことを要求する(design decision 1)。
  */
-export function applySubstation(
+export function applySubstationDetailed(
   state: ConstructionState,
   pos: Pos,
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
-): ConstructionState {
+): ApplyDetailedResult {
   const key = toKey(pos.x, pos.z);
   const existing = state.railMap.get(key);
 
-  if (!isBuildableGround(field, pos.x, pos.z)) return state;
-  if (townTileAt(townTiles, pos.x, pos.z)) return state;
-  if (existing) return state;
-  if (!hasAdjacentElectrifiedRail(state.railMap, pos)) return state;
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) return { ...state, failure: groundFailure };
+  if (townTileAt(townTiles, pos.x, pos.z)) return { ...state, failure: 'town-tile' };
+  if (existing) return { ...state, failure: 'occupied' };
+  if (!hasAdjacentElectrifiedRail(state.railMap, pos)) {
+    return { ...state, failure: 'needs-adjacent-electrified-rail' };
+  }
 
   const railMap = new Map(state.railMap);
   railMap.set(key, { type: 'substation' });
@@ -881,21 +961,34 @@ export function applySubstation(
   return { railMap, stations: state.stations };
 }
 
-export function applySignal(
+export function applySubstation(
+  state: ConstructionState,
+  pos: Pos,
+  field: TerrainField = EMPTY_FIELD,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ConstructionState {
+  const result = applySubstationDetailed(state, pos, field, townTiles);
+  return result.failure ? state : result;
+}
+
+export function applySignalDetailed(
   state: ConstructionState,
   path: Pos[],
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES,
   kind?: SignalKind
-): ConstructionState {
+): ApplyDetailedResult {
   const pos = path[0];
   const key = toKey(pos.x, pos.z);
   const cell = state.railMap.get(key);
-  if (!cell || (cell.type !== 'rail' && cell.type !== 'station')) return state;
+  if (!cell || (cell.type !== 'rail' && cell.type !== 'station')) {
+    return { ...state, failure: 'needs-rail' };
+  }
   // 信号は平地にしか置けない: 橋・トンネル区間(水域・山岳)への設置は no-op
-  if (!isBuildableGround(field, pos.x, pos.z)) return state;
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) return { ...state, failure: groundFailure };
   // 町タイル(家・道路=踏切)への設置も no-op(踏切セルには信号機を建てない)。
-  if (townTileAt(townTiles, pos.x, pos.z)) return state;
+  if (townTileAt(townTiles, pos.x, pos.z)) return { ...state, failure: 'town-tile' };
 
   const railMap = new Map(state.railMap);
   const conns = cell.connections || 0;
@@ -929,6 +1022,17 @@ export function applySignal(
   }
 
   return { railMap, stations: state.stations };
+}
+
+export function applySignal(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  kind?: SignalKind
+): ConstructionState {
+  const result = applySignalDetailed(state, path, field, townTiles, kind);
+  return result.failure ? state : result;
 }
 
 // --- 自由に敷ける高架線(applyElevatedPath) ---

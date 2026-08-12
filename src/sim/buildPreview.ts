@@ -13,10 +13,10 @@ import { toKey } from '../utils';
 import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel } from './construction';
 import {
   applyRailPathDetailed,
-  applyStation,
-  applyDepot,
-  applySubstation,
-  applySignal,
+  applyStationDetailed,
+  applyDepotDetailed,
+  applySubstationDetailed,
+  applySignalDetailed,
   applyElevatedPath,
   applyElevatedStation,
   applyUndergroundPath,
@@ -31,6 +31,7 @@ import {
   resolveGroundRailPlanDetailed,
   LAYERED_RAIL_MIN_PATH_CELLS,
   type GroundRailPlanFailureReason,
+  type BuildFailureReason,
 } from './construction';
 import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, costOfProtection, costOfRegauge, costMultiplierForRailWeight, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
 import type { RailBuildOptions } from './construction';
@@ -83,6 +84,14 @@ export interface BuildPreview {
    * より具体的にするために使う。
    */
   slopeIssue?: GroundRailPlanFailureReason;
+  /**
+   * reason==='no-effect'の具体的な理由(construction.tsのBuildFailureReason)。
+   * apply*Detailed系(applyStationDetailed/applyDepotDetailed/applySubstationDetailed/
+   * applySignalDetailed/applyRailPathDetailed)がno-opの際に返すfailureをそのまま
+   * 伝える。地上レールのslopeIssueもこの値に含まれる(値としては同一)。
+   * GameUI.tsxのBuildFeedbackが理由別の文言を出すために使う。
+   */
+  failure?: BuildFailureReason;
 }
 
 export function evaluateBuild(
@@ -267,18 +276,40 @@ export function evaluateBuild(
   const state: ConstructionState = { railMap, stations };
   let result: ConstructionState;
   let overpassCells = 0;
+  // apply*Detailed系がno-opの際に返す具体的な理由。UIへの表示用(下のfailure算出で使う)。
+  let applyFailure: BuildFailureReason | undefined;
   switch (mode) {
     case 'remove': result = removePath(state, path); break;
-    case 'signal': result = applySignal(state, path, field, townTiles); break;
-    case 'station':
-      result = elevated
-        ? applyElevatedStation(state, path[path.length - 1], [], elevatedLevel)
-        : underground
-        ? applyUndergroundStation(state, path[path.length - 1], [], undergroundLevel)
-        : applyStation(state, path[path.length - 1], field, [], undefined, townTiles);
+    case 'signal': {
+      const detailed = applySignalDetailed(state, path, field, townTiles);
+      result = detailed;
+      applyFailure = detailed.failure;
       break;
-    case 'depot': result = applyDepot(state, path[path.length - 1], field, townTiles); break;
-    case 'substation': result = applySubstation(state, path[path.length - 1], field, townTiles); break;
+    }
+    case 'station': {
+      if (elevated) {
+        result = applyElevatedStation(state, path[path.length - 1], [], elevatedLevel);
+      } else if (underground) {
+        result = applyUndergroundStation(state, path[path.length - 1], [], undergroundLevel);
+      } else {
+        const detailed = applyStationDetailed(state, path[path.length - 1], field, [], undefined, townTiles);
+        result = detailed;
+        applyFailure = detailed.failure;
+      }
+      break;
+    }
+    case 'depot': {
+      const detailed = applyDepotDetailed(state, path[path.length - 1], field, townTiles);
+      result = detailed;
+      applyFailure = detailed.failure;
+      break;
+    }
+    case 'substation': {
+      const detailed = applySubstationDetailed(state, path[path.length - 1], field, townTiles);
+      result = detailed;
+      applyFailure = detailed.failure;
+      break;
+    }
     case 'rail': {
       if (elevated) {
         result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTiles, railOptions);
@@ -289,6 +320,7 @@ export function evaluateBuild(
         const detailed = applyRailPathDetailed(state, path, field, townTiles, railOptions);
         result = detailed;
         overpassCells = detailed.overpassCells.size;
+        applyFailure = detailed.failure;
       }
       break;
     }
@@ -311,9 +343,10 @@ export function evaluateBuild(
 
   const slopeIssue =
     mode === 'rail' && !elevated && !underground && !effective ? groundSlopeIssue : undefined;
+  const failure = !effective ? (applyFailure ?? slopeIssue) : undefined;
 
   return {
     mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells,
-    rampCells: elevatedRampCount || groundRampCount, level, slopeIssue,
+    rampCells: elevatedRampCount || groundRampCount, level, slopeIssue, failure,
   };
 }
