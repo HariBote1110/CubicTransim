@@ -1196,11 +1196,14 @@ const stepTrain = (
     // 緩やかに落とす(applyOverspeedDecay)。
     rt.speedKmh = applyOverspeedDecay(rt.speedKmh, Math.min(releaseEnvelopeKmh, MAX_SPEED_KMH), dt);
     rt.brakeDecelMs2 = 0;
-  } else if (rt.speedKmh > hardEnvelopeKmh) {
+  } else if (rules.trackClasses && rt.speedKmh > hardEnvelopeKmh) {
     // 軌道(何キロレール)の制動曲線(hardEnvelopeKmh)を超えている(前方のレール速度上限に
     // 間に合わなくなった、または既に速度上限を超えたセルへ進んでしまった)場合も、
     // 通常のブレーキラッチ(rt.braking)を待たず非常制動で追いつく(design: 停止点向けの
     // hardEnvelope超過時の非常制動と同じ扱い)。
+    // M1: rules.trackClasses=falseならhardEnvelopeKmhはsqrt(2ad)そのもの(=従来からの
+    // 停止点向け制動曲線と同値)なので、この分岐をゲートしないと下位ティアの挙動が
+    // 変わってしまう(brakeDecelMs2が瞬時にserviceDecelMs2へ飛び、rampDecelを経由しない)。
     rt.speedKmh = Math.max(hardEnvelopeKmh, rt.speedKmh - EMERGENCY_DECEL_KMH_S * dt);
     rt.brakeDecelMs2 = serviceDecelMs2;
     rt.braking = true;
