@@ -3,13 +3,9 @@ import type { CellData, StationData, Level, RailGauge, TrainPower } from '../typ
 import { reservationKey } from './reservation';
 import { cellAllowsTrain, DEFAULT_GAME_RULES, type GameRules } from './gameRules';
 import type { FeedingIndex } from './feeding';
+import { activeConnections, entryLayerCandidates } from './levelAdjacency';
 
 export type Layer = 0 | Level;
-
-// あるセルの、指定した層で出られる方向のconnectionsビット集合。
-// layer0は地平connections、layer≥1はuppers[layer].connections。
-const activeConnections = (cell: CellData | undefined, layer: Layer): number =>
-  layer === 0 ? (cell?.connections ?? 0) : (cell?.uppers?.[layer]?.connections ?? 0);
 
 // あるセルの、指定した層でのstationId。地平(layer0)はcell.stationId、
 // 高架(layer≥1)はcell.uppers?.[layer]?.stationId(高架駅ホームでなければundefined)。
@@ -42,13 +38,9 @@ const resolveEntryLayer = (
   const enterBit = getOppositeDir(dir);
   const cellData = railMap.get(toKey(cell.x, cell.z));
 
-  const candidates: Layer[] = [];
-  if (cellData?.connections && (cellData.connections & enterBit)) candidates.push(0);
-  // P8a: 高架(1..3)だけでなく地下(-1..-3)も入場候補に含める。
-  for (const lvl of [1, 2, 3, -1, -2, -3] as const) {
-    const u = cellData?.uppers?.[lvl];
-    if (u?.connections && (u.connections & enterBit)) candidates.push(lvl);
-  }
+  // P8a: 高架(1..3)だけでなく地下(-1..-3)も入場候補に含める(levelAdjacency.tsが
+  // feeding.ts/blocks.tsと共有する規則)。
+  const candidates = entryLayerCandidates(cellData, enterBit) as Layer[];
   if (candidates.length === 0) return null;
 
   if (prevLayer !== undefined && candidates.includes(prevLayer)) return prevLayer;
