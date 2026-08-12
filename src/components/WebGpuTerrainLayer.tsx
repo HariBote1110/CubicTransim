@@ -14,7 +14,7 @@ import React, { useEffect, useRef } from 'react';
 
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import type { CornerDiffs } from '../sim/terrainOverlay';
-import type { TerrainProfile } from '../sim/terrainField';
+import type { TerrainField, TerrainProfile } from '../sim/terrainField';
 import type { WebGpuCameraState } from '../render/webgpuCamera';
 import {
   toWebGpuCameraState, type GameCameraState, type ViewportSize,
@@ -25,6 +25,33 @@ import {
   WebGpuTerrainLayerController, WebGpuUnavailableError,
   type WebGpuUnavailableReason,
 } from '../render/webgpuLayer';
+import { buildPerspectiveTerrainMesh, PERSPECTIVE_TERRAIN_CHUNK_ID } from '../render/perspectiveTerrain';
+import { MESH_LAYER_CLASS } from '../render/webgpuLayer';
+
+/**
+ * D1: 透視投影(乗客視点スパイク)のデバッグ状態。モジュール単位のミュータブルフラグ
+ * (CLAUDE.md 指定の「WebGpuRenderDriver にモジュール単位のフラグを持たせる」方式)。
+ * 実際の乗車UIはD2以降のスコープで、これは `window.__perspectiveDebug` からの検証専用。
+ */
+export const perspectiveDebugState: {
+  active: boolean;
+  eye: [number, number, number];
+  look: [number, number, number];
+  fovYRadians: number;
+  /** 直近に地形メッシュを焼いた中心セル(再焼き込みの要不要判定に使う)。 */
+  lastTerrainCentre: [number, number] | null;
+} = {
+  active: false,
+  eye: [0, 1.6, 0],
+  look: [10, 1.2, 0],
+  fovYRadians: Math.PI / 3,
+  lastTerrainCentre: null,
+};
+
+/** 透視パスで地形メッシュを焼く半径(セル)。オンデマンド生成、視点移動のたびに作り直す。 */
+const PERSPECTIVE_TERRAIN_RADIUS_CELLS = 48;
+/** 中心セルがこの距離以上動いたら地形メッシュを焼き直す(毎フレーム再構築を避ける)。 */
+const PERSPECTIVE_TERRAIN_REBAKE_THRESHOLD = 8;
 
 export type WebGpuLayerRef = React.RefObject<WebGpuTerrainLayerController | null>;
 
@@ -138,24 +165,88 @@ interface RenderDriverProps {
    * cameraRef/viewportRef から毎回その場で組み立てる。
    */
   stateRef?: React.MutableRefObject<WebGpuCameraState | null>;
+  /** D1: 透視パスの地形メッシュをオンデマンドに焼くための地形フィールド。 */
+  field?: TerrainField;
 }
 
 /**
  * 共有 rAF ループの render フェーズで、カメラ状態を wgpu へ送って1フレーム描かせる。
  * 画面には何も出さない(描画そのものは WebGpuTerrainLayer のキャンバスが受け持つ)。
+ *
+ * D1: `perspectiveDebugState.active` が true の間は、クォータービューのカメラ供給
+ * (setCamera)を止めて透視カメラ(setCameraPerspective)を毎フレーム供給する
+ * (「クォータービューのカメラ供給を止める」というタスク要求どおりの、モジュール単位の
+ * ミュータブルフラグによる最小限の切り替え)。
  */
 export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
-  layerRef, cameraRef, viewportRef, dim = 1, stateRef,
+  layerRef, cameraRef, viewportRef, dim = 1, stateRef, field,
 }) => {
   const dimRef = useRef(dim);
   dimRef.current = dim;
+  const fieldRef = useRef(field);
+  fieldRef.current = field;
+
+  useEffect(() => {
+    (window as any).__perspectiveDebug = {
+      /** 乗客視点デバッグモードへ入る(real 乗車UIはD2以降のスコープ)。 */
+      enter(
+        eye: [number, number, number],
+        look: [number, number, number],
+        fovYRadians = Math.PI / 3,
+      ) {
+        perspectiveDebugState.active = true;
+        perspectiveDebugState.eye = eye;
+        perspectiveDebugState.look = look;
+        perspectiveDebugState.fovYRadians = fovYRadians;
+        perspectiveDebugState.lastTerrainCentre = null; // 強制的に地形を焼き直す
+      },
+      exit() {
+        perspectiveDebugState.active = false;
+      },
+    };
+    return () => {
+      delete (window as any).__perspectiveDebug;
+    };
+  }, []);
 
   useFrameLoop(FRAME_ORDER.render, () => {
     const controller = layerRef.current;
     if (!controller) return;
+    controller.setDim(dimRef.current);
+
+    if (perspectiveDebugState.active) {
+      controller.setCameraMode('perspective');
+      controller.setCameraPerspective(
+        perspectiveDebugState.eye,
+        perspectiveDebugState.look,
+        perspectiveDebugState.fovYRadians,
+      );
+      const field = fieldRef.current;
+      if (field) {
+        const [ex, , ez] = perspectiveDebugState.eye;
+        const last = perspectiveDebugState.lastTerrainCentre;
+        const needsRebake = !last
+          || Math.hypot(ex - last[0], ez - last[1]) >= PERSPECTIVE_TERRAIN_REBAKE_THRESHOLD;
+        if (needsRebake) {
+          const mesh = buildPerspectiveTerrainMesh(field, ex, ez, PERSPECTIVE_TERRAIN_RADIUS_CELLS);
+          if (mesh) {
+            controller.uploadMeshChunk(PERSPECTIVE_TERRAIN_CHUNK_ID, MESH_LAYER_CLASS.surface, mesh);
+          }
+          perspectiveDebugState.lastTerrainCentre = [ex, ez];
+        }
+      }
+      const stats = controller.syncAndRender(
+        toWebGpuCameraState(cameraRef.current, viewportRef.current),
+        OVERPASS_HEIGHT,
+      );
+      if (stats) (window as any).__webgpuStats = stats;
+      (window as any).__dbgFrames = frameLoop.frameCount;
+      return;
+    }
+
+    controller.setCameraMode('quarter');
     const state = toWebGpuCameraState(cameraRef.current, viewportRef.current);
     if (stateRef) stateRef.current = state;
-    controller.setDim(dimRef.current);
     const stats = controller.syncAndRender(state, OVERPASS_HEIGHT);
     if (stats) (window as any).__webgpuStats = stats;
     (window as any).__dbgFrames = frameLoop.frameCount;

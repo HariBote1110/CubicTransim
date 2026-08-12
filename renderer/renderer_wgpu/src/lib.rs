@@ -9,6 +9,11 @@ pub const TERRAIN_NOISE_WGSL: &str = include_str!("../shaders/terrain_noise.wgsl
 pub const MESH_DRAW_WGSL: &str = include_str!("../shaders/mesh_draw.wgsl");
 /// R4a: 列車などのインスタンス描画シェーダ(R4cで使う)。
 pub const MESH_INSTANCED_WGSL: &str = include_str!("../shaders/mesh_instanced.wgsl");
+/// D1: 透視投影(乗客視点スパイク)用のメッシュチャンク描画シェーダ。クォータービューの
+/// MESH_DRAW_WGSL とは別経路(等角投影の閉形式ではなく、真の view_proj 行列を使う)。
+pub const MESH_DRAW_PERSP_WGSL: &str = include_str!("../shaders/mesh_draw_persp.wgsl");
+/// D1: 透視投影用のインスタンス描画シェーダ。
+pub const MESH_INSTANCED_PERSP_WGSL: &str = include_str!("../shaders/mesh_instanced_persp.wgsl");
 pub const TILE_GENERATE_WGSL: &str = include_str!("../shaders/tile_generate.wgsl");
 pub const TERRAIN_DRAW_WGSL: &str = include_str!("../shaders/terrain_draw.wgsl");
 pub const TILE_FINALIZE_WGSL: &str = include_str!("../shaders/tile_finalize.wgsl");
@@ -148,6 +153,183 @@ pub mod projection {
             c.centre_x = 100.5;
             c.centre_z = 100.5;
             assert!(aabb_visible(&far, c));
+        }
+    }
+}
+
+/// D1: 透視投影カメラ(乗客視点スパイク)の行列計算とフラスタムカリング。
+///
+/// クォータービュー(等角投影・projection モジュール)とは完全に別経路。真の
+/// view-projection 行列(右手系、深度レンジ [0,1]、reversed-Z は使わない — wgpu の
+/// LessEqual 比較・Clear(1.0) をそのまま流用できるいちばん単純な選択)を組む。
+/// ネイティブの `cargo test` で検証できるよう target非依存にしてある。
+pub mod perspective {
+    /// 4x4 行列(列優先、WGSL の `mat4x4<f32>` と同じメモリレイアウト)。
+    pub type Mat4 = [f32; 16];
+
+    fn mat4_mul(a: &Mat4, b: &Mat4) -> Mat4 {
+        let mut out = [0.0f32; 16];
+        for col in 0..4 {
+            for row in 0..4 {
+                let mut sum = 0.0f32;
+                for k in 0..4 {
+                    // a は列優先: a[col_a*4+row]。b も同様。
+                    sum += a[k * 4 + row] * b[col * 4 + k];
+                }
+                out[col * 4 + row] = sum;
+            }
+        }
+        out
+    }
+
+    fn normalise(v: [f32; 3]) -> [f32; 3] {
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if len < 1e-9 {
+            return [0.0, 0.0, 1.0];
+        }
+        [v[0] / len, v[1] / len, v[2] / len]
+    }
+
+    fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+
+    fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+
+    /// 右手系 lookAt。up がほぼ視線方向と平行なとき(真上/真下を見る)は
+    /// ワールド +Z を代替の up として使い、退化を避ける。
+    pub fn look_at_rh(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Mat4 {
+        let f = normalise(sub(target, eye));
+        let mut up_ref = up;
+        if dot(f, normalise(up)).abs() > 0.999 {
+            up_ref = [0.0, 0.0, 1.0];
+        }
+        let s = normalise(cross(f, up_ref));
+        let u = cross(s, f);
+        // 列優先: 列0=s, 列1=u, 列2=-f, 列3=平行移動。
+        [
+            s[0], u[0], -f[0], 0.0,
+            s[1], u[1], -f[1], 0.0,
+            s[2], u[2], -f[2], 0.0,
+            -dot(s, eye), -dot(u, eye), dot(f, eye), 1.0,
+        ]
+    }
+
+    /// 右手系透視投影、深度レンジ [0,1](wgpu既定、reversed-Zは使わない)。
+    pub fn perspective_rh_zo(fov_y_radians: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+        let f = 1.0 / (fov_y_radians * 0.5).tan();
+        let range_inv = 1.0 / (near - far);
+        [
+            f / aspect.max(1e-6), 0.0, 0.0, 0.0,
+            0.0, f, 0.0, 0.0,
+            0.0, 0.0, far * range_inv, -1.0,
+            0.0, 0.0, near * far * range_inv, 0.0,
+        ]
+    }
+
+    /// `perspective_rh_zo(...) * look_at_rh(...)`。
+    pub fn view_proj(
+        eye: [f32; 3],
+        target: [f32; 3],
+        fov_y_radians: f32,
+        aspect: f32,
+        near: f32,
+        far: f32,
+    ) -> Mat4 {
+        let view = look_at_rh(eye, target, [0.0, 1.0, 0.0]);
+        let proj = perspective_rh_zo(fov_y_radians, aspect, near, far);
+        mat4_mul(&proj, &view)
+    }
+
+    fn transform_point(m: &Mat4, p: [f32; 3]) -> [f32; 4] {
+        [
+            m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
+            m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13],
+            m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14],
+            m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15],
+        ]
+    }
+
+    /// AABB `[min_x,min_y,min_z,max_x,max_y,max_z]` が view_proj のクリップ空間で
+    /// 完全に外側(6平面のいずれかの外側に8頂点すべてがある)でなければ可視とみなす
+    /// (保守的な判定: 偽陽性は許容、偽陰性は避ける)。
+    pub fn aabb_visible_persp(aabb: &[f32; 6], view_proj: &Mat4) -> bool {
+        let corners = [
+            [aabb[0], aabb[1], aabb[2]],
+            [aabb[3], aabb[1], aabb[2]],
+            [aabb[0], aabb[4], aabb[2]],
+            [aabb[3], aabb[4], aabb[2]],
+            [aabb[0], aabb[1], aabb[5]],
+            [aabb[3], aabb[1], aabb[5]],
+            [aabb[0], aabb[4], aabb[5]],
+            [aabb[3], aabb[4], aabb[5]],
+        ];
+        let clipped: Vec<[f32; 4]> = corners.iter().map(|&p| transform_point(view_proj, p)).collect();
+        // 6平面それぞれについて、全頂点がその平面の外側にあれば不可視。
+        let outside_all = |test: &dyn Fn(&[f32; 4]) -> bool| clipped.iter().all(|c| test(c));
+        if outside_all(&|c| c[0] < -c[3]) {
+            return false;
+        }
+        if outside_all(&|c| c[0] > c[3]) {
+            return false;
+        }
+        if outside_all(&|c| c[1] < -c[3]) {
+            return false;
+        }
+        if outside_all(&|c| c[1] > c[3]) {
+            return false;
+        }
+        if outside_all(&|c| c[2] < 0.0) {
+            return false;
+        }
+        if outside_all(&|c| c[2] > c[3]) {
+            return false;
+        }
+        true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn point_in_front_of_eye_projects_within_ndc() {
+            let vp = view_proj([0.0, 1.0, 0.0], [0.0, 1.0, 10.0], std::f32::consts::FRAC_PI_3, 1.0, 0.1, 100.0);
+            let clip = transform_point(&vp, [0.0, 1.0, 10.0]);
+            // 視線の中心にある点は画面中央(x/w=0,y/w=0)近くに来る。
+            assert!((clip[0] / clip[3]).abs() < 1e-3);
+            assert!((clip[1] / clip[3]).abs() < 1e-3);
+            // 深度は [0,1] の範囲内。
+            let ndc_z = clip[2] / clip[3];
+            assert!(ndc_z >= 0.0 && ndc_z <= 1.0);
+        }
+
+        #[test]
+        fn box_behind_camera_is_not_visible() {
+            let vp = view_proj([0.0, 1.0, 0.0], [0.0, 1.0, 10.0], std::f32::consts::FRAC_PI_3, 1.0, 0.1, 100.0);
+            assert!(!aabb_visible_persp(&[-1.0, 0.0, -20.0, 1.0, 2.0, -18.0], &vp));
+        }
+
+        #[test]
+        fn box_ahead_of_camera_is_visible() {
+            let vp = view_proj([0.0, 1.0, 0.0], [0.0, 1.0, 10.0], std::f32::consts::FRAC_PI_3, 1.0, 0.1, 100.0);
+            assert!(aabb_visible_persp(&[-1.0, 0.0, 9.0, 1.0, 2.0, 11.0], &vp));
+        }
+
+        #[test]
+        fn box_far_to_the_side_is_not_visible() {
+            let vp = view_proj([0.0, 1.0, 0.0], [0.0, 1.0, 10.0], std::f32::consts::FRAC_PI_3, 1.0, 0.1, 100.0);
+            assert!(!aabb_visible_persp(&[500.0, 0.0, 9.0, 502.0, 2.0, 11.0], &vp));
         }
     }
 }
@@ -551,6 +733,61 @@ pub mod mesh_pipeline {
             instanced,
         }
     }
+
+    /// D1: 透視投影パイプライン一式。`create_all` と**同じ** camera_bgl/class_bgl
+    /// (パイプラインレイアウト)を再利用する — bind group layout はバッファの中身に
+    /// 関知しない(uniform 1本、サイズ制約なし)ので、専用の透視投影カメラ uniform
+    /// バッファ(こちらは view_proj 行列を積む、CanvasRenderer::persp_camera_buffer)を
+    /// 同じレイアウトへ束ねられる。シェーダとバインドグループだけが別経路になる。
+    pub fn create_perspective_all(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        camera_bgl: &wgpu::BindGroupLayout,
+        class_bgl: &wgpu::BindGroupLayout,
+    ) -> ([wgpu::RenderPipeline; 4], [wgpu::RenderPipeline; 2]) {
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("mesh-persp-layout"),
+            bind_group_layouts: &[camera_bgl, class_bgl],
+            push_constant_ranges: &[],
+        });
+        let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("mesh-draw-persp"),
+            source: wgpu::ShaderSource::Wgsl(super::MESH_DRAW_PERSP_WGSL.into()),
+        });
+        let instanced_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("mesh-instanced-persp"),
+            source: wgpu::ShaderSource::Wgsl(super::MESH_INSTANCED_PERSP_WGSL.into()),
+        });
+        let chunk = [
+            LayerClass::Surface,
+            LayerClass::Underground,
+            LayerClass::Translucent,
+            LayerClass::UndergroundGhost,
+        ]
+        .map(|class| {
+            create_mesh_pipeline(
+                device,
+                &mesh_shader,
+                &layout,
+                format,
+                class,
+                &[mesh_vertex_layout()],
+                "mesh-draw-persp-pipeline",
+            )
+        });
+        let instanced = [LayerClass::Surface, LayerClass::Underground].map(|class| {
+            create_mesh_pipeline(
+                device,
+                &instanced_shader,
+                &layout,
+                format,
+                class,
+                &[mesh_vertex_layout(), mesh_instance_layout()],
+                "mesh-instanced-persp-pipeline",
+            )
+        });
+        (chunk, instanced)
+    }
 }
 
 /// 地形編集オーバーレイ(terrainOverlay.ts の CornerDiffs)を GPU タイル生成へ橋渡しする
@@ -861,6 +1098,18 @@ mod wasm {
         underground: Option<(wgpu::Buffer, u32)>,
     }
 
+    /// D1: レンダリングモード。既定は Quarter(クォータービュー、既存挙動と完全一致)。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    enum CameraMode {
+        #[default]
+        Quarter,
+        Perspective,
+    }
+
+    /// D1: 透視パスの描画半径(=フォグ終端)。この距離でカットオフを霧に隠す。
+    const PERSP_DRAW_RADIUS: f64 = 300.0;
+    const PERSP_NEAR: f64 = 0.1;
+
     #[wasm_bindgen]
     pub struct CanvasRenderer {
         surface: wgpu::Surface<'static>,
@@ -891,6 +1140,19 @@ mod wasm {
         mesh_camera_bind_group: wgpu::BindGroup,
         mesh_chunks: HashMap<u32, MeshChunk>,
         instanced_meshes: HashMap<u32, InstancedMesh>,
+
+        /// D1: 透視投影(乗客視点スパイク)のパイプライン一式。クォータービュー用の
+        /// 上記フィールドとは完全に別経路(mesh_pipeline::create_perspective_all)。
+        persp_mesh_pipelines: [wgpu::RenderPipeline; 4],
+        persp_instanced_pipelines: [wgpu::RenderPipeline; 2],
+        persp_camera_buffer: wgpu::Buffer,
+        persp_camera_bind_group: wgpu::BindGroup,
+        /// 'quarter'(既定)か 'perspective' か。既定のクォータービューは本フィールドが
+        /// Quarter のときバイト単位で従来どおりに描かれる(render() のガード参照)。
+        mode: CameraMode,
+        persp_eye: [f64; 3],
+        persp_look: [f64; 3],
+        persp_fov_y: f64,
 
         tiles: HashMap<TileKey, GpuTile>,
         visible: Vec<TileKey>,
@@ -1330,6 +1592,26 @@ mod wasm {
             let mesh_pipelines = mesh.chunk;
             let instanced_pipelines = mesh.instanced;
 
+            // --- D1: 透視投影(乗客視点スパイク)パイプライン一式 ---
+            // camera_bgl/class_bgl はクォータービューと共有(バッファの中身に関知しない
+            // 汎用レイアウトのため)。専用のカメラ uniform だけ別バッファにする。
+            let (persp_mesh_pipelines, persp_instanced_pipelines) =
+                super::mesh_pipeline::create_perspective_all(&device, format, &mesh.camera_bgl, &mesh.class_bgl);
+            let persp_camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("persp-camera-params"),
+                size: 96,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let persp_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("persp-camera-bg"),
+                layout: &mesh.camera_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: persp_camera_buffer.as_entire_binding(),
+                }],
+            });
+
             Ok(Self {
                 surface,
                 device,
@@ -1355,6 +1637,14 @@ mod wasm {
                 mesh_camera_bind_group,
                 mesh_chunks: HashMap::new(),
                 instanced_meshes: HashMap::new(),
+                persp_mesh_pipelines,
+                persp_instanced_pipelines,
+                persp_camera_buffer,
+                persp_camera_bind_group,
+                mode: CameraMode::default(),
+                persp_eye: [0.0, 1.6, 0.0],
+                persp_look: [0.0, 1.6, 1.0],
+                persp_fov_y: std::f64::consts::FRAC_PI_3,
                 tiles: HashMap::with_capacity(128),
                 visible: Vec::with_capacity(64),
                 needed: Vec::with_capacity(96),
@@ -1417,6 +1707,42 @@ mod wasm {
                 self.center_z = next_z;
                 self.pixels_per_cell = next_ppc;
                 self.height_per_level = next_height;
+                self.camera_revision = self.camera_revision.wrapping_add(1);
+            }
+        }
+
+        /// D1: 透視投影カメラ(乗客視点スパイク)を更新する。クォータービューの
+        /// `set_camera` とは独立(center_x/pixels_per_cell 等は一切触らない)。
+        /// `mode` が Perspective のときだけ render() で使われる。
+        #[wasm_bindgen(js_name = setCameraPerspective)]
+        pub fn set_camera_perspective(
+            &mut self,
+            eye_x: f64,
+            eye_y: f64,
+            eye_z: f64,
+            look_x: f64,
+            look_y: f64,
+            look_z: f64,
+            fov_y_radians: f64,
+        ) {
+            self.persp_eye = [eye_x, eye_y, eye_z];
+            self.persp_look = [look_x, look_y, look_z];
+            self.persp_fov_y = fov_y_radians.max(0.01);
+            self.camera_revision = self.camera_revision.wrapping_add(1);
+        }
+
+        /// D1: レンダリングモードを切り替える。'perspective' 以外はすべて 'quarter'
+        /// (既定)として扱う。'quarter' に戻すとクォータービューは前回の set_camera
+        /// 状態でバイト単位に従来どおり描く(このメソッドは center_x 等を書き換えない)。
+        #[wasm_bindgen(js_name = setCameraMode)]
+        pub fn set_camera_mode(&mut self, mode: &str) {
+            let next = if mode == "perspective" {
+                CameraMode::Perspective
+            } else {
+                CameraMode::Quarter
+            };
+            if self.mode != next {
+                self.mode = next;
                 self.camera_revision = self.camera_revision.wrapping_add(1);
             }
         }
@@ -1709,6 +2035,60 @@ mod wasm {
             self.queue
                 .write_buffer(&self.camera_buffer, 0, &camera_bytes);
 
+            // D1: 透視投影カメラ uniform(mode==Perspective のときだけ実際に使われるが、
+            // 書き込み自体は毎フレーム軽いのでガード無しで行う)。
+            let aspect = (self.config.width.max(1) as f64) / (self.config.height.max(1) as f64);
+            let persp_vp = super::perspective::view_proj(
+                [
+                    self.persp_eye[0] as f32,
+                    self.persp_eye[1] as f32,
+                    self.persp_eye[2] as f32,
+                ],
+                [
+                    self.persp_look[0] as f32,
+                    self.persp_look[1] as f32,
+                    self.persp_look[2] as f32,
+                ],
+                self.persp_fov_y as f32,
+                aspect as f32,
+                PERSP_NEAR as f32,
+                PERSP_DRAW_RADIUS as f32,
+            );
+            let eye_underground = self.persp_eye[1] < 0.0;
+            let sky = if eye_underground {
+                [0.02f32, 0.02, 0.03]
+            } else {
+                [0.53, 0.75, 0.93]
+            };
+            let mut persp_bytes = [0u8; 96];
+            persp_bytes[0..64].copy_from_slice(bytemuck::bytes_of(&persp_vp));
+            put_f32(&mut persp_bytes, 64, self.persp_eye[0] as f32);
+            put_f32(&mut persp_bytes, 68, self.persp_eye[1] as f32);
+            put_f32(&mut persp_bytes, 72, self.persp_eye[2] as f32);
+            put_f32(&mut persp_bytes, 76, PERSP_DRAW_RADIUS as f32);
+            put_f32(&mut persp_bytes, 80, sky[0]);
+            put_f32(&mut persp_bytes, 84, sky[1]);
+            put_f32(&mut persp_bytes, 88, sky[2]);
+            put_f32(&mut persp_bytes, 92, 1.0);
+            self.queue
+                .write_buffer(&self.persp_camera_buffer, 0, &persp_bytes);
+
+            let clear_colour = if self.mode == CameraMode::Perspective {
+                wgpu::Color {
+                    r: sky[0] as f64,
+                    g: sky[1] as f64,
+                    b: sky[2] as f64,
+                    a: 1.0,
+                }
+            } else {
+                wgpu::Color {
+                    r: 0.604,
+                    g: 0.722,
+                    b: 0.435,
+                    a: 1.0,
+                }
+            };
+
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("quarterview-terrain-pass"),
@@ -1716,12 +2096,7 @@ mod wasm {
                         view: &view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.604,
-                                g: 0.722,
-                                b: 0.435,
-                                a: 1.0,
-                            }),
+                            load: wgpu::LoadOp::Clear(clear_colour),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -1736,56 +2111,93 @@ mod wasm {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                pass.set_pipeline(&self.draw_pipeline);
-                pass.set_bind_group(1, &self.camera_bind_group, &[]);
-                for &key in &self.visible {
-                    if let Some(tile) = self.tiles.get(&key) {
-                        pass.set_bind_group(0, &tile.draw_bind_group, &[]);
-                        pass.draw_indirect(&tile.render_args, 0);
-                    }
-                }
 
-                // --- R4a: ジオラマ物(メッシュチャンク+インスタンス) ---
-                // 描画順は 地表(不透明) → 地表インスタンス → 地下 → 地下インスタンス →
-                // 半透明。地下クラスは深度比較 Always で地形の上に出るため、地下ビュー
-                // (dim<1.0)以外では丸ごと描かない(three.js 側で通常表示時に地下の
-                // ジオメトリを出さないのと同じ規則)。
-                let cull = CullCamera {
-                    centre_x: self.center_x,
-                    centre_z: self.center_z,
-                    pixels_per_cell: self.pixels_per_cell,
-                    viewport_w: self.config.width as f64,
-                    viewport_h: self.config.height as f64,
-                };
-                let underground_visible = self.dim < 1.0;
-                pass.set_bind_group(0, &self.mesh_camera_bind_group, &[]);
-
-                let draw_class = |pass: &mut wgpu::RenderPass<'_>, class: LayerClass| {
-                    let slot = class.as_u32() as usize;
-                    pass.set_pipeline(&self.mesh_pipelines[slot]);
-                    pass.set_bind_group(1, &self.class_bind_groups[slot], &[]);
-                    let mut drawn = 0usize;
-                    for chunk in self.mesh_chunks.values() {
-                        if chunk.class != class || !aabb_visible(&chunk.aabb, cull) {
-                            continue;
+                if self.mode == CameraMode::Quarter {
+                    // --- クォータービュー(既存経路、バイト単位で無改造) ---
+                    pass.set_pipeline(&self.draw_pipeline);
+                    pass.set_bind_group(1, &self.camera_bind_group, &[]);
+                    for &key in &self.visible {
+                        if let Some(tile) = self.tiles.get(&key) {
+                            pass.set_bind_group(0, &tile.draw_bind_group, &[]);
+                            pass.draw_indirect(&tile.render_args, 0);
                         }
-                        pass.set_vertex_buffer(0, chunk.vertices.slice(..));
-                        pass.set_index_buffer(chunk.indices.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..chunk.index_count, 0, 0..1);
-                        drawn += 1;
                     }
-                    drawn
-                };
-                mesh_draws += draw_class(&mut pass, LayerClass::Surface);
-                instance_draws += self.draw_instances(&mut pass, LayerClass::Surface);
-                if underground_visible {
-                    mesh_draws += draw_class(&mut pass, LayerClass::Underground);
-                    instance_draws += self.draw_instances(&mut pass, LayerClass::Underground);
+
+                    // --- R4a: ジオラマ物(メッシュチャンク+インスタンス) ---
+                    // 描画順は 地表(不透明) → 地表インスタンス → 地下 → 地下インスタンス →
+                    // 半透明。地下クラスは深度比較 Always で地形の上に出るため、地下ビュー
+                    // (dim<1.0)以外では丸ごと描かない(three.js 側で通常表示時に地下の
+                    // ジオメトリを出さないのと同じ規則)。
+                    let cull = CullCamera {
+                        centre_x: self.center_x,
+                        centre_z: self.center_z,
+                        pixels_per_cell: self.pixels_per_cell,
+                        viewport_w: self.config.width as f64,
+                        viewport_h: self.config.height as f64,
+                    };
+                    let underground_visible = self.dim < 1.0;
+                    pass.set_bind_group(0, &self.mesh_camera_bind_group, &[]);
+
+                    let draw_class = |pass: &mut wgpu::RenderPass<'_>, class: LayerClass| {
+                        let slot = class.as_u32() as usize;
+                        pass.set_pipeline(&self.mesh_pipelines[slot]);
+                        pass.set_bind_group(1, &self.class_bind_groups[slot], &[]);
+                        let mut drawn = 0usize;
+                        for chunk in self.mesh_chunks.values() {
+                            if chunk.class != class || !aabb_visible(&chunk.aabb, cull) {
+                                continue;
+                            }
+                            pass.set_vertex_buffer(0, chunk.vertices.slice(..));
+                            pass.set_index_buffer(chunk.indices.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+                            drawn += 1;
+                        }
+                        drawn
+                    };
+                    mesh_draws += draw_class(&mut pass, LayerClass::Surface);
+                    instance_draws += self.draw_instances(&mut pass, LayerClass::Surface);
+                    if underground_visible {
+                        mesh_draws += draw_class(&mut pass, LayerClass::Underground);
+                        instance_draws += self.draw_instances(&mut pass, LayerClass::Underground);
+                    }
+                    // 地上ビューの地下ゴースト。存在するかどうかは TS 側のフィーダが
+                    // 決める(地下ビュー中はチャンクを載せない)ので、ここでは条件を持たない。
+                    mesh_draws += draw_class(&mut pass, LayerClass::UndergroundGhost);
+                    mesh_draws += draw_class(&mut pass, LayerClass::Translucent);
+                } else {
+                    // --- D1: 透視投影(乗客視点スパイク) ---
+                    // 地形は個別のドロー機構を持たない: TS 側が cellCornerHeights から
+                    // 焼いた通常のメッシュチャンク(Surfaceクラス)として届く前提で、
+                    // ここでは iso 用の tile indirect draw を一切呼ばない。
+                    pass.set_bind_group(0, &self.persp_camera_bind_group, &[]);
+                    let underground_visible = eye_underground;
+
+                    let draw_class_persp = |pass: &mut wgpu::RenderPass<'_>, class: LayerClass| {
+                        let slot = class.as_u32() as usize;
+                        pass.set_pipeline(&self.persp_mesh_pipelines[slot]);
+                        pass.set_bind_group(1, &self.class_bind_groups[slot], &[]);
+                        let mut drawn = 0usize;
+                        for chunk in self.mesh_chunks.values() {
+                            if chunk.class != class || !super::perspective::aabb_visible_persp(&chunk.aabb, &persp_vp) {
+                                continue;
+                            }
+                            pass.set_vertex_buffer(0, chunk.vertices.slice(..));
+                            pass.set_index_buffer(chunk.indices.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+                            drawn += 1;
+                        }
+                        drawn
+                    };
+                    mesh_draws += draw_class_persp(&mut pass, LayerClass::Surface);
+                    instance_draws += self.draw_instances_persp(&mut pass, LayerClass::Surface);
+                    if underground_visible {
+                        mesh_draws += draw_class_persp(&mut pass, LayerClass::Underground);
+                        instance_draws += self.draw_instances_persp(&mut pass, LayerClass::Underground);
+                    }
+                    // 半透明は最後(depth書き込み無し)。地下ゴーストはクォータービュー
+                    // 固有の演出なので透視パスでは描かない(D2以降のスコープ)。
+                    mesh_draws += draw_class_persp(&mut pass, LayerClass::Translucent);
                 }
-                // 地上ビューの地下ゴースト。存在するかどうかは TS 側のフィーダが
-                // 決める(地下ビュー中はチャンクを載せない)ので、ここでは条件を持たない。
-                mesh_draws += draw_class(&mut pass, LayerClass::UndergroundGhost);
-                mesh_draws += draw_class(&mut pass, LayerClass::Translucent);
             }
             self.queue.submit(Some(encoder.finish()));
             frame.present();
@@ -1972,6 +2384,35 @@ mod wasm {
                 _ => 0,
             };
             pass.set_pipeline(&self.instanced_pipelines[slot]);
+            pass.set_bind_group(1, &self.class_bind_groups[class.as_u32() as usize], &[]);
+            let mut draws = 0usize;
+            for mesh in self.instanced_meshes.values() {
+                let slice = match class {
+                    LayerClass::Underground => mesh.underground.as_ref(),
+                    _ => mesh.surface.as_ref(),
+                };
+                let Some((buffer, count)) = slice else {
+                    continue;
+                };
+                if *count == 0 {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, buffer.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..*count);
+                draws += 1;
+            }
+            draws
+        }
+
+        /// D1: `draw_instances` の透視投影版(persp_instanced_pipelines を使うだけの違い)。
+        fn draw_instances_persp(&self, pass: &mut wgpu::RenderPass<'_>, class: LayerClass) -> usize {
+            let slot = match class {
+                LayerClass::Underground => 1,
+                _ => 0,
+            };
+            pass.set_pipeline(&self.persp_instanced_pipelines[slot]);
             pass.set_bind_group(1, &self.class_bind_groups[class.as_u32() as usize], &[]);
             let mut draws = 0usize;
             for mesh in self.instanced_meshes.values() {

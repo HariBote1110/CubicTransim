@@ -38,6 +38,18 @@ interface CanvasRendererHandle {
   /** 地下ビュー減光係数(1.0=通常、0.0=真っ黒)。GameScene の isLevelDimmed と同調させる。 */
   setDim(factor: number): void;
   /**
+   * D1: 透視投影カメラ(乗客視点スパイク)を更新する。クォータービューの setCamera とは
+   * 独立(centreX/pixelsPerUnit 等を一切書き換えない)。mode が 'perspective' のときだけ
+   * render() で使われる。R4a 以前の wasm 成果物には無いため optional。
+   */
+  setCameraPerspective?(
+    eyeX: number, eyeY: number, eyeZ: number,
+    lookX: number, lookY: number, lookZ: number,
+    fovYRadians: number,
+  ): void;
+  /** D1: 'quarter'(既定) / 'perspective' の切り替え。旧い wasm 成果物では optional。 */
+  setCameraMode?(mode: 'quarter' | 'perspective'): void;
+  /**
    * R4a: ジオラマ物(樹木・町など)のメッシュチャンクを1つ登録する(同じidは置き換え)。
    * layerClass は 0=地表 / 1=地下 / 2=半透明(render/bakedMesh.ts で焼き込んだ頂点色を渡す)。
    *
@@ -175,6 +187,20 @@ export class WebGpuTerrainLayerController {
   /** 地下ビュー減光係数を wgpu 側へ同期する(setCamera とは独立、頻度も少ないため毎フレーム呼んでよい)。 */
   setDim(factor: number): void {
     this.renderer.setDim(factor);
+  }
+
+  /** D1: 透視投影カメラ(乗客視点スパイク)を更新する。 */
+  setCameraPerspective(
+    eye: readonly [number, number, number],
+    look: readonly [number, number, number],
+    fovYRadians: number,
+  ): void {
+    this.renderer.setCameraPerspective?.(eye[0], eye[1], eye[2], look[0], look[1], look[2], fovYRadians);
+  }
+
+  /** D1: レンダリングモードを切り替える('quarter'が既定)。 */
+  setCameraMode(mode: 'quarter' | 'perspective'): void {
+    this.renderer.setCameraMode?.(mode);
   }
 
   /**

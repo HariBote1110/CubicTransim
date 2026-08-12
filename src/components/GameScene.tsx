@@ -559,6 +559,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         viewportRef={viewportRef}
         dim={isLevelDimmed(0, undergroundView, buildLevel) ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
         stateRef={webGpuCameraStateRef}
+        field={field}
       />
 
       <SimulationDriver world={world} onSimEvent={onSimEvent} speed={simSpeed} />
