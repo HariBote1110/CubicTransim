@@ -1401,6 +1401,21 @@ const computeStationTransportInfos = (world: SimWorld): StationTransportInfo[] =
   return infos;
 };
 
+// H4(progress/review-play-modes-branch.md): 改軌(applyRegaugePath)のno-op判定は
+// 「列車が在線中のセル」を見る必要があるが、TrainData.x/zは車庫での初期位置のまま
+// 更新されない(走行中の実位置はTrainRuntime.gridおよびrt.route)。useGameLogic.tsの
+// commitPath('regauge')はworld.trainsではなくこちらを使うこと。
+// 予約中の区間(reservedEndIndex分)だけでなく経路全体を含めるのは、経路探索中の
+// 列車が改軌直後に軌間ミスマッチで立ち往生するのを避けるため、やや広めに取る安全側の判断。
+export function occupiedCellKeysFromRuntimes(runtimes: Map<string, TrainRuntime>): Set<string> {
+  const occupied = new Set<string>();
+  for (const rt of runtimes.values()) {
+    occupied.add(toKey(rt.grid.x, rt.grid.z));
+    for (const p of rt.route) occupied.add(toKey(p.x, p.z));
+  }
+  return occupied;
+}
+
 export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
   const events: SimEvent[] = [];
 

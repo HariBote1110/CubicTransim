@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
 import { fieldFromMaps } from './terrainField';
 import type { CellData, StationData, TrainData, TownData } from '../types';
-import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH } from './simulation';
+import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH, occupiedCellKeysFromRuntimes } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
 import { carPositions } from './consist';
 import { computeAcceleration, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
-import { applyBridge, type ConstructionState } from './construction';
+import { applyBridge, applyRegaugePath, type ConstructionState } from './construction';
 import { OVERPASS_HEIGHT, rampHeightAtPos, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2 } from './trackPath';
 import {
   PASSENGER_SPAWN_RATE,
@@ -1642,5 +1642,64 @@ describe('stepWorld: 軌道(何キロレール) — 前方のレール速度上�
     }
     // MAX_SPEED_KMH(100)まで加速できる=軌道の概念が一切効いていない。
     expect(sawAbove70).toBe(true);
+  });
+});
+
+describe('H4: occupiedCellKeysFromRuntimes(改軌のno-op判定に使う在線セル集合)', () => {
+  it('TrainData.x/zではなく、走行中の実位置(rt.grid/rt.route)を含む', () => {
+    const railMap = buildRailMap(Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(19, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 19, z: 0 }], center: { x: 19, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.1;
+    for (let i = 0; i < 300; i++) stepWorld(world, dt);
+
+    const rt = world.runtimes.get('t1')!;
+    // 車庫での初期位置(0,0)からは走り出しているはず(でなければテスト自体が無意味)。
+    expect(rt.grid.x).toBeGreaterThan(0);
+    // TrainData.x/zは初期位置のまま更新されない(現行の既知の制約)。
+    expect(train.x).toBe(0);
+
+    const occupied = occupiedCellKeysFromRuntimes(world.runtimes);
+    // 走行中の実位置(rt.grid)を含む。train.x/zだけを見ていた旧実装ならここが漏れる。
+    expect(occupied.has(toKey(rt.grid.x, rt.grid.z))).toBe(true);
+    // 旧実装が使っていた車庫での初期位置は、もう列車がいないので含まれない。
+    expect(occupied.has(toKey(0, 0))).toBe(false);
+  });
+
+  it('走行中の実位置を含む在線集合を渡すと、その区間を含む改軌はno-opになる(旧実装のtrain.x/zベースでは通ってしまっていた)', () => {
+    const railMap = buildRailMap(Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(19, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 19, z: 0 }], center: { x: 19, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.1;
+    for (let i = 0; i < 300; i++) stepWorld(world, dt);
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.grid.x).toBeGreaterThan(0); // 走行中であることの前提確認
+
+    const state: ConstructionState = { railMap: world.railMap, stations: world.stations };
+    const path = [{ x: rt.grid.x, z: rt.grid.z }];
+
+    // 旧実装相当: train.x/zだけを在線集合にする(車庫での初期位置しか入らない)と、
+    // 走行中の実セルへの改軌がno-opガードに引っかからず通ってしまう。
+    const staleOccupied = new Set([toKey(train.x, train.z)]);
+    const staleResult = applyRegaugePath(state, path, 1435, staleOccupied);
+    expect(staleResult.railMap).not.toBe(state.railMap); // 通ってしまう(バグの再現)
+
+    // H4修正後: occupiedCellKeysFromRuntimesを使えば、走行中の実セルが正しく
+    // 在線集合に入り、改軌はno-opになる。
+    const liveOccupied = occupiedCellKeysFromRuntimes(world.runtimes);
+    const liveResult = applyRegaugePath(state, path, 1435, liveOccupied);
+    expect(liveResult.railMap).toBe(state.railMap); // no-op
   });
 });

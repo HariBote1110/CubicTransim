@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
+import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import {
@@ -387,7 +388,10 @@ export const useGameLogic = () => {
         // 経路は全体がno-op(construction.tsのapplyRegaugePathが判定)。課金対象は
         // 実際に軌間が変わったセル数のみ(buildPreview.tsと同じ規約)。
         if (!regaugeTargetGauge) return;
-        const occupiedCells = new Set(worldRef.current.trains.map(t => toKey(t.x, t.z)));
+        // H4: TrainData.x/zは車庫での初期位置のまま更新されないため、走行中の実位置
+        // (worldRef.current.runtimes)から在線セルを求める(sim/simulation.tsの
+        // occupiedCellKeysFromRuntimes)。
+        const occupiedCells = occupiedCellKeysFromRuntimes(worldRef.current.runtimes);
         const regauged = applyRegaugePath(state, path, regaugeTargetGauge, occupiedCells);
         if (regauged.railMap === state.railMap) return;
         const changedCellCount = path.filter(p => {

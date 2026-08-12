@@ -15,6 +15,7 @@ import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES, averageInterv
 import type { LineMode } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
 import type { SimWorld } from '../sim/simulation';
+import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { computeStationArrivals } from '../sim/arrivals';
 import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
@@ -301,8 +302,12 @@ export const GameUI: React.FC<GameUIProps> = ({
     const blockers = buildEditBlockers({ halfExtent, railMap, townTileIndex: townTiles, baseField });
     return evaluateBuild(buildMode, previewPath, railMap, stations, field, money, buildLevel, townTiles, {
       base: baseField, editedField, blockers,
-    }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge' ? { targetGauge: regaugeTargetGauge ?? 1067 } : undefined);
-  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge]);
+    }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge'
+      // H4: commitPath(useGameLogic.ts)と同じくoccupiedCellKeysFromRuntimesで
+      // 走行中の実位置を見る。省略(=常に空集合)だとプレビューが実際の可否と食い違う。
+      ? { targetGauge: regaugeTargetGauge ?? 1067, occupiedCells: occupiedCellKeysFromRuntimes(world.current?.runtimes ?? new Map()) }
+      : undefined);
+  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge, world]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(
