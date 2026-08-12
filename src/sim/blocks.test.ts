@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildBlockIndex, blocksOccupiedByOthers } from './blocks';
 import type { CellData } from '../types';
 import { DIR, toKey } from '../utils';
+import { applyRailPath, applyElevatedPath, applyUndergroundPath, type ConstructionState } from './construction';
 
 const straight = (): Map<string, CellData> => {
   const m = new Map<string, CellData>();
@@ -42,10 +43,38 @@ describe('buildBlockIndex', () => {
     expect(idx.blockKeyOf(0, 0, 0)).toBe(idx.blockKeyOf(4, 0, 0));
   });
 
-  it('layerが0以外なら常にundefined(S1の対象外)', () => {
-    const railMap = straight();
-    const idx = buildBlockIndex(railMap);
-    expect(idx.blockKeyOf(0, 0, 1)).toBeUndefined();
+  it('地平→高架(坂)と続く区間はレベルをまたいで1つのブロックになる', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+
+    const idx = buildBlockIndex(state.railMap);
+    expect(idx.blockKeyOf(0, 0, 0)).toBeDefined();
+    expect(idx.blockKeyOf(0, 0, 0)).toBe(idx.blockKeyOf(9, 0, 1));
+  });
+
+  it('地平→地下(坂)と続く区間はレベルをまたいで1つのブロックになる', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    state = applyUndergroundPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, -1);
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+
+    const idx = buildBlockIndex(state.railMap);
+    expect(idx.blockKeyOf(0, 0, 0)).toBeDefined();
+    expect(idx.blockKeyOf(0, 0, 0)).toBe(idx.blockKeyOf(9, 0, -1));
+  });
+
+  it('地平の信号は同じセルの高架/地下レベルのブロックを分割しない(信号は地平のみの概念)', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1);
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+    // 地平のx=1に信号を立てる(地平のブロックだけを分割する想定)。
+    const key1 = toKey(1, 0);
+    state = { ...state, railMap: new Map(state.railMap).set(key1, { ...state.railMap.get(key1)!, signalDir: DIR.E }) };
+
+    const idx = buildBlockIndex(state.railMap);
+    // 高架レベル1のブロックは地平の信号に関係なく端から端まで繋がる。
+    expect(idx.blockKeyOf(4, 0, 1)).toBeDefined();
+    expect(idx.blockKeyOf(4, 0, 1)).toBe(idx.blockKeyOf(9, 0, 1));
   });
 
   it('接続していない離れた線路は別ブロックになる(connected componentsごと)', () => {

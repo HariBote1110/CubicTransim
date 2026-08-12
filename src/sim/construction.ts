@@ -446,7 +446,7 @@ export function applyRailPathDetailed(
     if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
       const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
       if (plan) {
-        const result = applyGroundPathWithElevatedConnect(state, path, field, plan);
+        const result = applyGroundPathWithElevatedConnect(state, path, field, plan, railOptions);
         if (result) return result;
       }
       // planがnull、または坂条件(車庫・地形)を満たせない場合は、接続を諦めて
@@ -582,7 +582,9 @@ function applyGroundPathWithElevatedConnect(
   state: ConstructionState,
   path: Pos[],
   field: TerrainField,
-  plan: ElevatedPathPlan
+  plan: ElevatedPathPlan,
+  // PM2: 軌間/電化。省略時は既存挙動と完全に同一(gaugeElectrifiedPatchが空になる)。
+  railOptions: RailBuildOptions = {}
 ): RailPathApplyResult | null {
   if (!isElevatedConnectPlanBuildable(state.railMap, path, field, plan)) return null;
 
@@ -599,7 +601,7 @@ function applyGroundPathWithElevatedConnect(
     const axisBits = prevDir | nextDir;
 
     if (role.kind === 'span') {
-      addConnectionToCell(railMap, key, axisBits, terrainFlags(field, path[i].x, path[i].z));
+      addConnectionToCell(railMap, key, axisBits, terrainFlags(field, path[i].x, path[i].z), railOptions);
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
       continue;
     }
@@ -607,16 +609,22 @@ function applyGroundPathWithElevatedConnect(
     if (role.kind === 'anchor') {
       // 既存の高架レベルconnectLevelの端タイルそのもの。既存データ(桁の内部接続等)は
       // 一切書き換えず、uppers[connectLevel].connectionsへ新しい方向ビットをORするだけに
-      // 留める(rampは付与しない。桁+坂の二重描画を避けるため)。
+      // 留める(rampは付与しない。桁+坂の二重描画を避けるため)。地平側のgauge/electrified
+      // だけはCellData本体(セル共有)へ上書きする(spanと同じPM2の単純化)。
       const dir = role.side === 'start' ? nextDir : prevDir;
       const existing = railMap.get(key);
       const upperAtLevel = existing?.uppers?.[role.connectLevel as Level];
+      const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
+        ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
+        ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
+      };
       railMap.set(key, {
         ...(existing ?? { type: 'rail' }),
         uppers: {
           ...(existing?.uppers ?? {}),
           [role.connectLevel]: { connections: (upperAtLevel?.connections ?? 0) | dir, stationId: upperAtLevel?.stationId },
         },
+        ...gaugeElectrifiedPatch,
       });
       continue;
     }
@@ -631,11 +639,16 @@ function applyGroundPathWithElevatedConnect(
     const rampDir = role.base < 0 ? getOppositeDir(rampDirRaw) : rampDirRaw;
     const existing = railMap.get(key);
     const merged = orIntoBaseLevel(existing, role.base, axisBits);
+    const rampGaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
+      ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
+      ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
+    };
     railMap.set(key, {
       ...merged,
       type: merged.type ?? 'rail',
       ...terrainFlags(field, path[i].x, path[i].z),
       ramp: { dir: rampDir, level: role.level, base: role.base },
+      ...rampGaugeElectrifiedPatch,
     });
     if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
   }

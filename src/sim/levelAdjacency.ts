@@ -14,7 +14,7 @@
 // (方向つき探索なので一意な次状態が要る)。feeding/blocksは向きを持たない静的な
 // 連結成分分割なので絞り込みは不要で、候補全部をエッジとして扱ってよい
 // (どの候補も「列車がその層で入場できる」という点では対等)。
-import type { CellData } from '../types';
+import type { CellData, Level } from '../types';
 import { toKey, DIR, getOppositeDir } from '../utils';
 
 /** 0=地平、それ以外はLevel(-3..-1, 1..3)。 */
@@ -29,7 +29,7 @@ export const ADJACENCY_DIRS = [
 
 /** あるセルの、指定した層で出られる方向のconnectionsビット集合。 */
 export const activeConnections = (cell: CellData | undefined, layer: Layer): number =>
-  layer === 0 ? (cell?.connections ?? 0) : (cell?.uppers?.[layer as never]?.connections ?? 0);
+  layer === 0 ? (cell?.connections ?? 0) : (cell?.uppers?.[layer as Level]?.connections ?? 0);
 
 const UPPER_LEVELS = [1, 2, 3, -1, -2, -3] as const;
 

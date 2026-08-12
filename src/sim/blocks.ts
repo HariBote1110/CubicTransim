@@ -11,30 +11,39 @@
 // 信号セル自身はどちらのブロックにも属さない(blockKeyOfはundefinedを返す)。
 // 駅・車庫はブロックを分割せず周囲のブロックへ合流する(仕様どおり)。
 //
-// PM4のき電索引(sim/feeding.ts)と同じ単純化として、layer!==0(高架・地下)は
-// 常にundefined=S1のブロック制約の対象外とする(follow-up)。
+// 高架・地下(layer!==0)も、levelAdjacency.ts(pathfinding.tsと同じ隣接規則)で
+// ブロックが地平をまたいで繋がる。信号(cell.signalDir)は「地平のconnectionsが無いと
+// 置けない」構造物(construction.tsのapplySignal)なので常に地平にしか存在しない。
+// signalDirを持つセルでも、そのセルの高架/地下レベルの線路は信号の影響を受けず
+// 通しでブロックが繋がる(isTrackCellのsignalDir判定はlayer===0のときのみ有効)。
 import type { CellData } from '../types';
-import { toKey, DIR } from '../utils';
+import { toKey } from '../utils';
+import { neighboursAtLayer, layerKey, activeConnections, type Layer } from './levelAdjacency';
 
 export interface BlockIndex {
-  /** そのセル(地平のみ)が属するブロックのキー。信号セル自身・非track・layer!==0はundefined。 */
+  /** そのセル・層が属するブロックのキー。信号セル自身(layer0のみ)・非trackはundefined。 */
   blockKeyOf(x: number, z: number, layer?: number): string | undefined;
 }
 
-const DIRS = [
-  { x: 0, z: -1, dir: DIR.N }, { x: 1, z: -1, dir: DIR.NE },
-  { x: 1, z: 0, dir: DIR.E }, { x: 1, z: 1, dir: DIR.SE },
-  { x: 0, z: 1, dir: DIR.S }, { x: -1, z: 1, dir: DIR.SW },
-  { x: -1, z: 0, dir: DIR.W }, { x: -1, z: -1, dir: DIR.NW },
-] as const;
-
-const oppositeOf = (dir: (typeof DIRS)[number]) => DIRS.find(d => d.x === -dir.x && d.z === -dir.z)!;
-
-const isTrackCell = (cell: CellData | undefined): boolean => {
+const isTrackNode = (cell: CellData | undefined, layer: Layer): boolean => {
   if (!cell) return false;
-  if (cell.signalDir) return false; // 信号セルは境界(どのブロックにも属さない)
-  if (cell.type === 'rail') return (cell.connections ?? 0) !== 0;
+  if (layer === 0 && cell.signalDir) return false; // 信号セル(地平限定)は境界
+  if (activeConnections(cell, layer) !== 0) return true;
+  if (layer !== 0) return false;
   return cell.type === 'station' || cell.type === 'depot';
+};
+
+/** cellが実際に線路(または駅・車庫、地平のみ)を持つ層の一覧。 */
+const layersOf = (cell: CellData): Layer[] => {
+  const layers: Layer[] = [];
+  if (isTrackNode(cell, 0)) layers.push(0);
+  if (cell.uppers) {
+    for (const key of Object.keys(cell.uppers)) {
+      const lvl = Number(key) as Layer;
+      if (isTrackNode(cell, lvl)) layers.push(lvl);
+    }
+  }
+  return layers;
 };
 
 /**
@@ -47,38 +56,32 @@ export function buildBlockIndex(railMap: Map<string, CellData>): BlockIndex {
   const visited = new Set<string>();
   let nextId = 0;
 
-  for (const [key, cell] of railMap) {
-    if (visited.has(key) || !isTrackCell(cell)) continue;
-    const [sx, sz] = key.split(',').map(Number);
-    const blockKey = `b${nextId++}`;
-    const stack: { x: number; z: number }[] = [{ x: sx, z: sz }];
-    visited.add(key);
-    while (stack.length > 0) {
-      const cur = stack.pop()!;
-      const curKey = toKey(cur.x, cur.z);
-      blockOf.set(curKey, blockKey);
-      const curCell = railMap.get(curKey);
-      const conns = curCell?.connections ?? 0;
-      for (const d of DIRS) {
-        if ((conns & d.dir) === 0) continue;
-        const nx = cur.x + d.x;
-        const nz = cur.z + d.z;
-        const nk = toKey(nx, nz);
-        if (visited.has(nk)) continue;
-        const nCell = railMap.get(nk);
-        if (!isTrackCell(nCell)) continue;
-        // 相手セルがこちらへ戻る接続を持たなければ繋がっていない(片側配線の防御)。
-        if (((nCell?.connections ?? 0) & oppositeOf(d).dir) === 0) continue;
-        visited.add(nk);
-        stack.push({ x: nx, z: nz });
+  for (const [cellKey, cell] of railMap) {
+    for (const layer of layersOf(cell)) {
+      const [sx, sz] = cellKey.split(',').map(Number);
+      const startKey = layerKey(sx, sz, layer);
+      if (visited.has(startKey)) continue;
+      const blockKey = `b${nextId++}`;
+      const stack: { x: number; z: number; layer: Layer }[] = [{ x: sx, z: sz, layer }];
+      visited.add(startKey);
+      while (stack.length > 0) {
+        const cur = stack.pop()!;
+        blockOf.set(layerKey(cur.x, cur.z, cur.layer), blockKey);
+        for (const n of neighboursAtLayer(railMap, cur.x, cur.z, cur.layer)) {
+          const nCell = railMap.get(toKey(n.x, n.z));
+          if (!isTrackNode(nCell, n.layer)) continue;
+          const nKey = layerKey(n.x, n.z, n.layer);
+          if (visited.has(nKey)) continue;
+          visited.add(nKey);
+          stack.push(n);
+        }
       }
     }
   }
 
   return {
     blockKeyOf(x: number, z: number, layer = 0): string | undefined {
-      if (layer !== 0) return undefined;
-      return blockOf.get(toKey(x, z));
+      return blockOf.get(layerKey(x, z, layer));
     },
   };
 }
@@ -105,14 +108,16 @@ export function blocksOccupiedByOthers(
   for (const [key, owner] of reservations) {
     if (owner === trainId) continue;
     const parsed = parseReservationKey(key);
-    if (!parsed || parsed.layer !== 0) continue;
-    const bk = blocks.blockKeyOf(parsed.x, parsed.z, 0);
+    if (!parsed) continue;
+    const bk = blocks.blockKeyOf(parsed.x, parsed.z, parsed.layer);
     if (bk && targetBlocks.has(bk)) return true;
   }
   return false;
 }
 
-const RESERVATION_KEY_RE = /^(-?\d+),(-?\d+)(?::u(\d+))?$/;
+// PM4/S1: 高架は":uN"、地下は負のlevelなので":u-N"になる(reservation.tsのreservationKey
+// と同じ規約)。旧正規表現は`\d+`のみで負の層(地下)を読み違えていた(常にNaN→layer0扱い)。
+const RESERVATION_KEY_RE = /^(-?\d+),(-?\d+)(?::u(-?\d+))?$/;
 
 const parseReservationKey = (key: string): { x: number; z: number; layer: number } | null => {
   const m = RESERVATION_KEY_RE.exec(key);
