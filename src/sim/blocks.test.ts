@@ -59,6 +59,7 @@ describe('buildBlockIndex', () => {
 describe('blocksOccupiedByOthers', () => {
   it('他列車の予約が同じブロックに無ければfalse', () => {
     const railMap = straight();
+    railMap.set(toKey(2, 0), { ...railMap.get(toKey(2, 0))!, signalDir: DIR.E });
     const idx = buildBlockIndex(railMap);
     const reservations = new Map<string, string>([[toKey(0, 0), 'trainA']]);
     const segment = [{ x: 3, z: 0 }, { x: 4, z: 0 }];
