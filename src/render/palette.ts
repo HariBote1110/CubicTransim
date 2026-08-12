@@ -44,6 +44,10 @@ export const PALETTE = {
   // 目視で分かるようにする(design decision 5、デッドセクション自体の専用表現はスコープ外)。
   catenaryMastAc: '#454b5a',
   catenaryWireAc: '#28303e',
+  // PM3 follow-up: デッドセクション標識(dc/ac境界の目印)。実物の白地標板に寄せ、
+  // 架線ポールと見分けが付くよう柱は濃色・標板は白系にする。
+  deadSectionMarkerPole: '#3a3d42',
+  deadSectionMarkerBoard: '#f2f0ea',
 
   // --- 駅 ---
   platform: '#d8d5cd',

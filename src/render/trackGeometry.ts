@@ -758,6 +758,50 @@ export function buildCatenaryParts(connections: number, x = 0, z = 0, originY = 
   return { masts, wires };
 }
 
+// --- デッドセクション標識(PM3 follow-up) ---
+// 実物のデッドセクション標識(架線の死区間を示す白い矩形の標板)を模した、低頂点数の
+// 「短い柱+白い標板」の組。findDeadSectionMarkerEdges(deadSectionMarkers.ts)が返す
+// 辺(セル+方向)ごとに1組だけ生成する(catenaryのような間引きはしない。境界は元から疎)。
+const MARKER_OFFSET = BALLAST_WIDTH / 2 + 0.12;
+const MARKER_POLE_WIDTH = 0.04;
+const MARKER_POLE_HEIGHT = 0.4;
+const MARKER_BOARD_WIDTH = 0.22;
+const MARKER_BOARD_HEIGHT = 0.14;
+const MARKER_BOARD_THICKNESS = 0.02;
+
+export interface DeadSectionMarkerParts {
+  poles: THREE.BufferGeometry[];
+  boards: THREE.BufferGeometry[];
+}
+
+/**
+ * (x, z)セルからdir方向へ進んだ辺の位置に、線路脇へ寄せた標識(柱+標板)を1組生成する。
+ * originYを渡すと高架のぶん持ち上げられる(catenaryと同じ扱い)。
+ */
+export function buildDeadSectionMarkerPart(x: number, z: number, dir: number, originY = 0): DeadSectionMarkerParts {
+  const { x: dx, z: dz } = getVectorFromDir(dir);
+  const len = Math.hypot(dx, dz) || 1;
+  const ux = dx / len;
+  const uz = dz / len;
+  // 辺(2セルの中間点)から、軸に直交する向きへ線路脇まで逃がす。
+  const px = -uz;
+  const pz = ux;
+  const edgeX = x + ux * 0.5;
+  const edgeZ = z + uz * 0.5;
+  const mx = edgeX + px * MARKER_OFFSET;
+  const mz = edgeZ + pz * MARKER_OFFSET;
+  const rotY = angleFromVector(ux, uz);
+
+  const pole = new THREE.BoxGeometry(MARKER_POLE_WIDTH, MARKER_POLE_HEIGHT, MARKER_POLE_WIDTH);
+  pole.translate(mx, originY + MARKER_POLE_HEIGHT / 2, mz);
+
+  const board = new THREE.BoxGeometry(MARKER_BOARD_WIDTH, MARKER_BOARD_HEIGHT, MARKER_BOARD_THICKNESS);
+  board.rotateY(rotY);
+  board.translate(mx, originY + MARKER_POLE_HEIGHT - MARKER_BOARD_HEIGHT / 2, mz);
+
+  return { poles: [pole], boards: [board] };
+}
+
 /** 部品配列をマージして1つのジオメトリにする(空なら null)。 */
 export function mergeParts(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
   return mergeAndDispose(geometries);
