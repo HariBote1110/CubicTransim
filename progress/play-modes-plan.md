@@ -1,5 +1,49 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
+## PM3 follow-up(0.5.0-Alpha-11a): デッドセクション失速(最低進入速度)
+
+PM3実装メモの残りfollow-up「最低進入速度・失速はPM3のスコープ外」を解消した。
+`electrification`が`'boundaries'`/`'feeding'`の電車限定(気動車は電化方式に関係なく
+走行できるため対象外。`!!train.power && train.power !== 'diesel'`で判定)で、
+惰行(coasting)中に速度が`STALL_SPEED_THRESHOLD_KMH=0.5km/h`未満まで落ちたら
+失速状態に入る(`simulation.ts`の惰行分岐、`TrainRuntime.stalledSeconds`に
+経過秒数を累積)。`debugStatus`は`` `失速 (${秒数}s)` ``(既存の`debugStatus`は
+英語表記だが、タスク定義でこの機能だけ日本語表示を明示指定されたためそれに従った)。
+
+- **物理定数の検証結果(チューニング不要だった)**: `physics.ts`の既存の転がり抵抗
+  (`ROLLING_RESISTANCE_COEF=0.0035`)・空気抵抗(`AIR_DRAG_COEF_PER_CAR=4`)だけで、
+  2両編成(60t)・標準的な2セル(60m)のデッドセクションを仮定すると、進入速度が
+  約7.3km/h未満なら惰行だけで停止距離(60m)以内に止まり、それ以上(最高速度100km/h
+  含む)なら余裕で通過する(100km/h進入時の停止距離は約2.8km、60mの約47倍)。
+  「歩く速さ(5km/h)で進入すると停止する・最高速度なら通過できる」という要件を
+  既存の抵抗モデルがそのまま満たしていたため、デッドセクション専用の追加抵抗係数は
+  導入していない(タスク定義の「弱すぎる場合のみ追加」を適用しなかった、という判断
+  の記録)。
+- **救援(recovery)**: `STALL_RECOVERY_SECONDS=15`秒間失速し続けると、
+  `SimEvent`に`{type:'stallRescue', trainId, penalty: STALL_RESCUE_COST=¥3,000}`を
+  1回だけpushする(`stalledSeconds`はここでリセット)。以降`TrainRuntime.stallRecovered`
+  フラグをtrueにし、先頭がそのデッドセクションを完全に抜ける(=現在セルと次セルの
+  電化方式差が無くなる)まで牽引力を持たせる(`coasting`ではなく`accelerating`扱い)。
+  抜けた時点で`stalledSeconds`/`stallRecovered`とも通常状態にリセットする。
+- **課金の配線**: `useGameLogic.ts`に`handleStallRescue`を新設し、既存の
+  `handleAccident`(事故の賠償金)と同じ「イベント受け取り→`setMoney`で即時減算」の
+  最小パターンを踏襲した。`MonthlyLedger`には専用フィールドを追加していない
+  (事故とは性質が異なる一時費用のため、既存の`accidents`バケットへは流用しなかった。
+  月次台帳としての集計が必要になったら別途フィールドを起こす)。`App.tsx`の
+  `onSimEvent`ディスパッチに`event.type==='stallRescue'`の分岐を1行追加しただけ。
+- TDD: `src/sim/deadSectionStall.test.ts`(新設)で、遅い進入(境界を先頭のすぐ隣に
+  置き静止発進させる決定的な構成)は失速してdebugStatusに「失速」が現れること、
+  15秒後に救援イベントが厳密に1回だけ発生し以降クロールで走り出すこと(2回目の
+  救援が発生しないこと)、速い進入(境界まで十分な助走距離を取る構成)は失速しない
+  こと、気動車は影響を受けないこと、`electrification:'modes'`(アドバンスド未満)
+  では失速機構自体が働かないことを固定した。
+- ブラウザ実機(アドバンスドモード、`window.__debugWorld`へdc→ac境界のシナリオを
+  直接注入、`window.__dbgStep`で手動tick)で、静止発進した交直流車が
+  `debugStatus:"失速 (2s)"`のように失速表示になること、20秒ぶんtickを進めると
+  `stallRecovered:true`・速度が35.8km/hまで回復して走り出すこと、所持金が
+  ¥50,000→¥47,000へ(STALL_RESCUE_COSTぶん)ちょうど1回だけ減っていることを確認した。
+  `npm run test`(1109件)・`npm run build`ともgreen。
+
 状態: **PM4 実装済み**（PM3の交直流電化(boundaries)に加え、'feeding'段階の
 変電所・き電区間・給電判定・容量超過ペナルティまで完了。リアリスティックモードの
 電化「全部盛り」計画は本PM4で最後の階層まで到達した）。

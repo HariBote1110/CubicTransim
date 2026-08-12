@@ -218,7 +218,7 @@ export default function App() {
     money, addIncome,
     loan, borrow, repay,
     selectedStationId, selectStation, upgradeStationDoors,
-    activeAccidents, handleAccident,
+    activeAccidents, handleAccident, handleStallRescue,
     currentLedger, ledgerHistory, handleMonthEnd,
     handleTownGrowth,
     stopLocation, setStopLocation,
@@ -265,6 +265,7 @@ export default function App() {
           if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
           if (event.type === 'income') addIncome(event.amount);
           if (event.type === 'accident') handleAccident(event);
+          if (event.type === 'stallRescue') handleStallRescue(event);
           if (event.type === 'monthEnd') handleMonthEnd(event);
           if (event.type === 'townGrowth') handleTownGrowth(event);
         }}

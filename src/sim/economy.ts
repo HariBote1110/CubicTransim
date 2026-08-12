@@ -257,6 +257,14 @@ export function costOfGroundRailPlan(
   }, 0);
 }
 
+// PM3フォローアップ: デッドセクション失速(progress/play-modes-plan.md)。
+// electrification='boundaries'/'feeding'のときのみ、境界通過中に速度が
+// ほぼ0まで落ちた電車は失速状態になる。STALL_RECOVERY_SECONDS秒待つと
+// 救援(牽引車の応援、という体の演出)が来て走行を再開できる代わりに
+// STALL_RESCUE_COSTを1回だけ課金する。値は「あったら楽しい」判断。
+export const STALL_RECOVERY_SECONDS = 15;
+export const STALL_RESCUE_COST = 3_000;
+
 // 事故発生確率 = 基本確率 × ドア種別による係数 × 混雑係数(待ち0で0.5倍、満杯で1.5倍)
 export function calculateAccidentChance(doorType: PlatformDoorType, waiting: number): number {
   const congestionFactor = 0.5 + waiting / STATION_WAITING_CAP;

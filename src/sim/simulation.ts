@@ -37,6 +37,8 @@ import {
   FARE_PER_TILE,
   ACCIDENT_HALT_DURATION,
   ACCIDENT_PENALTY,
+  STALL_RECOVERY_SECONDS,
+  STALL_RESCUE_COST,
   calculateAccidentChance,
   demandFactor,
   monthIndexOf,
@@ -57,6 +59,9 @@ export const BRAKING_MARGIN_M = 0.5;
 // 減速カーブは理論上有限時間で0に収束するが、dtが粗い場合に停止直前で
 // 極低速のまま刻み続けるのを防ぐスナップ。1セル=30mに対し十分小さい値にする。
 export const ARRIVAL_SNAP_M = 0.05;
+// デッドセクション失速判定のしきい値(km/h)。惰行(coasting)で速度がこれを下回ったら
+// 「事実上停止」とみなし失速状態へ入る(完全な0を待つとdtの粗さで揺れるため近傍値)。
+export const STALL_SPEED_THRESHOLD_KMH = 0.5;
 // 非常制動の減速度(km/h/s)。ジャーク制限つきの常用ブレーキが間に合わない場合
 // (予約が急に短くなった等)にのみ効く安全網。
 export const EMERGENCY_DECEL_KMH_S = 34.0;
@@ -169,6 +174,12 @@ export interface TrainRuntime {
   // 車内の旅客を行き先つきの塊で持つ。passengersはこの合計(質量計算と描画のために残している)。
   // 旧セーブには存在しないため任意とし、persistenceの移行処理で空配列を補う。
   load?: OnboardCohort[];
+  // PM3フォローアップ: デッドセクションで失速している秒数の累積。失速中でない間は0/undefined。
+  // セーブ対象外の走行状態(TrainRuntime全体がセーブに含まれないため他フィールドと同様)。
+  stalledSeconds?: number;
+  // 失速から救援されたあと、先頭がデッドセクションを完全に抜けるまで牽引力を持たせる
+  // (「全力で抜けきるまで」のフラグ)。区間を抜けるとstepTrainがfalseへ戻す。
+  stallRecovered?: boolean;
 }
 
 /** 車内の旅客の塊。alightAtで降りて、そこが目的地でなければ乗り換える。 */
@@ -285,6 +296,8 @@ export type SimEvent =
   | { type: 'arrive'; trainId: string; scheduleIndex: number }
   | { type: 'income'; trainId: string; amount: number; passengers: number }
   | { type: 'accident'; trainId: string; stationId: string; penalty: number }
+  // PM3フォローアップ: デッドセクション失速からの救援(1回だけ課金)。
+  | { type: 'stallRescue'; trainId: string; penalty: number }
   | { type: 'monthEnd'; year: number; month: number }
   // 月末の町の成長。React側は towns state をこの配列で置き換える。
   | { type: 'townGrowth'; towns: TownData[] };
@@ -997,28 +1010,61 @@ const stepTrain = (
       const nextCellForDeadSection = world.railMap.get(toKey(nextTile.x, nextTile.z));
       const inDeadSection = isDeadSectionBoundary(currentCellForDeadSection, nextCellForDeadSection);
 
-      // PM4: き電区間の在線数が容量を超えていれば、牽引力にOVERLOAD_ACCEL_FACTORを掛ける
-      // (電圧降下の離散近似、design decision 4「traction only」)。気動車・feeding未満の
-      // プレイモードでは常に1(無影響)。
-      let tractionFactor = 1;
-      if (world.feeding && feedingSectionCounts && train.power && train.power !== 'diesel') {
-        const sectionKey = world.feeding.sectionLoadKey(rt.grid.x, rt.grid.z, rt.grid.layer ?? 0);
-        if (sectionKey) {
-          const capacity = world.feeding.sectionCapacity(sectionKey);
-          const count = feedingSectionCounts.get(sectionKey) ?? 0;
-          if (count > capacity) tractionFactor = OVERLOAD_ACCEL_FACTOR;
+      // PM3フォローアップ: デッドセクション失速。rules.electrification が
+      // 'boundaries'/'feeding' の電車限定(気動車は電化方式に関係なく走れるので対象外)。
+      // 惰行中に速度がほぼ0まで落ちたら失速状態に入り、STALL_RECOVERY_SECONDS秒
+      // 経つと1回だけ課金して救援=以降このデッドセクションを抜けきるまで牽引力を持たせる
+      // (design: 「抜けるまで通電扱い」が最も単純で正しい)。
+      const rulesForStall = world.rules ?? DEFAULT_GAME_RULES;
+      const stallingActive =
+        (rulesForStall.electrification === 'boundaries' || rulesForStall.electrification === 'feeding') &&
+        !!train.power && train.power !== 'diesel';
+
+      let inStall = false;
+      if (stallingActive) {
+        if (!inDeadSection) {
+          rt.stalledSeconds = 0;
+          rt.stallRecovered = false;
+        } else if (!rt.stallRecovered && rt.speedKmh < STALL_SPEED_THRESHOLD_KMH) {
+          rt.stalledSeconds = (rt.stalledSeconds ?? 0) + dt;
+          if (rt.stalledSeconds >= STALL_RECOVERY_SECONDS) {
+            events.push({ type: 'stallRescue', trainId: train.id, penalty: STALL_RESCUE_COST });
+            rt.stalledSeconds = 0;
+            rt.stallRecovered = true;
+          } else {
+            inStall = true;
+            rt.debugStatus = `失速 (${rt.stalledSeconds.toFixed(0)}s)`;
+          }
         }
       }
 
-      // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
-      // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
-      const accelMs2 = computeAcceleration(
-        { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
-        inDeadSection ? 'coasting' : 'accelerating',
-        DECEL_KMH_S,
-        tractionFactor
-      );
-      rt.speedKmh = Math.min(releaseEnvelopeKmh, Math.max(0, rt.speedKmh + accelMs2 * 3.6 * dt));
+      if (!inStall) {
+        // PM4: き電区間の在線数が容量を超えていれば、牽引力にOVERLOAD_ACCEL_FACTORを掛ける
+        // (電圧降下の離散近似、design decision 4「traction only」)。気動車・feeding未満の
+        // プレイモードでは常に1(無影響)。
+        let tractionFactor = 1;
+        if (world.feeding && feedingSectionCounts && train.power && train.power !== 'diesel') {
+          const sectionKey = world.feeding.sectionLoadKey(rt.grid.x, rt.grid.z, rt.grid.layer ?? 0);
+          if (sectionKey) {
+            const capacity = world.feeding.sectionCapacity(sectionKey);
+            const count = feedingSectionCounts.get(sectionKey) ?? 0;
+            if (count > capacity) tractionFactor = OVERLOAD_ACCEL_FACTOR;
+          }
+        }
+
+        // 救援後は区間を抜けきるまで牽引力を持たせる(通常の'accelerating'扱い)。
+        const useCoasting = inDeadSection && !rt.stallRecovered;
+
+        // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
+        // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
+        const accelMs2 = computeAcceleration(
+          { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
+          useCoasting ? 'coasting' : 'accelerating',
+          DECEL_KMH_S,
+          tractionFactor
+        );
+        rt.speedKmh = Math.min(releaseEnvelopeKmh, Math.max(0, rt.speedKmh + accelMs2 * 3.6 * dt));
+      }
     }
   }
 

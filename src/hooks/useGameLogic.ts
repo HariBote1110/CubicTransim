@@ -656,6 +656,14 @@ export const useGameLogic = () => {
     setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId }]);
   };
 
+  // PM3フォローアップ: デッドセクション失速からの救援コスト(1回だけ課金)。
+  // handleAccidentと同じ「イベント→setMoneyで即時減算」の最小構成にした。
+  // MonthlyLedgerには専用フィールドを増やさず(既存のaccidentsとは性質が違う一時費用
+  // のため流用しない)、progress/play-modes-plan.mdに設計判断として記録する。
+  const handleStallRescue = (event: Extract<SimEvent, { type: 'stallRescue' }>) => {
+    setMoney(m => m - event.penalty);
+  };
+
   // ★追加: スケジュールコピー機能
   const copySchedule = (trainId: string) => {
     const target = trains.find(t => t.id === trainId);
@@ -851,6 +859,7 @@ export const useGameLogic = () => {
     upgradeStationDoors,
     activeAccidents,
     handleAccident,
+    handleStallRescue,
     // ★追加: 月次決算(収支台帳)
     currentLedger,
     ledgerHistory,
