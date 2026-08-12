@@ -224,10 +224,12 @@ export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
     if (!controller) return;
     controller.setDim(dimRef.current);
 
-    // D2: 乗車中の列車が消えた(到着後の回収・車庫入りなど)場合は自動的に降車する。
+    // D2/D3: 乗車中の列車が消えた(到着後の回収・車庫入りなど)場合は自動的に降車する。
     const ridingId = riderState.trainId;
     const worldNow = worldRef.current?.current;
-    const riderCam = ridingId && worldNow ? computeRiderCamera(worldNow, ridingId) : null;
+    const riderCam = ridingId && worldNow
+      ? computeRiderCamera(worldNow, ridingId, riderState.mode)
+      : null;
     if (ridingId && !riderCam) riderState.trainId = null;
 
     const active = riderCam
@@ -235,7 +237,7 @@ export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
       : perspectiveDebugState.active
         ? { eye: perspectiveDebugState.eye, look: perspectiveDebugState.look, fovYRadians: perspectiveDebugState.fovYRadians }
         : null;
-    const activeKey = riderCam ? `ride:${ridingId}` : perspectiveDebugState.active ? 'debug' : null;
+    const activeKey = riderCam ? `ride:${riderState.mode}:${ridingId}` : perspectiveDebugState.active ? 'debug' : null;
     const modeChanged = activeKey !== prevActiveKeyRef.current;
     prevActiveKeyRef.current = activeKey;
 

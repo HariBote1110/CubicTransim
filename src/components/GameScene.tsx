@@ -52,7 +52,10 @@ import { rectCells } from '../sim/terrainOverlay';
 import type { TownTileCache } from '../sim/townTiles';
 import { townIntersectsCellRange } from '../sim/townTiles';
 import { WebGpuRenderDriver, WEBGPU_UNDERGROUND_DIM_FACTOR, type WebGpuLayerRef } from './WebGpuTerrainLayer';
-import { riderState, computeRiderCamera, PASSENGER_CHUNK_VIEW_RADIUS_CELLS } from '../render/passengerView';
+import {
+  riderState, computeRiderCamera, PASSENGER_CHUNK_VIEW_RADIUS_CELLS, type RiderMode,
+} from '../render/passengerView';
+import { CabHud } from './CabHud';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
@@ -96,6 +99,8 @@ interface GameSceneProps {
   money: number;
   /** D2: 乗車中の列車id(null=乗車していない)。App.tsxのridingTrainIdをそのまま鏡写しする。 */
   ridingTrainId?: string | null;
+  /** D3: 乗車モード(客席/運転台)。運転台のときだけCabHudを出す。 */
+  ridingMode?: RiderMode;
   /** D2: 降車(Escキー・降車ボタン共通)。 */
   onAlightTrain?: () => void;
 
@@ -119,7 +124,7 @@ interface GameSceneProps {
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, towns, townTiles, field, halfExtent, webGpuLayer,
   cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, selectedTrainId,
-  isEditingSchedule, simSpeed, ridingTrainId = null, onAlightTrain,
+  isEditingSchedule, simSpeed, ridingTrainId = null, ridingMode = 'passenger', onAlightTrain,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
 }) => {
@@ -211,7 +216,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
   useFrameLoop(FRAME_ORDER.camera, () => {
     const ridingId = riderState.trainId;
     if (ridingId) {
-      const cam = world.current ? computeRiderCamera(world.current, ridingId) : null;
+      const cam = world.current ? computeRiderCamera(world.current, ridingId, riderState.mode) : null;
       if (cam) {
         const now = performance.now();
         if (now - lastChunkRunRef.current < CHUNK_VIEW_INTERVAL_MS) return;
@@ -602,7 +607,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
             color: T.text, fontSize: 12.5,
           }}
         >
-          <span>乗車中: 列車 {ridingTrainId}</span>
+          <span>乗車中({ridingMode === 'cab' ? '運転台' : '客席'}): 列車 {ridingTrainId}</span>
           <button
             onClick={onAlightTrain}
             style={{
@@ -614,6 +619,11 @@ export const GameScene: React.FC<GameSceneProps> = ({
             降車
           </button>
         </div>
+      )}
+
+      {/* D3: 運転台視点のときだけHUDを出す。 */}
+      {ridingTrainId && ridingMode === 'cab' && (
+        <CabHud world={world} trainId={ridingTrainId} />
       )}
 
       <WebGpuRenderDriver
@@ -706,7 +716,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
         world={world}
         field={field}
         housePlacements={housePlacements}
-        hidden={farViewHidden}
+        // D3: 乗車中(客席/運転台どちらも)はラベルオーバーレイを隠す。凍結されたiso
+        // カメラ(webGpuCameraStateRef)を経由して投影しているため、透視カメラ中は
+        // 位置が合わない(follow-up: 透視投影でのラベル再計算はD3スコープ外)。
+        hidden={farViewHidden || !!ridingTrainId}
       />
 
       <WebGpuTrains

@@ -28,6 +28,7 @@ import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
 import { REGAUGE_COST_PER_CELL, trainCostFor } from '../sim/economy';
+import type { RiderMode } from '../render/passengerView';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -113,9 +114,10 @@ interface GameUIProps {
   // PM2: 車庫(depot)ツールで列車を購入するときの動力方式選択。
   purchasePower: TrainPower;
   setPurchasePower: (power: TrainPower) => void;
-  // D2: 乗客視点(乗車モード)。ridingTrainId=null なら乗車していない。
+  // D2/D3: 乗客視点(乗車モード)。ridingTrainId=null なら乗車していない。
   ridingTrainId: string | null;
-  onBoardTrain: (trainId: string) => void;
+  ridingMode: RiderMode;
+  onBoardTrain: (trainId: string, mode: RiderMode) => void;
   onAlightTrain: () => void;
 }
 
@@ -178,7 +180,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   onClearGroupSchedule, onDeleteGroup,
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
   purchasePower, setPurchasePower,
-  ridingTrainId, onBoardTrain, onAlightTrain,
+  ridingTrainId, ridingMode, onBoardTrain, onAlightTrain,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
@@ -343,7 +345,8 @@ export const GameUI: React.FC<GameUIProps> = ({
               onCreateGroup={onCreateGroup}
               onAssignGroup={onAssignGroup}
               isRiding={ridingTrainId === selectedTrain.id}
-              onBoard={() => onBoardTrain(selectedTrain.id)}
+              ridingMode={ridingMode}
+              onBoard={(mode) => onBoardTrain(selectedTrain.id, mode)}
               onAlight={onAlightTrain}
             />
           ) : selectedStation ? (
@@ -738,14 +741,15 @@ const TrainInspector: React.FC<{
   groups: TrainGroupData[];
   onCreateGroup: (seedTrainId?: string) => string;
   onAssignGroup: (trainId: string, groupId: string | null) => void;
-  /** D2: この列車に乗車中か。 */
+  /** D2/D3: この列車に乗車中か、どのモードか。 */
   isRiding: boolean;
-  onBoard: () => void;
+  ridingMode: RiderMode;
+  onBoard: (mode: RiderMode) => void;
   onAlight: () => void;
 }> = ({
   train, stations, passengers, stuckSeconds, money, isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar, scheduleClipboard, onCopySchedule, onPasteSchedule,
-  groups, onCreateGroup, onAssignGroup, isRiding, onBoard, onAlight,
+  groups, onCreateGroup, onAssignGroup, isRiding, ridingMode, onBoard, onAlight,
 }) => {
   const stored = train.status === 'stored';
   const group = findGroup(groups, train.groupId);
@@ -767,15 +771,26 @@ const TrainInspector: React.FC<{
         </div>
       </div>
 
-      {/* D2: 乗客視点(乗車モード)。車庫在籍中の列車は乗る意味が無いので出さない。 */}
+      {/* D2/D3: 乗客視点(乗車モード)。車庫在籍中の列車は乗る意味が無いので出さない。
+          客席/運転台の2ボタン。乗車中のモードのボタンは押すと降車、もう片方は
+          押すと(降車せず)そのモードへ切り替わる。 */}
       {!stored && (
-        <button
-          onClick={isRiding ? onAlight : onBoard}
-          style={{ ...button({ active: isRiding, compact: true }), width: '100%', marginTop: 9 }}
-          title={isRiding ? '降車してクォータービューへ戻る(Escキーでも可)' : 'この列車に乗って車窓を眺める'}
-        >
-          {isRiding ? '降車' : '乗車'}
-        </button>
+        <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
+          <button
+            onClick={() => (isRiding && ridingMode === 'passenger' ? onAlight() : onBoard('passenger'))}
+            style={{ ...button({ active: isRiding && ridingMode === 'passenger', compact: true }), flex: 1 }}
+            title={isRiding && ridingMode === 'passenger' ? '降車してクォータービューへ戻る(Escキーでも可)' : '客席からこの列車に乗って車窓を眺める'}
+          >
+            {isRiding && ridingMode === 'passenger' ? '降車' : '乗車(客席)'}
+          </button>
+          <button
+            onClick={() => (isRiding && ridingMode === 'cab' ? onAlight() : onBoard('cab'))}
+            style={{ ...button({ active: isRiding && ridingMode === 'cab', compact: true }), flex: 1 }}
+            title={isRiding && ridingMode === 'cab' ? '降車してクォータービューへ戻る(Escキーでも可)' : '運転台からこの列車に乗ってHUDを見る'}
+          >
+            {isRiding && ridingMode === 'cab' ? '降車' : '運転台'}
+          </button>
+        </div>
       )}
 
       {!stored && stuckSeconds >= STUCK_WARNING_SECONDS && (
