@@ -7,9 +7,10 @@ import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import {
-  applyRailPath, applyStationPath, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
+  applyRailPathDetailed, applyStationPath, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
   applyUndergroundPath, applyUndergroundStation, applyRegaugePath,
   removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
+  resolveGroundRailPlanWithAutoFill,
 } from '../sim/construction';
 import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel, UndergroundLevel, RailBuildOptions } from '../sim/construction';
 import {
@@ -355,8 +356,25 @@ export const useGameLogic = () => {
             : costOfPath('rail', path.length, path, field)) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
           if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
+          // P-terraform: other-slopeで詰まった区間の自動整地(埋め立て)が必要かを
+          // resolveGroundRailPlanWithAutoFillへ事前に問い合わせ、コストへ上乗せする
+          // (buildPreview.tsと同じ判定を、実際の課金前にも一度使う)。デバッグ手組みの
+          // field(debugFieldOverride)を使っている間は編集経路が無いため試みない
+          // (raise/lowerの既存の割り切りと同じ)。
+          const terrainFillOptions = !debugFieldOverride
+            ? { base: baseField, blockers: buildEditBlockers({ halfExtent, railMap, townTileIndex, baseField }) }
+            : undefined;
+          if (terrainFillOptions) {
+            const autoFilled = resolveGroundRailPlanWithAutoFill(terrainFillOptions.base, editedField, path, terrainFillOptions.blockers);
+            if (autoFilled.terraformCorners > 0) cost += costOfTerrainEdit(autoFilled.terraformCorners);
+          }
           if (money < cost) return;
-          result = applyRailPath(state, path, field, townTileIndex, railOptions);
+          const detailed = applyRailPathDetailed(state, path, field, townTileIndex, railOptions, terrainFillOptions);
+          result = detailed;
+          // P-terraform: 実際に整地が起きていれば、手動raise/lowerと同じcornerDiffsの
+          // 経路(setCornerDiffs)で永続化する(セーブ/読込・描画チャンクの再構築を含めて
+          // 既存の地形編集と完全に同じ扱いになる)。
+          if (detailed.terrainEdit) setCornerDiffs(detailed.terrainEdit.diffs);
         } else if (level > 0) {
           // 自由な高架線(旧'elevated')。坂・橋桁の内訳はconstruction.ts側の判定
           // (resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath)にそのまま

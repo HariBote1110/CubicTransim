@@ -832,7 +832,10 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
 }) => {
   if (!preview || preview.cellCount === 0) return null;
 
-  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, failure } = preview;
+  const {
+    reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, failure,
+    terraformCorners,
+  } = preview;
   // 'incomplete-path'(高架/地下の線路でまだ1マスしか指していない)は建設不可ではなく
   // 「操作の途中」なので、警告色ではなく控えめな案内にする(0.5.0-Alpha-4c)。
   const tone =
@@ -859,6 +862,8 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
   } else if (overpassCells > 0) {
     detail.push(`橋桁 ${overpassCells}(4倍)`);
   }
+  // P-terraform: other-slope(三角形の斜面など)を自動整地(埋め立て)して建設した場合の内訳。
+  if (terraformCorners) detail.push(`整地含む ${terraformCorners}`);
 
   return (
     <div style={panel({
