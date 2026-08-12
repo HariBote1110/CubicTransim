@@ -23,9 +23,11 @@ import {
 } from './construction';
 import {
   costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfUndergroundPath,
+  costOfElectrification, costOfProtection, costMultiplierForRailWeight,
   ELEVATED_STATION_COST, UNDERGROUND_STATION_COST,
 } from './economy';
 import { createTerrainField, type TerrainField } from './terrainField';
+import type { RailBuildOptions } from './construction';
 
 type Pos = { x: number; z: number };
 type Mode = 'rail' | 'station' | 'depot' | 'signal' | 'remove';
@@ -45,6 +47,7 @@ const commitLikeUseGameLogic = (
   level: BuildLevel,
   money: number,
   axisHint?: StationAxis,
+  railOptions: RailBuildOptions = {},
 ): CommitOutcome => {
   let result: ConstructionState = state;
   let cost = 0;
@@ -90,11 +93,13 @@ const commitLikeUseGameLogic = (
             }
           }
         }
-        cost = groundRampFlags
+        cost = (groundRampFlags
           ? costOfGroundPathWithRamps(path, field, groundRampFlags)
-          : costOfPath('rail', path.length, path, field);
+          : costOfPath('rail', path.length, path, field)) * costMultiplierForRailWeight(railOptions.railWeight);
+        if (railOptions.electrified) cost += costOfElectrification(path.length);
+        if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
         if (money < cost) return { next: state, built: false, cost };
-        result = applyRailPath(state, path, field, new Map());
+        result = applyRailPath(state, path, field, new Map(), railOptions);
       } else if (level > 0) {
         const elevatedLevel = level as ElevatedLevel;
         const startEnd = pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[0]), elevatedLevel);
@@ -103,13 +108,17 @@ const commitLikeUseGameLogic = (
         cost = costOfElevatedPath(
           plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0,
           plan ? plan.roles.filter(r => r.kind === 'span').length : 0,
-        );
+        ) * costMultiplierForRailWeight(railOptions.railWeight);
+        if (railOptions.electrified) cost += costOfElectrification(path.length);
+        if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
         if (money < cost) return { next: state, built: false, cost };
-        result = applyElevatedPath(state, path, field, elevatedLevel, undefined, new Map());
+        result = applyElevatedPath(state, path, field, elevatedLevel, undefined, new Map(), railOptions);
       } else {
-        cost = costOfUndergroundPath(path.length);
+        cost = costOfUndergroundPath(path.length) * costMultiplierForRailWeight(railOptions.railWeight);
+        if (railOptions.electrified) cost += costOfElectrification(path.length);
+        if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
         if (money < cost) return { next: state, built: false, cost };
-        result = applyUndergroundPath(state, path, field, level as UndergroundLevel);
+        result = applyUndergroundPath(state, path, field, level as UndergroundLevel, undefined, railOptions);
       }
       break;
   }
@@ -173,5 +182,22 @@ describe('プレビューと実際の建設の判定一致(evaluateBuild ⇔ com
     // 世界が空のままだと何も検証していないのと同じなので、実際に建った量も確かめる。
     expect(state.railMap.size).toBeGreaterThan(100);
     expect(state.stations.size).toBeGreaterThan(5);
+  });
+
+  it('H1: 保安装置+電化+レール種別を選んだrail建設は、プレビューのコストが実課金と一致する', () => {
+    const field = createTerrainField(1, 45);
+    const state: ConstructionState = {
+      railMap: new Map<string, CellData>(),
+      stations: new Map<string, StationData>(),
+    };
+    const path: Pos[] = Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 }));
+    const railOptions = { electrified: 'dc' as const, protection: 'cbtc' as const, railWeight: 60 as const };
+
+    const preview = evaluateBuild('rail', path, state.railMap, state.stations, field, 1e9, 0, new Map(), railOptions);
+    const commit = commitLikeUseGameLogic(state, path, 'rail', field, 0, 1e9, undefined, railOptions);
+
+    expect(preview.reason).toBe('ok');
+    expect(commit.built).toBe(true);
+    expect(preview.cost).toBe(commit.cost);
   });
 });
