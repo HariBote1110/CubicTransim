@@ -1,19 +1,22 @@
 // D3: 運転台視点(乗車モードの一種)のHUD情報を求める純関数。
 //
-// simulation.ts の stepTrain が速度制御のために計算している値
-// (distanceAlongRouteTo/distanceToStopPoint、MAX_SPEED_KMH)をそのまま再利用し、
-// 別のテーブル・別の制動計算を持ち込まない。信号現示・デッドセクション予告は
-// stepTrainが内部変数として持つだけで公開していない値なので、既存の純粋な述語
-// (reservation.ts の予約状態、gameRules.ts の isDeadSectionBoundary)から
-// この関数の中だけで組み立て直す(sim層のロジック自体は無改造)。
+// simulation.ts の stepTrain が速度制御・閉塞判定のために計算している値
+// (distanceAlongRouteTo/distanceToStopPoint、railWeightSpeedCapKmh、
+// entrySignalKindFor/blocksSegmentEntry)をそのまま再利用し、別のテーブル・
+// 別の閉塞判定を持ち込まない。stepTrainのローカル変数としてしか存在しない
+// 「安全点までの分類」「ブロック占有の再評価」だけは、この関数の中で
+// 同じ2〜3行の組み立てを再現する(sim層のロジック自体は無改造。可視性のみ変更)。
 
 import { toKey } from '../utils';
 import type { CellData } from '../types';
-import { isDeadSectionBoundary } from '../sim/gameRules';
+import { DEFAULT_GAME_RULES, isDeadSectionBoundary } from '../sim/gameRules';
 import {
   MAX_SPEED_KMH, distanceAlongRouteTo, distanceToStopPoint,
+  entrySignalKindFor, blocksSegmentEntry,
 } from '../sim/simulation';
 import type { SimWorld, TrainRuntime } from '../sim/simulation';
+import { railWeightSpeedCapKmh } from '../sim/physics';
+import { findSafeSegmentEnd } from '../sim/reservation';
 
 /** 次信号の先読み範囲(セル)。信号が無い区間で毎フレーム経路全体を舐めないための上限。 */
 export const NEXT_SIGNAL_LOOKAHEAD_CELLS = 20;
@@ -22,8 +25,11 @@ export const DEAD_SECTION_LOOKAHEAD_CELLS = 10;
 
 export interface CabHudInfo {
   speedKmh: number;
-  /** 制限速度(km/h)。このゲームには軌道等級別のテーブルは無いため、
-   * simulation.ts の唯一の速度上限定数(MAX_SPEED_KMH)をそのまま返す。 */
+  /**
+   * 制限速度(km/h)。`rules.trackClasses`が有効なら現在セルのレール種別に応じた
+   * 速度上限(`railWeightSpeedCapKmh`、physics.tsのテーブルをそのまま参照)、
+   * 無効なら唯一の速度上限定数(`MAX_SPEED_KMH`)にフォールバックする。
+   */
   speedLimitKmh: number;
   /** 次の停止点(信号のsafe waiting point、または最終停止駅)までの距離(m)。経路が無ければnull。 */
   nextStopDistanceM: number | null;
@@ -39,14 +45,18 @@ const cellAt = (railMap: Map<string, CellData>, p: { x: number; z: number }): Ce
 export function computeCabHud(world: SimWorld, trainId: string): CabHudInfo | null {
   const rt = world.runtimes.get(trainId);
   if (!rt) return null;
+  const rules = world.rules ?? DEFAULT_GAME_RULES;
 
   const nextStopDistanceM = computeNextStopDistanceM(rt);
-  const nextSignalAspect = computeNextSignalAspect(world, rt);
+  const nextSignalAspect = computeNextSignalAspect(world, rt, trainId);
   const deadSectionAhead = computeDeadSectionAhead(world, rt);
+  const speedLimitKmh = rules.trackClasses
+    ? railWeightSpeedCapKmh(cellAt(world.railMap, rt.grid)?.railWeight)
+    : MAX_SPEED_KMH;
 
   return {
     speedKmh: rt.speedKmh,
-    speedLimitKmh: MAX_SPEED_KMH,
+    speedLimitKmh,
     nextStopDistanceM,
     nextSignalAspect,
     deadSectionAhead,
@@ -66,19 +76,43 @@ function computeNextStopDistanceM(rt: TrainRuntime): number | null {
 }
 
 /**
- * 経路上の先読み範囲から最初の信号セルを探し、reservedEndIndexがその信号の
- * indexまで届いていれば green(通過してよい)、届いていなければ red とする。
- * 信号が見つからなければ null(HUDでは「なし」扱い)。
+ * 経路上の先読み範囲から最初の信号セルを探す。
+ *
+ * - 既に`reservedEndIndex`がその信号のindexまで届いていれば無条件でgreen
+ *   (予約はブロック占有チェックを通過済みの結果なので、これより確実な情報は無い)。
+ * - s0(ブロックの概念が無い)なら、そこまでで届いていない=red。
+ * - s1/s2/s3では、`reservedEndIndex`が届いていないからといって即redにはしない。
+ *   列車がまだ制動距離圏内に入っておらず予約延長そのものを試みていないだけの
+ *   可能性があるため(旧実装はこれを誤ってredと報告していた)、「信号セルそのものを
+ *   route上のsafe waiting pointとみなして、そこから先(信号の先のブロック)を
+ *   予約しようとしたら通るか」をstepTrainのensureReservationと同じ組み立て
+ *   (`findSafeSegmentEnd`で信号の先の次の安全点区間を求め、
+ *   `entrySignalKindFor`/`blocksSegmentEntry`でその区間が予約可能かを評価する)で
+ *   直接問い合わせる。信号セル自身はどのブロックにも属さない(blocks.ts)ため、
+ *   区間の起点を信号のindexそのものにすることで、信号の先のブロックの占有状態を
+ *   確実に踏む(reservedEndIndex+1を起点にすると、まだ手前のブロックしか見ない)。
  */
-function computeNextSignalAspect(world: SimWorld, rt: TrainRuntime): 'green' | 'red' | null {
+function computeNextSignalAspect(world: SimWorld, rt: TrainRuntime, trainId: string): 'green' | 'red' | null {
   const limit = Math.min(rt.route.length, NEXT_SIGNAL_LOOKAHEAD_CELLS);
+  let signalIdx = -1;
   for (let i = 0; i < limit; i++) {
-    const cell = cellAt(world.railMap, rt.route[i]);
-    if (cell?.signalDir) {
-      return rt.reservedEndIndex >= i ? 'green' : 'red';
+    if (cellAt(world.railMap, rt.route[i])?.signalDir) {
+      signalIdx = i;
+      break;
     }
   }
-  return null;
+  if (signalIdx === -1) return null;
+  if (rt.reservedEndIndex >= signalIdx) return 'green';
+
+  const rules = world.rules ?? DEFAULT_GAME_RULES;
+  if (rules.signalling === 's0' || !world.blocks) return 'red';
+
+  const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, signalIdx);
+  const segment = rt.route.slice(signalIdx, nextIdx + 1);
+  const entryKind = entrySignalKindFor(world, rt, signalIdx);
+  const trainProtection = world.trains.find(t => t.id === trainId)?.protection;
+  const blocked = blocksSegmentEntry(world, rules, trainId, segment, entryKind, trainProtection, rt.route, signalIdx);
+  return blocked ? 'red' : 'green';
 }
 
 /** 先読み範囲内(現在地からroute[N-1]まで)にデッドセクション境界があるか。 */
