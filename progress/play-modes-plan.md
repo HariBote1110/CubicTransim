@@ -374,3 +374,35 @@ interface GameRules {
 - モード選択UIの置き場所（新規ゲームダイアログ内を想定）
 - リアリスティックの電化以外の候補（建築限界・勾配と粘着・保線など）は
   電化全部盛りの完成後に改めて優先順位を付ける
+
+## PM3 follow-up(0.5.0-Alpha-9a): デッドセクション標識の視覚表現
+
+PM3(0.5.0-Alpha-7a)で導入したdc/ac電化境界(`isDeadSectionBoundary`)は
+シミュレーション上は牽引力ゼロの惰行区間として機能していたが、視覚的な目印が
+無く境界の位置がプレイヤーから見えなかった(PM3実装メモの残りfollow-up)。
+
+配置ロジックを`render/deadSectionMarkers.ts`の`findDeadSectionMarkerEdges`として
+切り出した(sim/three.js非依存の純関数)。線路(connections)で実際に繋がっている
+dc/ac隣接セル境界だけを、E/SE/S/SWの4方向を正準として重複無く列挙する
+(反対向きの4方向は隣接セル側から検出されるため走査しない。catenaryの間引きと
+同じ「軸方向を正準化する」考え方)。
+
+ジオラマとしては実物のデッドセクション標識(架線の死区間を示す白い矩形標板)を
+模した、柱1本+標板1枚の低頂点数アセットを`trackGeometry.ts`の
+`buildDeadSectionMarkerPart`で生成し、`railGeometry.ts`の
+`buildRailNetworkGeometry`が地平の平坦区間(incline/坂は対象外、catenaryと同じ
+スコープ判断)の境界にだけ焼き込む。`WebGpuTrackNetwork.tsx`のsurfaceチャンクへ
+catenaryと同じ経路(色は`PALETTE.deadSectionMarkerPole`/`deadSectionMarkerBoard`)
+で載せた。境界が存在しないマップでは何も生成されない。
+
+架線の色分け(dc灰/ac青みがかったグレー、PM3実装済み)そのままで、境界の
+コントラクトワイヤーを中立色に置き換える案は`buildCatenaryParts`の改修が
+大掛かりになるためスコープ外にした(柱+標板だけで境界位置は十分視認できる)。
+
+高架・地下(uppers境界)のデッドセクションは対象外(地平のみ)。必要になれば
+`findDeadSectionMarkerEdges`をレベル別に拡張する形で追随できる。
+
+TDD: `deadSectionMarkers.test.ts`で配置ロジック(重複無し・connections必須・
+同一方式/非電化混在では検出しない・斜め方向も検出)を固定。ブラウザ実機
+(アドバンスドモード、セーブ注入でdc→ac接続線路を作成)で境界セルに柱+白い
+標板が描画されることを確認。
