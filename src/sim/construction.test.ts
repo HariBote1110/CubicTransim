@@ -38,6 +38,7 @@ import {
 import { fieldFromMaps } from './terrainField';
 import type { TerrainField } from './terrainField';
 import { computeElevation } from './testSupport/elevationFixture';
+import { calculateRoute } from './pathfinding';
 
 const emptyState = (): ConstructionState => ({
   railMap: new Map<string, CellData>(),
@@ -411,6 +412,41 @@ describe('applyDepot（特性テスト・バグ修正）', () => {
     const cell = result.railMap.get(toKey(0, 0))!;
     expect(cell.type).toBe('station');
     expect(result.stations.size).toBe(stationCountBefore);
+  });
+
+  // 車庫を既存の線路に隣接して置いたとき、線路側セルに車庫方向へ戻るビットが
+  // 立たないと、reciprocal-bitモデル(pathfinding.tsのresolveEntryLayer)では
+  // 車庫へ進入/車庫から発車できない(バグ報告: 「1マス離れた線路に隣接配置しても
+  // 自動接続しない」)。
+  it('既存の線路に隣接して車庫を設置すると、隣接する線路セル側にも車庫方向への接続ビットが立つ', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    // (1,0)の線路の東隣(2,0)に車庫を設置する: 車庫はその西(W)を向く。
+    state = applyDepot(state, { x: 2, z: 0 });
+
+    const railNeighbour = state.railMap.get(toKey(1, 0))!;
+    expect(railNeighbour.connections! & DIR.E).toBe(DIR.E);
+  });
+
+  it('既存の線路に隣接して設置した車庫からは、線路経由で駅まで経路探索できる', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+    ]);
+    state = applyStation(state, { x: 0, z: 0 });
+    // 線路(2,0)の東隣(3,0)に車庫を設置する: 車庫は線路から1マス離れているのではなく
+    // 隣接だが、バグ報告の「車庫を既存線路の隣に置いても繋がらない」ケースを再現する。
+    state = applyDepot(state, { x: 3, z: 0 });
+
+    const stationId = Array.from(state.stations.keys())[0];
+    const result = calculateRoute(state.railMap, state.stations, new Set(), new Set(), {
+      start: { x: 3, z: 0 },
+      prev: null,
+      targetStationId: stationId,
+      cars: 1,
+    });
+
+    expect(result.length).toBeGreaterThan(0);
   });
 });
 
