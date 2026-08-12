@@ -32,7 +32,7 @@ import {
   LAYERED_RAIL_MIN_PATH_CELLS,
   type GroundRailPlanFailureReason,
 } from './construction';
-import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, costOfRegauge, costMultiplierForRailWeight, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, costOfProtection, costOfRegauge, costMultiplierForRailWeight, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
 import type { RailBuildOptions } from './construction';
 import type { TerrainField } from './terrainField';
 import type { EditedTerrainField } from './terrainOverlay';
@@ -254,9 +254,14 @@ export function evaluateBuild(
     : baseCost;
   // PM2: 電化を選んだrail建設には、線路本体のコストに架線設備費を上乗せする
   // (地平/高架/地下いずれも同じ単価。costOfElectrificationのdocコメント参照)。
-  const cost = mode === 'rail' && railOptions.electrified
+  const electrificationAdjustedCost = mode === 'rail' && railOptions.electrified
     ? railWeightAdjustedCost + costOfElectrification(path.length)
     : railWeightAdjustedCost;
+  // PM3/S3: 保安装置を選んだrail建設には地上設備費を上乗せする
+  // (useGameLogic.commitPathの3経路(地平・高架・地下)と同じ加算)。
+  const cost = mode === 'rail' && railOptions.protection
+    ? electrificationAdjustedCost + costOfProtection(path.length, railOptions.protection)
+    : electrificationAdjustedCost;
 
   // 実際に適用してみて、変化が生じるか(=建設が成立するか)を確かめる。
   const state: ConstructionState = { railMap, stations };

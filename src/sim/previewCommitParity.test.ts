@@ -193,7 +193,7 @@ describe('プレビューと実際の建設の判定一致(evaluateBuild ⇔ com
     const path: Pos[] = Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 }));
     const railOptions = { electrified: 'dc' as const, protection: 'cbtc' as const, railWeight: 60 as const };
 
-    const preview = evaluateBuild('rail', path, state.railMap, state.stations, field, 1e9, 0, new Map(), railOptions);
+    const preview = evaluateBuild('rail', path, state.railMap, state.stations, field, 1e9, 0, new Map(), undefined, railOptions);
     const commit = commitLikeUseGameLogic(state, path, 'rail', field, 0, 1e9, undefined, railOptions);
 
     expect(preview.reason).toBe('ok');
