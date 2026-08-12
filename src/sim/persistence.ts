@@ -9,6 +9,8 @@ import type { TownDensity } from './towns';
 import type { TerrainProfile } from './terrainField';
 import type { GameRules } from './gameRules';
 import { DEFAULT_GAME_RULES } from './gameRules';
+import type { Level } from '../types';
+import { fromKey, toKey, getVectorFromDir, getOppositeDir } from '../utils';
 
 // v15: 地形の持ち方を「全セル実体化(terrain/heights Map)」から「決定的な純関数
 // (worldSeed)+疎な編集差分(cornerDiffs)」へ転換した(progress/16k-map-architecture.md
@@ -27,8 +29,14 @@ import { DEFAULT_GAME_RULES } from './gameRules';
 // v16以前のセーブにrulesは無いが、その時点では概念自体が存在しなかったことが確定しているため、
 // DEFAULT_GAME_RULES(ライト相当)として読み込む。PM1では読み込む以外に誰もrulesを参照しないため、
 // 挙動は一切変わらない。
-export interface SaveDataV17 {
-  version: 17 | 16 | 15;
+// v18(M5, progress/review-play-modes-branch.md): normaliseUndergroundRampDirsは
+// 91f5945以前のセーブ(地下ランプのdirが逆を向いたまま保存されている)を直すための
+// 移行処理だが、版数で区切らずに毎回実行すると、修正後に書かれた正しいセーブに対しても
+// 隣接セルの接続状態からの構造推定(坑口・分岐など、高い側の隣接セルが接続ビットを
+// 持たない形状)でdirを誤って反転しうる。v18以降のセーブは常に正しい形式で書かれる
+// ことが保証されるため、deserialiseWorldは version < 18 のときだけ正規化を適用する。
+export interface SaveDataV18 {
+  version: 18 | 17 | 16 | 15;
   /** 地形の乱数シード(sim/terrainField.tsのcreateTerrainFieldへそのまま渡す)。 */
   seed: number;
   /** マップの生成半径(-halfExtent..halfExtentのセルを生成する)。 */
@@ -80,7 +88,7 @@ export interface LegacySaveData {
   version: number;
 }
 
-export type SaveData = SaveDataV17 | LegacySaveData;
+export type SaveData = SaveDataV18 | LegacySaveData;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -107,9 +115,9 @@ export function serialiseWorld(
   townDensity: TownDensity = 'normal',
   terrainProfile: TerrainProfile = 'normal',
   rules: GameRules = DEFAULT_GAME_RULES
-): SaveDataV17 {
+): SaveDataV18 {
   return {
-    version: 17,
+    version: 18,
     seed,
     halfExtent,
     cornerDiffs: serialiseCornerDiffs(cornerDiffs),
@@ -165,17 +173,57 @@ export interface RestoredWorld {
 }
 
 /**
+ * 91f5945の修正前に作られたセーブは、地下(base<0)のランプのramp.dirが
+ * 高さの低い側(地下側)を向いたまま保存されている(修正後は高い側=地表側を向く)。
+ * セル単体では新旧どちらの形式か判別できないため、隣接セルの接続状態から
+ * 「dir/oppositeのどちらが実際に高い側(base+1レベル)へ連続しているか」を
+ * 構造的に判定し、oppositeだけが一致する場合(=dirが逆を向いている)にだけ
+ * dirを反転する。両方/どちらも一致しない曖昧なケースは判別不能なので変更しない。
+ * base>=0(高架側)のランプ・rampを持たないセルは対象外。
+ */
+export function normaliseUndergroundRampDirs(railMap: Map<string, CellData>): Map<string, CellData> {
+  const result = new Map(railMap);
+  for (const [key, cell] of railMap) {
+    const ramp = cell.ramp;
+    if (!ramp) continue;
+    const base = ramp.base ?? 0;
+    if (base >= 0) continue;
+    const higherLevel = base + 1;
+    const { x, z } = fromKey(key);
+
+    const continuesAtHigherLevel = (candidateDir: number): boolean => {
+      const v = getVectorFromDir(candidateDir);
+      const neighbour = railMap.get(toKey(x + v.x, z + v.z));
+      if (!neighbour) return false;
+      const backBit = getOppositeDir(candidateDir);
+      if (higherLevel === 0) {
+        return ((neighbour.connections ?? 0) & backBit) !== 0;
+      }
+      return (((neighbour.uppers?.[higherLevel as Level]?.connections) ?? 0) & backBit) !== 0;
+    };
+
+    const opp = getOppositeDir(ramp.dir);
+    const dirMatches = continuesAtHigherLevel(ramp.dir);
+    const oppMatches = continuesAtHigherLevel(opp);
+    if (!dirMatches && oppMatches) {
+      result.set(key, { ...cell, ramp: { ...ramp, dir: opp } });
+    }
+  }
+  return result;
+}
+
+/**
  * セーブデータの復元。v17と(rules欠落=ライト相当扱いの)v16・(terrainProfile欠落=normal扱いの)v15を受け付ける。
  * v14以前はterrain/heights Mapを全セル実体化していた旧形式であり、v15(worldSeed+halfExtent+cornerDiffs)とは
  * 互換性が無い。リリース前でセーブ互換は破壊してよい(ユーザー明言)ため、
  * 移行処理は書かずnullを返す(呼び出し側は壊れたセーブと同様に扱う)。
  */
 export function deserialiseWorld(input: SaveData): RestoredWorld | null {
-  if (input.version !== 17 && input.version !== 16 && input.version !== 15) return null;
+  if (input.version !== 18 && input.version !== 17 && input.version !== 16 && input.version !== 15) return null;
   // LegacySaveDataのversionは(旧バージョン識別のためだけに)number型なので、上のガードだけでは
   // TypeScriptの判別共用体narrowingが効かない(number側が15/16/17を許容範囲として残るため)。
   // ここまで来た時点でversionが15/16/17であることは実行時に確定しているので、明示的に絞り込む。
-  const data = input as SaveDataV17;
+  const data = input as SaveDataV18;
 
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -211,12 +259,15 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
 
   // PM3: legacyのelectrified:true(v17前期〜PM2)は「直流」を意味するため、
   // 'dc'へ正規化して読み込む。'ac'/'dc'の文字列はそのまま、undefinedもそのまま。
-  const railMap = new Map(
+  const railMapRaw = new Map(
     data.railMap.map(([key, cell]) => [
       key,
       cell.electrified === true ? { ...cell, electrified: 'dc' as const } : cell,
     ])
   );
+  // M5: v18以降は既に正しい形式で書かれているため、正規化(構造推定によるヒューリスティック)
+  // を適用しない。version<18の旧セーブだけを対象にする。
+  const railMap = data.version < 18 ? normaliseUndergroundRampDirs(railMapRaw) : railMapRaw;
 
   return {
     railMap,
@@ -241,6 +292,9 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
     terrainProfile: data.terrainProfile ?? 'normal',
     // PM2: extendedGaugesはv17後期(PM1)〜PM2直前のセーブに存在しない可能性があるため、
     // rulesオブジェクト自体はあってもフィールド単位でfalse(基本ラインナップ)を補う。
-    rules: data.rules ? { ...data.rules, extendedGauges: data.rules.extendedGauges ?? false } : DEFAULT_GAME_RULES,
+    // 軌道(trackClasses)も同様に、この機能追加より前のセーブには存在しないため補う。
+    rules: data.rules
+      ? { ...data.rules, extendedGauges: data.rules.extendedGauges ?? false, trackClasses: data.rules.trackClasses ?? false }
+      : DEFAULT_GAME_RULES,
   };
 }

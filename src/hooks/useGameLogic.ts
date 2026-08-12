@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
+import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData, RestoredWorld } from '../sim/persistence';
 import {
@@ -11,17 +13,20 @@ import {
 } from '../sim/construction';
 import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel, UndergroundLevel, RailBuildOptions } from '../sim/construction';
 import {
-  STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
+  STARTING_MONEY, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
-  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge, trainCostFor,
+  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
+  trainCostForProtected, costOfProtection, costMultiplierForRailWeight,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
 import type { TerrainProfile } from '../sim/terrainField';
 import { DEFAULT_GAME_RULES } from '../sim/gameRules';
 import type { GameRules } from '../sim/gameRules';
+import { AXLE_LOAD_T_BY_POWER } from '../sim/physics';
 import { buildFeedingIndex } from '../sim/feeding';
+import { buildBlockIndex } from '../sim/blocks';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
 import { createEditedTerrainField, applyCornerEdit, buildEditBlockers, cornerDiffsFromField } from '../sim/terrainOverlay';
 
@@ -50,6 +55,8 @@ const ACCIDENT_POLL_INTERVAL_MS = 500;
 export interface AccidentNotice {
   trainId: string;
   stationId: string;
+  /** S3の信号冒進(SPAD)通知か。省略時は従来どおりの駅の人身事故。 */
+  kind?: 'spad';
 }
 
 /** loadGameがReact stateへ反映するsetter群(useGameLogic.loadGame.test.tsから直接検証できるように分離)。 */
@@ -266,6 +273,15 @@ export const useGameLogic = () => {
     worldRef.current.feeding = feedingIndex;
   }, [feedingIndex]);
 
+  // S1: 固定閉塞のブロック索引。feedingIndexと同じ同期パターンで、railMapが
+  // 変わったときだけ再計算する。rules.signalling!=='s1'のときも常に計算はするが、
+  // stepWorld側が参照しないため無害(挙動変更ゼロ)。
+  const blockIndex = useMemo(() => buildBlockIndex(railMap), [railMap]);
+
+  useEffect(() => {
+    worldRef.current.blocks = blockIndex;
+  }, [blockIndex]);
+
   // --- Commit Path ---
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
   // ここでは現在の state を渡し、結果をまとめて setRailMap/setStations するだけの薄いラッパー。
@@ -282,7 +298,11 @@ export const useGameLogic = () => {
     // ため、既存の建設挙動は変わらない。
     railOptions: RailBuildOptions = {},
     // PM2 Stage B: 改軌(buildMode==='regauge')専用の目的軌間。
-    regaugeTargetGauge?: RailGauge
+    regaugeTargetGauge?: RailGauge,
+    // S2: 信号(buildMode==='signal')専用の種別選択。rules.signalling!=='s2'のUIからは
+    // 常に'block'のまま渡ってくるため、applySignal側で新規設置時に'block'相当(undefined)
+    // へ丸め込む必要はなく、そのまま渡してよい(s2以外はblocksSegmentEntryが種別を見ない)。
+    signalKind?: CellData['signalKind']
   ) => {
     if (path.length === 0) return;
 
@@ -318,7 +338,7 @@ export const useGameLogic = () => {
       case 'signal':
         cost = costOfPath('signal', path.length);
         if (money < cost) return;
-        result = applySignal(state, path, field, townTileIndex);
+        result = applySignal(state, path, field, townTileIndex, signalKind);
         break;
       case 'station': {
         if (level === 0) {
@@ -374,10 +394,11 @@ export const useGameLogic = () => {
             }
           }
           // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
-          cost = groundRampFlags
+          cost = (groundRampFlags
             ? costOfGroundPathWithRamps(path, field, groundRampFlags)
-            : costOfPath('rail', path.length, path, field);
+            : costOfPath('rail', path.length, path, field)) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyRailPath(state, path, field, townTileIndex, railOptions);
         } else if (level > 0) {
@@ -390,8 +411,9 @@ export const useGameLogic = () => {
           const plan = planElevatedPath(path.length, startEnd, endEnd, elevatedLevel);
           const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
           const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
-          cost = costOfElevatedPath(rampCount, overpassCount);
+          cost = costOfElevatedPath(rampCount, overpassCount) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTileIndex, railOptions);
         } else {
@@ -399,8 +421,9 @@ export const useGameLogic = () => {
           // 経路の全セルへ一律のコスト倍率(UNDERGROUND_RAIL_COST_MULTIPLIER)を課す
           // (buildPreview.tsのcostOfUndergroundPathと同じ計算)。
           const undergroundLevel = level as UndergroundLevel;
-          cost = costOfUndergroundPath(path.length);
+          cost = costOfUndergroundPath(path.length) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyUndergroundPath(state, path, field, undergroundLevel, undefined, railOptions);
         }
@@ -411,7 +434,10 @@ export const useGameLogic = () => {
         // 経路は全体がno-op(construction.tsのapplyRegaugePathが判定)。課金対象は
         // 実際に軌間が変わったセル数のみ(buildPreview.tsと同じ規約)。
         if (!regaugeTargetGauge) return;
-        const occupiedCells = new Set(worldRef.current.trains.map(t => toKey(t.x, t.z)));
+        // H4: TrainData.x/zは車庫での初期位置のまま更新されないため、走行中の実位置
+        // (worldRef.current.runtimes)から在線セルを求める(sim/simulation.tsの
+        // occupiedCellKeysFromRuntimes)。
+        const occupiedCells = occupiedCellKeysFromRuntimes(worldRef.current.runtimes);
         const regauged = applyRegaugePath(state, path, regaugeTargetGauge, occupiedCells);
         if (regauged.railMap === state.railMap) return;
         const changedCellCount = path.filter(p => {
@@ -469,10 +495,12 @@ export const useGameLogic = () => {
 
   // PM2: powerは購入UIから選ぶ(省略時=気動車)。軌間は車庫セルの軌間を自動で継承する
   // (rules.gaugeが有効な場合のみ。無効時はgauge概念が無いためundefinedのまま=旧来どおり)。
-  const buyTrain = (x: number, z: number, power: TrainPower = 'diesel') => {
+  const buyTrain = (x: number, z: number, power: TrainPower = 'diesel', protection?: TrainProtection) => {
     // PM3: 交流/交直流車は価格が異なる(economy.tsのtrainCostFor)。
     // rules.electrification==='none'ならpower自体を持たせないので常にdiesel価格になる。
-    const cost = gameRules.electrification !== 'none' ? trainCostFor(power) : TRAIN_COST;
+    // S3: 保安装置の車上装置分の倍率(trainCostForProtected)をさらに乗算合成する。
+    // rules.signalling!=='s3'ならprotection自体を渡さないUIになるので常に基準額のまま。
+    const cost = trainCostForProtected(gameRules.electrification !== 'none' ? power : 'diesel', protection);
     if (money < cost) return;
     const depotCell = worldRef.current.railMap.get(toKey(x, z));
     const newTrain: TrainData = {
@@ -480,8 +508,14 @@ export const useGameLogic = () => {
         x, z,
         schedule: [], scheduleIndex: 0, status: 'stored',
         cars: 2,
-        ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? 1067 } : {}),
+        ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? DEFAULT_GAUGE } : {}),
         ...(gameRules.electrification !== 'none' ? { power } : {}),
+        ...(gameRules.signalling === 's3' && protection ? { protection } : {}),
+        // 軌道(何キロレール): 動力方式から軸重を導出する(physics.tsのAXLE_LOAD_T_BY_POWER)。
+        // trackClasses=falseなら概念が無いため付与しない(従来どおりの挙動)。
+        ...(gameRules.trackClasses
+          ? { axleLoadT: AXLE_LOAD_T_BY_POWER[gameRules.electrification !== 'none' ? power : 'diesel'] }
+          : {}),
     };
     setTrains(prev => [...prev, newTrain]);
     setSelectedTrainId(newTrain.id);
@@ -688,7 +722,15 @@ export const useGameLogic = () => {
   const handleAccident = (event: Extract<SimEvent, { type: 'accident' }>) => {
     setMoney(m => m - event.penalty);
     setCurrentLedger(l => ({ ...l, accidents: l.accidents + event.penalty }));
-    setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId }]);
+    setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId, kind: event.kind }]);
+  };
+
+  // PM3フォローアップ: デッドセクション失速からの救援コスト(1回だけ課金)。
+  // handleAccidentと同じ「イベント→setMoneyで即時減算」の最小構成にした。
+  // MonthlyLedgerには専用フィールドを増やさず(既存のaccidentsとは性質が違う一時費用
+  // のため流用しない)、progress/play-modes-plan.mdに設計判断として記録する。
+  const handleStallRescue = (event: Extract<SimEvent, { type: 'stallRescue' }>) => {
+    setMoney(m => m - event.penalty);
   };
 
   // ★追加: スケジュールコピー機能
@@ -876,6 +918,7 @@ export const useGameLogic = () => {
     upgradeStationDoors,
     activeAccidents,
     handleAccident,
+    handleStallRescue,
     // ★追加: 月次決算(収支台帳)
     currentLedger,
     ledgerHistory,

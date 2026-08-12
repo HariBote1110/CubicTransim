@@ -18,6 +18,7 @@ import {
 import { GameLabels } from './GameLabels';
 import { WebGpuTrains } from './WebGpuTrains';
 import { WebGpuBuildPreview, type PreviewGhostCell } from './WebGpuBuildPreview';
+import { WebGpuFeedingOverlay } from './WebGpuFeedingOverlay';
 import { WebGpuTownMarkers } from './WebGpuTownMarkers';
 import { pickTrainAtScreenPoint, type TrainScreenCandidate } from '../render/trainPicking';
 import { carGroupPosition } from '../render/trainInstanceMath';
@@ -643,6 +644,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
         cells={previewGhostCells}
         dragCell={dragGhost}
         gridCentre={buildMode === 'none' ? null : chunkView.targetCell}
+      />
+
+      <WebGpuFeedingOverlay
+        layerRef={webGpuLayer}
+        railMap={railMap}
+        world={world}
+        field={field}
+        active={buildMode === 'substation'}
       />
 
       <WebGpuScenery

@@ -7,9 +7,10 @@ import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
-import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, type PlayMode } from './sim/gameRules';
+import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, effectiveRailOptions, type PlayMode, type Signalling } from './sim/gameRules';
 import type { RailBuildOptions } from './sim/construction';
-import type { RailGauge, TrainPower } from './types';
+import type { RailGauge, TrainPower, SignalKind, TrainProtection } from './types';
+import { DEFAULT_GAUGE } from './types';
 import { T, button as themeButton } from './ui/theme';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
 import type { WebGpuTerrainLayerController, WebGpuUnavailableReason } from './render/webgpuLayer';
@@ -58,6 +59,14 @@ const PLAY_MODE_HINTS: Record<PlayMode, string> = {
 const PLAY_MODE_OPTIONS: { label: string; value: PlayMode; hint: string }[] = (
   Object.keys(PLAY_MODE_PRESETS) as PlayMode[]
 ).map(mode => ({ label: PLAY_MODE_LABELS[mode], value: mode, hint: PLAY_MODE_HINTS[mode] }));
+
+// 信号方式の選択肢(progress/signalling-plan.md)。プレイモードとは独立した別軸。
+const SIGNALLING_OPTIONS: { label: string; value: Signalling; hint: string }[] = [
+  { label: 'おまかせ', value: 's0', hint: '信号機の設置は不要。移動閉塞で自動的に間隔が詰まる(既定)' },
+  { label: '固定閉塞', value: 's1', hint: '信号機で区切った区間だけが閉塞になる。単線行き違いを自分で設計する' },
+  { label: '信号種別', value: 's2', hint: '信号に場内・出発・閉塞の役割がつく。駅構内配線の設計が意味を持つ' },
+  { label: '保安装置', value: 's3', hint: 'ATS-S/ATS-P/ATC/CBTCを敷設する。上位装置ほど信号冒進を確実に防げる。CBTCは移動閉塞を投資で取り戻す' },
+];
 
 /**
  * R4d: WebGPU が使えないときの案内画面。three.js のフォールバックは廃止したので、
@@ -124,15 +133,19 @@ export default function App() {
   // 起動ダイアログの地形選択(既定は標準=normal)。マップサイズのボタンを押した時点の値を使う。
   const [selectedTerrainProfile, setSelectedTerrainProfile] = useState<TerrainProfile>('normal');
   const [selectedPlayMode, setSelectedPlayMode] = useState<PlayMode>('light');
+  const [selectedSignalling, setSelectedSignalling] = useState<Signalling>('s0');
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
   const [buildLevel, setBuildLevel] = useState<BuildLevel>(0);
   // PM2: 線路ツールの軌間/電化選択、改軌ツールの目的軌間、車庫での購入動力。
   // いずれもrules.gauge=false(ライト)の間はUIから触れられないため既定値のまま使われない。
-  const [railOptions, setRailOptions] = useState<RailBuildOptions>({ gauge: 1067 });
-  const [regaugeTargetGauge, setRegaugeTargetGauge] = useState<RailGauge | undefined>(1067);
+  const [railOptions, setRailOptions] = useState<RailBuildOptions>({ gauge: DEFAULT_GAUGE });
+  const [regaugeTargetGauge, setRegaugeTargetGauge] = useState<RailGauge | undefined>(DEFAULT_GAUGE);
+  // S2: 信号ツールで置く信号の種別選択。rules.signalling!=='s2'の間はUIから触れられない。
+  const [signalKind, setSignalKind] = useState<SignalKind>('block');
   const [purchasePower, setPurchasePower] = useState<TrainPower>('diesel');
+  const [purchaseProtection, setPurchaseProtection] = useState<TrainProtection | undefined>(undefined);
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
@@ -226,7 +239,7 @@ export default function App() {
     money, addIncome,
     loan, borrow, repay,
     selectedStationId, selectStation, upgradeStationDoors,
-    activeAccidents, handleAccident,
+    activeAccidents, handleAccident, handleStallRescue,
     currentLedger, ledgerHistory, handleMonthEnd,
     handleTownGrowth,
     stopLocation, setStopLocation,
@@ -267,17 +280,24 @@ export default function App() {
         isEditingSchedule={isEditingSchedule}
         simSpeed={simSpeed}
         money={money}
-        onCommitPath={(path, mode, axisHint, level) => commitPath(path, mode, axisHint, level, railOptions, regaugeTargetGauge)}
+        onCommitPath={(path, mode, axisHint, level) => commitPath(
+          path, mode, axisHint, level, effectiveRailOptions(gameRules, railOptions), regaugeTargetGauge,
+          // L2: s2未満(信号種別の概念が無い)では常に'block'を書き込まず、種別欄そのものに
+          // 触れない(既存セルの値を保つ)。設計意図(s2未満では種別の概念が無い)とセーブの
+          // 素直さを揃える(挙動は変わらない: sim側の述語はもともとs2/s3以外で種別を見ない)。
+          gameRules.signalling === 's2' || gameRules.signalling === 's3' ? signalKind : undefined
+        )}
         removeSignal={removeSignal}
         onSimEvent={(event) => {
           if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
           if (event.type === 'income') addIncome(event.amount);
           if (event.type === 'accident') handleAccident(event);
+          if (event.type === 'stallRescue') handleStallRescue(event);
           if (event.type === 'monthEnd') handleMonthEnd(event);
           if (event.type === 'townGrowth') handleTownGrowth(event);
         }}
         onSelectTrain={setSelectedTrainId}
-        onBuyTrain={(x, z) => buyTrain(x, z, purchasePower)}
+        onBuyTrain={(x, z) => buyTrain(x, z, purchasePower, purchaseProtection)}
         onAddSchedule={addSchedule}
         onSelectStation={selectStation}
         onPreviewChange={handlePreviewChange}
@@ -313,7 +333,7 @@ export default function App() {
         simSpeed={simSpeed}
         setSimSpeed={setSimSpeed}
         onSave={saveGame}
-        onLoad={loadGame}
+        onLoad={() => { loadGame(); setRailOptions({ gauge: DEFAULT_GAUGE }); }}
         money={money}
         world={worldRef}
         selectedStationId={selectedStationId}
@@ -341,7 +361,11 @@ export default function App() {
         regaugeTargetGauge={regaugeTargetGauge}
         setRegaugeTargetGauge={setRegaugeTargetGauge}
         purchasePower={purchasePower}
+        purchaseProtection={purchaseProtection}
+        setPurchaseProtection={setPurchaseProtection}
         setPurchasePower={setPurchasePower}
+        signalKind={signalKind}
+        setSignalKind={setSignalKind}
         ridingTrainId={ridingTrainId}
         ridingMode={ridingMode}
         onBoardTrain={handleBoardTrain}
@@ -361,7 +385,14 @@ export default function App() {
                       key={opt.label}
                       style={{ ...themeButton({ active: true }), width: '100%', textAlign: 'left' }}
                       onClick={() => {
-                        newGame(opt.halfExtent, selectedTownDensity, selectedTerrainProfile, PLAY_MODE_PRESETS[selectedPlayMode]);
+                        newGame(opt.halfExtent, selectedTownDensity, selectedTerrainProfile, {
+                          ...PLAY_MODE_PRESETS[selectedPlayMode],
+                          signalling: selectedSignalling,
+                        });
+                        // H2: 前のゲームで選んだ軌間/電化/保安装置/レール種別を持ち越さない
+                        // (effectiveRailOptionsによるストリップが本体の保証だが、選択UI自体も
+                        // 素直な既定へ戻しておく)。
+                        setRailOptions({ gauge: DEFAULT_GAUGE });
                         setShowStartupOptions(false);
                       }}
                     >
@@ -422,6 +453,25 @@ export default function App() {
                 <p style={{ color: T.textMuted, fontSize: 11, lineHeight: 1.5, marginTop: 0, marginBottom: T.gap }}>
                   {PLAY_MODE_OPTIONS.find(opt => opt.value === selectedPlayMode)?.hint}
                 </p>
+                <p style={{ color: '#b9c3cc', lineHeight: 1.55, marginTop: 0 }}>信号方式</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: T.gap, marginBottom: 4 }}>
+                  {SIGNALLING_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      style={{
+                        ...themeButton({ active: selectedSignalling === opt.value, compact: true }),
+                        width: '100%',
+                      }}
+                      onClick={() => setSelectedSignalling(opt.value)}
+                      title={opt.hint}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p style={{ color: T.textMuted, fontSize: 11, lineHeight: 1.5, marginTop: 0, marginBottom: T.gap }}>
+                  {SIGNALLING_OPTIONS.find(opt => opt.value === selectedSignalling)?.hint}
+                </p>
                 <button
                   style={{ ...themeButton(), width: '100%' }}
                   onClick={() => setShowDebugScenarios(true)}
@@ -439,6 +489,7 @@ export default function App() {
                       style={{ ...themeButton(), width: '100%', textAlign: 'left' }}
                       onClick={() => {
                         loadDebugScenario(scenario.build());
+                        setRailOptions({ gauge: DEFAULT_GAUGE });
                         setSimSpeed(2);
                         setShowStartupOptions(false);
                         setShowDebugScenarios(false);

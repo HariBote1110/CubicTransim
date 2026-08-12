@@ -1,5 +1,6 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TownData, Level, RailGauge } from '../types';
+import type { CellData, StationData, TownData, Level, RailGauge, SignalKind, TrainProtection, RailWeight } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
@@ -377,7 +378,24 @@ export interface RailBuildOptions {
   gauge?: RailGauge;
   /** PM3: 'modes'段階のUIは常に'dc'を書く。'ac'は'boundaries'以上でのみ選べる。 */
   electrified?: 'dc' | 'ac' | boolean;
+  /** S3: 保安装置。省略時は既存セルの値を保つ(gauge/electrifiedと同じ規約)。 */
+  protection?: TrainProtection;
+  /** 軌道(何キロレール)。省略時は既存セルの値を保つ(gauge/electrifiedと同じ規約)。 */
+  railWeight?: RailWeight;
 }
+
+// M6: 「railOptionsのうち指定されているフィールドだけをCellDataへのパッチにする」処理が
+// addConnectionToCell/applyRailPathDetailed(地平の直進/anchor)/applyElevatedPath/
+// applyUndergroundPathの計5箇所に同一のスプレッド式でコピーされていた
+// (protection/railWeightを追加したとき、実際に5箇所の修正漏れが起きた)。1箇所に括る。
+const gaugeElectrifiedPatchOf = (
+  options: RailBuildOptions
+): Pick<CellData, 'gauge' | 'electrified' | 'protection' | 'railWeight'> => ({
+  ...(options.gauge !== undefined ? { gauge: options.gauge } : {}),
+  ...(options.electrified !== undefined ? { electrified: options.electrified } : {}),
+  ...(options.protection !== undefined ? { protection: options.protection } : {}),
+  ...(options.railWeight !== undefined ? { railWeight: options.railWeight } : {}),
+});
 
 const addConnectionToCell = (
   railMap: Map<string, CellData>,
@@ -392,14 +410,11 @@ const addConnectionToCell = (
   // 軌間概念に触れていない)なら、常に「既存セルの軌間」同士の比較(実質つねに一致)になり、
   // 挙動は変わらない。
   if (existing && existing.type === 'rail') {
-    const existingGauge = existing.gauge ?? 1067;
+    const existingGauge = existing.gauge ?? DEFAULT_GAUGE;
     const newGauge = options.gauge ?? existingGauge;
     if (existingGauge !== newGauge) return;
   }
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
-    ...(options.gauge !== undefined ? { gauge: options.gauge } : {}),
-    ...(options.electrified !== undefined ? { electrified: options.electrified } : {}),
-  };
+  const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(options);
   if (!existing) {
     railMap.set(key, { type: 'rail', connections: dir, ...flags, ...gaugeElectrifiedPatch });
   } else if (existing.type !== 'rail') {
@@ -446,7 +461,7 @@ export function applyRailPathDetailed(
     if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
       const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
       if (plan) {
-        const result = applyGroundPathWithElevatedConnect(state, path, field, plan);
+        const result = applyGroundPathWithElevatedConnect(state, path, field, plan, railOptions);
         if (result) return result;
       }
       // planがnull、または坂条件(車庫・地形)を満たせない場合は、接続を諦めて
@@ -582,7 +597,9 @@ function applyGroundPathWithElevatedConnect(
   state: ConstructionState,
   path: Pos[],
   field: TerrainField,
-  plan: ElevatedPathPlan
+  plan: ElevatedPathPlan,
+  // PM2: 軌間/電化。省略時は既存挙動と完全に同一(gaugeElectrifiedPatchが空になる)。
+  railOptions: RailBuildOptions = {}
 ): RailPathApplyResult | null {
   if (!isElevatedConnectPlanBuildable(state.railMap, path, field, plan)) return null;
 
@@ -599,7 +616,7 @@ function applyGroundPathWithElevatedConnect(
     const axisBits = prevDir | nextDir;
 
     if (role.kind === 'span') {
-      addConnectionToCell(railMap, key, axisBits, terrainFlags(field, path[i].x, path[i].z));
+      addConnectionToCell(railMap, key, axisBits, terrainFlags(field, path[i].x, path[i].z), railOptions);
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
       continue;
     }
@@ -607,16 +624,19 @@ function applyGroundPathWithElevatedConnect(
     if (role.kind === 'anchor') {
       // 既存の高架レベルconnectLevelの端タイルそのもの。既存データ(桁の内部接続等)は
       // 一切書き換えず、uppers[connectLevel].connectionsへ新しい方向ビットをORするだけに
-      // 留める(rampは付与しない。桁+坂の二重描画を避けるため)。
+      // 留める(rampは付与しない。桁+坂の二重描画を避けるため)。地平側のgauge/electrified
+      // だけはCellData本体(セル共有)へ上書きする(spanと同じPM2の単純化)。
       const dir = role.side === 'start' ? nextDir : prevDir;
       const existing = railMap.get(key);
       const upperAtLevel = existing?.uppers?.[role.connectLevel as Level];
+      const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
       railMap.set(key, {
         ...(existing ?? { type: 'rail' }),
         uppers: {
           ...(existing?.uppers ?? {}),
           [role.connectLevel]: { connections: (upperAtLevel?.connections ?? 0) | dir, stationId: upperAtLevel?.stationId },
         },
+        ...gaugeElectrifiedPatch,
       });
       continue;
     }
@@ -631,11 +651,13 @@ function applyGroundPathWithElevatedConnect(
     const rampDir = role.base < 0 ? getOppositeDir(rampDirRaw) : rampDirRaw;
     const existing = railMap.get(key);
     const merged = orIntoBaseLevel(existing, role.base, axisBits);
+    const rampGaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
     railMap.set(key, {
       ...merged,
       type: merged.type ?? 'rail',
       ...terrainFlags(field, path[i].x, path[i].z),
       ramp: { dir: rampDir, level: role.level, base: role.base },
+      ...rampGaugeElectrifiedPatch,
     });
     if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
   }
@@ -823,10 +845,11 @@ const NEIGHBOUR_OFFSETS: Pos[] = [
   { x: 0, z: 1 }, { x: -1, z: 1 }, { x: -1, z: 0 }, { x: -1, z: -1 },
 ];
 
-/** posの8近傍(または本セル)に電化railセルが1つでもあるか(PM4: 変電所の設置条件)。 */
+// L1: 呼び出し元(applySubstation)は必ず`if (existing) return state;`のあとに呼ぶため、
+// pos自身のセルは常にundefined(=既存セルが無いこと確定済み)。よってposの8近傍だけを
+// 見ればよく、自セルの電化判定は不要。
+/** posの8近傍に電化railセルが1つでもあるか(PM4: 変電所の設置条件)。 */
 const hasAdjacentElectrifiedRail = (railMap: Map<string, CellData>, pos: Pos): boolean => {
-  const self = railMap.get(toKey(pos.x, pos.z));
-  if (self && (self.type === 'rail' || self.type === 'station') && self.electrified) return true;
   return NEIGHBOUR_OFFSETS.some(d => {
     const cell = railMap.get(toKey(pos.x + d.x, pos.z + d.z));
     return !!cell && (cell.type === 'rail' || cell.type === 'station') && !!cell.electrified;
@@ -862,7 +885,8 @@ export function applySignal(
   state: ConstructionState,
   path: Pos[],
   field: TerrainField = EMPTY_FIELD,
-  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  kind?: SignalKind
 ): ConstructionState {
   const pos = path[0];
   const key = toKey(pos.x, pos.z);
@@ -885,7 +909,10 @@ export function applySignal(
         break;
       }
     }
-    railMap.set(key, { ...cell, signalDir: firstDir });
+    railMap.set(key, { ...cell, signalDir: firstDir, signalKind: kind });
+  } else if (kind && kind !== (cell.signalKind ?? 'block')) {
+    // S2: 種別選択ツールで既存信号の種別だけを変更する(向きは維持、巡回しない)。
+    railMap.set(key, { ...cell, signalKind: kind });
   } else {
     const currentDir = cell.signalDir;
     let nextDir = currentDir;
@@ -1200,10 +1227,7 @@ export function applyElevatedPath(
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
   // PM2: セル単位で軌間/電化を共有するため、CellData本体(uppersの外側)へ付ける。
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
-    ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
-    ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
-  };
+  const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -1335,10 +1359,7 @@ export function applyUndergroundPath(
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
-    ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
-    ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
-  };
+  const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -1765,7 +1786,7 @@ export function applyRegaugePath(
   for (const p of path) {
     const key = toKey(p.x, p.z);
     const cell = railMap.get(key)!;
-    const currentGauge = cell.gauge ?? 1067;
+    const currentGauge = cell.gauge ?? DEFAULT_GAUGE;
     if (currentGauge === targetGauge) continue;
     railMap.set(key, { ...cell, gauge: targetGauge });
     changed = true;

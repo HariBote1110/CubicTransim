@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, RailWeight, TrainPower, SignalKind, TrainProtection } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND, SUBSTATION_COST,
@@ -15,6 +16,7 @@ import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES, averageInterv
 import type { LineMode } from '../sim/groups';
 import type { BuildPreview } from '../sim/buildPreview';
 import type { SimWorld } from '../sim/simulation';
+import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { computeStationArrivals } from '../sim/arrivals';
 import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
@@ -27,7 +29,7 @@ import type { EditedTerrainField } from '../sim/terrainOverlay';
 import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
-import { REGAUGE_COST_PER_CELL, trainCostFor } from '../sim/economy';
+import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST } from '../sim/economy';
 import type { RiderMode } from '../render/passengerView';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
@@ -40,12 +42,35 @@ export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'raise' | 'low
 
 // PM2: 軌間の選択肢(基本ラインナップ2種+拡張ラインナップ2種)。
 const BASIC_GAUGES: { value: RailGauge; label: string }[] = [
-  { value: 1067, label: '狭軌' },
+  { value: DEFAULT_GAUGE, label: '狭軌' },
   { value: 1435, label: '標準軌' },
 ];
 const EXTENDED_GAUGES: { value: RailGauge; label: string }[] = [
   { value: 762, label: '特殊狭軌' },
   { value: 1372, label: '馬車軌間' },
+];
+
+// 軌道(何キロレール): レール種別の選択肢(リアリスティックのみ)。
+const RAIL_WEIGHT_OPTIONS: { value: RailWeight; label: string; hint: string }[] = [
+  { value: 37, label: '37kg', hint: '軽量・安価(速度上限70km/h、許容軸重12t)。コスト×0.8' },
+  { value: 50, label: '50kgN', hint: '標準(速度上限110km/h、許容軸重16t)。コスト×1.0' },
+  { value: 60, label: '60kg', hint: '重量・高価(速度上限なし、軸重無制限)。コスト×1.3' },
+];
+
+// S2: 信号種別の選択肢(progress/signalling-plan.md)。
+const SIGNAL_KIND_OPTIONS: { value: SignalKind; label: string; hint: string }[] = [
+  { value: 'block', label: '閉塞', hint: 'ブロック全体の占有で他列車の進入を止める(既定)' },
+  { value: 'home', label: '場内', hint: '同じブロック内でも、自分の経路セルが他列車と重ならなければ進入できる(駅構内向け)' },
+  { value: 'departure', label: '出発', hint: '停車中はこの先を予約しない。発車後は先のブロックが空くまで待つ' },
+];
+
+// S3: 保安装置の選択肢(progress/signalling-plan.md)。
+const PROTECTION_OPTIONS: { value: TrainProtection | undefined; label: string; hint: string }[] = [
+  { value: undefined, label: 'なし', hint: '無防備。信号冒進(SPAD)の確率が最も高い' },
+  { value: 'ats-s', label: 'ATS-S', hint: `警報のみ(確認で通過できる)。地上設備 +¥${PROTECTION_COST['ats-s']}/マス` },
+  { value: 'ats-p', label: 'ATS-P', hint: `パターン照査で自動ブレーキ。地上設備 +¥${PROTECTION_COST['ats-p']}/マス` },
+  { value: 'atc', label: 'ATC', hint: `車内信号・段階速度制御。地上設備 +¥${PROTECTION_COST.atc}/マス` },
+  { value: 'cbtc', label: 'CBTC', hint: `無線移動閉塞。地上設備 +¥${PROTECTION_COST.cbtc}/マス。車上装置も揃えば移動閉塞になる` },
 ];
 
 interface GameUIProps {
@@ -114,6 +139,12 @@ interface GameUIProps {
   // PM2: 車庫(depot)ツールで列車を購入するときの動力方式選択。
   purchasePower: TrainPower;
   setPurchasePower: (power: TrainPower) => void;
+  // S2: 信号(signal)ツール専用の種別選択。rules.signalling==='s2'のときだけUIに出す。
+  signalKind: SignalKind;
+  setSignalKind: (kind: SignalKind) => void;
+  // S3: 車庫(depot)ツールで列車を購入するときの保安装置選択。rules.signalling==='s3'のみ。
+  purchaseProtection: TrainProtection | undefined;
+  setPurchaseProtection: (protection: TrainProtection | undefined) => void;
   // D2/D3: 乗客視点(乗車モード)。ridingTrainId=null なら乗車していない。
   ridingTrainId: string | null;
   ridingMode: RiderMode;
@@ -179,7 +210,8 @@ export const GameUI: React.FC<GameUIProps> = ({
   groups, onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup,
   onClearGroupSchedule, onDeleteGroup,
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
-  purchasePower, setPurchasePower,
+  purchasePower, setPurchasePower, signalKind, setSignalKind,
+  purchaseProtection, setPurchaseProtection,
   ridingTrainId, ridingMode, onBoardTrain, onAlightTrain,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
@@ -288,8 +320,12 @@ export const GameUI: React.FC<GameUIProps> = ({
     const blockers = buildEditBlockers({ halfExtent, railMap, townTileIndex: townTiles, baseField });
     return evaluateBuild(buildMode, previewPath, railMap, stations, field, money, buildLevel, townTiles, {
       base: baseField, editedField, blockers,
-    }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge' ? { targetGauge: regaugeTargetGauge ?? 1067 } : undefined);
-  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge]);
+    }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge'
+      // H4: commitPath(useGameLogic.ts)と同じくoccupiedCellKeysFromRuntimesで
+      // 走行中の実位置を見る。省略(=常に空集合)だとプレビューが実際の可否と食い違う。
+      ? { targetGauge: regaugeTargetGauge ?? DEFAULT_GAUGE, occupiedCells: occupiedCellKeysFromRuntimes(world.current?.runtimes ?? new Map()) }
+      : undefined);
+  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge, world]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(
@@ -484,7 +520,9 @@ export const GameUI: React.FC<GameUIProps> = ({
               background: 'rgba(153, 27, 27, 0.92)', border: '1px solid rgba(255,255,255,0.22)',
               padding: '8px 14px', fontSize: 12.5, fontWeight: 700, color: '#fff',
             })}>
-              ⚠ {stations.get(a.stationId)?.name ?? a.stationId} で人身事故 — 運転見合わせ中
+              {a.kind === 'spad'
+                ? `⚠ ${a.stationId} で信号冒進(SPAD) — 運転見合わせ中`
+                : `⚠ ${stations.get(a.stationId)?.name ?? a.stationId} で人身事故 — 運転見合わせ中`}
             </div>
           ))}
         </div>
@@ -524,6 +562,27 @@ export const GameUI: React.FC<GameUIProps> = ({
           </div>
         )}
 
+        {/* S2: 信号種別の選択(信号ツール、rules.signalling==='s2'のときのみ)。 */}
+        {buildMode === 'signal' && gameRules.signalling === 's2' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>信号種別</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {SIGNAL_KIND_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setSignalKind(opt.value)}
+                  style={button({ active: signalKind === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* PM2: 軌間・電化の選択(線路ツール、rules.gauge=trueのときのみ)。 */}
         {buildMode === 'rail' && gameRules.gauge && (
           <div style={panel({
@@ -535,7 +594,7 @@ export const GameUI: React.FC<GameUIProps> = ({
                 <button
                   key={g.value}
                   onClick={() => setRailOptions({ ...railOptions, gauge: g.value })}
-                  style={button({ active: (railOptions.gauge ?? 1067) === g.value, accent: T.accent, compact: true })}
+                  style={button({ active: (railOptions.gauge ?? DEFAULT_GAUGE) === g.value, accent: T.accent, compact: true })}
                 >
                   {g.label}
                 </button>
@@ -581,6 +640,49 @@ export const GameUI: React.FC<GameUIProps> = ({
           </div>
         )}
 
+        {/* 軌道(何キロレール): レール種別の選択(線路ツール、rules.trackClasses=trueのときのみ)。
+            省略時は50kgN(DEFAULT_RAIL_WEIGHT)扱いなので既定選択も50kgNにしておく。 */}
+        {buildMode === 'rail' && gameRules.trackClasses && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>レール種別</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {RAIL_WEIGHT_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setRailOptions({ ...railOptions, railWeight: opt.value })}
+                  style={button({ active: (railOptions.railWeight ?? 50) === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* S3: 保安装置の選択(線路ツール、rules.signalling==='s3'のときのみ)。 */}
+        {buildMode === 'rail' && gameRules.signalling === 's3' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>保安装置</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {PROTECTION_OPTIONS.map(opt => (
+                <button
+                  key={opt.label}
+                  onClick={() => setRailOptions({ ...railOptions, protection: opt.value })}
+                  style={button({ active: railOptions.protection === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* PM2/PM3: 車庫ツールでの列車購入時の動力方式選択(rules.electrification!=='none'のみ)。
             交流/交直流はrules.electrificationが'boundaries'以上のときのみ選べる(design decision 2)。
             軌間は車庫セルの軌間を自動継承する(useGameLogic.tsのbuyTrain)ため選択させない。 */}
@@ -599,9 +701,30 @@ export const GameUI: React.FC<GameUIProps> = ({
                   key={value}
                   onClick={() => setPurchasePower(value)}
                   style={button({ active: purchasePower === value, accent: T.depot, compact: true })}
-                  title={`¥${trainCostFor(value).toLocaleString()}`}
+                  title={`¥${trainCostForProtected(value, gameRules.signalling === 's3' ? purchaseProtection : undefined).toLocaleString()}`}
                 >
                   {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* S3: 車庫ツールでの列車購入時の保安装置選択(rules.signalling==='s3'のときのみ)。 */}
+        {buildMode === 'depot' && gameRules.signalling === 's3' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>保安装置</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {PROTECTION_OPTIONS.map(opt => (
+                <button
+                  key={opt.label}
+                  onClick={() => setPurchaseProtection(opt.value)}
+                  style={button({ active: purchaseProtection === opt.value, accent: T.depot, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
                 </button>
               ))}
             </div>
@@ -619,7 +742,7 @@ export const GameUI: React.FC<GameUIProps> = ({
                 <button
                   key={g.value}
                   onClick={() => setRegaugeTargetGauge(g.value)}
-                  style={button({ active: (regaugeTargetGauge ?? 1067) === g.value, accent: T.bridge, compact: true })}
+                  style={button({ active: (regaugeTargetGauge ?? DEFAULT_GAUGE) === g.value, accent: T.bridge, compact: true })}
                 >
                   {g.label}
                 </button>

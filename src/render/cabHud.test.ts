@@ -3,6 +3,9 @@ import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
 import type { CellData, StationData, TrainData } from '../types';
 import { stepWorld, MAX_SPEED_KMH } from '../sim/simulation';
 import type { SimWorld, TrainRuntime } from '../sim/simulation';
+import { railWeightSpeedCapKmh } from '../sim/physics';
+import { PLAY_MODE_PRESETS } from '../sim/gameRules';
+import { buildBlockIndex } from '../sim/blocks';
 import { computeCabHud } from './cabHud';
 
 // D3: 運転台HUDの純関数テスト。simulation.tsのstepTrainが内部で使っている
@@ -149,6 +152,61 @@ describe('computeCabHud (D3 運転台HUD)', () => {
     const route = [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }];
     world.runtimes.set('t1', makeRuntime({ grid: { x: 0, z: 0 }, route, reservedEndIndex: -1 }));
     expect(computeCabHud(world, 't1')!.deadSectionAhead).toBe(false);
+  });
+
+  it('rules.trackClasses=trueなら現在セルのレール種別に応じた速度上限(railWeightSpeedCapKmh)を返す', () => {
+    const railMap = buildRailMap([{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, railWeight: 37 });
+    const world = makeWorld(railMap, new Map(), []);
+    world.rules = { ...PLAY_MODE_PRESETS.realistic, trackClasses: true };
+    world.runtimes.set('t1', makeRuntime({ grid: { x: 0, z: 0 } }));
+    const hud = computeCabHud(world, 't1')!;
+    expect(hud.speedLimitKmh).toBe(railWeightSpeedCapKmh(37));
+    expect(hud.speedLimitKmh).toBeLessThan(MAX_SPEED_KMH);
+  });
+
+  it('rules.trackClasses=falseならレール種別を無視してMAX_SPEED_KMHを返す(フォールバック)', () => {
+    const railMap = buildRailMap([{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    railMap.set(toKey(0, 0), { ...railMap.get(toKey(0, 0))!, railWeight: 37 });
+    const world = makeWorld(railMap, new Map(), []);
+    world.rules = { ...PLAY_MODE_PRESETS.light, trackClasses: false };
+    world.runtimes.set('t1', makeRuntime({ grid: { x: 0, z: 0 } }));
+    expect(computeCabHud(world, 't1')!.speedLimitKmh).toBe(MAX_SPEED_KMH);
+  });
+
+  it('S1: ブロックが他列車に占有されていれば、reservedEndIndexがまだ信号に届いていなくても次信号は停止(red)', () => {
+    const cells = Array.from({ length: 8 }, (_, i) => ({ x: i, z: 0 }));
+    const railMap = buildRailMap(cells);
+    // (3,0)に信号。0..2が手前ブロック、4..7が信号の先のブロック。
+    railMap.set(toKey(3, 0), { ...railMap.get(toKey(3, 0))!, signalDir: DIR.E });
+    const world = makeWorld(railMap, new Map(), []);
+    world.rules = { ...PLAY_MODE_PRESETS.light, signalling: 's1' };
+    world.blocks = buildBlockIndex(railMap);
+    // 信号の先のブロック(4,0)を別列車'other'が予約保有している(=占有中)。
+    world.reservations = new Map([[toKey(4, 0), 'other']]);
+    const route = [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }];
+    // reservedEndIndexはまだ-1(遠方で延長を試みていないだけ)。旧実装ならこれだけでredになるが、
+    // ここで確認したいのは「ブロックが実際に空いていればreservedEndIndexの遅れに関わらずgreenになる」
+    // 対の性質なので、このテストではブロックを塞いだ状態でredのままであることを確認する。
+    world.runtimes.set('t1', makeRuntime({ grid: { x: 0, z: 0 }, route, reservedEndIndex: -1 }));
+    expect(computeCabHud(world, 't1')!.nextSignalAspect).toBe('red');
+  });
+
+  it('S1: ブロックが空いていれば、reservedEndIndexが信号にまだ届いていなくても次信号は開通(green)', () => {
+    const cells = Array.from({ length: 8 }, (_, i) => ({ x: i, z: 0 }));
+    const railMap = buildRailMap(cells);
+    railMap.set(toKey(3, 0), { ...railMap.get(toKey(3, 0))!, signalDir: DIR.E });
+    const world = makeWorld(railMap, new Map(), []);
+    world.rules = { ...PLAY_MODE_PRESETS.light, signalling: 's1' };
+    world.blocks = buildBlockIndex(railMap);
+    // 予約は無し(誰もブロックを保有していない)。
+    world.reservations = new Map();
+    const route = [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }];
+    // reservedEndIndex=-1のまま(=まだ延長を試みていないだけ)だが、ブロックは実際には空いている。
+    // 旧実装(reservedEndIndex比較のみ)ならここでredと誤判定するが、blocksSegmentEntryを
+    // 直接評価する新実装ではgreenになるはず。
+    world.runtimes.set('t1', makeRuntime({ grid: { x: 0, z: 0 }, route, reservedEndIndex: -1 }));
+    expect(computeCabHud(world, 't1')!.nextSignalAspect).toBe('green');
   });
 
   it('実際にstepWorldで走らせても例外なくHUDが計算できる(統合スモーク)', () => {

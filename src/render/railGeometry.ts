@@ -8,13 +8,14 @@
 import * as THREE from './geom';
 import type { CellData } from '../types';
 import type { TerrainField } from '../sim/terrainField';
-import { DIR, fromKey, getOppositeDir } from '../utils';
+import { DIR, fromKey, toKey, getOppositeDir } from '../utils';
 import {
   buildBridgeAbutmentPart, buildCellTrackParts, buildGroundInclineTrackParts, buildOverpassSupportParts,
   mergeParts, buildRampTrackParts, buildRampAbutmentPart, buildRampPierPart, shouldPlacePier,
-  buildUndergroundOpeningPart, buildCatenaryParts,
-  type TrackParts, type SupportParts, type CatenaryParts,
+  buildUndergroundOpeningPart, buildCatenaryParts, buildDeadSectionMarkerPart,
+  type TrackParts, type SupportParts, type CatenaryParts, type DeadSectionMarkerParts,
 } from './trackGeometry';
+import { findDeadSectionMarkerEdges } from './deadSectionMarkers';
 import {
   OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL, rampHeightAtPos, rampSegmentPositions,
 } from '../sim/trackPath';
@@ -65,6 +66,11 @@ export interface RailNetworkGeometry {
   catenary: { masts: THREE.BufferGeometry | null; wires: THREE.BufferGeometry | null };
   /** PM3: 交流電化区間の架線(色調のみdcと異なる。palette.tsのcatenaryMastAc/catenaryWireAc)。 */
   catenaryAc: { masts: THREE.BufferGeometry | null; wires: THREE.BufferGeometry | null };
+  /**
+   * PM3 follow-up: dc/ac電化境界(デッドセクション)の目印(短い柱+白い標板)。
+   * 地平の平坦な区間の境界のみが対象(catenaryと同じくスコープを絞る判断)。
+   */
+  deadSectionMarkers: { poles: THREE.BufferGeometry | null; boards: THREE.BufferGeometry | null };
 }
 
 /**
@@ -98,6 +104,7 @@ export function buildRailNetworkGeometry(
   const openingWalls: THREE.BufferGeometry[] = [];
   const catenary: CatenaryParts = { masts: [], wires: [] };
   const catenaryAc: CatenaryParts = { masts: [], wires: [] };
+  const deadSectionMarkers: DeadSectionMarkerParts = { poles: [], boards: [] };
 
   // 'hidden'(地上ビューの地下線)はどのバケットへも入れない=一切描かない。
   const bucketOf = (bucket: UndergroundBucket): TrackParts | null =>
@@ -238,6 +245,18 @@ export function buildRailNetworkGeometry(
     }
   }
 
+  // PM3 follow-up: dc/ac境界の標識。地平の平坦区間(=incline/坂ではない)同士の
+  // 境界だけを対象にする(catenaryと同じスコープ判断)。
+  for (const edge of findDeadSectionMarkerEdges(railMap)) {
+    const cell = railMap.get(toKey(edge.x, edge.z));
+    if (!cell) continue;
+    const renderHeight = railRenderHeight(field, cell, edge.x, edge.z);
+    if (renderHeight.kind === 'incline') continue;
+    const marker = buildDeadSectionMarkerPart(edge.x, edge.z, edge.dir, renderHeight.y);
+    deadSectionMarkers.poles.push(...marker.poles);
+    deadSectionMarkers.boards.push(...marker.boards);
+  }
+
   return {
     surface: {
       ballast: mergeParts(surface.ballast),
@@ -266,6 +285,10 @@ export function buildRailNetworkGeometry(
     catenaryAc: {
       masts: mergeParts(catenaryAc.masts),
       wires: mergeParts(catenaryAc.wires),
+    },
+    deadSectionMarkers: {
+      poles: mergeParts(deadSectionMarkers.poles),
+      boards: mergeParts(deadSectionMarkers.boards),
     },
   };
 }

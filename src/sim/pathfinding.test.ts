@@ -850,7 +850,7 @@ describe('多レベル高架: 地平→レベル1→レベル2と登坂する経
 });
 
 describe('calculateRoute: PM2 軌間・電化', () => {
-  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
 
   it('rules省略時(ライト相当)はセルにgauge/electrifiedが付いていても無視して通過する', () => {
     const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }];
@@ -913,7 +913,7 @@ describe('calculateRoute: PM2 軌間・電化', () => {
 });
 
 describe('PM4: き電(feeding)段階の給電判定', () => {
-  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const };
+  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const, trackClasses: false };
 
   it('feeding段階で電車は給電されていないセルへ進入できない', () => {
     const cells = [{ x: 0, z: 0 }, { x: 1, z: 0 }];

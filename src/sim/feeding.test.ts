@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildFeedingIndex, DC_FEED_RANGE_CELLS, AC_FEED_RANGE_CELLS, SUBSTATION_CAPACITY_TRAINS } from './feeding';
+import { buildFeedingIndex, DC_FEED_RANGE_CELLS, AC_FEED_RANGE_CELLS, SUBSTATION_CAPACITY_TRAINS, isOverloaded } from './feeding';
 import type { CellData } from '../types';
 import { toKey, DIR } from '../utils';
+import { applyRailPath, applyElevatedPath, applyUndergroundPath, applySubstation, type ConstructionState } from './construction';
 
 // x方向に一直線の電化rail区間をrailMapへ敷く(system='dc'|'ac')。
 function layStraightRail(
@@ -70,12 +71,41 @@ describe('feeding: き電区間の索引(PM4)', () => {
     expect(index.isPowered(0, 0, 0)).toBe(false);
   });
 
-  it('level!==0は常に給電あり・セクション無し扱い(高架/地下はスコープ外)', () => {
-    const railMap = new Map<string, CellData>();
-    layStraightRail(railMap, 0, 3, 0, 'dc');
-    const index = buildFeedingIndex(railMap, []);
-    expect(index.isPowered(0, 0, 1)).toBe(true);
-    expect(index.sectionLoadKey(0, 0, 1)).toBeNull();
+  it('地平→高架(坂)と続く電化区間はレベルをまたいで1つのセクションになる', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    // 浮いた高架(レベル1、dc電化)を(4,0)〜(9,0)に敷く
+    state = applyElevatedPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, 1, undefined, undefined, { electrified: 'dc' });
+    // 地平の線路(dc電化)を高架の端タイル(4,0)まで引く(applyRailPathが自動で坂を作る)
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }], undefined, undefined, { electrified: 'dc' });
+
+    const index = buildFeedingIndex(state.railMap, []);
+    expect(index.sectionLoadKey(0, 0, 0)).not.toBeNull();
+    expect(index.sectionLoadKey(0, 0, 0)).toBe(index.sectionLoadKey(9, 0, 1));
+  });
+
+  it('地平→地下(坂)と続く電化区間はレベルをまたいで1つのセクションになる', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    // 浮いた地下(レベル-1、dc電化)を(4,0)〜(9,0)に敷く
+    state = applyUndergroundPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, -1, undefined, { electrified: 'dc' });
+    // 地平の線路(dc電化)を地下の端タイル(4,0)まで引く(applyRailPathが自動で坂を作る)
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }], undefined, undefined, { electrified: 'dc' });
+
+    const index = buildFeedingIndex(state.railMap, []);
+    expect(index.sectionLoadKey(0, 0, 0)).not.toBeNull();
+    expect(index.sectionLoadKey(0, 0, 0)).toBe(index.sectionLoadKey(9, 0, -1));
+  });
+
+  it('地平の変電所からの給電が坂を越えて地下区間まで到達する(ホップ数はレベルをまたいで通しで数える)', () => {
+    let state: ConstructionState = { railMap: new Map(), stations: new Map() };
+    state = applyUndergroundPath(state, Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })), undefined, -1, undefined, { electrified: 'dc' });
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }], undefined, undefined, { electrified: 'dc' });
+    // 変電所を地平区間に隣接させる(地平のみに置ける構造物)。
+    state = applySubstation(state, { x: 0, z: 1 });
+
+    const index = buildFeedingIndex(state.railMap, [{ x: 0, z: 1 }]);
+    expect(index.isPowered(0, 0, 0)).toBe(true);
+    // 地下区間(x=9, level=-1)も同じセクション内かつ給電範囲(48セル)内なので給電される。
+    expect(index.isPowered(9, 0, -1)).toBe(true);
   });
 
   it('セクション容量は接続する変電所数×SUBSTATION_CAPACITY_TRAINS', () => {
@@ -98,5 +128,18 @@ describe('feeding: き電区間の索引(PM4)', () => {
     const index = buildFeedingIndex(railMap, [{ x: 0, z: 0 }]);
     const key = index.sectionLoadKey(1, 1, 0);
     if (key) expect(index.sectionCapacity(key)).toBe(SUBSTATION_CAPACITY_TRAINS);
+  });
+});
+
+describe('M3: isOverloaded(sim/renderで共有する容量超過述語)', () => {
+  it('countがcapacityを超えていればtrue', () => {
+    expect(isOverloaded(4, 3)).toBe(true);
+    expect(isOverloaded(3, 3)).toBe(false);
+    expect(isOverloaded(2, 3)).toBe(false);
+  });
+
+  it('capacity=0(変電所が1つも繋がっていない)区間でも、在線がいればtrue(capacity>0の別ガードは持たない)', () => {
+    expect(isOverloaded(1, 0)).toBe(true);
+    expect(isOverloaded(0, 0)).toBe(false);
   });
 });

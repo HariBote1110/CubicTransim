@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
 import { fieldFromMaps } from './terrainField';
 import type { CellData, StationData, TrainData, TownData } from '../types';
-import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH } from './simulation';
+import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH, occupiedCellKeysFromRuntimes } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
 import { carPositions } from './consist';
 import { computeAcceleration, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
-import { applyBridge, type ConstructionState } from './construction';
+import { applyBridge, applyRegaugePath, type ConstructionState } from './construction';
 import { OVERPASS_HEIGHT, rampHeightAtPos, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2 } from './trackPath';
 import {
   PASSENGER_SPAWN_RATE,
@@ -1400,8 +1400,8 @@ describe('stepWorld: 立体交差の十字乗換駅(統合) 地平×高架の同
 });
 
 describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () => {
-  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
-  const ELECTRIFICATION_ONLY_RULES = { gauge: false, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
+  const ELECTRIFICATION_ONLY_RULES = { gauge: false, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
 
   it('電車は非電化区間では経路が見つからず停止したままになる', () => {
     const { railMap, stations } = buildStraightLine(6, 'stA');
@@ -1462,7 +1462,7 @@ describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () =
 });
 
 describe('stepWorld: PM3 交直流デッドセクション', () => {
-  const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const };
+  const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const, trackClasses: false };
 
   it('dc専用車はac区間を含む経路には進入できず停止したままになる', () => {
     const { railMap, stations } = buildStraightLine(6, 'stA');
@@ -1512,7 +1512,7 @@ describe('stepWorld: PM3 交直流デッドセクション', () => {
 });
 
 describe('stepWorld: PM4 き電区間の容量超過ペナルティ', () => {
-  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const };
+  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const, trackClasses: false };
 
   it('セクションの在線数が容量を超えると電車の加速が鈍る(OVERLOAD_ACCEL_FACTOR)', () => {
     const dt = 0.1;
@@ -1563,5 +1563,179 @@ describe('stepWorld: PM4 き電区間の容量超過ペナルティ', () => {
     const baselineRt = baselineWorld.runtimes.get('tBaseline')!;
 
     expect(dieselRt.speedKmh).toBeCloseTo(baselineRt.speedKmh, 5);
+  });
+});
+
+describe('stepWorld: 軌道(何キロレール) — 前方のレール速度上限に間に合うよう制動する', () => {
+  const TRACK_CLASS_RULES = {
+    gauge: true, extendedGauges: true, electrification: 'none' as const, signalling: 's0' as const, trackClasses: true,
+  };
+
+  it('60kg区間からMAX_SPEED_KMHまで加速した列車は、37kg区間(cap=70km/h)に入る前に70km/h以下へ減速し、以後も超過しない', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 150) railMap.set(key, { ...cell, railWeight: 37 });
+      else railMap.set(key, { ...cell, railWeight: 60 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = TRACK_CLASS_RULES;
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    let reachedCappedSection = false;
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x >= 150) {
+        // 制動が間に合っていること(70km/hを大きく超えて突入していない)。
+        expect(rt.speedKmh).toBeLessThanOrEqual(70 + 1e-6);
+        reachedCappedSection = true;
+      }
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(reachedCappedSection).toBe(true);
+  });
+
+  it('37kg区間全体で常に70km/hを超えない(区間内に入ってからの巡航速度も上限どおり)', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 100 && x < 200) railMap.set(key, { ...cell, railWeight: 37 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = TRACK_CLASS_RULES;
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x >= 100 && rt.grid.x < 200) {
+        expect(rt.speedKmh).toBeLessThanOrEqual(70 + 1e-6);
+      }
+      if (rt.stopRemaining > 0) break;
+    }
+  });
+
+  it('trackClasses=falseなら37kgのrailWeightがあっても速度上限を無視する(概念なし)', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 100) railMap.set(key, { ...cell, railWeight: 37 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    // world.rules未設定(旧セーブ相当) = DEFAULT_GAME_RULES(trackClasses:false)
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    let sawAbove70 = false;
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.speedKmh > 70 + 1e-6) sawAbove70 = true;
+      if (rt.stopRemaining > 0) break;
+    }
+    // MAX_SPEED_KMH(100)まで加速できる=軌道の概念が一切効いていない。
+    expect(sawAbove70).toBe(true);
+  });
+});
+
+describe('M1: 非常制動分岐(hardEnvelopeKmh超過)はrules.trackClassesで囲われているべき', () => {
+  it('trackClasses=false(ライト等)でも、予約末端手前で速度超過ならbrakeDecelMs2が瞬時に常用最大へ飛ばず、ジャーク制限で立ち上げる', () => {
+    const railMap = buildRailMap(Array.from({ length: 4 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(3, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 3, z: 0 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+    // rules未設定 = DEFAULT_GAME_RULES(trackClasses:false)。
+
+    // 予約末端が目前(30m先)まで縮んでいるのに速度90km/hのまま、というhardEnvelope
+    // 超過状態を直接作る(距離的にhardEnvelopeKmhは約65km/hになり、90km/hはこれを超える)。
+    // 予約末端の先(route[1]=(2,0))を他列車'ghost'が予約済みにして、ensureReservationが
+    // このtickで先へ延長してしまわないようにする(=予約末端が縮んだまま、という状況の再現)。
+    world.runtimes.set('t1', {
+      id: 't1', grid: { x: 0, z: 0 }, prevGrid: null, progress: 0, speedKmh: 90,
+      route: [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }], reservedEndIndex: 0,
+      trail: [{ x: 0, z: 0 }], pathHistory: [{ x: 0, z: 0 }],
+      stopRemaining: 0, waitTimer: 0, debugStatus: '',
+      renderPos: { x: 0, y: 0.5, z: 0 }, renderTarget: null,
+      passengers: 0, lastStopStationId: null, haltRemaining: 0,
+      stopProgress: 1, brakeDecelMs2: 0, braking: false,
+    });
+    world.reservations = new Map([[toKey(2, 0), 'ghost']]);
+
+    stepWorld(world, 0.1);
+    const rt = world.runtimes.get('t1')!;
+    const serviceDecelMs2 = DECEL_KMH_S / 3.6;
+    // 修正前(M1のバグ)はbrakeDecelMs2がserviceDecelMs2へ瞬時に飛ぶ。
+    // 修正後はrampDecel(ジャーク制限)で立ち上げるため、1tick目はそれより小さい。
+    expect(rt.brakeDecelMs2!).toBeLessThan(serviceDecelMs2 - 1e-9);
+  });
+});
+
+describe('H4: occupiedCellKeysFromRuntimes(改軌のno-op判定に使う在線セル集合)', () => {
+  it('TrainData.x/zではなく、走行中の実位置(rt.grid/rt.route)を含む', () => {
+    const railMap = buildRailMap(Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(19, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 19, z: 0 }], center: { x: 19, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.1;
+    for (let i = 0; i < 300; i++) stepWorld(world, dt);
+
+    const rt = world.runtimes.get('t1')!;
+    // 車庫での初期位置(0,0)からは走り出しているはず(でなければテスト自体が無意味)。
+    expect(rt.grid.x).toBeGreaterThan(0);
+    // TrainData.x/zは初期位置のまま更新されない(現行の既知の制約)。
+    expect(train.x).toBe(0);
+
+    const occupied = occupiedCellKeysFromRuntimes(world.runtimes);
+    // 走行中の実位置(rt.grid)を含む。train.x/zだけを見ていた旧実装ならここが漏れる。
+    expect(occupied.has(toKey(rt.grid.x, rt.grid.z))).toBe(true);
+    // 旧実装が使っていた車庫での初期位置は、もう列車がいないので含まれない。
+    expect(occupied.has(toKey(0, 0))).toBe(false);
+  });
+
+  it('走行中の実位置を含む在線集合を渡すと、その区間を含む改軌はno-opになる(旧実装のtrain.x/zベースでは通ってしまっていた)', () => {
+    const railMap = buildRailMap(Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(19, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 19, z: 0 }], center: { x: 19, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.1;
+    for (let i = 0; i < 300; i++) stepWorld(world, dt);
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.grid.x).toBeGreaterThan(0); // 走行中であることの前提確認
+
+    const state: ConstructionState = { railMap: world.railMap, stations: world.stations };
+    const path = [{ x: rt.grid.x, z: rt.grid.z }];
+
+    // 旧実装相当: train.x/zだけを在線集合にする(車庫での初期位置しか入らない)と、
+    // 走行中の実セルへの改軌がno-opガードに引っかからず通ってしまう。
+    const staleOccupied = new Set([toKey(train.x, train.z)]);
+    const staleResult = applyRegaugePath(state, path, 1435, staleOccupied);
+    expect(staleResult.railMap).not.toBe(state.railMap); // 通ってしまう(バグの再現)
+
+    // H4修正後: occupiedCellKeysFromRuntimesを使えば、走行中の実セルが正しく
+    // 在線集合に入り、改軌はno-opになる。
+    const liveOccupied = occupiedCellKeysFromRuntimes(world.runtimes);
+    const liveResult = applyRegaugePath(state, path, 1435, liveOccupied);
+    expect(liveResult.railMap).toBe(state.railMap); // no-op
   });
 });

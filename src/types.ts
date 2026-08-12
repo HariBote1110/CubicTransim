@@ -18,6 +18,17 @@ export type RailGauge = 762 | 1067 | 1372 | 1435;
 export const DEFAULT_GAUGE: RailGauge = 1067;
 
 /**
+ * レール種別(kg/m、リアリスティックのみ・PM「軌道」)。37kg(軽量)/50kgN(標準)/60kg(重量)。
+ * 省略時は「概念なし(rules.trackClasses=false)」または「50kgN扱い(rules.trackClasses=true)」
+ * のいずれか(呼び出し側がrules.trackClassesを見て解釈する。gameRules.tsのeffectiveRailWeight参照。
+ * gauge/DEFAULT_GAUGEと同じ規約)。
+ */
+export type RailWeight = 37 | 50 | 60;
+
+/** 建設時の既定レール種別(標準)。省略されたセルはrules.trackClasses=true時にこの値として扱う。 */
+export const DEFAULT_RAIL_WEIGHT: RailWeight = 50;
+
+/**
  * 列車の動力方式(PM2/PM3)。気動車はどのセルでも走行可。
  * 'electric'は直流専用車(PM2からの既存名称、以後は直流専用の意味に固定する)、
  * 'electric-ac'は交流専用車、'electric-acdc'は交直流両用車(PM3、rules.electrification
@@ -36,12 +47,28 @@ export type Level = -3 | -2 | -1 | 1 | 2 | 3;
 // 地形。平地は既定値のため Map には載せず、terrainField.tsのterrainTypeAt()が'grass'を返す。
 export type TerrainType = 'water' | 'mountain';
 
+/** S2(信号の種別)における信号の役割。'block'=閉塞信号(既定・従来どおり)。 */
+export type SignalKind = 'block' | 'home' | 'departure';
+
+/**
+ * S3(保安装置、progress/signalling-plan.md)。未設定(undefined)は無防備を意味する。
+ * ATS-Sは警報のみ(確認扱いで通過できる=冒進を完全には防げない)、ATS-P/ATCは
+ * パターン照査で自動ブレーキ、CBTCは無線移動閉塞(S0と同じ挙動を投資で勝ち取る)。
+ */
+export type TrainProtection = 'ats-s' | 'ats-p' | 'atc' | 'cbtc';
+
 export interface CellData {
   type: CellType;
   connections?: number;
   stationId?: string;
   rotation?: number;
   signalDir?: number;
+  /**
+   * S2(信号の種別、progress/signalling-plan.md)での信号の役割。未設定(または'block')は
+   * 従来どおりの閉塞信号として扱う。s0/s1配下では常に無視され、全信号が閉塞境界として
+   * 振る舞う(sim/simulation.tsのblocksSegmentEntry)。
+   */
+  signalKind?: SignalKind;
   // ★追加: 水上の橋・山岳のトンネル(描画用のフラグ)。costOfPathの倍率とは別に、
   // applyRailPathがterrainを見て設定する。
   // 注意: この`bridge`は「水上を渡る線路の見た目・コスト倍率」を表すフラグであり、
@@ -96,6 +123,12 @@ export interface CellData {
    */
   gauge?: RailGauge;
   /**
+   * レール種別(kg/m、リアリスティックのみ)。省略時は「概念なし」または「50kgN扱い」の
+   * いずれか(gameRules.tsのeffectiveRailWeight参照。gaugeと同じ規約)。
+   * 高架(uppers)・地下は本セルと共有する単純化とする(gaugeと同様)。
+   */
+  railWeight?: RailWeight;
+  /**
    * 電化(PM2/PM3)。PM2時点ではboolean(ON/OFF、直流前提)のみだったが、PM3で
    * 交流を追加し'dc'|'ac'|booleanのunionへ拡張した。旧セーブ・'modes'段階のUIが
    * 書き込むlegacyの`true`は「直流」を意味する(gameRules.tsのelectrificationOfで
@@ -103,6 +136,12 @@ export interface CellData {
    * ときのみUIから書き込まれる。
    */
   electrified?: 'dc' | 'ac' | boolean;
+  /**
+   * S3(保安装置)。このセルに敷設された地上設備。信号セル(signalDir)と同じセルに
+   * 乗る想定(場内・出発などの信号機に保安装置が付帯する、という現実の対応関係)。
+   * 未設定=無防備。sim/simulation.tsのSPAD判定・CBTC移動閉塞判定が参照する。
+   */
+  protection?: TrainProtection;
 }
 
 export type PlatformDoorType = 'none' | 'standard' | 'fullscreen';
@@ -148,6 +187,14 @@ export interface TrainData {
   gauge?: RailGauge;
   /** 動力方式(PM2)。省略時は気動車扱い(どこでも走行可)。 */
   power?: TrainPower;
+  /** S3(保安装置)。車上装置。未設定=無防備。sim/gameRules.ts参照。 */
+  protection?: TrainProtection;
+  /**
+   * 軸重(t、リアリスティックのみ)。動力方式から購入時に導出する(physics.tsの
+   * AXLE_LOAD_T_BY_POWER)。省略時はrules.trackClasses=falseのワールド、または旧セーブ。
+   * 将来、機関車ごとに異なる軸重を持たせる余地を残すため動力方式と切り離してTrainDataに持たせる。
+   */
+  axleLoadT?: number;
 }
 
 /**

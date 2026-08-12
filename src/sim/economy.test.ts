@@ -39,7 +39,22 @@ import {
   CAR_COST,
   CAR_REFUND,
   calculateUpkeep,
+  costMultiplierForRailWeight,
+  RAIL_WEIGHT_COST_MULTIPLIER,
 } from './economy';
+
+describe('economy: 軌道(何キロレール)のコスト倍率', () => {
+  it('37kg=0.8倍・50kgN=1.0倍・60kg=1.3倍', () => {
+    expect(RAIL_WEIGHT_COST_MULTIPLIER).toEqual({ 37: 0.8, 50: 1.0, 60: 1.3 });
+    expect(costMultiplierForRailWeight(37)).toBe(0.8);
+    expect(costMultiplierForRailWeight(50)).toBe(1.0);
+    expect(costMultiplierForRailWeight(60)).toBe(1.3);
+  });
+
+  it('省略時は50kgN(1.0倍)扱い', () => {
+    expect(costMultiplierForRailWeight(undefined)).toBe(1.0);
+  });
+});
 
 describe('economy: 定数', () => {
   it('初期所持金・単価が仕様通り定義されている', () => {

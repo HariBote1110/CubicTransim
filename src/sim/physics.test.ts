@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeAcceleration, applyOverspeedDecay, TRAIN_SPECS,
   permittedSpeedKmh, brakingDistanceM, rampDecel, BRAKE_JERK_MS3,
+  railWeightSpeedCapKmh, RAIL_WEIGHT_SPEED_CAP_KMH, AXLE_LOAD_T_BY_POWER,
 } from './physics';
 
 describe('computeAcceleration', () => {
@@ -114,5 +115,26 @@ describe('permittedSpeedKmh / brakingDistanceM (ジャーク制限つき制動�
     expect(rampDecel(a - j * dt * 0.5, a, j, dt)).toBe(a);
     // 緩解方向も同じ上限
     expect(rampDecel(a, 0, j, dt)).toBeCloseTo(a - j * dt, 9);
+  });
+});
+
+describe('軌道(何キロレール): レール種別の速度上限・動力方式の軸重', () => {
+  it('37kg=70km/h・50kgN=110km/h・60kg=無制限', () => {
+    expect(RAIL_WEIGHT_SPEED_CAP_KMH[37]).toBe(70);
+    expect(RAIL_WEIGHT_SPEED_CAP_KMH[50]).toBe(110);
+    expect(RAIL_WEIGHT_SPEED_CAP_KMH[60]).toBe(Infinity);
+  });
+
+  it('railWeightSpeedCapKmhは省略時50kgN扱い', () => {
+    expect(railWeightSpeedCapKmh(undefined)).toBe(110);
+    expect(railWeightSpeedCapKmh(37)).toBe(70);
+    expect(railWeightSpeedCapKmh(60)).toBe(Infinity);
+  });
+
+  it('動力方式ごとの軸重: diesel=14t, electric/electric-ac=12t, electric-acdc=13t', () => {
+    expect(AXLE_LOAD_T_BY_POWER.diesel).toBe(14);
+    expect(AXLE_LOAD_T_BY_POWER.electric).toBe(12);
+    expect(AXLE_LOAD_T_BY_POWER['electric-ac']).toBe(12);
+    expect(AXLE_LOAD_T_BY_POWER['electric-acdc']).toBe(13);
   });
 });

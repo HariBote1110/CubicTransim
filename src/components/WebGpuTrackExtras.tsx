@@ -59,7 +59,7 @@ export const WebGpuTrackExtras: React.FC<Props> = ({ layerRef, railMap, field, t
       if (!data.signalDir) return [];
       const { x, z } = fromKey(key);
       const groundY = field.cellHeightAt(x, z) * OVERPASS_HEIGHT;
-      return buildSignalGeometries([x, groundY + 0.05, z], data.signalDir);
+      return buildSignalGeometries([x, groundY + 0.05, z], data.signalDir, data.signalKind ?? 'block');
     });
     const opaque = entries.filter(e => !e.translucent).map(e => ({ geometry: e.geometry, colour: e.colour }));
     return bakeGeometries(opaque);
@@ -70,7 +70,7 @@ export const WebGpuTrackExtras: React.FC<Props> = ({ layerRef, railMap, field, t
       if (!data.signalDir) return [];
       const { x, z } = fromKey(key);
       const groundY = field.cellHeightAt(x, z) * OVERPASS_HEIGHT;
-      return buildSignalGeometries([x, groundY + 0.05, z], data.signalDir);
+      return buildSignalGeometries([x, groundY + 0.05, z], data.signalDir, data.signalKind ?? 'block');
     });
     const translucent = entries.filter(e => e.translucent);
     const options = { alpha: Math.round(0.6 * 255) };

@@ -1,7 +1,7 @@
 // 経済システムの定数と建設コスト計算。
 // 純粋関数のみ。React/THREE には依存しない。
 import { toKey } from '../utils';
-import type { CellData, PlatformDoorType, TownData, TrainPower } from '../types';
+import type { CellData, PlatformDoorType, TownData, TrainPower, TrainProtection, RailWeight } from '../types';
 import type { TerrainField } from './terrainField';
 import { applyRailPathDetailed, resolveGroundRailPlan, MAX_BRIDGE_LENGTH, type GroundRailCellRole } from './construction';
 import { SLOPE_RAIL_COST_MULTIPLIER } from './slopes';
@@ -115,6 +115,20 @@ export function costOfElectrification(cellCount: number): number {
   return cellCount * RAIL_COST * ELECTRIFICATION_COST_MULTIPLIER;
 }
 
+// 軌道(何キロレール、リアリスティックのみ)。重いレールほど高価にする。
+// 37kg(軽量・安価)/50kgN(標準・基準単価)/60kg(重量・高価)。線路本体の単価(baseCost)に
+// 乗算する倍率とし、electrification(架線設備費、加算)とは独立に扱う。
+export const RAIL_WEIGHT_COST_MULTIPLIER: Record<RailWeight, number> = {
+  37: 0.8,
+  50: 1.0,
+  60: 1.3,
+};
+
+/** レール種別のコスト倍率。省略時は50kgN(倍率1.0)。 */
+export function costMultiplierForRailWeight(weight?: RailWeight): number {
+  return RAIL_WEIGHT_COST_MULTIPLIER[weight ?? 50];
+}
+
 // PM3: 交流専用車は直流車+20%、交直流両用車は+50%(値は「あったら楽しい」判断、
 // progress/play-modes-plan.md PM3。実物同様、交流は車両側が複雑・高価になる)。
 export const AC_TRAIN_PRICE_MULTIPLIER = 1.2;
@@ -186,6 +200,69 @@ export const ACCIDENT_DOOR_MODIFIER = {
 export const ACCIDENT_HALT_DURATION = 60; // シミュレーション秒
 export const ACCIDENT_PENALTY = 5_000;
 
+// S3(保安装置、progress/signalling-plan.md)。地上設備の1セルあたり追加コスト
+// (敷設した信号セルのみ課金。線路本体・信号本体のコストとは別建て)。
+export const PROTECTION_COST: Record<TrainProtection, number> = {
+  'ats-s': 10,
+  'ats-p': 30,
+  atc: 60,
+  cbtc: 100,
+};
+
+// S3: 車上装置の価格倍率。基準額(trainCostForの結果)に掛ける。AC/ACDCの倍率とは
+// 乗算で合成する(=交流用CBTC車なら AC_TRAIN_PRICE_MULTIPLIER × 1.5、のように積み上がる)。
+export const PROTECTION_TRAIN_PRICE_MULTIPLIER: Record<TrainProtection, number> = {
+  'ats-s': 1.05,
+  'ats-p': 1.15,
+  atc: 1.3,
+  cbtc: 1.5,
+};
+
+// S3: 信号冒進(SPAD)の発生確率。停止信号への進入待ちに入った瞬間、1回だけ判定する
+// (progress/signalling-plan.mdの「事故システムと接続する」設計どおり)。ATS-Sは
+// 警報のみ(確認扱いで通過できてしまう)ため完全には防げない。ATS-P/ATC/CBTCは
+// パターン照査・移動閉塞のため確実に止まる=0%とする。
+export const SPAD_CHANCE: Record<'none' | TrainProtection, number> = {
+  none: 0.02,
+  'ats-s': 0.005,
+  'ats-p': 0,
+  atc: 0,
+  cbtc: 0,
+};
+
+// S3: 保安装置の強さの順位(弱いほど小さい)。ATS-P/ATCはSPAD確率が同じ(0%)なので
+// 順位が同着でも判定結果には影響しない。「弱い方」判定(weakerProtection)専用。
+const PROTECTION_RANK: Record<'none' | TrainProtection, number> = {
+  none: 0,
+  'ats-s': 1,
+  'ats-p': 2,
+  atc: 2,
+  cbtc: 3,
+};
+
+/** 地上設備と車上装置のうち弱い方(=effective protection)を返す。未設定は'none'扱い。 */
+export function weakerProtection(
+  a: TrainProtection | undefined,
+  b: TrainProtection | undefined
+): 'none' | TrainProtection {
+  const an = a ?? 'none';
+  const bn = b ?? 'none';
+  return PROTECTION_RANK[an] <= PROTECTION_RANK[bn] ? an : bn;
+}
+
+// S3: 動力方式の価格(trainCostFor)に保安装置の倍率を乗算合成する。
+export function trainCostForProtected(power: TrainPower, protection?: TrainProtection): number {
+  const base = trainCostFor(power);
+  if (!protection) return base;
+  return Math.round(base * PROTECTION_TRAIN_PRICE_MULTIPLIER[protection]);
+}
+
+// S3: 保安装置を選んだ場合の地上設備の追加費用(建設セル数×単価)。
+export function costOfProtection(cellCount: number, protection?: TrainProtection): number {
+  if (!protection) return 0;
+  return cellCount * PROTECTION_COST[protection];
+}
+
 // 'bridge'は旧・固定長橋の後方互換用(applyBridgeが薄いラッパーとして残っているため)。
 // 高架専用ツール('elevated'/'elevated-station')は廃止し、'rail'/'station'がlevel引数
 // (buildPreview.ts参照)に従って高架を建設する形に統合した。
@@ -256,6 +333,14 @@ export function costOfGroundRailPlan(
     return sum + RAIL_COST * (t === 'water' ? BRIDGE_COST_MULTIPLIER : 1);
   }, 0);
 }
+
+// PM3フォローアップ: デッドセクション失速(progress/play-modes-plan.md)。
+// electrification='boundaries'/'feeding'のときのみ、境界通過中に速度が
+// ほぼ0まで落ちた電車は失速状態になる。STALL_RECOVERY_SECONDS秒待つと
+// 救援(牽引車の応援、という体の演出)が来て走行を再開できる代わりに
+// STALL_RESCUE_COSTを1回だけ課金する。値は「あったら楽しい」判断。
+export const STALL_RECOVERY_SECONDS = 15;
+export const STALL_RESCUE_COST = 3_000;
 
 // 事故発生確率 = 基本確率 × ドア種別による係数 × 混雑係数(待ち0で0.5倍、満杯で1.5倍)
 export function calculateAccidentChance(doorType: PlatformDoorType, waiting: number): number {
