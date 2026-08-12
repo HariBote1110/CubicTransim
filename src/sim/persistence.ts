@@ -29,8 +29,14 @@ import { fromKey, toKey, getVectorFromDir, getOppositeDir } from '../utils';
 // v16以前のセーブにrulesは無いが、その時点では概念自体が存在しなかったことが確定しているため、
 // DEFAULT_GAME_RULES(ライト相当)として読み込む。PM1では読み込む以外に誰もrulesを参照しないため、
 // 挙動は一切変わらない。
-export interface SaveDataV17 {
-  version: 17 | 16 | 15;
+// v18(M5, progress/review-play-modes-branch.md): normaliseUndergroundRampDirsは
+// 91f5945以前のセーブ(地下ランプのdirが逆を向いたまま保存されている)を直すための
+// 移行処理だが、版数で区切らずに毎回実行すると、修正後に書かれた正しいセーブに対しても
+// 隣接セルの接続状態からの構造推定(坑口・分岐など、高い側の隣接セルが接続ビットを
+// 持たない形状)でdirを誤って反転しうる。v18以降のセーブは常に正しい形式で書かれる
+// ことが保証されるため、deserialiseWorldは version < 18 のときだけ正規化を適用する。
+export interface SaveDataV18 {
+  version: 18 | 17 | 16 | 15;
   /** 地形の乱数シード(sim/terrainField.tsのcreateTerrainFieldへそのまま渡す)。 */
   seed: number;
   /** マップの生成半径(-halfExtent..halfExtentのセルを生成する)。 */
@@ -82,7 +88,7 @@ export interface LegacySaveData {
   version: number;
 }
 
-export type SaveData = SaveDataV17 | LegacySaveData;
+export type SaveData = SaveDataV18 | LegacySaveData;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -109,9 +115,9 @@ export function serialiseWorld(
   townDensity: TownDensity = 'normal',
   terrainProfile: TerrainProfile = 'normal',
   rules: GameRules = DEFAULT_GAME_RULES
-): SaveDataV17 {
+): SaveDataV18 {
   return {
-    version: 17,
+    version: 18,
     seed,
     halfExtent,
     cornerDiffs: serialiseCornerDiffs(cornerDiffs),
@@ -213,11 +219,11 @@ export function normaliseUndergroundRampDirs(railMap: Map<string, CellData>): Ma
  * 移行処理は書かずnullを返す(呼び出し側は壊れたセーブと同様に扱う)。
  */
 export function deserialiseWorld(input: SaveData): RestoredWorld | null {
-  if (input.version !== 17 && input.version !== 16 && input.version !== 15) return null;
+  if (input.version !== 18 && input.version !== 17 && input.version !== 16 && input.version !== 15) return null;
   // LegacySaveDataのversionは(旧バージョン識別のためだけに)number型なので、上のガードだけでは
   // TypeScriptの判別共用体narrowingが効かない(number側が15/16/17を許容範囲として残るため)。
   // ここまで来た時点でversionが15/16/17であることは実行時に確定しているので、明示的に絞り込む。
-  const data = input as SaveDataV17;
+  const data = input as SaveDataV18;
 
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -259,7 +265,9 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
       cell.electrified === true ? { ...cell, electrified: 'dc' as const } : cell,
     ])
   );
-  const railMap = normaliseUndergroundRampDirs(railMapRaw);
+  // M5: v18以降は既に正しい形式で書かれているため、正規化(構造推定によるヒューリスティック)
+  // を適用しない。version<18の旧セーブだけを対象にする。
+  const railMap = data.version < 18 ? normaliseUndergroundRampDirs(railMapRaw) : railMapRaw;
 
   return {
     railMap,

@@ -67,7 +67,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand,
       halfExtent, cornerDiffs
     );
-    expect(saveData.version).toBe(17);
+    expect(saveData.version).toBe(18);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -398,16 +398,37 @@ describe('persistence: normaliseUndergroundRampDirs (地下ランプdir逆転の
     expect(result.get('6,6')).toEqual(before6);
   });
 
-  it('deserialiseWorldはロード時にrailMapへこの正規化を適用する', () => {
+  // M5: 正規化は「version<18の旧セーブだけ」に適用する。serialiseWorldは常に最新版数
+  // (18)を書くため、旧形式(v17以前)のロードを確かめるにはversion:17の生データを
+  // 直接組み立てる必要がある。
+  it('version 17(<18)のセーブはロード時にrailMapへこの正規化を適用する', () => {
     const railMap = buildStructurallyCorrectMap();
+    railMap.set('0,0', { ...railMap.get('0,0')!, ramp: { dir: DIR.S, base: -1 } });
+    const saveData = { ...serialiseWorld(
+      railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      45, new Map()
+    ), version: 17 as const };
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.railMap.get('0,0')?.ramp?.dir).toBe(DIR.N);
+  });
+
+  // M5(progress/review-play-modes-branch.md): 正規化を版数で区切らないと、修正後に
+  // 書かれた正しいセーブに対しても構造推定の誤判定でdirを反転しうる。v18(=serialiseWorld
+  // が今書く版数)ではこのフィールドに触れないことを固定する。
+  it('version 18のセーブは正規化を適用しない(新形式は既に正しいので触らない)', () => {
+    const railMap = buildStructurallyCorrectMap();
+    // v17形式なら反転対象になる不正な状態を人工的に作り、v18では「触らない」ことを見る。
     railMap.set('0,0', { ...railMap.get('0,0')!, ramp: { dir: DIR.S, base: -1 } });
     const saveData = serialiseWorld(
       railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
       { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
       45, new Map()
     );
+    expect(saveData.version).toBe(18);
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
     expect(restored).not.toBeNull();
-    expect(restored!.railMap.get('0,0')?.ramp?.dir).toBe(DIR.N);
+    expect(restored!.railMap.get('0,0')?.ramp?.dir).toBe(DIR.S);
   });
 });
