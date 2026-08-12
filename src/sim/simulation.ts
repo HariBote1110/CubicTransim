@@ -226,6 +226,13 @@ export interface SimWorld {
    * 誰も参照しない(挙動変更ゼロ)。
    */
   feeding?: FeedingIndex;
+  /**
+   * PM4フォローアップ: 直近tickの、き電区間ごとの在線数(電車のみ)。stepWorldが
+   * 容量超過ペナルティ判定のために1パス目で数えたものをそのまま鏡写しする(セーブ対象外、
+   * デバッグ・オーバーレイ描画用の副産物)。rules.electrification!=='feeding'なら常に
+   * undefined。
+   */
+  feedingSectionCounts?: Map<string, number>;
 }
 
 /**
@@ -1175,6 +1182,7 @@ export function stepWorld(world: SimWorld, dt: number): SimEvent[] {
       feedingSectionCounts.set(key, (feedingSectionCounts.get(key) ?? 0) + 1);
     }
   }
+  world.feedingSectionCounts = feedingSectionCounts;
 
   for (const train of world.trains) {
     if (train.status !== 'running') {
