@@ -29,6 +29,7 @@ import {
   isElevatedConnectPlanBuildable,
   resolveGroundRailPlan,
   resolveGroundRailPlanDetailed,
+  resolveGroundRailPlanWithAutoFill,
   LAYERED_RAIL_MIN_PATH_CELLS,
   type GroundRailPlanFailureReason,
   type BuildFailureReason,
@@ -92,6 +93,13 @@ export interface BuildPreview {
    * GameUI.tsxのBuildFeedbackが理由別の文言を出すために使う。
    */
   failure?: BuildFailureReason;
+  /**
+   * P-terraform: 地上レール(mode:'rail', level 0)の建設に伴って自動整地(埋め立て)が
+   * 行われた場合の変化コーナー数。埋め立てが起きなければ0(または未指定)。
+   */
+  terraformCorners?: number;
+  /** terraformCornersに対応する追加コスト(costOfTerrainEdit)。costには既に加算済み。 */
+  terraformCost?: number;
 }
 
 export function evaluateBuild(
@@ -192,10 +200,21 @@ export function evaluateBuild(
   let tunnelCells = 0;
   let groundPlan: ReturnType<typeof resolveGroundRailPlan> = null;
   let groundSlopeIssue: GroundRailPlanFailureReason | undefined;
+  let terraformCorners = 0;
   if (mode === 'rail' && !elevated && !underground) {
-    const detailed = resolveGroundRailPlanDetailed(field, path);
-    groundPlan = detailed.plan;
-    groundSlopeIssue = detailed.reason;
+    // P-terraform: terrainEdit(base/editedField/blockers)が渡されていれば、実際の建設
+    // (applyRailPathDetailed)と同じくresolveGroundRailPlanWithAutoFillへ問い合わせ、
+    // other-slopeで詰まった区間の自動整地込みの内訳(トンネル/整地コーナー数)を出す。
+    if (terrainEdit) {
+      const detailed = resolveGroundRailPlanWithAutoFill(terrainEdit.base, terrainEdit.editedField, path, terrainEdit.blockers);
+      groundPlan = detailed.plan;
+      groundSlopeIssue = detailed.reason;
+      terraformCorners = detailed.terraformCorners;
+    } else {
+      const detailed = resolveGroundRailPlanDetailed(field, path);
+      groundPlan = detailed.plan;
+      groundSlopeIssue = detailed.reason;
+    }
     if (groundPlan) {
       for (let i = 0; i < path.length; i++) {
         const role = groundPlan[i];
@@ -272,9 +291,14 @@ export function evaluateBuild(
     : railWeightAdjustedCost;
   // PM3/S3: 保安装置を選んだrail建設には地上設備費を上乗せする
   // (useGameLogic.commitPathの3経路(地平・高架・地下)と同じ加算)。
-  const cost = mode === 'rail' && railOptions.protection
+  const protectionAdjustedCost = mode === 'rail' && railOptions.protection
     ? electrificationAdjustedCost + costOfProtection(path.length, railOptions.protection)
     : electrificationAdjustedCost;
+  // P-terraform: 自動整地(埋め立て)が起きた分だけ、地形編集と同じ単価を線路本体コストに上乗せする。
+  const terraformCost = costOfTerrainEdit(terraformCorners);
+  const cost = mode === 'rail' && !elevated && !underground && terraformCorners > 0
+    ? protectionAdjustedCost + terraformCost
+    : protectionAdjustedCost;
 
   // 実際に適用してみて、変化が生じるか(=建設が成立するか)を確かめる。
   const state: ConstructionState = { railMap, stations };
@@ -323,7 +347,10 @@ export function evaluateBuild(
       } else if (underground) {
         result = applyUndergroundPath(state, path, field, undergroundLevel, undefined, railOptions);
       } else {
-        const detailed = applyRailPathDetailed(state, path, field, townTiles, railOptions);
+        const detailed = applyRailPathDetailed(
+          state, path, field, townTiles, railOptions,
+          terrainEdit ? { base: terrainEdit.base, blockers: terrainEdit.blockers } : undefined
+        );
         result = detailed;
         overpassCells = detailed.overpassCells.size;
         applyFailure = detailed.failure;
@@ -359,5 +386,7 @@ export function evaluateBuild(
   return {
     mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells,
     rampCells: elevatedRampCount || groundRampCount, level, slopeIssue, failure,
+    terraformCorners: terraformCorners > 0 ? terraformCorners : undefined,
+    terraformCost: terraformCorners > 0 ? terraformCost : undefined,
   };
 }

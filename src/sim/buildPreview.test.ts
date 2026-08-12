@@ -114,6 +114,37 @@ describe('evaluateBuild', () => {
     expect(p.slopeIssue).toBe('other-slope');
   });
 
+  it('P-terraform: terrainEditを渡すとother-slopeの経路が自動整地込みで建設可能になり、terraformコストが上乗せされる', () => {
+    const { railMap, stations } = emptyMaps();
+    const overrides: Record<string, number> = { '1,0': 1 }; // cell(0,0)のne隅だけ1段低い
+    const base: TerrainField = {
+      cornerHeightAt: (x, z) => overrides[`${x},${z}`] ?? 2,
+      cellCornerHeights: (x, z) => {
+        const h = (cx: number, cz: number) => overrides[`${cx},${cz}`] ?? 2;
+        return [h(x, z), h(x + 1, z), h(x, z + 1), h(x + 1, z + 1)];
+      },
+      cellHeightAt: (x, z) => Math.min(...(base.cellCornerHeights(x, z))),
+      terrainTypeAt: () => 'grass',
+    };
+    const editedField = createEditedTerrainField(base);
+    const blockers: EditBlockers = { isCellBlocked: () => false };
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+
+    const withoutFill = evaluateBuild('rail', path, railMap, stations, editedField, 100_000);
+    expect(withoutFill.reason).toBe('no-effect');
+    expect(withoutFill.slopeIssue).toBe('other-slope');
+
+    const p = evaluateBuild(
+      'rail', path, railMap, stations, editedField, 100_000, 0, new Map(),
+      { base, editedField, blockers }
+    );
+    expect(p.reason).toBe('ok');
+    expect(p.terraformCorners).toBe(1);
+    expect(p.terraformCost).toBeGreaterThan(0);
+    // 整地コスト込みのcostは、線路本体だけの通常コスト(RAIL_COST*2セル=200)に上乗せされる。
+    expect(p.cost).toBe(200 + p.terraformCost!);
+  });
+
   it('P7d: トンネル出口の標高が食い違う経路はslopeIssue:tunnel-exit-mismatch', () => {
     const { railMap, stations } = emptyMaps();
     const field: TerrainField = {
