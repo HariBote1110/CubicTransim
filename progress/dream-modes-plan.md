@@ -458,9 +458,44 @@ follow-upのまま。
 
 - デッドセクション予告のブラウザ実機確認(アドバンスドモードで交直流境界を
   実際に敷設しての確認)は未実施。単体テストでロジックは固定済み。
-- 次信号の現示は「予約が信号の先まで届いているか」の二値判定で、実際の閉塞方式
-  (s1固定閉塞/s2〜s3の段階的現示など、将来実装される信号灯の多段階現示)には
-  対応していない。将来s1〜s3を実装する際は、このHUD述語をそのまま使えるか
-  再検討が要る。
 - HUDのレイアウト(左下固定・幅220px)はブラウザの1回の実機確認のみで判断した
   ざっくりしたもの。デザイン調整の余地がある。
+
+## マージ後の再整合(`feature/stopping-and-diorama-visuals`統合、0.5.0-Alpha-14b)
+
+D1〜D3は`feature/perspective-camera`をmainlineの0.5.0-Alpha-8f相当から分岐して
+作業していたため、同時期にmainlineで進んでいたPM1-PM4完結・S1-S3信号方式・
+軌道(レール種別)・レビュー対応(H1-H4/M1-M7/L1-L6)を知らずに実装していた。
+`git merge origin/feature/stopping-and-diorama-visuals`で取り込み、以下を再整合した。
+
+- **コンフリクト**: package.json(バージョン、14bを採用)・progress/dream-modes-plan.md
+  (add/add、双方の文書を`---`区切りで連結)・progress/INDEX.md(双方のエントリを
+  結合)・src/App.tsx/src/components/GameUI.tsx(S2/S3のprops
+  `signalKind`/`purchaseProtection`とD2/D3のprops`ridingTrainId`/`ridingMode`が
+  同じ箇所に追加されていただけの純粋な加算コンフリクト、両方保持)。
+  src/sim/simulation.ts・GameScene.tsx・useGameLogic.tsは自動マージ成功(無介入)。
+  列車インスペクタの乗車ボタンと車庫の保安装置選択UIはそもそも別セクションで、
+  コンフリクトすら起きなかった。
+- **cabHud.tsの再整合**(TDD、Red→Green):
+  - `speedLimitKmh`: `rules.trackClasses`が有効なら現在セルのレール種別に応じた
+    上限(physics.tsの`railWeightSpeedCapKmh`、テーブルはそのまま参照・複製せず)、
+    無効なら`MAX_SPEED_KMH`にフォールバック。
+  - `nextSignalAspect`: `reservedEndIndex`が信号のindexまで届いていれば従来どおり
+    green即決。届いていない場合、s0はredのまま。s1/s2/s3では
+    `reservedEndIndex`の遅れ(列車がまだ制動距離圏内に入っておらず予約延長を
+    試みていないだけの状態)に引きずられて誤ってredと報告しないよう、信号セル
+    そのものを起点に`findSafeSegmentEnd`/`entrySignalKindFor`/`blocksSegmentEntry`
+    (いずれもsimulation.tsから可視性のみの変更でexport)を直接呼び、
+    「信号の先のブロックが今まさに予約可能か」をその場で評価するよう変更した。
+    (旧メモの「将来s1〜s3を実装する際は再検討が要る」というfollow-upは、この
+    変更で解消した。)
+  - `deadSectionAhead`は無改造(`isDeadSectionBoundary`はS1-S3以前から存在)。
+- **検証**: `npm run test`は1081件→**1175件**(mainline分の増分+cabHudの新規テスト
+  4件)、`npm run build`・`cargo test`(20件、Rust側は無変更)・
+  `npm run build:renderer`いずれもgreen。ブラウザ実機で(a)クォータービュー起動の
+  健全性、(b)デバッグシナリオ「単線行き違い」で運転台に乗車しHUDの信号現示が
+  対向列車の解放で赤→緑に切り替わることを再確認、(c)リアリスティック+保安装置
+  (S3)モードで実際に車庫から電車(保安装置ATS-P)を購入・出庫し、車庫の
+  保安装置選択UIと列車インスペクタの乗車(客席)/運転台ボタンの両方が問題なく
+  機能すること、運転台HUDの制限速度がtrackClasses有効時にMAX_SPEED_KMH(100)
+  ではなくレール種別の上限(110、既定50kgNレール)を表示することを確認した。
