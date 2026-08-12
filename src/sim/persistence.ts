@@ -9,6 +9,8 @@ import type { TownDensity } from './towns';
 import type { TerrainProfile } from './terrainField';
 import type { GameRules } from './gameRules';
 import { DEFAULT_GAME_RULES } from './gameRules';
+import type { Level } from '../types';
+import { fromKey, toKey, getVectorFromDir, getOppositeDir } from '../utils';
 
 // v15: 地形の持ち方を「全セル実体化(terrain/heights Map)」から「決定的な純関数
 // (worldSeed)+疎な編集差分(cornerDiffs)」へ転換した(progress/16k-map-architecture.md
@@ -165,6 +167,46 @@ export interface RestoredWorld {
 }
 
 /**
+ * 91f5945の修正前に作られたセーブは、地下(base<0)のランプのramp.dirが
+ * 高さの低い側(地下側)を向いたまま保存されている(修正後は高い側=地表側を向く)。
+ * セル単体では新旧どちらの形式か判別できないため、隣接セルの接続状態から
+ * 「dir/oppositeのどちらが実際に高い側(base+1レベル)へ連続しているか」を
+ * 構造的に判定し、oppositeだけが一致する場合(=dirが逆を向いている)にだけ
+ * dirを反転する。両方/どちらも一致しない曖昧なケースは判別不能なので変更しない。
+ * base>=0(高架側)のランプ・rampを持たないセルは対象外。
+ */
+export function normaliseUndergroundRampDirs(railMap: Map<string, CellData>): Map<string, CellData> {
+  const result = new Map(railMap);
+  for (const [key, cell] of railMap) {
+    const ramp = cell.ramp;
+    if (!ramp) continue;
+    const base = ramp.base ?? 0;
+    if (base >= 0) continue;
+    const higherLevel = base + 1;
+    const { x, z } = fromKey(key);
+
+    const continuesAtHigherLevel = (candidateDir: number): boolean => {
+      const v = getVectorFromDir(candidateDir);
+      const neighbour = railMap.get(toKey(x + v.x, z + v.z));
+      if (!neighbour) return false;
+      const backBit = getOppositeDir(candidateDir);
+      if (higherLevel === 0) {
+        return ((neighbour.connections ?? 0) & backBit) !== 0;
+      }
+      return (((neighbour.uppers?.[higherLevel as Level]?.connections) ?? 0) & backBit) !== 0;
+    };
+
+    const opp = getOppositeDir(ramp.dir);
+    const dirMatches = continuesAtHigherLevel(ramp.dir);
+    const oppMatches = continuesAtHigherLevel(opp);
+    if (!dirMatches && oppMatches) {
+      result.set(key, { ...cell, ramp: { ...ramp, dir: opp } });
+    }
+  }
+  return result;
+}
+
+/**
  * セーブデータの復元。v17と(rules欠落=ライト相当扱いの)v16・(terrainProfile欠落=normal扱いの)v15を受け付ける。
  * v14以前はterrain/heights Mapを全セル実体化していた旧形式であり、v15(worldSeed+halfExtent+cornerDiffs)とは
  * 互換性が無い。リリース前でセーブ互換は破壊してよい(ユーザー明言)ため、
@@ -211,12 +253,13 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
 
   // PM3: legacyのelectrified:true(v17前期〜PM2)は「直流」を意味するため、
   // 'dc'へ正規化して読み込む。'ac'/'dc'の文字列はそのまま、undefinedもそのまま。
-  const railMap = new Map(
+  const railMapRaw = new Map(
     data.railMap.map(([key, cell]) => [
       key,
       cell.electrified === true ? { ...cell, electrified: 'dc' as const } : cell,
     ])
   );
+  const railMap = normaliseUndergroundRampDirs(railMapRaw);
 
   return {
     railMap,
