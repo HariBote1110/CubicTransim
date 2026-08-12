@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower } from '../types';
+import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower, SignalKind } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND, SUBSTATION_COST,
@@ -45,6 +45,13 @@ const BASIC_GAUGES: { value: RailGauge; label: string }[] = [
 const EXTENDED_GAUGES: { value: RailGauge; label: string }[] = [
   { value: 762, label: '特殊狭軌' },
   { value: 1372, label: '馬車軌間' },
+];
+
+// S2: 信号種別の選択肢(progress/signalling-plan.md)。
+const SIGNAL_KIND_OPTIONS: { value: SignalKind; label: string; hint: string }[] = [
+  { value: 'block', label: '閉塞', hint: 'ブロック全体の占有で他列車の進入を止める(既定)' },
+  { value: 'home', label: '場内', hint: '同じブロック内でも、自分の経路セルが他列車と重ならなければ進入できる(駅構内向け)' },
+  { value: 'departure', label: '出発', hint: '停車中はこの先を予約しない。発車後は先のブロックが空くまで待つ' },
 ];
 
 interface GameUIProps {
@@ -113,6 +120,9 @@ interface GameUIProps {
   // PM2: 車庫(depot)ツールで列車を購入するときの動力方式選択。
   purchasePower: TrainPower;
   setPurchasePower: (power: TrainPower) => void;
+  // S2: 信号(signal)ツール専用の種別選択。rules.signalling==='s2'のときだけUIに出す。
+  signalKind: SignalKind;
+  setSignalKind: (kind: SignalKind) => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -173,7 +183,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   groups, onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup,
   onClearGroupSchedule, onDeleteGroup,
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
-  purchasePower, setPurchasePower,
+  purchasePower, setPurchasePower, signalKind, setSignalKind,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
@@ -497,6 +507,27 @@ export const GameUI: React.FC<GameUIProps> = ({
                   }
                 >
                   {lv === 0 ? '地平' : lv > 0 ? `Lv${lv}` : `地下${-lv}`}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* S2: 信号種別の選択(信号ツール、rules.signalling==='s2'のときのみ)。 */}
+        {buildMode === 'signal' && gameRules.signalling === 's2' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>信号種別</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {SIGNAL_KIND_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setSignalKind(opt.value)}
+                  style={button({ active: signalKind === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
                 </button>
               ))}
             </div>

@@ -363,6 +363,43 @@ describe('applySignal（特性テスト）', () => {
     const cell = result.railMap.get(toKey(0, 0))!;
     expect(cell.signalDir).toBe(DIR.E);
   });
+
+  it('S2: kindを指定して新規設置すると、その種別で置かれる(未指定はblock扱い)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const withoutKind = applySignal(state, [{ x: 0, z: 0 }]);
+    expect(withoutKind.railMap.get(toKey(0, 0))!.signalKind).toBeUndefined();
+
+    let state2 = emptyState();
+    state2 = applyRailPath(state2, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const withHome = applySignal(state2, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    expect(withHome.railMap.get(toKey(0, 0))!.signalKind).toBe('home');
+  });
+
+  it('S2: 既存信号に異なるkindを指定すると、向きは変えずkindだけ更新する', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    state = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    const before = state.railMap.get(toKey(0, 0))!;
+    expect(before.signalDir).toBe(DIR.E);
+    expect(before.signalKind).toBe('home');
+
+    const changed = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'departure');
+    const after = changed.railMap.get(toKey(0, 0))!;
+    expect(after.signalDir).toBe(DIR.E); // 向きは変わらない
+    expect(after.signalKind).toBe('departure');
+  });
+
+  it('S2: 既存信号へ同じkindを指定して呼ぶと、従来どおり向きを巡回する', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 0, z: -1 }]);
+    state = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    const before = state.railMap.get(toKey(0, 0))!.signalDir;
+    const cycled = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    expect(cycled.railMap.get(toKey(0, 0))!.signalDir).not.toBe(before);
+    expect(cycled.railMap.get(toKey(0, 0))!.signalKind).toBe('home');
+  });
 });
 
 describe('地形による建設制約（水域・傾斜） P7bで更新', () => {

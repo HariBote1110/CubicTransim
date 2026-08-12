@@ -1,5 +1,5 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TownData, Level, RailGauge } from '../types';
+import type { CellData, StationData, TownData, Level, RailGauge, SignalKind } from '../types';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
@@ -875,7 +875,8 @@ export function applySignal(
   state: ConstructionState,
   path: Pos[],
   field: TerrainField = EMPTY_FIELD,
-  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  kind?: SignalKind
 ): ConstructionState {
   const pos = path[0];
   const key = toKey(pos.x, pos.z);
@@ -898,7 +899,10 @@ export function applySignal(
         break;
       }
     }
-    railMap.set(key, { ...cell, signalDir: firstDir });
+    railMap.set(key, { ...cell, signalDir: firstDir, signalKind: kind });
+  } else if (kind && kind !== (cell.signalKind ?? 'block')) {
+    // S2: 種別選択ツールで既存信号の種別だけを変更する(向きは維持、巡回しない)。
+    railMap.set(key, { ...cell, signalKind: kind });
   } else {
     const currentDir = cell.signalDir;
     let nextDir = currentDir;
@@ -911,7 +915,7 @@ export function applySignal(
         break;
       }
     }
-    railMap.set(key, { ...cell, signalDir: nextDir });
+    railMap.set(key, { ...cell, signalDir: nextDir, signalKind: cell.signalKind });
   }
 
   return { railMap, stations: state.stations };

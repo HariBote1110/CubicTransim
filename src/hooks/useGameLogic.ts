@@ -247,7 +247,11 @@ export const useGameLogic = () => {
     // ため、既存の建設挙動は変わらない。
     railOptions: RailBuildOptions = {},
     // PM2 Stage B: 改軌(buildMode==='regauge')専用の目的軌間。
-    regaugeTargetGauge?: RailGauge
+    regaugeTargetGauge?: RailGauge,
+    // S2: 信号(buildMode==='signal')専用の種別選択。rules.signalling!=='s2'のUIからは
+    // 常に'block'のまま渡ってくるため、applySignal側で新規設置時に'block'相当(undefined)
+    // へ丸め込む必要はなく、そのまま渡してよい(s2以外はblocksSegmentEntryが種別を見ない)。
+    signalKind?: CellData['signalKind']
   ) => {
     if (path.length === 0) return;
 
@@ -283,7 +287,7 @@ export const useGameLogic = () => {
       case 'signal':
         cost = costOfPath('signal', path.length);
         if (money < cost) return;
-        result = applySignal(state, path, field, townTileIndex);
+        result = applySignal(state, path, field, townTileIndex, signalKind);
         break;
       case 'station': {
         if (level === 0) {

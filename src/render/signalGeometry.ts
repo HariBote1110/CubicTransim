@@ -4,6 +4,7 @@
 import * as THREE from './geom';
 import { PALETTE } from './palette';
 import { SIGNAL_COLOUR } from '../types';
+import type { SignalKind } from '../types';
 import { getVectorFromDir } from '../utils';
 import type { ShadedGeometryEntry } from './stationGeometry';
 
@@ -11,17 +12,27 @@ const MAST_COLOUR = '#333';
 const HEAD_COLOUR = '#222';
 const LIGHT_COLOUR = '#00ff00';
 
+// S2(信号の種別)での灯火色の作り分け。既定(kind未指定/'block')は従来どおりの緑。
+// 場内は青、出発は黄。挙動には影響しない見た目だけの区別(小さな変更に留める)。
+const LIGHT_COLOUR_BY_KIND: Record<SignalKind, string> = {
+  block: LIGHT_COLOUR,
+  home: '#3399ff',
+  departure: '#ffcc00',
+};
+
 /** 地面マーカーの頂点色アルファ(three.js側 opacity 0.6 相当)。 */
 export const SIGNAL_MARKER_ALPHA = Math.round(0.6 * 255);
 
-/** 信号機1つぶんを、ワールド座標(position)+許可方向(dir)で配置して生成する。 */
+/** 信号機1つぶんを、ワールド座標(position)+許可方向(dir)+種別(kind)で配置して生成する。 */
 export function buildSignalGeometries(
   position: readonly [number, number, number],
   dir: number,
+  kind: SignalKind = 'block',
 ): ShadedGeometryEntry[] {
   const v = getVectorFromDir(dir);
   const rotation = Math.atan2(v.x, v.z);
   const [x, y, z] = position;
+  const lightColour = LIGHT_COLOUR_BY_KIND[kind] ?? LIGHT_COLOUR;
   const entries: ShadedGeometryEntry[] = [];
   const push = (geometry: THREE.BufferGeometry, colour: string, translucent = false) => {
     geometry.rotateY(rotation);
@@ -40,7 +51,7 @@ export function buildSignalGeometries(
   const light = new THREE.CylinderGeometry(0.035, 0.035, 0.02);
   light.rotateX(Math.PI / 2);
   light.translate(0.3, 0.42, 0.07);
-  push(light, LIGHT_COLOUR);
+  push(light, lightColour);
 
   const shaft = new THREE.BoxGeometry(0.08, 0.02, 0.5);
   shaft.translate(0, 0.03, -0.05);
