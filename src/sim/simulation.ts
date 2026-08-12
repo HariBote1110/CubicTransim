@@ -411,8 +411,10 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime) 
   }
 };
 
-// 現在位置(rt.grid + progress)からroute[idx]までの弧長距離(m)
-const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
+// 現在位置(rt.grid + progress)からroute[idx]までの弧長距離(m)。
+// D3: 運転台HUD(render/cabHud.ts)が「次の停止点までの距離」を求めるのにも使う
+// (stepTrainの速度制御と同じ式を再利用し、重複実装しないため export した)。
+export const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
   const route = rt.route;
   const first = route[0];
   const currentTileGeoDist = Math.sqrt((first.x - rt.grid.x) ** 2 + (first.z - rt.grid.z) ** 2);
@@ -435,7 +437,8 @@ const segmentLengthInto = (rt: TrainRuntime, idx: number): number => {
 
 // 現在位置から実際の停止点(経路末尾セルの手前 stopProgress の位置)までの距離(m)。
 // stopProgress=1(セル中心停車)なら distanceAlongRouteTo(末尾) と一致する。
-const distanceToStopPoint = (rt: TrainRuntime): number => {
+// D3: distanceAlongRouteTo と同じ理由で export した(render/cabHud.ts が再利用する)。
+export const distanceToStopPoint = (rt: TrainRuntime): number => {
   const last = rt.route.length - 1;
   const f = rt.stopProgress ?? 1;
   const base = distanceAlongRouteTo(rt, last);
