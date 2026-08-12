@@ -25,6 +25,7 @@ import { groundRailCentreHeight } from './slopes';
 import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
 import type { IntervalSamples } from './groups';
 import { tryReserve, releaseCell, findSafeSegmentEnd, findDepartureSegmentEnd, reservationKey } from './reservation';
+import { blocksOccupiedByOthers, type BlockIndex } from './blocks';
 import {
   computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
   permittedSpeedKmh, rampDecel, brakingDistanceM, BRAKE_JERK_MS3,
@@ -233,6 +234,13 @@ export interface SimWorld {
    * undefined。
    */
   feedingSectionCounts?: Map<string, number>;
+  /**
+   * S1(固定閉塞、progress/signalling-plan.md)のブロック索引(sim/blocks.tsの
+   * buildBlockIndex)。useGameLogic.tsがrailMap変化時にのみ再計算して鏡写しする
+   * (feedingIndexと同じ同期パターン)。セーブ対象外。rules.signalling!=='s1'のときは
+   * 誰も参照しない(挙動変更ゼロ)。
+   */
+  blocks?: BlockIndex;
 }
 
 /**
@@ -379,7 +387,22 @@ const buildBlockedSet = (world: SimWorld, selfId: string): Set<string> => {
 // - reservedEndIndexが-1(未取得)なら、次のsafe waiting pointまでの区間取得を試みる
 // - 取得済みで、予約末端までの残り距離が制動距離+マージン以内に近づいたら、
 //   さらに次のsafe waiting pointまでの延長を試みる(失敗時は現状維持=末端で待機)
-const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime) => {
+// S1(固定閉塞)のとき、segmentが他列車の占有する未占有でないブロックへ踏み込むなら
+// trueを返す(=このセグメントは予約してはいけない)。rules.signalling!=='s1'、または
+// ブロック索引が無ければ常にfalse(=S0と同じ、制約なし)。
+const blocksSegmentEntry = (world: SimWorld, rules: GameRules, trainId: string, segment: Grid[]): boolean => {
+  if (rules.signalling !== 's1' || !world.blocks) return false;
+  return blocksOccupiedByOthers(world.reservations, world.blocks, segment, trainId);
+};
+
+// PBS予約の取得・延長。route[0..reservedEndIndex]が予約済み区間になる。
+// - reservedEndIndexが-1(未取得)なら、次のsafe waiting pointまでの区間取得を試みる
+// - 取得済みで、予約末端までの残り距離が制動距離+マージン以内に近づいたら、
+//   さらに次のsafe waiting pointまでの延長を試みる(失敗時は現状維持=末端で待機)
+// S1(固定閉塞)では、セグメントが跨ぐブロックが他列車に占有されている場合、
+// tryReserve自体は成功しうる(セル単位の排他はS0と同じ)としても、ここで先に弾いて
+// 予約を取らせない。これにより「信号(=ブロック境界)の手前で待つ」挙動になる。
+const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime, rules: GameRules) => {
   if (rt.route.length === 0) return;
   if (!world.reservations) world.reservations = new Map();
 
@@ -391,7 +414,12 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime) 
     const idx = inDepot
       ? findDepartureSegmentEnd(world.railMap, rt.route)
       : findSafeSegmentEnd(world.railMap, rt.route, 0);
-    if (tryReserve(world.reservations, train.id, rt.route.slice(0, idx + 1))) {
+    const segment = rt.route.slice(0, idx + 1);
+    if (blocksSegmentEntry(world, rules, train.id, segment)) {
+      rt.debugStatus = 'Waiting for block to clear...';
+      return;
+    }
+    if (tryReserve(world.reservations, train.id, segment)) {
       rt.reservedEndIndex = idx;
     } else if (inDepot) {
       rt.debugStatus = 'Waiting for departure path...';
@@ -413,6 +441,7 @@ const ensureReservation = (world: SimWorld, train: TrainData, rt: TrainRuntime) 
 
   const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, rt.reservedEndIndex + 1);
   const segment = rt.route.slice(rt.reservedEndIndex + 1, nextIdx + 1);
+  if (blocksSegmentEntry(world, rules, train.id, segment)) return; // ブロックが空くまで現在の末端で待機
   if (tryReserve(world.reservations, train.id, segment)) {
     rt.reservedEndIndex = nextIdx;
   }
@@ -810,7 +839,8 @@ const stepTrain = (
 
   // PBS予約の取得・延長を試みる(取得済み区間の末端が制動距離+マージン以内に
   // 近づいたら、次のsafe waiting pointまでの延長を試みる)。
-  ensureReservation(world, train, rt);
+  // PM2: rules省略時(旧セーブ・デバッグシナリオ)はDEFAULT_GAME_RULES(ライト相当)に短絡する。
+  ensureReservation(world, train, rt, world.rules ?? DEFAULT_GAME_RULES);
 
   if (rt.reservedEndIndex < 0) {
     // 次のsafe waiting pointまでの区間がまだ1つも予約できていない
