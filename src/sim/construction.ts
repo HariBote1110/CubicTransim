@@ -138,22 +138,24 @@ const isFlatGroundLevelZero = (field: TerrainField, x: number, z: number): boole
   isBuildableGround(field, x, z) && field.cellHeightAt(x, z) === 0;
 
 // --- ヘルパー ---
+// 車庫が向きうる4方向。優先順位はN,E,S,Wの順(updateDepotRotation/
+// connectDepotToFacingNeighbourの両方でこの順序を共有する)。
+const DEPOT_FACING_NEIGHBOURS = [
+  { dx: 0, dz: -1, rot: 0, dir: DIR.N },
+  { dx: 1, dz: 0, rot: -Math.PI / 2, dir: DIR.E },
+  { dx: 0, dz: 1, rot: Math.PI, dir: DIR.S },
+  { dx: -1, dz: 0, rot: Math.PI / 2, dir: DIR.W },
+];
+
 const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
   const key = toKey(x, z);
   const cell = map.get(key);
   if (!cell || cell.type !== 'depot') return;
 
-  const neighbours = [
-    { dx: 0, dz: -1, rot: 0 },
-    { dx: 1, dz: 0, rot: -Math.PI / 2 },
-    { dx: 0, dz: 1, rot: Math.PI },
-    { dx: -1, dz: 0, rot: Math.PI / 2 },
-  ];
-
   let bestRot = cell.rotation || 0;
   let found = false;
 
-  for (const n of neighbours) {
+  for (const n of DEPOT_FACING_NEIGHBOURS) {
     const targetKey = toKey(x + n.dx, z + n.dz);
     const targetCell = map.get(targetKey);
     if (targetCell && (targetCell.type === 'rail' || targetCell.type === 'station')) {
@@ -164,6 +166,38 @@ const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) =
   }
   if (found) {
     map.set(key, { ...cell, rotation: bestRot });
+  }
+};
+
+// 車庫を既存の線路/駅に隣接して設置したとき、pathfinding.ts(resolveEntryLayer)の
+// reciprocal-bitモデルが要求する「隣接セル側から車庫へ戻る接続ビット」を追加する。
+// 車庫は単一の出入口(updateDepotRotationが選ぶ、向いている1方向)しか持たない前提
+// なので、その1方向の隣接セルだけを接続する(4方向すべてを繋ぐと車庫がダイヤモンド
+// クロッシングのように振る舞ってしまい、単一出入口という前提が崩れる)。
+// 隣接が坂(incline)などallowedRailConnectionsで許されない向きだったり、既存の
+// ramp軸と交差する向きだったりする場合は、その接続だけ黙ってスキップする
+// (車庫自体の設置を失敗させない)。
+const connectDepotToFacingNeighbour = (
+  railMap: Map<string, CellData>,
+  x: number,
+  z: number,
+  field: TerrainField
+) => {
+  for (const n of DEPOT_FACING_NEIGHBOURS) {
+    const nx = x + n.dx;
+    const nz = z + n.dz;
+    const targetKey = toKey(nx, nz);
+    const targetCell = railMap.get(targetKey);
+    if (!targetCell || (targetCell.type !== 'rail' && targetCell.type !== 'station')) continue;
+
+    const backDir = getOppositeDir(n.dir);
+    if (targetCell.type === 'rail') {
+      const allowed = allowedRailConnections(slopeOf(field.cellCornerHeights(nx, nz)));
+      if ((allowed & backDir) === 0) break;
+      if (conflictsWithExistingRamp(targetCell, backDir)) break;
+    }
+    railMap.set(targetKey, { ...targetCell, connections: (targetCell.connections ?? 0) | backDir });
+    break;
   }
 };
 
@@ -994,6 +1028,7 @@ export function applyDepotDetailed(
   const railMap = new Map(state.railMap);
   railMap.set(key, { type: 'depot', connections: DIR.N | DIR.E | DIR.S | DIR.W, rotation: 0 });
   updateDepotRotation(railMap, pos.x, pos.z);
+  connectDepotToFacingNeighbour(railMap, pos.x, pos.z, field);
 
   return { railMap, stations: state.stations };
 }

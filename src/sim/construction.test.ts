@@ -448,6 +448,20 @@ describe('applyDepot（特性テスト・バグ修正）', () => {
 
     expect(result.length).toBeGreaterThan(0);
   });
+
+  // 逆方向(既存の車庫に向かって線路を敷く)は、applyRailPathDetailedの
+  // addConnectionToCellが経路の両端セルへ常にビットをORするため、以前から
+  // 自動接続していたはずの挙動を確認する回帰テスト。
+  it('既存の車庫へ向かって線路を敷設すると、車庫側にも線路側にも接続ビットが立つ', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 5, z: 0 });
+    state = applyRailPath(state, [{ x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }]);
+
+    const railCell = state.railMap.get(toKey(4, 0))!;
+    expect(railCell.connections! & DIR.E).toBe(DIR.E);
+    const depotCell = state.railMap.get(toKey(5, 0))!;
+    expect(depotCell.connections! & DIR.W).toBe(DIR.W);
+  });
 });
 
 describe('applySubstation（PM4・特性テスト）', () => {
