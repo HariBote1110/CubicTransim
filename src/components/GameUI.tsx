@@ -113,6 +113,10 @@ interface GameUIProps {
   // PM2: 車庫(depot)ツールで列車を購入するときの動力方式選択。
   purchasePower: TrainPower;
   setPurchasePower: (power: TrainPower) => void;
+  // D2: 乗客視点(乗車モード)。ridingTrainId=null なら乗車していない。
+  ridingTrainId: string | null;
+  onBoardTrain: (trainId: string) => void;
+  onAlightTrain: () => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -174,6 +178,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   onClearGroupSchedule, onDeleteGroup,
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
   purchasePower, setPurchasePower,
+  ridingTrainId, onBoardTrain, onAlightTrain,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
@@ -203,6 +208,13 @@ export const GameUI: React.FC<GameUIProps> = ({
     const id = setInterval(() => {
       setPassengers(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.passengers ?? 0) : 0);
       setStuckSeconds(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.waitTimer ?? 0) : 0);
+      // D2: 乗車中の列車がワールドから消えた(到着後の回収・車庫入りなど)場合、この低頻度
+      // ポーリングで気づいて降車する。フレームごとの自動降車はWebGpuRenderDriver側(D2実装
+      // メモ参照)がriderState.trainIdを直接クリアするが、React側のUI表示(ridingTrainId)は
+      // ここで追随させる必要がある。
+      if (ridingTrainId && !world.current?.runtimes.get(ridingTrainId)) {
+        onAlightTrain();
+      }
       setWaitingByStation(new Map(world.current?.waiting ?? []));
       const samples = world.current?.groupIntervals;
       setActualIntervals(new Map(
@@ -232,7 +244,7 @@ export const GameUI: React.FC<GameUIProps> = ({
       );
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [selectedTrainId, selectedStationId, world, stations, groups]);
+  }, [selectedTrainId, selectedStationId, world, stations, groups, ridingTrainId, onAlightTrain]);
 
   // キーボードショートカット: 1〜6で建設モード、Spaceで一時停止、Escで選択解除。
   // 線路(rail)・駅(station)ツール選択中はArrowUp/Downで建設レベルを0(地平)〜
@@ -247,7 +259,10 @@ export const GameUI: React.FC<GameUIProps> = ({
         && (t.mode !== 'substation' || gameRules.electrification === 'feeding'));
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
-      if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); return; }
+      if (e.key === 'Escape') {
+        if (ridingTrainId) { onAlightTrain(); return; }
+        setBuildMode('none'); setOpenPanel('none'); return;
+      }
       if ((buildMode === 'rail' || buildMode === 'station')
         && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         e.preventDefault();
@@ -259,7 +274,7 @@ export const GameUI: React.FC<GameUIProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge, gameRules.electrification]);
+  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge, gameRules.electrification, ridingTrainId, onAlightTrain]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
@@ -327,6 +342,9 @@ export const GameUI: React.FC<GameUIProps> = ({
               groups={groups}
               onCreateGroup={onCreateGroup}
               onAssignGroup={onAssignGroup}
+              isRiding={ridingTrainId === selectedTrain.id}
+              onBoard={() => onBoardTrain(selectedTrain.id)}
+              onAlight={onAlightTrain}
             />
           ) : selectedStation ? (
             <StationInspector
@@ -720,10 +738,14 @@ const TrainInspector: React.FC<{
   groups: TrainGroupData[];
   onCreateGroup: (seedTrainId?: string) => string;
   onAssignGroup: (trainId: string, groupId: string | null) => void;
+  /** D2: この列車に乗車中か。 */
+  isRiding: boolean;
+  onBoard: () => void;
+  onAlight: () => void;
 }> = ({
   train, stations, passengers, stuckSeconds, money, isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar, scheduleClipboard, onCopySchedule, onPasteSchedule,
-  groups, onCreateGroup, onAssignGroup,
+  groups, onCreateGroup, onAssignGroup, isRiding, onBoard, onAlight,
 }) => {
   const stored = train.status === 'stored';
   const group = findGroup(groups, train.groupId);
@@ -744,6 +766,17 @@ const TrainInspector: React.FC<{
           {stored ? '車庫' : '運行中'}
         </div>
       </div>
+
+      {/* D2: 乗客視点(乗車モード)。車庫在籍中の列車は乗る意味が無いので出さない。 */}
+      {!stored && (
+        <button
+          onClick={isRiding ? onAlight : onBoard}
+          style={{ ...button({ active: isRiding, compact: true }), width: '100%', marginTop: 9 }}
+          title={isRiding ? '降車してクォータービューへ戻る(Escキーでも可)' : 'この列車に乗って車窓を眺める'}
+        >
+          {isRiding ? '降車' : '乗車'}
+        </button>
+      )}
 
       {!stored && stuckSeconds >= STUCK_WARNING_SECONDS && (
         <div style={{

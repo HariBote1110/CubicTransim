@@ -27,6 +27,8 @@ import {
 } from '../render/webgpuLayer';
 import { buildPerspectiveTerrainMesh, PERSPECTIVE_TERRAIN_CHUNK_ID } from '../render/perspectiveTerrain';
 import { MESH_LAYER_CLASS } from '../render/webgpuLayer';
+import { computeRiderCamera, riderState } from '../render/passengerView';
+import type { SimWorld } from '../sim/simulation';
 
 /**
  * D1: 透視投影(乗客視点スパイク)のデバッグ状態。モジュール単位のミュータブルフラグ
@@ -165,30 +167,38 @@ interface RenderDriverProps {
    * cameraRef/viewportRef から毎回その場で組み立てる。
    */
   stateRef?: React.MutableRefObject<WebGpuCameraState | null>;
-  /** D1: 透視パスの地形メッシュをオンデマンドに焼くための地形フィールド。 */
+  /** D1/D2: 透視パスの地形メッシュをオンデマンドに焼くための地形フィールド。 */
   field?: TerrainField;
+  /** D2: 乗車中のライダーカメラを計算するための SimWorld(App.tsx の worldRef)。 */
+  world?: React.RefObject<SimWorld>;
 }
 
 /**
  * 共有 rAF ループの render フェーズで、カメラ状態を wgpu へ送って1フレーム描かせる。
  * 画面には何も出さない(描画そのものは WebGpuTerrainLayer のキャンバスが受け持つ)。
  *
- * D1: `perspectiveDebugState.active` が true の間は、クォータービューのカメラ供給
- * (setCamera)を止めて透視カメラ(setCameraPerspective)を毎フレーム供給する
- * (「クォータービューのカメラ供給を止める」というタスク要求どおりの、モジュール単位の
- * ミュータブルフラグによる最小限の切り替え)。
+ * D1/D2: 透視パスが有効な間(`riderState.trainId` での乗車、または
+ * `perspectiveDebugState.active` でのデバッグ乗車)は、クォータービューのカメラ供給
+ * (setCamera)を止めて透視カメラ(setCameraPerspective)を毎フレーム供給する。
+ * 乗車(riderState)がデバッグより優先。両方ともモジュール単位のミュータブルフラグ
+ * (Reactの再レンダリングを経由しない)。
  */
 export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
-  layerRef, cameraRef, viewportRef, dim = 1, stateRef, field,
+  layerRef, cameraRef, viewportRef, dim = 1, stateRef, field, world,
 }) => {
   const dimRef = useRef(dim);
   dimRef.current = dim;
   const fieldRef = useRef(field);
   fieldRef.current = field;
+  const worldRef = useRef(world);
+  worldRef.current = world;
+  // 直前フレームの透視ソース('ride:<id>' / 'debug' / null)。切り替わった瞬間だけ
+  // 地形メッシュを強制的に焼き直す/外す(距離しきい値を待たずに済ませる)。
+  const prevActiveKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     (window as any).__perspectiveDebug = {
-      /** 乗客視点デバッグモードへ入る(real 乗車UIはD2以降のスコープ)。 */
+      /** 乗客視点デバッグモードへ入る(実際の乗車UIはD2、window.__perspectiveDebugとは独立)。 */
       enter(
         eye: [number, number, number],
         look: [number, number, number],
@@ -198,15 +208,9 @@ export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
         perspectiveDebugState.eye = eye;
         perspectiveDebugState.look = look;
         perspectiveDebugState.fovYRadians = fovYRadians;
-        perspectiveDebugState.lastTerrainCentre = null; // 強制的に地形を焼き直す
       },
       exit() {
         perspectiveDebugState.active = false;
-        perspectiveDebugState.lastTerrainCentre = null;
-        // 透視パス専用の地形メッシュチャンクを外す。残したままだとクォータービューの
-        // Surfaceクラス描画(iso投影)にもそのまま乗ってしまい、地形の上に別の地形が
-        // 二重に(等角投影のずれた位置で)描かれてしまう。
-        layerRef.current?.removeMeshChunk(PERSPECTIVE_TERRAIN_CHUNK_ID);
       },
     };
     return () => {
@@ -220,18 +224,29 @@ export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
     if (!controller) return;
     controller.setDim(dimRef.current);
 
-    if (perspectiveDebugState.active) {
+    // D2: 乗車中の列車が消えた(到着後の回収・車庫入りなど)場合は自動的に降車する。
+    const ridingId = riderState.trainId;
+    const worldNow = worldRef.current?.current;
+    const riderCam = ridingId && worldNow ? computeRiderCamera(worldNow, ridingId) : null;
+    if (ridingId && !riderCam) riderState.trainId = null;
+
+    const active = riderCam
+      ? { eye: riderCam.eye, look: riderCam.look, fovYRadians: perspectiveDebugState.fovYRadians }
+      : perspectiveDebugState.active
+        ? { eye: perspectiveDebugState.eye, look: perspectiveDebugState.look, fovYRadians: perspectiveDebugState.fovYRadians }
+        : null;
+    const activeKey = riderCam ? `ride:${ridingId}` : perspectiveDebugState.active ? 'debug' : null;
+    const modeChanged = activeKey !== prevActiveKeyRef.current;
+    prevActiveKeyRef.current = activeKey;
+
+    if (active) {
       controller.setCameraMode('perspective');
-      controller.setCameraPerspective(
-        perspectiveDebugState.eye,
-        perspectiveDebugState.look,
-        perspectiveDebugState.fovYRadians,
-      );
+      controller.setCameraPerspective(active.eye, active.look, active.fovYRadians);
       const field = fieldRef.current;
       if (field) {
-        const [ex, , ez] = perspectiveDebugState.eye;
+        const [ex, , ez] = active.eye;
         const last = perspectiveDebugState.lastTerrainCentre;
-        const needsRebake = !last
+        const needsRebake = modeChanged || !last
           || Math.hypot(ex - last[0], ez - last[1]) >= PERSPECTIVE_TERRAIN_REBAKE_THRESHOLD;
         if (needsRebake) {
           const mesh = buildPerspectiveTerrainMesh(field, ex, ez, PERSPECTIVE_TERRAIN_RADIUS_CELLS);
@@ -248,6 +263,14 @@ export const WebGpuRenderDriver: React.FC<RenderDriverProps> = ({
       if (stats) (window as any).__webgpuStats = stats;
       (window as any).__dbgFrames = frameLoop.frameCount;
       return;
+    }
+
+    if (modeChanged) {
+      // 直前まで透視パス(デバッグ or 乗車)だった → 地形メッシュチャンクを外す。残したままだと
+      // クォータービューのSurfaceクラス描画(iso投影)にもそのまま乗ってしまい、地形の上に
+      // 別の地形が二重に(等角投影のずれた位置で)描かれてしまう(D1で発見・修正した不具合と同じ)。
+      controller.removeMeshChunk(PERSPECTIVE_TERRAIN_CHUNK_ID);
+      perspectiveDebugState.lastTerrainCentre = null;
     }
 
     controller.setCameraMode('quarter');
