@@ -6,6 +6,7 @@ import type { SimWorld, TrainRuntime } from '../sim/simulation';
 import { railWeightSpeedCapKmh } from '../sim/physics';
 import { PLAY_MODE_PRESETS } from '../sim/gameRules';
 import { buildBlockIndex } from '../sim/blocks';
+import { createManualRideTally } from '../sim/manualDrive';
 import { computeCabHud } from './cabHud';
 
 // D3: 運転台HUDの純関数テスト。simulation.tsのstepTrainが内部で使っている
@@ -207,6 +208,32 @@ describe('computeCabHud (D3 運転台HUD)', () => {
     // 直接評価する新実装ではgreenになるはず。
     world.runtimes.set('t1', makeRuntime({ grid: { x: 0, z: 0 }, route, reservedEndIndex: -1 }));
     expect(computeCabHud(world, 't1')!.nextSignalAspect).toBe('green');
+  });
+
+  it('D4: world.manualDriveがこの列車を指していれば、ノッチ・難易度・タリーをそのまま返す', () => {
+    const railMap = buildRailMap([{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const world = makeWorld(railMap, new Map(), []);
+    world.runtimes.set('t1', makeRuntime({}));
+    world.manualDrive = { trainId: 't1', notch: 'P3', difficulty: 'hard', tally: createManualRideTally() };
+    const hud = computeCabHud(world, 't1')!;
+    expect(hud.manual).toEqual({ notch: 'P3', difficulty: 'hard', tally: createManualRideTally() });
+  });
+
+  it('D4: world.manualDriveが別の列車を指していればmanualはundefined(自動運転扱い)', () => {
+    const railMap = buildRailMap([{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const world = makeWorld(railMap, new Map(), []);
+    world.runtimes.set('t1', makeRuntime({}));
+    world.manualDrive = { trainId: 'other', notch: 'P3', difficulty: 'hard', tally: createManualRideTally() };
+    expect(computeCabHud(world, 't1')!.manual).toBeUndefined();
+  });
+
+  it('D4: 直近の停車採点(TrainRuntime.manualLastStopScore)をそのまま転記する', () => {
+    const railMap = buildRailMap([{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const world = makeWorld(railMap, new Map(), []);
+    world.runtimes.set('t1', makeRuntime({
+      manualLastStopScore: { distanceM: 3.2, withinTolerance: true, toleranceM: 5 },
+    }));
+    expect(computeCabHud(world, 't1')!.lastStopScore).toEqual({ distanceM: 3.2, withinTolerance: true, toleranceM: 5 });
   });
 
   it('実際にstepWorldで走らせても例外なくHUDが計算できる(統合スモーク)', () => {

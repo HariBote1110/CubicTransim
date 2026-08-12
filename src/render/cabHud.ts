@@ -17,6 +17,7 @@ import {
 import type { SimWorld, TrainRuntime } from '../sim/simulation';
 import { railWeightSpeedCapKmh } from '../sim/physics';
 import { findSafeSegmentEnd } from '../sim/reservation';
+import type { ManualNotch, ManualDifficulty, ManualRideTally } from '../sim/manualDrive';
 
 /** 次信号の先読み範囲(セル)。信号が無い区間で毎フレーム経路全体を舐めないための上限。 */
 export const NEXT_SIGNAL_LOOKAHEAD_CELLS = 20;
@@ -37,6 +38,10 @@ export interface CabHudInfo {
   nextSignalAspect: 'green' | 'red' | null;
   /** 先読み範囲内に交直(電化方式)デッドセクション境界があるか。 */
   deadSectionAhead: boolean;
+  /** D4: この列車がworld.manualDriveの対象なら、ノッチ・難易度・乗車タリーをそのまま。 */
+  manual?: { notch: ManualNotch; difficulty: ManualDifficulty; tally: ManualRideTally };
+  /** D4: 直近の停車採点(TrainRuntime.manualLastStopScoreの転記)。未採点ならundefined。 */
+  lastStopScore?: { distanceM: number; withinTolerance: boolean; toleranceM: number };
 }
 
 const cellAt = (railMap: Map<string, CellData>, p: { x: number; z: number }): CellData | undefined =>
@@ -54,12 +59,18 @@ export function computeCabHud(world: SimWorld, trainId: string): CabHudInfo | nu
     ? railWeightSpeedCapKmh(cellAt(world.railMap, rt.grid)?.railWeight)
     : MAX_SPEED_KMH;
 
+  const manual = world.manualDrive && world.manualDrive.trainId === trainId
+    ? { notch: world.manualDrive.notch, difficulty: world.manualDrive.difficulty, tally: world.manualDrive.tally }
+    : undefined;
+
   return {
     speedKmh: rt.speedKmh,
     speedLimitKmh,
     nextStopDistanceM,
     nextSignalAspect,
     deadSectionAhead,
+    manual,
+    lastStopScore: rt.manualLastStopScore,
   };
 }
 
