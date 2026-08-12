@@ -19,6 +19,8 @@ import type { WebGpuLayerRef } from './WebGpuTerrainLayer';
 import { buildFeedingOverlayCells, type FeedingOverlayCell, type FeedingOverlayColourKind } from '../render/feedingOverlay';
 import type { SimWorld } from '../sim/simulation';
 import type { CellData } from '../types';
+import type { TerrainField } from '../sim/terrainField';
+import { OVERPASS_HEIGHT } from '../sim/trackPath';
 
 const FEEDING_OVERLAY_CHUNK_ID = 0x9200_0001;
 
@@ -27,12 +29,17 @@ const PLATE_ALPHA = Math.round(0.45 * 255);
 /** 変電所セルは目立たせるため、より不透明に。 */
 const SUBSTATION_ALPHA = Math.round(0.7 * 255);
 
-/** 地表すれすれの薄い板(タスク仕様の0.05高)。 */
+/**
+ * 薄い板(タスク仕様の0.05高)。render/trackGeometry.tsのRAIL_TOP(0.13、バラスト+レール
+ * 頭頂の高さ)より下に置くとバラスト(BALLAST_WIDTH=0.5の不透明ボックス)に埋もれて
+ * 見えなくなる(実機検証で発覚)。レール頭頂より上へ最小限持ち上げて可視化する。
+ */
 const PLATE_HEIGHT = 0.05;
-const PLATE_Y = PLATE_HEIGHT / 2 + 0.01;
-/** 変電所の板は少し背を高くして強調する。 */
+const PLATE_CLEARANCE_ABOVE_RAIL = 0.13;
+const PLATE_Y = PLATE_CLEARANCE_ABOVE_RAIL + PLATE_HEIGHT / 2 + 0.01;
+/** 変電所の板は少し背を高くして強調する(同じくレール頭頂より上から積む)。 */
 const SUBSTATION_HEIGHT = 0.5;
-const SUBSTATION_Y = SUBSTATION_HEIGHT / 2 + 0.01;
+const SUBSTATION_Y = PLATE_CLEARANCE_ABOVE_RAIL + SUBSTATION_HEIGHT / 2 + 0.01;
 
 const COLOUR_BY_KIND: Record<FeedingOverlayColourKind, string> = {
   powered: '#34d399',
@@ -46,17 +53,24 @@ interface Props {
   railMap: Map<string, CellData>;
   /** feeding索引・直近tickの在線数はworldRefから毎フレーム読む(WebGpuTrainsと同じ生鮮参照パターン)。 */
   world: React.RefObject<SimWorld>;
+  /**
+   * 地形field(GameScene props と同じ)。板のyへ`cellHeightAt(x,z)*OVERPASS_HEIGHT`ぶんの
+   * 標高オフセットを足すのに使う(render/townGeometry.ts等と同じ変換式)。これが無いと
+   * 平坦でない地平(丘・自動トンネル部)で板が地形の中に埋もれて見えなくなる(実機検証で発覚)。
+   */
+  field: TerrainField;
   /** 変電所ツールが選択中のときだけ表示する(タスク仕様どおり、専用トグルは無い)。 */
   active: boolean;
 }
 
-const buildOverlayChunk = (cells: readonly FeedingOverlayCell[]): BakedMeshChunk | null => {
+const buildOverlayChunk = (cells: readonly FeedingOverlayCell[], field: TerrainField): BakedMeshChunk | null => {
   if (cells.length === 0) return null;
   const geometries: THREE.BoxGeometry[] = [];
   const entries = cells.map(cell => {
     const isSubstation = cell.colourKind === 'substation';
     const height = isSubstation ? SUBSTATION_HEIGHT : PLATE_HEIGHT;
-    const y = isSubstation ? SUBSTATION_Y : PLATE_Y;
+    const baseY = isSubstation ? SUBSTATION_Y : PLATE_Y;
+    const y = baseY + field.cellHeightAt(cell.x, cell.z) * OVERPASS_HEIGHT;
     const geometry = new THREE.BoxGeometry(0.92, height, 0.92);
     geometry.translate(cell.x, y, cell.z);
     geometries.push(geometry);
@@ -83,8 +97,9 @@ const railSignatureOf = (railMap: Map<string, CellData>): string => {
   return sig;
 };
 
-export const WebGpuFeedingOverlay: React.FC<Props> = ({ layerRef, railMap, world, active }) => {
+export const WebGpuFeedingOverlay: React.FC<Props> = ({ layerRef, railMap, world, field, active }) => {
   const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
+  const lastFieldRef = useRef<TerrainField | null>(null);
   const lastSigRef = useRef<string>('');
 
   useFrameLoop(FRAME_ORDER.feed, () => {
@@ -95,13 +110,13 @@ export const WebGpuFeedingOverlay: React.FC<Props> = ({ layerRef, railMap, world
     const feedingSectionCounts = world.current?.feedingSectionCounts;
 
     const controllerChanged = lastControllerRef.current !== controller;
-    if (controllerChanged) {
-      lastControllerRef.current = controller;
-      lastSigRef.current = '';
-    }
+    const fieldChanged = lastFieldRef.current !== field;
+    if (controllerChanged) lastControllerRef.current = controller;
+    if (fieldChanged) lastFieldRef.current = field;
+    if (controllerChanged || fieldChanged) lastSigRef.current = '';
 
     const sig = active && feeding ? `${railSignatureOf(railMap)}#${feedingSectionCounts?.size ?? -1}` : '';
-    if (!controllerChanged && sig === lastSigRef.current) return;
+    if (!controllerChanged && !fieldChanged && sig === lastSigRef.current) return;
     lastSigRef.current = sig;
 
     if (!active || !feeding) {
@@ -110,7 +125,7 @@ export const WebGpuFeedingOverlay: React.FC<Props> = ({ layerRef, railMap, world
     }
 
     const cells = buildFeedingOverlayCells(railMap, feeding, feedingSectionCounts);
-    const chunk = buildOverlayChunk(cells);
+    const chunk = buildOverlayChunk(cells, field);
     if (chunk) controller.uploadMeshChunk(FEEDING_OVERLAY_CHUNK_ID, MESH_LAYER_CLASS.translucent, chunk);
     else controller.removeMeshChunk(FEEDING_OVERLAY_CHUNK_ID);
   });

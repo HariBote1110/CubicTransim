@@ -575,6 +575,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
         layerRef={webGpuLayer}
         railMap={railMap}
         world={world}
+        field={field}
         active={buildMode === 'substation'}
       />
 
