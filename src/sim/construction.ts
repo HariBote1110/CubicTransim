@@ -15,6 +15,8 @@ import {
   slopeOf,
   undergroundEdgeContinuous,
 } from './slopes';
+import type { CornerDiffs, EditBlockers, EditedTerrainField } from './terrainOverlay';
+import { applyCornerFill, isEditedTerrainField } from './terrainOverlay';
 
 // 旧・固定長の橋(applyBridge)が使っていた上限値。自由な高架線(applyElevatedPath)には
 // 上下限を設けないため実質未使用だが、economy.ts側の後方互換のため定数だけ残す。
@@ -461,6 +463,100 @@ export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundR
   return resolveGroundRailPlanDetailed(field, path).plan;
 }
 
+/**
+ * P-terraform: 経路上のotherスロープ(単一/対角コーナーだけ低いいびつな形)のセルを、
+ * 「そのセルの最も低いコーナーを、そのセルの最も高いコーナーまで埋め立てる(fill、
+ * 常にraise方向)」ことでflatへ均す。OpenTTD式の自動整地の下地。
+ *
+ * セル単位で独立に処理する(経路の前のセルの埋め立てが後のセルのコーナーへ影響しうる
+ * ため、editedFieldを都度差し替えながら順番に適用する)。ブロック(既存のrail/町タイル/
+ * 水域/範囲外に触れる)で埋め立てできないセルはそのまま(other)にしておき、後続の
+ * resolveGroundRailPlanDetailedの判定に委ねる。
+ */
+function tryAutoFillOtherSlopes(
+  base: TerrainField,
+  editedField: EditedTerrainField,
+  path: Pos[],
+  blockers: EditBlockers
+): { field: EditedTerrainField; changedCorners: number } {
+  let current = editedField;
+  let changedCorners = 0;
+
+  for (const p of path) {
+    const corners = current.cellCornerHeights(p.x, p.z);
+    if (slopeOf(corners).kind !== 'other') continue;
+
+    const maxHeight = Math.max(...corners);
+    const cellCorners: Pos[] = [
+      { x: p.x, z: p.z },
+      { x: p.x + 1, z: p.z },
+      { x: p.x, z: p.z + 1 },
+      { x: p.x + 1, z: p.z + 1 },
+    ];
+    const targets = cellCorners
+      .filter(c => current.cornerHeightAt(c.x, c.z) < maxHeight)
+      .map(c => ({ ...c, height: maxHeight }));
+    if (targets.length === 0) continue;
+
+    const result = applyCornerFill(base, current, targets, blockers);
+    if (result.field === current) continue; // ブロックされていた: このセルはotherのまま残す
+    current = result.field;
+    changedCorners += result.changedCorners;
+  }
+
+  return { field: current, changedCorners };
+}
+
+/** resolveGroundRailPlanWithAutoFillの戻り値。field/terraformCornersは埋め立てが実際に
+ * 起きたときだけ意味を持つ(起きなければ引数のeditedFieldそのまま・terraformCorners=0)。 */
+export interface GroundRailPlanWithAutoFillResult {
+  plan: GroundRailCellRole[] | null;
+  reason?: GroundRailPlanFailureReason;
+  field: EditedTerrainField;
+  terraformCorners: number;
+}
+
+/**
+ * P-terraform: resolveGroundRailPlanDetailedのラッパー。素の地形で建設不可
+ * (reason:'other-slope')になった経路だけ、tryAutoFillOtherSlopesで低いコーナーを
+ * 埋め立ててから再判定する。
+ *
+ * 埋め立てを試みるのは reason:'other-slope' のときだけ — 'direction-blocked'/
+ * 'edge-discontinuous'/'tunnel-exit-mismatch' はコーナーの高低差の問題ではないため
+ * 埋め立てても解決しない。また、地形が十分高くトンネルで貫ける区間は
+ * resolveGroundRailPlanDetailed が最初からtunnel役割つきのplanを返す(reasonがつかない)
+ * ため、そもそもこの埋め立て経路には入らない(=トンネルで通せる山を掘り崩して
+ * 埋め立てにすり替えることはない)。
+ *
+ * 埋め立て後に再判定してもなお建設不可なら、埋め立てを破棄して元の理由をそのまま返す
+ * (部分的な地形改変を残さない no-op 規約)。
+ */
+export function resolveGroundRailPlanWithAutoFill(
+  base: TerrainField,
+  editedField: EditedTerrainField,
+  path: Pos[],
+  blockers: EditBlockers
+): GroundRailPlanWithAutoFillResult {
+  const original = resolveGroundRailPlanDetailed(editedField, path);
+  if (original.plan) return { plan: original.plan, field: editedField, terraformCorners: 0 };
+  if (original.reason !== 'other-slope') {
+    return { plan: null, reason: original.reason, field: editedField, terraformCorners: 0 };
+  }
+
+  const filled = tryAutoFillOtherSlopes(base, editedField, path, blockers);
+  if (filled.changedCorners === 0) {
+    return { plan: null, reason: 'other-slope', field: editedField, terraformCorners: 0 };
+  }
+
+  const retried = resolveGroundRailPlanDetailed(filled.field, path);
+  if (!retried.plan) {
+    // 埋め立てても解決しなかった: 地形改変を破棄し、元の理由のまま失敗させる。
+    return { plan: null, reason: original.reason, field: editedField, terraformCorners: 0 };
+  }
+
+  return { plan: retried.plan, field: filled.field, terraformCorners: filled.changedCorners };
+}
+
 // resolveGroundRailPlanの結果から、そのセルに付けるCellDataの地形フラグ(bridge/tunnel)を返す。
 const cellFlagsForRole = (field: TerrainField, role: GroundRailCellRole, x: number, z: number): Pick<CellData, 'bridge' | 'tunnel'> => {
   if (role.kind === 'tunnel') return { bridge: undefined, tunnel: { height: role.height } };
@@ -530,6 +626,22 @@ export interface RailPathApplyResult extends ConstructionState {
   overpassCells: Set<string>;
   /** no-op(railMapが元の参照のまま)になったときだけ設定される具体的な理由。 */
   failure?: BuildFailureReason;
+  /**
+   * P-terraform: 自動整地(埋め立て)が実際に行われたときだけ設定される。呼び出し側
+   * (useGameLogic.ts)はこのdiffsをcornerDiffsへ反映して永続化する(手動のraise/lowerと
+   * 同じ経路)。埋め立てが起きなければundefined。
+   */
+  terrainEdit?: { diffs: CornerDiffs; changedCorners: number };
+}
+
+/**
+ * P-terraform: applyRailPathDetailedが自動整地(埋め立て)を試みるために必要な引数。
+ * fieldが実際のEditedTerrainField(diffsを持つ)でなければ(=デバッグ手組みfieldなど)
+ * 埋め立ては行わない(既存挙動のまま)。
+ */
+export interface RailTerrainFillOptions {
+  base: TerrainField;
+  blockers: EditBlockers;
 }
 
 // applyRailPathの詳細版。overpassCellsは自動高架の廃止により常に空集合。
@@ -547,7 +659,11 @@ export function applyRailPathDetailed(
   // 家タイルを通る経路はno-op(道路タイルは踏切として通過できる)。
   townTiles: TownTileIndex = EMPTY_TOWN_TILES,
   // PM2: 軌間/電化。省略時は既存挙動と完全に同一(gaugeElectrifiedPatchが空になる)。
-  railOptions: RailBuildOptions = {}
+  railOptions: RailBuildOptions = {},
+  // P-terraform: 指定された場合のみ、地上レール(下のresolveGroundRailPlanDetailed経路)が
+  // other-slopeで建設不可になったセルの自動整地(埋め立て)を試みる。省略時は既存挙動と
+  // 完全に同一。
+  terrainFillOptions?: RailTerrainFillOptions
 ): RailPathApplyResult {
   // 家タイルの上には地平の線路を敷けない(高架のみ通過可)。経路のどこか1セルでも
   // 家に抵触すれば建設全体をno-opにする(部分建設で町を壊さないため)。
@@ -576,7 +692,28 @@ export function applyRailPathDetailed(
   // P7b: 勾配追従(flat/incline)で建設できないセルを、必要なら定高さのtunnelとして
   // 建設する計画を立てる。runの高さがterrain以下だったり坑口の標高が繋がらない場合は
   // nullになり、経路全体をno-opにする(部分建設で破綻した見た目を残さないため)。
-  const { plan, reason: groundPlanFailure } = resolveGroundRailPlanDetailed(field, path);
+  //
+  // P-terraform: terrainFillOptionsが渡され、かつfieldが実際のEditedTerrainFieldなら、
+  // other-slopeで詰まったセルの自動整地(埋め立て)を試みるresolveGroundRailPlanWithAutoFill
+  // を経由する。それ以外(デバッグ手組みfieldなど)は従来どおりresolveGroundRailPlanDetailed
+  // を直接呼ぶ(挙動を一切変えない)。
+  let effectiveField: TerrainField = field;
+  let plan: GroundRailCellRole[] | null;
+  let groundPlanFailure: GroundRailPlanFailureReason | undefined;
+  let terrainEdit: RailPathApplyResult['terrainEdit'];
+  if (terrainFillOptions && isEditedTerrainField(field)) {
+    const autoFilled = resolveGroundRailPlanWithAutoFill(terrainFillOptions.base, field, path, terrainFillOptions.blockers);
+    plan = autoFilled.plan;
+    groundPlanFailure = autoFilled.reason;
+    effectiveField = autoFilled.field;
+    if (autoFilled.plan && autoFilled.terraformCorners > 0) {
+      terrainEdit = { diffs: autoFilled.field.diffs, changedCorners: autoFilled.terraformCorners };
+    }
+  } else {
+    const detailed = resolveGroundRailPlanDetailed(field, path);
+    plan = detailed.plan;
+    groundPlanFailure = detailed.reason;
+  }
   if (!plan) {
     return { ...state, overpassCells: new Set(), failure: groundPlanFailure };
   }
@@ -594,10 +731,10 @@ export function applyRailPathDetailed(
     const dir = getDirFromVector(dx, dz);
     const oppDir = getOppositeDir(dir);
 
-    addConnectionToCell(railMap, currKey, dir, cellFlagsForRole(field, plan[i], curr.x, curr.z), railOptions);
+    addConnectionToCell(railMap, currKey, dir, cellFlagsForRole(effectiveField, plan[i], curr.x, curr.z), railOptions);
     if (railMap.get(currKey)?.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
 
-    addConnectionToCell(railMap, nextKey, oppDir, cellFlagsForRole(field, plan[i + 1], next.x, next.z), railOptions);
+    addConnectionToCell(railMap, nextKey, oppDir, cellFlagsForRole(effectiveField, plan[i + 1], next.x, next.z), railOptions);
     if (railMap.get(nextKey)?.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
 
     const checkDepotNeighbours = (px: number, pz: number) => {
@@ -608,7 +745,7 @@ export function applyRailPathDetailed(
     checkDepotNeighbours(next.x, next.z);
   }
 
-  return { railMap, stations: state.stations, overpassCells };
+  return { railMap, stations: state.stations, overpassCells, terrainEdit };
 }
 
 export function applyRailPath(
@@ -616,9 +753,10 @@ export function applyRailPath(
   path: Pos[],
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES,
-  railOptions: RailBuildOptions = {}
+  railOptions: RailBuildOptions = {},
+  terrainFillOptions?: RailTerrainFillOptions
 ): ConstructionState {
-  return applyRailPathDetailed(state, path, field, townTiles, railOptions);
+  return applyRailPathDetailed(state, path, field, townTiles, railOptions, terrainFillOptions);
 }
 
 /**

@@ -29,6 +29,7 @@ import {
   pickElevatedConnection,
   planHasStraightRamps,
   resolveGroundRailPlanDetailed,
+  resolveGroundRailPlanWithAutoFill,
   type ConstructionState,
   type ElevatedEndPlan,
   type ElevatedPathPlan,
@@ -38,6 +39,8 @@ import {
 import { fieldFromMaps } from './terrainField';
 import type { TerrainField } from './terrainField';
 import { computeElevation } from './testSupport/elevationFixture';
+import { createEditedTerrainField, buildEditBlockers } from './terrainOverlay';
+import type { EditBlockers } from './terrainOverlay';
 import { calculateRoute } from './pathfinding';
 
 const emptyState = (): ConstructionState => ({
@@ -795,6 +798,121 @@ describe('P7d: resolveGroundRailPlanDetailed（建設不可の理由、UIフィ�
     const result = resolveGroundRailPlanDetailed(field, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
     expect(result.plan).toBeNull();
     expect(result.reason).toBe('direction-blocked');
+  });
+});
+
+describe('P-terraform: resolveGroundRailPlanWithAutoFill/applyRailPathDetailedの自動整地(埋め立て)', () => {
+  // コーナー座標を直接指定できる、実際のcornerHeightAt/cellCornerHeightsが整合した最小field。
+  // fallback=2で全面フラット、overridesだけ個別のコーナーを下げる(単一コーナーのくぼみ =
+  // ユーザーが「三角形の斜面」と呼ぶotherスロープを再現する)。
+  const cornerField = (overrides: Record<string, number>, fallback = 2): TerrainField => {
+    const cornerHeightAt = (x: number, z: number): number => overrides[`${x},${z}`] ?? fallback;
+    const cellCornerHeights = (x: number, z: number): [number, number, number, number] => [
+      cornerHeightAt(x, z), cornerHeightAt(x + 1, z), cornerHeightAt(x, z + 1), cornerHeightAt(x + 1, z + 1),
+    ];
+    return {
+      cornerHeightAt,
+      cellCornerHeights,
+      cellHeightAt: (x, z) => Math.min(...cellCornerHeights(x, z)),
+      terrainTypeAt: () => 'grass',
+    };
+  };
+
+  const openBlockers: EditBlockers = { isCellBlocked: () => false };
+
+  it('単一コーナーのくぼみで塞がれたセルを埋め立て、planを返す', () => {
+    // セル(0,0)は[nw,ne,sw,se]=[2,1,2,2](ne=corner(1,0)だけ1段低い、他は全部flatの2)。
+    // corner(1,0)は西隣セル(-1,0)には触れないので、(-1,0)は完全にflatのまま。
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+
+    const before = resolveGroundRailPlanDetailed(editedField, path);
+    expect(before.plan).toBeNull();
+    expect(before.reason).toBe('other-slope');
+
+    const result = resolveGroundRailPlanWithAutoFill(base, editedField, path, openBlockers);
+    expect(result.plan).not.toBeNull();
+    expect(result.reason).toBeUndefined();
+    expect(result.terraformCorners).toBe(1);
+    expect(result.field.cornerHeightAt(1, 0)).toBe(2);
+  });
+
+  it('埋め立てるコーナーがブロックされている場合はfillを諦め、元のother-slope失敗のままにする', () => {
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+    // corner(1,0)は cell(1,0)/(0,0)/(1,-1)/(0,-1) に接する。(1,-1)を既存構造でブロックする。
+    const blockers: EditBlockers = { isCellBlocked: (x, z) => x === 1 && z === -1 };
+
+    const result = resolveGroundRailPlanWithAutoFill(base, editedField, path, blockers);
+    expect(result.plan).toBeNull();
+    expect(result.reason).toBe('other-slope');
+    expect(result.terraformCorners).toBe(0);
+    expect(result.field).toBe(editedField);
+  });
+
+  it('地形がentryHeightより高く元々トンネル判定される経路は埋め立てを試みない(reasonが無いのでfillに入らない)', () => {
+    // 進入標高より高い山を貫く経路は、元々resolveGroundRailPlanDetailedがtunnelつきの
+    // planを返す(reasonが付かない)ため、resolveGroundRailPlanWithAutoFillもterraformCorners=0
+    // のまま元のplanをそのまま返す(山を掘り崩して埋め立てにすり替えない)。
+    // (0,0)はother形状(単一コーナーだけ高い、corner(1,0)=6)だが、最大コーナー(6)が
+    // entryHeight(西隣のflat=2)より十分高い山なので、resolveGroundRailPlanDetailedが
+    // 最初からtunnel役割つきのplanを返す(reasonが付かない)。
+    const base = cornerField({ '1,0': 6 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+
+    const result = resolveGroundRailPlanWithAutoFill(base, editedField, path, openBlockers);
+    expect(result.plan).not.toBeNull();
+    expect(result.plan?.some(r => r.kind === 'tunnel')).toBe(true);
+    expect(result.terraformCorners).toBe(0);
+    expect(result.field).toBe(editedField);
+  });
+});
+
+describe('P-terraform: applyRailPathDetailedのterrainFillOptions配線', () => {
+  const cornerField = (overrides: Record<string, number>, fallback = 2): TerrainField => {
+    const cornerHeightAt = (x: number, z: number): number => overrides[`${x},${z}`] ?? fallback;
+    const cellCornerHeights = (x: number, z: number): [number, number, number, number] => [
+      cornerHeightAt(x, z), cornerHeightAt(x + 1, z), cornerHeightAt(x, z + 1), cornerHeightAt(x + 1, z + 1),
+    ];
+    return {
+      cornerHeightAt,
+      cellCornerHeights,
+      cellHeightAt: (x, z) => Math.min(...cellCornerHeights(x, z)),
+      terrainTypeAt: () => 'grass',
+    };
+  };
+
+  it('terrainFillOptionsを渡すと自動整地して建設が成立し、terrainEditを返す', () => {
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const blockers = buildEditBlockers({
+      halfExtent: 100, railMap: new Map(), townTileIndex: new Map(), baseField: base,
+    });
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+    const state = emptyState();
+
+    const result = applyRailPathDetailed(state, path, editedField, undefined, {}, { base, blockers });
+
+    expect(result.railMap).not.toBe(state.railMap);
+    expect(result.failure).toBeUndefined();
+    expect(result.terrainEdit?.changedCorners).toBe(1);
+    expect(result.terrainEdit?.diffs.get('0,0')?.size).toBe(1);
+  });
+
+  it('terrainFillOptionsを渡さなければ従来どおりother-slopeでno-opのまま(挙動不変)', () => {
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+    const state = emptyState();
+
+    const result = applyRailPathDetailed(state, path, editedField);
+
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe('other-slope');
+    expect(result.terrainEdit).toBeUndefined();
   });
 });
 
