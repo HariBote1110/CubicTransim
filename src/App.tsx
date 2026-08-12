@@ -7,7 +7,7 @@ import type { BuildLevel } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
-import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, type PlayMode, type Signalling } from './sim/gameRules';
+import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, effectiveRailOptions, type PlayMode, type Signalling } from './sim/gameRules';
 import type { RailBuildOptions } from './sim/construction';
 import type { RailGauge, TrainPower, SignalKind, TrainProtection } from './types';
 import { T, button as themeButton } from './ui/theme';
@@ -263,7 +263,7 @@ export default function App() {
         isEditingSchedule={isEditingSchedule}
         simSpeed={simSpeed}
         money={money}
-        onCommitPath={(path, mode, axisHint, level) => commitPath(path, mode, axisHint, level, railOptions, regaugeTargetGauge, signalKind)}
+        onCommitPath={(path, mode, axisHint, level) => commitPath(path, mode, axisHint, level, effectiveRailOptions(gameRules, railOptions), regaugeTargetGauge, signalKind)}
         removeSignal={removeSignal}
         onSimEvent={(event) => {
           if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);
@@ -307,7 +307,7 @@ export default function App() {
         simSpeed={simSpeed}
         setSimSpeed={setSimSpeed}
         onSave={saveGame}
-        onLoad={loadGame}
+        onLoad={() => { loadGame(); setRailOptions({ gauge: 1067 }); }}
         money={money}
         world={worldRef}
         selectedStationId={selectedStationId}
@@ -359,6 +359,10 @@ export default function App() {
                           ...PLAY_MODE_PRESETS[selectedPlayMode],
                           signalling: selectedSignalling,
                         });
+                        // H2: 前のゲームで選んだ軌間/電化/保安装置/レール種別を持ち越さない
+                        // (effectiveRailOptionsによるストリップが本体の保証だが、選択UI自体も
+                        // 素直な既定へ戻しておく)。
+                        setRailOptions({ gauge: 1067 });
                         setShowStartupOptions(false);
                       }}
                     >
@@ -455,6 +459,7 @@ export default function App() {
                       style={{ ...themeButton(), width: '100%', textAlign: 'left' }}
                       onClick={() => {
                         loadDebugScenario(scenario.build());
+                        setRailOptions({ gauge: 1067 });
                         setSimSpeed(2);
                         setShowStartupOptions(false);
                         setShowDebugScenarios(false);

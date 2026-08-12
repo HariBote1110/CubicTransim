@@ -72,6 +72,7 @@ export function playModeOf(rules: GameRules): PlayMode | 'custom' {
 
 import type { RailGauge, CellData, TrainPower, RailWeight } from '../types';
 import { DEFAULT_GAUGE, DEFAULT_RAIL_WEIGHT } from '../types';
+import type { RailBuildOptions } from './construction';
 
 /** セルの実効軌間。rules.gauge=falseなら概念が無いためDEFAULT_GAUGE固定。 */
 export function effectiveGauge(cell: CellData | undefined, rules: GameRules): RailGauge {
@@ -160,4 +161,20 @@ export function axleLoadAllowed(
   if (trainAxleLoadT === undefined) return true;
   const limit = RAIL_WEIGHT_AXLE_LIMIT_T[effectiveRailWeight(cell, rules)];
   return trainAxleLoadT <= limit;
+}
+
+// --- H2: UI→construction境界での概念ストリップ ------------------------------------
+
+/**
+ * UI(railOptions state)がgameRulesの段階を無視して下位モードへ持ち込まれないよう、
+ * commitPath(App.tsx)がconstruction.tsのapply系を呼ぶ直前にここを通す。
+ * 概念が存在しない段階のフィールドは省略(=既存セルの値を保つ/課金しない)にする。
+ */
+export function effectiveRailOptions(rules: GameRules, options: RailBuildOptions): RailBuildOptions {
+  const result: RailBuildOptions = { ...options };
+  if (!rules.gauge) delete result.gauge;
+  if (rules.electrification === 'none') delete result.electrified;
+  if (rules.signalling !== 's3') delete result.protection;
+  if (!rules.trackClasses) delete result.railWeight;
+  return result;
 }
