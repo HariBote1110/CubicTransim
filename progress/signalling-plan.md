@@ -86,10 +86,30 @@ CBTC風の移動閉塞）の実装そのものとして機能している。コ�
   (`passing-loop.test.ts`)はS1でもそのまま機能する(`signalling-s1.test.ts`に
   同型シナリオをS1ルールで追加し、デッドロック検知つきで衝突なし・双方到着を確認)。
 - **既知の制約・follow-up**:
-  - 高架・地下(layer!==0)はブロック分割の対象外(常に制約なし)。き電索引と同じ
-    妥協で、複線高架での追い越し等リアルな固定閉塞挙動が欲しくなったら別途対応。
   - ブロック占有判定は毎tick`world.reservations`全体を線形走査する(O(予約数)）。
     現状の列車数・マップ規模では問題にならないが、将来的に索引化の余地はある。
+
+## S1フォローアップ: 高架・地下のブロック対応(0.5.0-Alpha-10b)
+
+- 上記「高架・地下(layer!==0)はブロック分割の対象外」の単純化を撤去した。
+  `src/sim/levelAdjacency.ts`(新設、`feeding.ts`と共有)の`neighboursAtLayer`が
+  `pathfinding.ts`の`resolveEntryLayer`と同じ「進入ビットで相手側の層を決める」
+  規則で隣接セル+層を返すため、`buildBlockIndex`はこれを使って地平・高架・地下を
+  またぐ連結成分を1回のBFSで求める。坂(ramp)で地平から高架/地下へ登る区間は
+  自動的に同じブロックへ合流する。
+- 信号(`cell.signalDir`)は`construction.ts`の`applySignal`が地平の`connections`
+  無しでは置けない構造上、常に地平限定の概念。そのため`isTrackNode`は
+  `layer===0`のときだけ`signalDir`を境界として扱い、高架・地下ノードは地平の
+  信号の有無に関係なくブロックが繋がる(`blocks.test.ts`「地平の信号は同じセルの
+  高架/地下レベルのブロックを分割しない」で固定)。
+- `blocksOccupiedByOthers`が使う予約キー正規表現(`RESERVATION_KEY_RE`)が
+  負のlayer(地下、`x,z:u-1`のような形)を読めていなかったバグ(常に`NaN`→
+  地平扱いに丸め込まれていた)も本フォローアップで発見・修正した。
+  `reservationKey`(`reservation.ts`)の出力形式に地下ケースが無かったため
+  これまで顕在化していなかった。
+- ブラウザ実機(リアリスティックモード)で、地平のDC電化線路→坂→地下1の区間を
+  実際にUIから建設し確認した(詳細はplay-modes-plan.mdのPM4フォローアップ参照。
+  ブロック索引も同じ`levelAdjacency.ts`を使うため挙動は対称)。
 
 ## 未決定事項
 

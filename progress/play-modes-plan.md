@@ -61,9 +61,44 @@
   無関係な既存の性能タイミングテストの単発flakeで再実行後green）・
   `npm run build`ともgreen。
 - **残るfollow-up**: 高架・地下のき電（本PM4は地平のみ、design decision通り
-  スコープ外として明示）、変電所の選択/検査UI（「コストがかかるならスキップ可」の
+  スコープ外として明示。→0.5.0-Alpha-10bで撤去、下記フォローアップ参照）、
+  変電所の選択/検査UI（「コストがかかるならスキップ可」の
   指示どおり未実装）。これでPM1〜PM4（電化の「全部盛り」計画）は完了し、
   リアリスティックモード固有の目玉機能が出揃った。
+
+## PM4フォローアップ: 高架・地下のき電対応(0.5.0-Alpha-10b)
+
+- 上記「高架・地下（level!==0）は本PM4のスコープ外」の単純化を撤去した。
+  `src/sim/levelAdjacency.ts`（新設）が`pathfinding.ts`の`resolveEntryLayer`と
+  同じ「進入ビットで相手側の層を一意に決める」規則を`entryLayerCandidates`/
+  `neighboursAtLayer`として抽出し、`pathfinding.ts`・`feeding.ts`・`blocks.ts`の
+  3箇所がこれを共有する（三者三様の隣接判定に分岐しないための唯一の真実源）。
+  `feeding.ts`のセクション分割BFSと変電所の給電範囲BFSは、どちらもこの隣接関数で
+  地平・高架・地下をまたいで辿る。電化(`electrified`)はPM2の単純化どおり
+  `CellData`本体(セル全体)が持つ値なので、坂で登った先の高架・地下セルも
+  自動的に同じ電化方式を引き継ぐ(=坂の前後で系統が変わることはない)。
+  `isPowered`/`sectionLoadKey`のホップ数カウントもレベルをまたいで通しで続く。
+- **副産物のバグ修正**: 実装中に`construction.ts`の
+  `applyGroundPathWithElevatedConnect`(地平線路が既存の浮いた高架/地下の端タイルに
+  接したときに自動で坂を作る内部ヘルパー)が、呼び出し元`applyRailPathDetailed`から
+  `railOptions`(軌間・電化)を一切受け取っておらず、坂で自動接続する経路の
+  gauge/electrifiedが常に無視される既存バグを発見した。地平のDC電化線路を
+  高架・地下の端タイルへ引くと、自動生成された坂・桁側のセルにelectrifiedが
+  付かず、意図せず別のき電セクションへ分断されてしまう実害があったため、
+  このフォローアップの一部として修正した(railOptionsを引数に追加し、
+  span/anchor/ramp各ロールでgauge/electrifiedパッチを適用)。
+- `src/sim/blocks.ts`も同じ`levelAdjacency.ts`を使って同時に対応した(詳細は
+  signalling-plan.mdのS1フォローアップ参照)。
+- **ブラウザ実機確認**(リアリスティックモード、小マップ): UIから地平にDC電化の
+  線路を敷設(直流選択→ドラッグ)、建設レベルを「地下1」に切り替えて同じ端点から
+  さらにドラッグ(自動で坂が生成され地下へ接続)、地平に戻して変電所を地平区間の
+  隣接空きマスへ設置。`window.__debugWorld.feeding.isPowered(x,0,-1)`が地下側の
+  遠端(x=10)まで`true`を返すこと、`sectionLoadKey(0,0,0)`と
+  `sectionLoadKey(10,0,-1)`が同じキー(`"0,0"`)になることを確認した。
+  変電所ツールのオーバーレイ(`render/feedingOverlay.ts`)は地平の`isPowered(x,z,0)`
+  のみを塗り分ける実装のままで、今回は変更していない(地下ビューでの重ね描画は
+  高さ座標の扱いも含む描画側の別タスクになるため、意図的に見送った。
+  地下・高架セルの給電状態はデバッグAPI(`__debugWorld.feeding`)で確認できる)。
 
 ## PM4フォローアップ: き電区間の可視化オーバーレイ(0.5.0-Alpha-9b)
 
