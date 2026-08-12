@@ -97,10 +97,24 @@ const railSignatureOf = (railMap: Map<string, CellData>): string => {
   return sig;
 };
 
+// M2: 区間ごとの在線数の「内容」(sectionKey:countのペア)を署名に入れる。sizeだけだと
+// 「在線区間の数」が変わらない限り(既に在線している区間の人数が増減しても)署名が
+// 一致してしまい、容量超過に転じても再描画されない。
+const countsSignatureOf = (counts: Map<string, number> | undefined): string => {
+  if (!counts) return '';
+  let sig = '';
+  for (const [key, count] of counts) sig += `${key}:${count}|`;
+  return sig;
+};
+
 export const WebGpuFeedingOverlay: React.FC<Props> = ({ layerRef, railMap, world, field, active }) => {
   const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
   const lastFieldRef = useRef<TerrainField | null>(null);
   const lastSigRef = useRef<string>('');
+  // M2: railMapの参照が変わらない限り(=construction.tsのapply系はno-opなら同じ参照を返す)、
+  // 毎フレームrailMap全体を走査するrailSignatureOfを再計算しない。
+  const lastRailMapRef = useRef<Map<string, CellData> | null>(null);
+  const lastRailSigRef = useRef<string>('');
 
   useFrameLoop(FRAME_ORDER.feed, () => {
     const controller = layerRef.current;
@@ -115,7 +129,15 @@ export const WebGpuFeedingOverlay: React.FC<Props> = ({ layerRef, railMap, world
     if (fieldChanged) lastFieldRef.current = field;
     if (controllerChanged || fieldChanged) lastSigRef.current = '';
 
-    const sig = active && feeding ? `${railSignatureOf(railMap)}#${feedingSectionCounts?.size ?? -1}` : '';
+    let railSig = '';
+    if (active && feeding) {
+      if (lastRailMapRef.current !== railMap) {
+        lastRailMapRef.current = railMap;
+        lastRailSigRef.current = railSignatureOf(railMap);
+      }
+      railSig = lastRailSigRef.current;
+    }
+    const sig = active && feeding ? `${railSig}#${countsSignatureOf(feedingSectionCounts)}` : '';
     if (!controllerChanged && !fieldChanged && sig === lastSigRef.current) return;
     lastSigRef.current = sig;
 

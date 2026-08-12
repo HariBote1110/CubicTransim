@@ -16,7 +16,7 @@ import { growTown, townServiceLevel, resolveTownSpawnTick } from './towns';
 import type { StationTransportInfo } from './towns';
 import { calculateRouteWithStop, stationIdAtLayer } from './pathfinding';
 import { DEFAULT_GAME_RULES, isDeadSectionBoundary, type GameRules } from './gameRules';
-import { OVERLOAD_ACCEL_FACTOR, type FeedingIndex } from './feeding';
+import { OVERLOAD_ACCEL_FACTOR, isOverloaded, type FeedingIndex } from './feeding';
 import {
   pathPointAt, pathHeightAt, rampHeightAtPos, OVERPASS_HEIGHT,
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
@@ -1293,7 +1293,7 @@ const stepTrain = (
           if (sectionKey) {
             const capacity = world.feeding.sectionCapacity(sectionKey);
             const count = feedingSectionCounts.get(sectionKey) ?? 0;
-            if (count > capacity) tractionFactor = OVERLOAD_ACCEL_FACTOR;
+            if (isOverloaded(count, capacity)) tractionFactor = OVERLOAD_ACCEL_FACTOR;
           }
         }
 

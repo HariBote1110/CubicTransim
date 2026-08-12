@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildFeedingIndex, DC_FEED_RANGE_CELLS, AC_FEED_RANGE_CELLS, SUBSTATION_CAPACITY_TRAINS } from './feeding';
+import { buildFeedingIndex, DC_FEED_RANGE_CELLS, AC_FEED_RANGE_CELLS, SUBSTATION_CAPACITY_TRAINS, isOverloaded } from './feeding';
 import type { CellData } from '../types';
 import { toKey, DIR } from '../utils';
 import { applyRailPath, applyElevatedPath, applyUndergroundPath, applySubstation, type ConstructionState } from './construction';
@@ -128,5 +128,18 @@ describe('feeding: き電区間の索引(PM4)', () => {
     const index = buildFeedingIndex(railMap, [{ x: 0, z: 0 }]);
     const key = index.sectionLoadKey(1, 1, 0);
     if (key) expect(index.sectionCapacity(key)).toBe(SUBSTATION_CAPACITY_TRAINS);
+  });
+});
+
+describe('M3: isOverloaded(sim/renderで共有する容量超過述語)', () => {
+  it('countがcapacityを超えていればtrue', () => {
+    expect(isOverloaded(4, 3)).toBe(true);
+    expect(isOverloaded(3, 3)).toBe(false);
+    expect(isOverloaded(2, 3)).toBe(false);
+  });
+
+  it('capacity=0(変電所が1つも繋がっていない)区間でも、在線がいればtrue(capacity>0の別ガードは持たない)', () => {
+    expect(isOverloaded(1, 0)).toBe(true);
+    expect(isOverloaded(0, 0)).toBe(false);
   });
 });

@@ -28,6 +28,12 @@ export const SUBSTATION_CAPACITY_TRAINS = 3;
 /** き電区間の在線数が容量を超えたときの牽引力係数(電圧降下の離散近似)。 */
 export const OVERLOAD_ACCEL_FACTOR = 0.5;
 
+// M3: 「区間が容量超過か」の述語をsim(simulation.ts)とrender(feedingOverlay.ts)で
+// 共有する。capacity=0(変電所が1つも繋がっていない)区間に電車が残っている場合も
+// 超過として扱う(count>0>capacity=0で自然に成立する。capacity>0の別ガードは不要かつ
+// sim側の判定と食い違う原因だった)。
+export const isOverloaded = (count: number, capacity: number): boolean => count > capacity;
+
 interface Pos {
   x: number;
   z: number;

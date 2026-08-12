@@ -6,7 +6,7 @@
 // メッシュチャンクのパターン)。
 import type { CellData } from '../types';
 import { electrificationOf } from '../sim/gameRules';
-import type { FeedingIndex } from '../sim/feeding';
+import { isOverloaded, type FeedingIndex } from '../sim/feeding';
 
 export type FeedingOverlayColourKind = 'powered' | 'unpowered' | 'overload' | 'substation';
 
@@ -53,7 +53,7 @@ export function buildFeedingOverlayCells(
       if (sectionKey) {
         const capacity = feeding.sectionCapacity(sectionKey);
         const count = feedingSectionCounts.get(sectionKey) ?? 0;
-        if (capacity > 0 && count > capacity) {
+        if (isOverloaded(count, capacity)) {
           cells.push({ x, z, colourKind: 'overload' });
           continue;
         }
