@@ -786,6 +786,7 @@ const FAILURE_MESSAGES: Record<NonNullable<BuildPreview['failure']>, string> = {
   'ramp-conflict': '坂と干渉します',
   'needs-adjacent-electrified-rail': '隣接する電化線路が必要です',
   'needs-rail': '信号は線路の上に設置します',
+  'station-axis-mismatch': '線路の向きと合いません',
   'other-slope': SLOPE_ISSUE_MESSAGES['other-slope'],
   'direction-blocked': SLOPE_ISSUE_MESSAGES['direction-blocked'],
   'edge-discontinuous': SLOPE_ISSUE_MESSAGES['edge-discontinuous'],

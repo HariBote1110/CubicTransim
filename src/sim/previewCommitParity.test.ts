@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import type { CellData, StationData } from '../types';
 import { evaluateBuild } from './buildPreview';
 import {
-  applyRailPath, applyStation, applyDepot, applySignal,
+  applyRailPath, applyStationPath, applyDepot, applySignal,
   applyElevatedPath, applyElevatedStation, applyUndergroundPath, applyUndergroundStation,
   removePath,
   resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
@@ -64,7 +64,7 @@ const commitLikeUseGameLogic = (
       if (level === 0) {
         cost = costOfPath('station', path.length);
         if (money < cost) return { next: state, built: false, cost };
-        result = applyStation(state, path[path.length - 1], field, [], axisHint, new Map());
+        result = applyStationPath(state, path, field, [], axisHint, new Map());
       } else if (level > 0) {
         cost = ELEVATED_STATION_COST;
         if (money < cost) return { next: state, built: false, cost };
@@ -161,7 +161,7 @@ describe('プレビューと実際の建設の判定一致(evaluateBuild ⇔ com
         : undefined;
       const money = 1e9;
 
-      const preview = evaluateBuild(mode, target, state.railMap, state.stations, field, money, level, new Map());
+      const preview = evaluateBuild(mode, target, state.railMap, state.stations, field, money, level, new Map(), undefined, {}, undefined, axisHint);
       const commit = commitLikeUseGameLogic(state, target, mode, field, level, money, axisHint);
       const previewSaysOk = preview.reason === 'ok';
       // 撤去はプレビューが「対象セルに何かある」で判定するため、参照比較(常に新Map)では

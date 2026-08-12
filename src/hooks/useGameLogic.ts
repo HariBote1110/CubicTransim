@@ -7,7 +7,7 @@ import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData } from '../sim/persistence';
 import {
-  applyRailPath, applyStation, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
+  applyRailPath, applyStationPath, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
   applyUndergroundPath, applyUndergroundStation, applyRegaugePath,
   removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
 } from '../sim/construction';
@@ -299,11 +299,12 @@ export const useGameLogic = () => {
         if (level === 0) {
           cost = costOfPath('station', path.length);
           if (money < cost) return;
-          const stationPos = path[path.length - 1];
+          // OpenTTD式のドラッグ駅建設: 経路全体(単発クリックならpath.length===1)を
+          // まとめて1つの駅として建設する。
           // 駅設置時点では町を湧かせない(近くに町が無くてもそのまま建てられる)。
           // 命名は既存の町名由来/A駅フォールバックのまま(applyStationのstationNameFor)。
           // 町は輸送力が育ってから日次チェック(resolveTownSpawnTick)で湧く。
-          result = applyStation(state, stationPos, field, towns, stationAxisHint, townTileIndex);
+          result = applyStationPath(state, path, field, towns, stationAxisHint, townTileIndex);
         } else if (level > 0) {
           // 高架駅タイル1枚(旧'elevated-station')。
           cost = ELEVATED_STATION_COST;

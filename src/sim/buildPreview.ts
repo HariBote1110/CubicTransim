@@ -13,7 +13,7 @@ import { toKey } from '../utils';
 import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel, StationAxis } from './construction';
 import {
   applyRailPathDetailed,
-  applyStationDetailed,
+  applyStationPathDetailed,
   applyDepotDetailed,
   applySubstationDetailed,
   applySignalDetailed,
@@ -118,7 +118,11 @@ export function evaluateBuild(
   railOptions: RailBuildOptions = {},
   // PM2 Stage B: 改軌ツール('regauge'モードのときのみ参照)。targetGauge省略時は
   // 改軌不能(no-effect)。occupiedCellsは列車が在線中のセル(toKey形式)の集合。
-  regauge?: { targetGauge: RailGauge; occupiedCells?: Set<string> }
+  regauge?: { targetGauge: RailGauge; occupiedCells?: Set<string> },
+  // OpenTTD式の駅方向指定: プレイヤーが明示選択した軸。地平駅(mode:'station', level 0)
+  // でのみ参照する(高架/地下駅は別の軸機構のまま。GameScene側の注記参照)。
+  // 省略時はapplyStationDetailedが隣接構造から推測する(既存呼び出し互換)。
+  stationAxis?: StationAxis
 ): BuildPreview {
   const empty: BuildPreview = {
     mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0, level,
@@ -292,7 +296,9 @@ export function evaluateBuild(
       } else if (underground) {
         result = applyUndergroundStation(state, path[path.length - 1], [], undergroundLevel);
       } else {
-        const detailed = applyStationDetailed(state, path[path.length - 1], field, [], undefined, townTiles);
+        // OpenTTD式のドラッグ駅建設: 地平駅は経路全体(複数セル)をまとめて評価する
+        // (単発クリックはpath.length===1なので従来通り1セルの評価と同じ結果になる)。
+        const detailed = applyStationPathDetailed(state, path, field, [], stationAxis, townTiles);
         result = detailed;
         applyFailure = detailed.failure;
       }
@@ -335,7 +341,12 @@ export function evaluateBuild(
     ? path.some(c => railMap.has(`${c.x},${c.z}`))
     : (result.railMap !== state.railMap || result.stations !== state.stations);
 
-  const cellCount = mode === 'rail' || mode === 'remove' || mode === 'bridge' ? path.length : 1;
+  // OpenTTD式のドラッグ駅建設: 地平駅(mode:'station', !elevated && !underground)は
+  // rail/remove/bridgeと同じく経路全体のセル数を対象にする(高架/地下駅は常に単一セル)。
+  const cellCount =
+    mode === 'rail' || mode === 'remove' || mode === 'bridge' || (mode === 'station' && !elevated && !underground)
+      ? path.length
+      : 1;
 
   let reason: BuildBlockReason = 'ok';
   if (!effective) reason = 'no-effect';
