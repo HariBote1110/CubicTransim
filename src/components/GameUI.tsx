@@ -22,7 +22,7 @@ import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
-import type { BuildLevel } from '../sim/construction';
+import type { BuildLevel, StationAxis } from '../sim/construction';
 import { UNDERGROUND_RAIL_COST_MULTIPLIER, UNDERGROUND_STATION_COST } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import type { EditedTerrainField } from '../sim/terrainOverlay';
@@ -144,6 +144,10 @@ interface GameUIProps {
   // S3: 車庫(depot)ツールで列車を購入するときの保安装置選択。rules.signalling==='s3'のみ。
   purchaseProtection: TrainProtection | undefined;
   setPurchaseProtection: (protection: TrainProtection | undefined) => void;
+  // OpenTTD式の駅方向指定: 駅(station)ツールでプレイヤーが選ぶ軸('ns'/'ew')。
+  // 地平駅の建設判定で権威的に使う(高架/地下駅は別機構のため参照しない)。
+  stationAxis: StationAxis;
+  setStationAxis: (axis: StationAxis) => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -206,6 +210,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
   purchasePower, setPurchasePower, signalKind, setSignalKind,
   purchaseProtection, setPurchaseProtection,
+  stationAxis, setStationAxis,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
@@ -307,8 +312,9 @@ export const GameUI: React.FC<GameUIProps> = ({
       // H4: commitPath(useGameLogic.ts)と同じくoccupiedCellKeysFromRuntimesで
       // 走行中の実位置を見る。省略(=常に空集合)だとプレビューが実際の可否と食い違う。
       ? { targetGauge: regaugeTargetGauge ?? DEFAULT_GAUGE, occupiedCells: occupiedCellKeysFromRuntimes(world.current?.runtimes ?? new Map()) }
-      : undefined);
-  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge, world]);
+      : undefined,
+    stationAxis);
+  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge, world, stationAxis]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
   const shuttleSuggestions = useMemo(
@@ -537,6 +543,33 @@ export const GameUI: React.FC<GameUIProps> = ({
                   {lv === 0 ? '地平' : lv > 0 ? `Lv${lv}` : `地下${-lv}`}
                 </button>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* OpenTTD式の駅方向指定: 駅ツール選択中は軸(南北/東西)を明示選択させる。
+            高架/地下駅(buildLevel!==0)は軸の概念を持たない別機構なので、地平駅
+            (buildLevel===0)のときだけ出す。 */}
+        {buildMode === 'station' && buildLevel === 0 && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>駅の向き</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button
+                onClick={() => setStationAxis('ns')}
+                style={{ ...button({ active: stationAxis === 'ns', accent: T.station, compact: true }), minWidth: 48 }}
+                title="南北方向のホームにする"
+              >
+                南北
+              </button>
+              <button
+                onClick={() => setStationAxis('ew')}
+                style={{ ...button({ active: stationAxis === 'ew', accent: T.station, compact: true }), minWidth: 48 }}
+                title="東西方向のホームにする"
+              >
+                東西
+              </button>
             </div>
           </div>
         )}

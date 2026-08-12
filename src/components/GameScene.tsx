@@ -44,7 +44,7 @@ import { carPositions } from '../sim/consist';
 import { toKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis, BuildLevel } from '../sim/construction';
-import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
+import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, MAX_STATION_DRAG_CELLS } from '../sim/construction';
 import { isUndergroundView, isLevelDimmed } from '../render/viewMode';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
@@ -63,6 +63,28 @@ import {
 } from '../render/stationLayers';
 
 const REMOVE_COLOUR = '#ff3b47';
+
+// OpenTTD式のドラッグ駅建設: ドラッグの直交成分は無視し、プレイヤーが選んだ軸方向の
+// 成分だけを使って直線のセル列を作る(rail用のgetConstrainedPathとは別の、駅専用の
+// 単純な直線クランプ)。MAX_STATION_DRAG_CELLSで長さを上限に丸める(construction.tsの
+// applyStationPathDetailedと同じ定数を共有し、UIのプレビューと実際の建設が一致するようにする)。
+const stationDragPath = (
+  start: { x: number; z: number },
+  end: { x: number; z: number },
+  axis: StationAxis
+): { x: number; z: number }[] => {
+  if (axis === 'cross') return [start];
+  const delta = axis === 'ew' ? end.x - start.x : end.z - start.z;
+  const step = delta === 0 ? 0 : delta > 0 ? 1 : -1;
+  const length = Math.min(Math.abs(delta) + 1, MAX_STATION_DRAG_CELLS);
+  const cells: { x: number; z: number }[] = [];
+  for (let i = 0; i < length; i++) {
+    cells.push(
+      axis === 'ew' ? { x: start.x + step * i, z: start.z } : { x: start.x, z: start.z + step * i }
+    );
+  }
+  return cells;
+};
 
 /** 可視チャンク(注視セル・可視半径)の再計算の最短間隔。旧 CameraChunkTracker と同じ。 */
 const CHUNK_VIEW_INTERVAL_MS = 150;
@@ -90,6 +112,8 @@ interface GameSceneProps {
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
   buildLevel: BuildLevel;
+  /** OpenTTD式の駅方向指定: 駅(station)ツールでプレイヤーが選んだ軸。地平駅の建設で権威的に使う。 */
+  stationAxis: StationAxis;
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
   simSpeed: number;
@@ -114,7 +138,7 @@ interface GameSceneProps {
 
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, towns, townTiles, field, halfExtent, webGpuLayer,
-  cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, selectedTrainId,
+  cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, stationAxis, selectedTrainId,
   isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
   onPreviewChange, groups = [], onRelocateTrain,
@@ -152,13 +176,18 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
     if (!dragStartPos) return [cursorPos];
+    // OpenTTD式のドラッグ駅建設: 地平駅(buildLevel===0)はドラッグの直交成分を無視し、
+    // プレイヤーが選んだ軸方向だけの直線プレビューにする(高架/地下駅は従来通り単一セル)。
+    if (buildMode === 'station' && buildLevel === 0) {
+      return stationDragPath(dragStartPos, cursorPos, stationAxis);
+    }
     if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal') {
       return [cursorPos];
     }
     // 地形編集は8方向の直線ではなく矩形範囲を選択する(OpenTTD流)。
     if (terrainEditActive) return rectCells(dragStartPos, cursorPos);
     return getConstrainedPath(dragStartPos, cursorPos);
-  }, [dragStartPos, cursorPos, buildMode, terrainEditActive]);
+  }, [dragStartPos, cursorPos, buildMode, buildLevel, stationAxis, terrainEditActive]);
 
   // 高架/地下の線路プレビューの各セルの役割(坂/そのまま)。construction.ts へ問い合わせる
   // (UIにルールを書き写さない)。
@@ -359,18 +388,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
     const start = dragStartRef.current;
     if (!start) return;
     const pos = cellFromEvent(event);
-    const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal')
+    // OpenTTD式のドラッグ駅建設: 地平駅(buildLevel===0)はドラッグの直交成分を無視し、
+    // プレイヤーが選んだ軸方向だけの直線経路にする(previewPathと同じstationDragPath)。
+    // 高架/地下駅は従来通り単一セル。
+    const path = (buildMode === 'station' && buildLevel === 0)
+      ? stationDragPath(start, pos, stationAxis)
+      : (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal')
       ? [pos]
       : terrainEditActive
       ? rectCells(start, pos)
       : getConstrainedPath(start, pos);
-    // 駅設置(station)は常に単一セルを置くが、ドラッグした向きを軸のヒントとして渡す。
-    let stationAxisHint: StationAxis | undefined;
-    if (buildMode === 'station') {
-      const dx = Math.abs(pos.x - start.x);
-      const dz = Math.abs(pos.z - start.z);
-      if (dx > 0 || dz > 0) stationAxisHint = dx >= dz ? 'ew' : 'ns';
-    }
+    // axisはもはやドラッグ方向からの推測ヒントではなく、プレイヤーがツールバーで
+    // 選んだ権威的な値(GameUIのstationAxis)をそのまま渡す。
+    const stationAxisHint: StationAxis | undefined = buildMode === 'station' ? stationAxis : undefined;
     const level = (buildMode === 'rail' || buildMode === 'station') ? buildLevel : undefined;
     onCommitPath(path, buildMode, stationAxisHint, level);
     dragStartRef.current = null;

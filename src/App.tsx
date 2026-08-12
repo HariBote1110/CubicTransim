@@ -3,7 +3,7 @@ import { useGameLogic } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
 import { GameUI } from './components/GameUI';
 import type { BuildMode } from './components/GameUI';
-import type { BuildLevel } from './sim/construction';
+import type { BuildLevel, StationAxis } from './sim/construction';
 import { DEBUG_SCENARIOS } from './sim/debugScenarios';
 import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
@@ -137,6 +137,9 @@ export default function App() {
   // 線路(rail)・駅(station)ツールの建設対象レベル(0=地平〜3、既定0)。GameUIのArrowUp/Down、
   // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
   const [buildLevel, setBuildLevel] = useState<BuildLevel>(0);
+  // OpenTTD式の駅方向指定: 駅(station)ツールでプレイヤーが選ぶ軸。GameUIのトグル、
+  // GameScene(プレビュー・commit)双方から参照するため、共通の親であるAppで保持する。
+  const [stationAxis, setStationAxis] = useState<StationAxis>('ew');
   // PM2: 線路ツールの軌間/電化選択、改軌ツールの目的軌間、車庫での購入動力。
   // いずれもrules.gauge=false(ライト)の間はUIから触れられないため既定値のまま使われない。
   const [railOptions, setRailOptions] = useState<RailBuildOptions>({ gauge: DEFAULT_GAUGE });
@@ -260,6 +263,7 @@ export default function App() {
         world={worldRef}
         buildMode={buildMode}
         buildLevel={buildLevel}
+        stationAxis={stationAxis}
         selectedTrainId={selectedTrainId}
         isEditingSchedule={isEditingSchedule}
         simSpeed={simSpeed}
@@ -294,6 +298,8 @@ export default function App() {
         setBuildMode={setBuildMode}
         buildLevel={buildLevel}
         setBuildLevel={setBuildLevel}
+        stationAxis={stationAxis}
+        setStationAxis={setStationAxis}
         selectedTrainId={selectedTrainId}
         trains={trains}
         stations={stations}
