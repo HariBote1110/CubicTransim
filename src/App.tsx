@@ -10,6 +10,7 @@ import type { TerrainProfile } from './sim/terrainField';
 import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, effectiveRailOptions, type PlayMode, type Signalling } from './sim/gameRules';
 import type { RailBuildOptions } from './sim/construction';
 import type { RailGauge, TrainPower, SignalKind, TrainProtection } from './types';
+import { DEFAULT_GAUGE } from './types';
 import { T, button as themeButton } from './ui/theme';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
 import type { WebGpuTerrainLayerController, WebGpuUnavailableReason } from './render/webgpuLayer';
@@ -138,8 +139,8 @@ export default function App() {
   const [buildLevel, setBuildLevel] = useState<BuildLevel>(0);
   // PM2: 線路ツールの軌間/電化選択、改軌ツールの目的軌間、車庫での購入動力。
   // いずれもrules.gauge=false(ライト)の間はUIから触れられないため既定値のまま使われない。
-  const [railOptions, setRailOptions] = useState<RailBuildOptions>({ gauge: 1067 });
-  const [regaugeTargetGauge, setRegaugeTargetGauge] = useState<RailGauge | undefined>(1067);
+  const [railOptions, setRailOptions] = useState<RailBuildOptions>({ gauge: DEFAULT_GAUGE });
+  const [regaugeTargetGauge, setRegaugeTargetGauge] = useState<RailGauge | undefined>(DEFAULT_GAUGE);
   // S2: 信号ツールで置く信号の種別選択。rules.signalling!=='s2'の間はUIから触れられない。
   const [signalKind, setSignalKind] = useState<SignalKind>('block');
   const [purchasePower, setPurchasePower] = useState<TrainPower>('diesel');
@@ -307,7 +308,7 @@ export default function App() {
         simSpeed={simSpeed}
         setSimSpeed={setSimSpeed}
         onSave={saveGame}
-        onLoad={() => { loadGame(); setRailOptions({ gauge: 1067 }); }}
+        onLoad={() => { loadGame(); setRailOptions({ gauge: DEFAULT_GAUGE }); }}
         money={money}
         world={worldRef}
         selectedStationId={selectedStationId}
@@ -362,7 +363,7 @@ export default function App() {
                         // H2: 前のゲームで選んだ軌間/電化/保安装置/レール種別を持ち越さない
                         // (effectiveRailOptionsによるストリップが本体の保証だが、選択UI自体も
                         // 素直な既定へ戻しておく)。
-                        setRailOptions({ gauge: 1067 });
+                        setRailOptions({ gauge: DEFAULT_GAUGE });
                         setShowStartupOptions(false);
                       }}
                     >
@@ -459,7 +460,7 @@ export default function App() {
                       style={{ ...themeButton(), width: '100%', textAlign: 'left' }}
                       onClick={() => {
                         loadDebugScenario(scenario.build());
-                        setRailOptions({ gauge: 1067 });
+                        setRailOptions({ gauge: DEFAULT_GAUGE });
                         setSimSpeed(2);
                         setShowStartupOptions(false);
                         setShowDebugScenarios(false);

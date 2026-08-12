@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, RailWeight, TrainPower, SignalKind, TrainProtection } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND, SUBSTATION_COST,
@@ -40,7 +41,7 @@ export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'raise' | 'low
 
 // PM2: 軌間の選択肢(基本ラインナップ2種+拡張ラインナップ2種)。
 const BASIC_GAUGES: { value: RailGauge; label: string }[] = [
-  { value: 1067, label: '狭軌' },
+  { value: DEFAULT_GAUGE, label: '狭軌' },
   { value: 1435, label: '標準軌' },
 ];
 const EXTENDED_GAUGES: { value: RailGauge; label: string }[] = [
@@ -305,7 +306,7 @@ export const GameUI: React.FC<GameUIProps> = ({
     }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge'
       // H4: commitPath(useGameLogic.ts)と同じくoccupiedCellKeysFromRuntimesで
       // 走行中の実位置を見る。省略(=常に空集合)だとプレビューが実際の可否と食い違う。
-      ? { targetGauge: regaugeTargetGauge ?? 1067, occupiedCells: occupiedCellKeysFromRuntimes(world.current?.runtimes ?? new Map()) }
+      ? { targetGauge: regaugeTargetGauge ?? DEFAULT_GAUGE, occupiedCells: occupiedCellKeysFromRuntimes(world.current?.runtimes ?? new Map()) }
       : undefined);
   }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge, world]);
 
@@ -572,7 +573,7 @@ export const GameUI: React.FC<GameUIProps> = ({
                 <button
                   key={g.value}
                   onClick={() => setRailOptions({ ...railOptions, gauge: g.value })}
-                  style={button({ active: (railOptions.gauge ?? 1067) === g.value, accent: T.accent, compact: true })}
+                  style={button({ active: (railOptions.gauge ?? DEFAULT_GAUGE) === g.value, accent: T.accent, compact: true })}
                 >
                   {g.label}
                 </button>
@@ -720,7 +721,7 @@ export const GameUI: React.FC<GameUIProps> = ({
                 <button
                   key={g.value}
                   onClick={() => setRegaugeTargetGauge(g.value)}
-                  style={button({ active: (regaugeTargetGauge ?? 1067) === g.value, accent: T.bridge, compact: true })}
+                  style={button({ active: (regaugeTargetGauge ?? DEFAULT_GAUGE) === g.value, accent: T.bridge, compact: true })}
                 >
                   {g.label}
                 </button>

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
 import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
@@ -462,7 +463,7 @@ export const useGameLogic = () => {
         x, z,
         schedule: [], scheduleIndex: 0, status: 'stored',
         cars: 2,
-        ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? 1067 } : {}),
+        ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? DEFAULT_GAUGE } : {}),
         ...(gameRules.electrification !== 'none' ? { power } : {}),
         ...(gameRules.signalling === 's3' && protection ? { protection } : {}),
         // 軌道(何キロレール): 動力方式から軸重を導出する(physics.tsのAXLE_LOAD_T_BY_POWER)。

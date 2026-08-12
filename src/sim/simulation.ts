@@ -1,5 +1,6 @@
 import { toKey } from '../utils';
 import type { CellData, StationData, TrainData, TrainGroupData, TownData, Level, TrainProtection } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import type { TerrainField } from './terrainField';
 import {
   buildServiceGraph,
@@ -979,7 +980,7 @@ const stepTrain = (
       cars: carCountForRoute,
       stopLocation,
       rules,
-      trainGauge: train.gauge ?? 1067,
+      trainGauge: train.gauge ?? DEFAULT_GAUGE,
       trainPower: train.power ?? 'diesel',
       trainAxleLoadT: train.axleLoadT,
       feeding: world.feeding,
@@ -1024,7 +1025,7 @@ const stepTrain = (
           cars: carCountForRoute,
           stopLocation,
           rules,
-          trainGauge: train.gauge ?? 1067,
+          trainGauge: train.gauge ?? DEFAULT_GAUGE,
           trainPower: train.power ?? 'diesel',
           trainAxleLoadT: train.axleLoadT,
           feeding: world.feeding,

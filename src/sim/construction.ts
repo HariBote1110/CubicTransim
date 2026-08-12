@@ -1,5 +1,6 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
 import type { CellData, StationData, TownData, Level, RailGauge, SignalKind, TrainProtection, RailWeight } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
@@ -409,7 +410,7 @@ const addConnectionToCell = (
   // 軌間概念に触れていない)なら、常に「既存セルの軌間」同士の比較(実質つねに一致)になり、
   // 挙動は変わらない。
   if (existing && existing.type === 'rail') {
-    const existingGauge = existing.gauge ?? 1067;
+    const existingGauge = existing.gauge ?? DEFAULT_GAUGE;
     const newGauge = options.gauge ?? existingGauge;
     if (existingGauge !== newGauge) return;
   }
@@ -1784,7 +1785,7 @@ export function applyRegaugePath(
   for (const p of path) {
     const key = toKey(p.x, p.z);
     const cell = railMap.get(key)!;
-    const currentGauge = cell.gauge ?? 1067;
+    const currentGauge = cell.gauge ?? DEFAULT_GAUGE;
     if (currentGauge === targetGauge) continue;
     railMap.set(key, { ...cell, gauge: targetGauge });
     changed = true;

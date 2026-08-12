@@ -1,5 +1,6 @@
 import { toKey, DIR, getVectorFromDir, getDirFromVector, getOppositeDir } from '../utils';
 import type { CellData, StationData, Level, RailGauge, TrainPower } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import { reservationKey } from './reservation';
 import { cellAllowsTrain, DEFAULT_GAME_RULES, type GameRules } from './gameRules';
 import type { FeedingIndex } from './feeding';
@@ -247,7 +248,7 @@ export function calculateRouteWithStop(
 ): RouteResult {
   const {
     start, prev: prevGrid, targetStationId: targetId, cars, stopLocation = 'middle',
-    rules = DEFAULT_GAME_RULES, trainGauge = 1067, trainPower = 'diesel', trainAxleLoadT, feeding,
+    rules = DEFAULT_GAME_RULES, trainGauge = DEFAULT_GAUGE, trainPower = 'diesel', trainAxleLoadT, feeding,
   } = query;
 
   const targetSt = stations.get(targetId);
