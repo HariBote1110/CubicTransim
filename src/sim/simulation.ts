@@ -443,11 +443,51 @@ const segmentAllCbtc = (world: SimWorld, segment: Grid[]): boolean =>
 // S1(固定閉塞)のとき、segmentが他列車の占有する未占有でないブロックへ踏み込むなら
 // trueを返す(=このセグメントは予約してはいけない)。rules.signalling!=='s1'/'s2'/'s3'、または
 // ブロック索引が無ければ常にfalse(=S0と同じ、制約なし)。
+// H3(progress/review-play-modes-branch.md): entryKind==='home'のときブロック全体占有を
+// 無条件でバイパスすると、単線区間の両端に場内信号を置いただけで対向列車が中央でセルを
+// 取り合う恒久デッドロックになる(signalling-plan.mdの意図は駅構内の複数ホームへの
+// 同時進入=互いに重ならないトラックを使う場合の許可であり、単線の対向を許すものではない)。
+// 「自分がこのブロック内で実際に通る経路(route上、ブロックを出るまでの全セル)」が
+// 他列車の保有セルと重ならない場合に限って許可する。二面ホームなど互いに交わらない
+// トラックを使うケースは常に成立し(既存挙動を維持)、単線の対向は経路が必ず重なるため
+// 先着した列車がブロックを空けるまで後発が入口で待つ(=S1相当の排他)。
+const cellsThroughBlock = (world: SimWorld, route: Grid[], startIdx: number): Grid[] => {
+  if (!world.blocks) return [];
+  const cells: Grid[] = [];
+  let blockKey: string | undefined;
+  for (let i = startIdx; i < route.length; i++) {
+    const p = route[i];
+    const bk = world.blocks.blockKeyOf(p.x, p.z, p.layer ?? 0);
+    if (bk === undefined) {
+      // 信号セル(どのブロックにも属さない)。まだブロックへ入っていなければ
+      // くぐって入る信号そのものなのでスキップして先を見る。既にブロック内に
+      // 入ったあとなら、次の境界に達したということなのでそこで打ち切る。
+      if (blockKey !== undefined) break;
+      continue;
+    }
+    if (blockKey === undefined) blockKey = bk;
+    else if (bk !== blockKey) break;
+    cells.push(p);
+  }
+  return cells;
+};
+
+const pathOverlapsOthers = (
+  reservations: Map<string, string> | undefined,
+  path: Grid[],
+  trainId: string
+): boolean => {
+  if (!reservations) return false;
+  for (const c of path) {
+    const owner = reservations.get(reservationKey(c));
+    if (owner && owner !== trainId) return true;
+  }
+  return false;
+};
+
 // S2(信号の種別)ではS1と同じブロック全体判定を使うが、entryKind==='home'(場内信号を
-// くぐって入る)のときだけ例外にする: ホーム越しに入るブロックはトラック単位(=セル単位)の
-// 排他で足りるとみなし、ブロック全体の占有チェックを外す。実際のセル排他はtryReserveが
-// 別途保証するため、「自分のセグメントのセルが他列車のセルと重ならない限り入線できる」
-// という per-track occupancy がそのまま実現できる(複数ホームを持つ駅構内の同時進入)。
+// くぐって入る)のときだけ、上記pathOverlapsOthersによる「自分の全経路 vs 他列車の保有セル」
+// の判定に差し替える。
 // S3(保安装置)はS2の判定をそのまま含んだ上で(「S3はS2挙動を包含する」設計どおり)、
 // Effect B(CBTC移動閉塞)を追加する: segmentの全セルとtrainProtectionがともに'cbtc'なら
 // ブロック全体判定を丸ごとバイパスしてfalse(=S0と同じ、セル単位の排他のみ)を返す。
@@ -457,7 +497,9 @@ const blocksSegmentEntry = (
   trainId: string,
   segment: Grid[],
   entryKind?: CellData['signalKind'],
-  trainProtection?: TrainProtection
+  trainProtection?: TrainProtection,
+  route?: Grid[],
+  routeStartIdx?: number
 ): boolean => {
   if (!world.blocks) return false;
   if (rules.signalling === 's1') {
@@ -465,7 +507,12 @@ const blocksSegmentEntry = (
   }
   if (rules.signalling === 's2' || rules.signalling === 's3') {
     if (rules.signalling === 's3' && trainProtection === 'cbtc' && segmentAllCbtc(world, segment)) return false;
-    if (entryKind === 'home') return false;
+    if (entryKind === 'home') {
+      const path = route && routeStartIdx !== undefined
+        ? cellsThroughBlock(world, route, routeStartIdx)
+        : segment;
+      return pathOverlapsOthers(world.reservations, path, trainId);
+    }
     return blocksOccupiedByOthers(world.reservations, world.blocks, segment, trainId);
   }
   return false;
@@ -533,7 +580,7 @@ const ensureReservation = (
       : findSafeSegmentEnd(world.railMap, rt.route, 0);
     const segment = rt.route.slice(0, idx + 1);
     const entryKind = entrySignalKindFor(world, rt, 0);
-    if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection)) {
+    if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection, rt.route, 0)) {
       rt.debugStatus = 'Waiting for block to clear...';
       evaluateSpadOnce(world, rules, train, rt, rt.route[0], entryKind, events);
       return;
@@ -562,7 +609,7 @@ const ensureReservation = (
   const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, rt.reservedEndIndex + 1);
   const segment = rt.route.slice(rt.reservedEndIndex + 1, nextIdx + 1);
   const entryKind = entrySignalKindFor(world, rt, rt.reservedEndIndex + 1);
-  if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection)) {
+  if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection, rt.route, rt.reservedEndIndex + 1)) {
     evaluateSpadOnce(world, rules, train, rt, rt.route[rt.reservedEndIndex + 1], entryKind, events);
     return; // ブロックが空くまで現在の末端で待機
   }
