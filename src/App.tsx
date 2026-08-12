@@ -264,7 +264,13 @@ export default function App() {
         isEditingSchedule={isEditingSchedule}
         simSpeed={simSpeed}
         money={money}
-        onCommitPath={(path, mode, axisHint, level) => commitPath(path, mode, axisHint, level, effectiveRailOptions(gameRules, railOptions), regaugeTargetGauge, signalKind)}
+        onCommitPath={(path, mode, axisHint, level) => commitPath(
+          path, mode, axisHint, level, effectiveRailOptions(gameRules, railOptions), regaugeTargetGauge,
+          // L2: s2未満(信号種別の概念が無い)では常に'block'を書き込まず、種別欄そのものに
+          // 触れない(既存セルの値を保つ)。設計意図(s2未満では種別の概念が無い)とセーブの
+          // 素直さを揃える(挙動は変わらない: sim側の述語はもともとs2/s3以外で種別を見ない)。
+          gameRules.signalling === 's2' || gameRules.signalling === 's3' ? signalKind : undefined
+        )}
         removeSignal={removeSignal}
         onSimEvent={(event) => {
           if (event.type === 'arrive') handleTrainArrive(event.trainId, event.scheduleIndex);

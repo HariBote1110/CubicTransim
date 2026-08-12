@@ -89,8 +89,9 @@ export function gaugesCompatible(a: RailGauge, b: RailGauge, rules: GameRules): 
 /**
  * セルの電化方式を正規化する('dc'|'ac'|null)。PM2以前のセーブ・'modes'段階のUIが
  * 書き込むlegacyのboolean `true`は「直流」を意味する(design decision 1)。
- * persistence.tsのdeserialiseWorldで一度正規化しているが、テスト・デバッグシナリオ等
- * 経由で正規化前のCellDataがそのまま渡ってくることもあるため、ここでも防御的に扱う。
+ * persistence.tsのdeserialiseWorldがロード時に正規化するが、テストやデバッグシナリオが
+ * 正規化前のCellData(electrified: true)を直接組み立てて渡すケースが現存するため、
+ * この関数自身もboolean入力を受け付ける(=不変条件は「正規化済みとは限らない」)。
  */
 export function electrificationOf(cell: CellData | undefined): 'dc' | 'ac' | null {
   const e = cell?.electrified;
@@ -114,8 +115,9 @@ export function cellAllowsTrain(
   const system = electrificationOf(cell);
   if (!system) return false;
 
-  // 'modes'段階はUIが'ac'を書き込まないため、trainPowerも'electric'(=直流専用)しか
-  // 存在しない前提だが、念のため'boundaries'以上と同じ判定式を使い回す。
+  // 判定式は'modes'/'boundaries'以上で共通(段階ごとに分岐しない)。'modes'段階はUIが
+  // 'ac'/'electric-ac'/'electric-acdc'を書かないため、実質'electric'(直流専用)の分岐
+  // しか使われないが、式自体を分ける理由が無いので1本にまとめている。
   if (trainPower === 'electric') return system === 'dc';
   if (trainPower === 'electric-ac') return system === 'ac';
   if (trainPower === 'electric-acdc') return system === 'dc' || system === 'ac';

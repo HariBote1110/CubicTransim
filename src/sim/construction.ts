@@ -845,10 +845,11 @@ const NEIGHBOUR_OFFSETS: Pos[] = [
   { x: 0, z: 1 }, { x: -1, z: 1 }, { x: -1, z: 0 }, { x: -1, z: -1 },
 ];
 
-/** posの8近傍(または本セル)に電化railセルが1つでもあるか(PM4: 変電所の設置条件)。 */
+// L1: 呼び出し元(applySubstation)は必ず`if (existing) return state;`のあとに呼ぶため、
+// pos自身のセルは常にundefined(=既存セルが無いこと確定済み)。よってposの8近傍だけを
+// 見ればよく、自セルの電化判定は不要。
+/** posの8近傍に電化railセルが1つでもあるか(PM4: 変電所の設置条件)。 */
 const hasAdjacentElectrifiedRail = (railMap: Map<string, CellData>, pos: Pos): boolean => {
-  const self = railMap.get(toKey(pos.x, pos.z));
-  if (self && (self.type === 'rail' || self.type === 'station') && self.electrified) return true;
   return NEIGHBOUR_OFFSETS.some(d => {
     const cell = railMap.get(toKey(pos.x + d.x, pos.z + d.z));
     return !!cell && (cell.type === 'rail' || cell.type === 'station') && !!cell.electrified;
@@ -924,7 +925,7 @@ export function applySignal(
         break;
       }
     }
-    railMap.set(key, { ...cell, signalDir: nextDir, signalKind: cell.signalKind });
+    railMap.set(key, { ...cell, signalDir: nextDir });
   }
 
   return { railMap, stations: state.stations };

@@ -6,7 +6,7 @@ import type { SimWorld } from './simulation';
 import { buildBlockIndex } from './blocks';
 import { PLAY_MODE_PRESETS } from './gameRules';
 import {
-  weakerProtection, SPAD_CHANCE, PROTECTION_COST, PROTECTION_TRAIN_PRICE_MULTIPLIER,
+  weakerProtection, SPAD_CHANCE,
   costOfProtection, trainCostForProtected, TRAIN_COST,
 } from './economy';
 
@@ -129,7 +129,11 @@ describe('S3保安装置: weakerProtection純関数', () => {
     expect(weakerProtection(undefined, undefined)).toBe('none');
     expect(weakerProtection('ats-s', undefined)).toBe('none');
     expect(weakerProtection('cbtc', 'ats-s')).toBe('ats-s');
-    expect(weakerProtection('ats-p', 'atc')).toBe('ats-p'); // 同rank(確率は同じ)なのでどちらでも良い
+    // L5: ats-p/atcは同rank(SPAD_CHANCEが同じ0)なので、どちらのタイブレークでも挙動は
+    // 変わらない。実装の具体的な戻り値を固定するのではなく、その性質(結果のSPAD_CHANCEが
+    // 両者の最大値=0と一致する)を確かめる。
+    const tieResult = weakerProtection('ats-p', 'atc');
+    expect(SPAD_CHANCE[tieResult]).toBe(Math.max(SPAD_CHANCE['ats-p'], SPAD_CHANCE.atc));
   });
 
   it('SPAD_CHANCEはATS-Sのみ0より大きく1未満、ATS-P/ATC/CBTCは0', () => {
@@ -224,18 +228,25 @@ describe('S3保安装置: CBTC移動閉塞(Effect B)', () => {
 
 describe('S3保安装置: コスト定数', () => {
   it('地上設備は保安装置ごとにセル単価が異なり、未指定はコストゼロ', () => {
+    // L5: 単価定数を掛け算し直すのではなく、性質(未指定は0、セル数に比例、上位装置ほど
+    // 高い)を確かめる。定数の値そのものを変えても、この性質が保たれていれば通る。
     expect(costOfProtection(3, undefined)).toBe(0);
-    expect(costOfProtection(3, 'ats-s')).toBe(3 * PROTECTION_COST['ats-s']);
-    expect(costOfProtection(2, 'cbtc')).toBe(2 * PROTECTION_COST.cbtc);
-    expect(PROTECTION_COST['ats-s']).toBeLessThan(PROTECTION_COST['ats-p']);
-    expect(PROTECTION_COST['ats-p']).toBeLessThan(PROTECTION_COST.atc);
-    expect(PROTECTION_COST.atc).toBeLessThan(PROTECTION_COST.cbtc);
+    expect(costOfProtection(0, 'cbtc')).toBe(0);
+    expect(costOfProtection(6, 'ats-s')).toBe(2 * costOfProtection(3, 'ats-s')); // セル数に比例
+    expect(costOfProtection(3, 'ats-s')).toBeGreaterThan(0);
+    expect(costOfProtection(3, 'ats-s')).toBeLessThan(costOfProtection(3, 'ats-p'));
+    expect(costOfProtection(3, 'ats-p')).toBeLessThan(costOfProtection(3, 'atc'));
+    expect(costOfProtection(3, 'atc')).toBeLessThan(costOfProtection(3, 'cbtc'));
   });
 
   it('車上装置は基準額に倍率を乗算合成する(電化倍率とは別建て)', () => {
+    // L5: 倍率定数を掛け算し直すのではなく、性質(未指定は素の車両価格、上位装置ほど高い、
+    // 電化倍率とは乗算で合成される)を確かめる。
     expect(trainCostForProtected('diesel', undefined)).toBe(TRAIN_COST);
-    expect(trainCostForProtected('diesel', 'ats-s')).toBe(Math.round(TRAIN_COST * PROTECTION_TRAIN_PRICE_MULTIPLIER['ats-s']));
-    expect(trainCostForProtected('diesel', 'cbtc')).toBe(Math.round(TRAIN_COST * PROTECTION_TRAIN_PRICE_MULTIPLIER.cbtc));
+    expect(trainCostForProtected('diesel', 'ats-s')).toBeGreaterThan(TRAIN_COST);
+    expect(trainCostForProtected('diesel', 'ats-s')).toBeLessThan(trainCostForProtected('diesel', 'ats-p'));
+    expect(trainCostForProtected('diesel', 'ats-p')).toBeLessThan(trainCostForProtected('diesel', 'atc'));
+    expect(trainCostForProtected('diesel', 'atc')).toBeLessThan(trainCostForProtected('diesel', 'cbtc'));
     // 交流(AC_TRAIN_PRICE_MULTIPLIER)とCBTC倍率は乗算で合成される。
     const acCbtc = trainCostForProtected('electric-ac', 'cbtc');
     expect(acCbtc).toBeGreaterThan(trainCostForProtected('electric-ac', undefined));

@@ -116,7 +116,7 @@ export function blocksOccupiedByOthers(
 }
 
 // PM4/S1: 高架は":uN"、地下は負のlevelなので":u-N"になる(reservation.tsのreservationKey
-// と同じ規約)。旧正規表現は`\d+`のみで負の層(地下)を読み違えていた(常にNaN→layer0扱い)。
+// と同じ規約)。地下(負のlayer)を読み違えないよう、x/zだけでなくlayerの符号も許容する。
 const RESERVATION_KEY_RE = /^(-?\d+),(-?\d+)(?::u(-?\d+))?$/;
 
 const parseReservationKey = (key: string): { x: number; z: number; layer: number } | null => {

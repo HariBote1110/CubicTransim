@@ -32,7 +32,7 @@ const SUBSTATION_ALPHA = Math.round(0.7 * 255);
 /**
  * 薄い板(タスク仕様の0.05高)。render/trackGeometry.tsのRAIL_TOP(0.13、バラスト+レール
  * 頭頂の高さ)より下に置くとバラスト(BALLAST_WIDTH=0.5の不透明ボックス)に埋もれて
- * 見えなくなる(実機検証で発覚)。レール頭頂より上へ最小限持ち上げて可視化する。
+ * 見えなくなる。レール頭頂より上へ最小限持ち上げて可視化する。
  */
 const PLATE_HEIGHT = 0.05;
 const PLATE_CLEARANCE_ABOVE_RAIL = 0.13;
@@ -56,7 +56,7 @@ interface Props {
   /**
    * 地形field(GameScene props と同じ)。板のyへ`cellHeightAt(x,z)*OVERPASS_HEIGHT`ぶんの
    * 標高オフセットを足すのに使う(render/townGeometry.ts等と同じ変換式)。これが無いと
-   * 平坦でない地平(丘・自動トンネル部)で板が地形の中に埋もれて見えなくなる(実機検証で発覚)。
+   * 平坦でない地平(丘・自動トンネル部)で板が地形の中に埋もれて見えなくなる。
    */
   field: TerrainField;
   /** 変電所ツールが選択中のときだけ表示する(タスク仕様どおり、専用トグルは無い)。 */
