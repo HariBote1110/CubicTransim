@@ -183,8 +183,9 @@ export const WebGpuTrains: React.FC<Props> = ({
         const isTail = i === positions.length - 1 && positions.length > 1;
         const isHeadOrTail = i === 0 || isTail;
         const finalYaw = isTail ? yaw + Math.PI : yaw;
+        const finalPitch = isTail ? -pitch : pitch;
         const buf = isHeadOrTail ? head : mid;
-        buf.push(groupPos.x, groupPos.y, groupPos.z, finalYaw, pitch, tintR, tintG, tintB, flags);
+        buf.push(groupPos.x, groupPos.y, groupPos.z, finalYaw, finalPitch, tintR, tintG, tintB, flags);
 
         if (isSelected && i === 0) {
           selection.push(groupPos.x, groupPos.y + 0.85, groupPos.z, 0, 0, tintR, tintG, tintB, 0);

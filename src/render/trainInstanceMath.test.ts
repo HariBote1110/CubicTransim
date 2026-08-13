@@ -65,4 +65,28 @@ describe('headingToYawPitch', () => {
     expect(rotated.y).toBeCloseTo(heading.y, 10);
     expect(rotated.z).toBeCloseTo(heading.z, 10);
   });
+
+  it('tail flip (yaw+PI, pitch negated) reproduces the reversed heading on a slope', () => {
+    // 2両目(tail)はfinalYaw = yaw+PI, finalPitch = -pitchで描画される(WebGpuTrains.tsx)。
+    // このヘルパーで world 前方ベクトルを再現し、-heading と一致することを検証する
+    // (yawだけ反転してpitchを据え置くと、坂ではy成分が反転せず逆走して見えるバグがあった)。
+    const raw = { x: 0.4, y: -0.3, z: 0.866 };
+    const len = Math.hypot(raw.x, raw.y, raw.z);
+    const heading = { x: raw.x / len, y: raw.y / len, z: raw.z / len };
+    const { yaw, pitch } = headingToYawPitch(heading);
+
+    const forwardFrom = (yawArg: number, pitchArg: number) => {
+      const cp = Math.cos(pitchArg);
+      const sp = Math.sin(pitchArg);
+      const pitched = { y: -sp, z: cp };
+      const cy = Math.cos(yawArg);
+      const sy = Math.sin(yawArg);
+      return { x: pitched.z * sy, y: pitched.y, z: pitched.z * cy };
+    };
+
+    const tailForward = forwardFrom(yaw + Math.PI, -pitch);
+    expect(tailForward.x).toBeCloseTo(-heading.x, 10);
+    expect(tailForward.y).toBeCloseTo(-heading.y, 10);
+    expect(tailForward.z).toBeCloseTo(-heading.z, 10);
+  });
 });
