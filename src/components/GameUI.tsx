@@ -33,6 +33,7 @@ import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
 import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST } from '../sim/economy';
+import { fromKey } from '../utils';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -143,19 +144,18 @@ interface GameUIProps {
   // PM2 Stage B: 改軌ツール専用の目的軌間。
   regaugeTargetGauge: RailGauge | undefined;
   setRegaugeTargetGauge: (gauge: RailGauge | undefined) => void;
-  // PM2: 車庫(depot)ツールで列車を購入するときの動力方式選択。
-  purchasePower: TrainPower;
-  setPurchasePower: (power: TrainPower) => void;
   // S2: 信号(signal)ツール専用の種別選択。rules.signalling==='s2'のときだけUIに出す。
   signalKind: SignalKind;
   setSignalKind: (kind: SignalKind) => void;
-  // S3: 車庫(depot)ツールで列車を購入するときの保安装置選択。rules.signalling==='s3'のみ。
-  purchaseProtection: TrainProtection | undefined;
-  setPurchaseProtection: (protection: TrainProtection | undefined) => void;
   // OpenTTD式の駅方向指定: 駅(station)ツールでプレイヤーが選ぶ軸('ns'/'ew')。
   // 地平駅の建設判定で権威的に使う(高架/地下駅は別機構のため参照しない)。
   stationAxis: StationAxis;
   setStationAxis: (axis: StationAxis) => void;
+  // ★追加: 車庫インスペクタ(選択中の車庫セル・列車購入/売却)。
+  selectedDepotKey: string | null;
+  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection) => void;
+  onSellTrain: (trainId: string) => void;
+  onSelectTrain: (id: string | null) => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -170,7 +170,7 @@ const BUILD_TOOLS: {
   { mode: 'none', label: '選択', key: '1', accent: '#8b98a6', hint: '列車や駅をクリックして選ぶ' },
   { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: `ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)、地下は掘割(${UNDERGROUND_RAIL_COST_MULTIPLIER}倍)。高架/地下の端に当てると坂で自動接続。↑/↓で建設レベル(高架/地下)を切替` },
   { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: `線路の上に置くと隣接セルと繋がって長いホームになる。地下駅は¥${UNDERGROUND_STATION_COST.toLocaleString()}。↑/↓で建設レベル(高架/地下)を切替` },
-  { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
+  { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '選択ツールで車庫をクリックすると車両の購入・管理ができる' },
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
   { mode: 'raise', label: '盛土', key: '7', accent: T.terrain, cost: `¥${TERRAIN_EDIT_COST}/マス`, hint: 'ドラッグした矩形範囲を1段盛り上げる。段差1以下を保つため周囲も自動でならされる(その分も課金)。線路・町・水の上は不可' },
@@ -216,9 +216,9 @@ export const GameUI: React.FC<GameUIProps> = ({
   lines, services, onCreateLine, onClearLineStops, onRenameLine, onSetLineMode, onDeleteLine,
   onCreateService, onRenameService, onSetServiceHeadway, onToggleServiceStop, onDeleteService, onAssignService,
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
-  purchasePower, setPurchasePower, signalKind, setSignalKind,
-  purchaseProtection, setPurchaseProtection,
+  signalKind, setSignalKind,
   stationAxis, setStationAxis,
+  selectedDepotKey, onBuyTrain, onSellTrain, onSelectTrain,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'lines'>('none');
@@ -308,6 +308,8 @@ export const GameUI: React.FC<GameUIProps> = ({
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
+  const selectedDepotPos = selectedDepotKey ? fromKey(selectedDepotKey) : null;
+  const selectedDepotCell = selectedDepotPos ? railMap.get(selectedDepotKey!) : undefined;
   const activeTool = BUILD_TOOLS.find(t => t.mode === buildMode);
 
   // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
@@ -390,6 +392,19 @@ export const GameUI: React.FC<GameUIProps> = ({
               demand={stationDemand}
               money={money}
               onUpgradeDoors={onUpgradeDoors}
+            />
+          ) : selectedDepotPos && selectedDepotCell?.type === 'depot' ? (
+            <DepotInspector
+              x={selectedDepotPos.x}
+              z={selectedDepotPos.z}
+              gauge={selectedDepotCell.gauge}
+              trains={trains}
+              money={money}
+              gameRules={gameRules}
+              onSelectTrain={onSelectTrain}
+              onDeploy={onDeploy}
+              onSellTrain={onSellTrain}
+              onBuyTrain={onBuyTrain}
             />
           ) : (
             <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
@@ -701,54 +716,6 @@ export const GameUI: React.FC<GameUIProps> = ({
                   key={opt.label}
                   onClick={() => setRailOptions({ ...railOptions, protection: opt.value })}
                   style={button({ active: railOptions.protection === opt.value, accent: T.accent, compact: true })}
-                  title={opt.hint}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* PM2/PM3: 車庫ツールでの列車購入時の動力方式選択(rules.electrification!=='none'のみ)。
-            交流/交直流はrules.electrificationが'boundaries'以上のときのみ選べる(design decision 2)。
-            軌間は車庫セルの軌間を自動継承する(useGameLogic.tsのbuyTrain)ため選択させない。 */}
-        {buildMode === 'depot' && gameRules.electrification !== 'none' && (
-          <div style={panel({
-            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
-          })}>
-            <span style={{ color: T.textMuted }}>購入する動力</span>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {([
-                ['electric', '電車'],
-                ...(gameRules.electrification !== 'modes' ? [['electric-ac', '交流電車'], ['electric-acdc', '交直流電車']] as const : []),
-                ['diesel', '気動車'],
-              ] as const).map(([value, label]) => (
-                <button
-                  key={value}
-                  onClick={() => setPurchasePower(value)}
-                  style={button({ active: purchasePower === value, accent: T.depot, compact: true })}
-                  title={`¥${trainCostForProtected(value, gameRules.signalling === 's3' ? purchaseProtection : undefined).toLocaleString()}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* S3: 車庫ツールでの列車購入時の保安装置選択(rules.signalling==='s3'のときのみ)。 */}
-        {buildMode === 'depot' && gameRules.signalling === 's3' && (
-          <div style={panel({
-            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
-          })}>
-            <span style={{ color: T.textMuted }}>保安装置</span>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {PROTECTION_OPTIONS.map(opt => (
-                <button
-                  key={opt.label}
-                  onClick={() => setPurchaseProtection(opt.value)}
-                  style={button({ active: purchaseProtection === opt.value, accent: T.depot, compact: true })}
                   title={opt.hint}
                 >
                   {opt.label}
@@ -1268,6 +1235,118 @@ const StationInspector: React.FC<{
         <div style={{ fontSize: 11, color: T.textFaint, lineHeight: 1.6 }}>
           ホームドアを設置すると人身事故の発生確率が下がります。
         </div>
+      </div>
+    </div>
+  );
+};
+
+// --- 車庫インスペクタ ---
+// OpenTTD式: 車庫セルをクリックすると即購入ではなく、このパネルで在籍列車の一覧・
+// 出庫/売却・新規購入(動力/保安装置選択)を行う。
+const DepotInspector: React.FC<{
+  x: number;
+  z: number;
+  gauge: RailGauge | undefined;
+  trains: TrainData[];
+  money: number;
+  gameRules: GameRules;
+  onSelectTrain: (id: string | null) => void;
+  onDeploy: (id: string) => void;
+  onSellTrain: (id: string) => void;
+  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection) => void;
+}> = ({ x, z, gauge, trains, money, gameRules, onSelectTrain, onDeploy, onSellTrain, onBuyTrain }) => {
+  const [power, setPower] = useState<TrainPower>('diesel');
+  const [protection, setProtection] = useState<TrainProtection | undefined>(undefined);
+
+  const stored = trains.filter(t => t.status === 'stored' && t.x === x && t.z === z);
+  const effectivePower = gameRules.electrification !== 'none' ? power : 'diesel';
+  const effectiveProtection = gameRules.signalling === 's3' ? protection : undefined;
+  const cost = trainCostForProtected(effectivePower, effectiveProtection);
+  const canBuy = money >= cost;
+
+  const POWER_OPTIONS: readonly (readonly [TrainPower, string])[] = [
+    ['electric', '電車'],
+    ...(gameRules.electrification !== 'modes' ? [['electric-ac', '交流電車'], ['electric-acdc', '交直流電車']] as const : []),
+    ['diesel', '気動車'],
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: T.depot }}>車庫</div>
+        <div style={{ fontSize: 11, color: T.textFaint }}>
+          ({x}, {z}){gauge ? `・軌間${gauge}mm` : ''}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <div style={sectionLabel}>在籍列車 — {stored.length}本</div>
+        {stored.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: T.textFaint }}>在籍している列車はありません</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {stored.map(t => (
+              <div key={t.id} style={{
+                display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                padding: '5px 7px', borderRadius: T.radius, background: 'rgba(255,255,255,0.05)',
+              }}>
+                <span style={{ flex: 1, fontWeight: 600 }}>
+                  {t.id}
+                  <span style={{ marginLeft: 6, fontSize: 11, color: T.textFaint, fontWeight: 400 }}>
+                    {t.cars}両{t.power ? `・${t.power}` : ''}
+                  </span>
+                </span>
+                <button onClick={() => onSelectTrain(t.id)} style={button({ compact: true })}>選択</button>
+                <button onClick={() => onDeploy(t.id)} style={button({ compact: true, accent: T.positive })}>出庫</button>
+                <button onClick={() => onSellTrain(t.id)} style={button({ compact: true, accent: T.danger })}>売却</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 13 }}>
+        <div style={sectionLabel}>購入</div>
+
+        {gameRules.electrification !== 'none' && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+            {POWER_OPTIONS.map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setPower(value)}
+                style={button({ active: power === value, accent: T.depot, compact: true })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {gameRules.signalling === 's3' && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+            {PROTECTION_OPTIONS.map(opt => (
+              <button
+                key={opt.label}
+                onClick={() => setProtection(opt.value)}
+                style={button({ active: protection === opt.value, accent: T.depot, compact: true })}
+                title={opt.hint}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <button
+          onClick={() => onBuyTrain(x, z, power, protection)}
+          disabled={!canBuy}
+          style={{ ...button({ disabled: !canBuy, accent: T.depot }), width: '100%' }}
+        >
+          ＋列車を購入 ¥{cost.toLocaleString()}
+        </button>
+        {!canBuy && (
+          <div style={{ fontSize: 11, color: T.danger, marginTop: 4 }}>資金が足りません</div>
+        )}
       </div>
     </div>
   );

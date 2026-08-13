@@ -18,7 +18,7 @@ import {
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
-  trainCostForProtected, costOfProtection, costMultiplierForRailWeight,
+  trainCostForProtected, costOfProtection, costMultiplierForRailWeight, trainSellRefund,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
@@ -106,6 +106,8 @@ export const useGameLogic = () => {
   );
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
+  // ★追加: 車庫選択(列車選択・駅選択とは排他)。toKey(x,z)形式のセルキー。
+  const [selectedDepotKey, setSelectedDepotKey] = useState<string | null>(null);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
 
   // ★追加: 人身事故の通知(バナー表示用)。列車のhaltRemainingが尽きたら自動的に消える。
@@ -503,10 +505,30 @@ export const useGameLogic = () => {
           : {}),
     };
     setTrains(prev => [...prev, newTrain]);
-    setSelectedTrainId(newTrain.id);
-    setIsEditingSchedule(false);
     setMoney(m => m - cost);
     setCurrentLedger(l => ({ ...l, construction: l.construction + cost }));
+  };
+
+  // ★追加: 車庫在籍中の列車を売却する。払い戻し(sim/economy.tsのtrainSellRefund)は
+  // CAR_REFUND/CAR_COSTと同じ50%比率を編成全体に適用したもの。運行中の列車は対象外。
+  const sellTrain = (trainId: string) => {
+    const target = trains.find(t => t.id === trainId);
+    if (!target || target.status !== 'stored') return;
+    const power = gameRules.electrification !== 'none' ? (target.power ?? 'diesel') : 'diesel';
+    const baseCost = trainCostForProtected(power, target.protection);
+    const refund = trainSellRefund(baseCost, target.cars);
+    setTrains(prev => prev.filter(t => t.id !== trainId));
+    setMoney(m => m + refund);
+    setCurrentLedger(l => ({ ...l, construction: l.construction - refund }));
+    if (selectedTrainId === trainId) setSelectedTrainId(null);
+  };
+
+  // ★追加: 車庫選択(列車選択・駅選択とは排他)。GameScene側から車庫セルクリックで呼ばれる。
+  const selectDepot = (x: number, z: number) => {
+    setSelectedDepotKey(toKey(x, z));
+    setSelectedTrainId(null);
+    setSelectedStationId(null);
+    setIsEditingSchedule(false);
   };
 
   // ★追加: 増結(車庫在籍中の列車のみ想定。running中はGameUI側でボタンを非表示にする)。
@@ -723,6 +745,7 @@ export const useGameLogic = () => {
     setSelectedTrainId(id);
     setIsEditingSchedule(false);
     setSelectedStationId(null);
+    setSelectedDepotKey(null);
   };
 
   // ★追加: デッドロック救済用、列車のドラッグ置き直し(プラレールを掴んで動かす操作)。
@@ -738,6 +761,7 @@ export const useGameLogic = () => {
   const selectStation = (id: string | null) => {
     setSelectedStationId(id);
     setSelectedTrainId(null);
+    setSelectedDepotKey(null);
     setIsEditingSchedule(false);
   };
 
@@ -950,7 +974,8 @@ export const useGameLogic = () => {
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal,
     handleTrainArrive,
-    buyTrain, deployTrain,
+    buyTrain, deployTrain, sellTrain,
+    selectedDepotKey, selectDepot,
     addCar, removeCar,
     addSchedule,
     worldRef,

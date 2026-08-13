@@ -128,7 +128,7 @@ interface GameSceneProps {
   removeSignal: (x: number, z: number) => void;
   onSimEvent: (event: SimEvent) => void;
   onSelectTrain: (id: string | null) => void;
-  onBuyTrain: (x: number, z: number) => void;
+  onSelectDepot: (x: number, z: number) => void;
   onAddSchedule: (trainId: string, stationId: string) => void;
   onSelectStation: (id: string | null) => void;
   onPreviewChange?: (path: { x: number; z: number }[]) => void;
@@ -141,7 +141,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, towns, townTiles, field, halfExtent, webGpuLayer,
   cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, stationAxis, selectedTrainId,
   isEditingSchedule, simSpeed,
-  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
+  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onSelectDepot, onAddSchedule, onSelectStation,
   onPreviewChange, lines = [], services = [], onRelocateTrain,
 }) => {
   const inputRef = useRef<HTMLDivElement>(null);
@@ -439,7 +439,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       return;
     }
     if (cell && cell.type === 'depot') {
-      onBuyTrain(pos.x, pos.z);
+      onSelectDepot(pos.x, pos.z);
       return;
     }
     if (undergroundView) {

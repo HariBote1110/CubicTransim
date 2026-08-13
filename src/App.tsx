@@ -9,7 +9,7 @@ import type { TownDensity } from './sim/towns';
 import type { TerrainProfile } from './sim/terrainField';
 import { PLAY_MODE_PRESETS, PLAY_MODE_LABELS, effectiveRailOptions, type PlayMode, type Signalling } from './sim/gameRules';
 import type { RailBuildOptions } from './sim/construction';
-import type { RailGauge, TrainPower, SignalKind, TrainProtection } from './types';
+import type { RailGauge, SignalKind } from './types';
 import { DEFAULT_GAUGE } from './types';
 import { T, button as themeButton } from './ui/theme';
 import { WebGpuTerrainLayer } from './components/WebGpuTerrainLayer';
@@ -146,8 +146,6 @@ export default function App() {
   const [regaugeTargetGauge, setRegaugeTargetGauge] = useState<RailGauge | undefined>(DEFAULT_GAUGE);
   // S2: 信号ツールで置く信号の種別選択。rules.signalling!=='s2'の間はUIから触れられない。
   const [signalKind, setSignalKind] = useState<SignalKind>('block');
-  const [purchasePower, setPurchasePower] = useState<TrainPower>('diesel');
-  const [purchaseProtection, setPurchaseProtection] = useState<TrainProtection | undefined>(undefined);
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
@@ -218,7 +216,8 @@ export default function App() {
     railMap, stations, trains, towns, townTileIndex, newGame, field, worldSeed, halfExtent, terrainProfile, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
-    buyTrain, deployTrain,
+    buyTrain, deployTrain, sellTrain,
+    selectedDepotKey, selectDepot,
     addCar, removeCar,
     addSchedule, worldRef, relocateTrainAt,
     scheduleClipboard, copySchedule, pasteSchedule,
@@ -285,7 +284,7 @@ export default function App() {
           if (event.type === 'townGrowth') handleTownGrowth(event);
         }}
         onSelectTrain={setSelectedTrainId}
-        onBuyTrain={(x, z) => buyTrain(x, z, purchasePower, purchaseProtection)}
+        onSelectDepot={selectDepot}
         onAddSchedule={addSchedule}
         onSelectStation={selectStation}
         onPreviewChange={handlePreviewChange}
@@ -353,12 +352,12 @@ export default function App() {
         setRailOptions={setRailOptions}
         regaugeTargetGauge={regaugeTargetGauge}
         setRegaugeTargetGauge={setRegaugeTargetGauge}
-        purchasePower={purchasePower}
-        purchaseProtection={purchaseProtection}
-        setPurchaseProtection={setPurchaseProtection}
-        setPurchasePower={setPurchasePower}
         signalKind={signalKind}
         setSignalKind={setSignalKind}
+        selectedDepotKey={selectedDepotKey}
+        onBuyTrain={buyTrain}
+        onSellTrain={sellTrain}
+        onSelectTrain={setSelectedTrainId}
       />
 
       {showStartupOptions && (
