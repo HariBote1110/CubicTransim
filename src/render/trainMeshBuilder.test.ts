@@ -40,6 +40,48 @@ describe('buildTrainCarMesh', () => {
   });
 });
 
+describe('buildTrainCarMesh（車種ごとの見た目)', () => {
+  const MODEL_IDS = ['commuter', 'suburban', 'express', 'local-express'] as const;
+
+  it('builds a non-null baked chunk for every model and both variants, within the dimension budget', () => {
+    for (const modelId of MODEL_IDS) {
+      for (const variant of ['head', 'mid'] as const) {
+        const mesh = buildTrainCarMesh(variant, modelId);
+        expect(mesh).not.toBeNull();
+        const [minX, minY, minZ, maxX, maxY, maxZ] = mesh!.aabb;
+        expect(maxX - minX).toBeLessThanOrEqual(0.50);
+        expect(maxZ - minZ).toBeLessThanOrEqual(0.92);
+        expect(minY).toBeGreaterThanOrEqual(-0.60);
+        expect(maxY).toBeLessThanOrEqual(0.60);
+      }
+    }
+  });
+
+  it('head and mid vertex counts differ for every model (cab-only features)', () => {
+    for (const modelId of MODEL_IDS) {
+      const head = buildTrainCarMesh('head', modelId)!;
+      const mid = buildTrainCarMesh('mid', modelId)!;
+      expect(head.positions.length).not.toBe(mid.positions.length);
+    }
+  });
+
+  it('the express (nose-long) head has more geometry than the commuter (flat-black) head', () => {
+    const commuterHead = buildTrainCarMesh('head', 'commuter')!;
+    const expressHead = buildTrainCarMesh('head', 'express')!;
+    expect(expressHead.positions.length).toBeGreaterThan(commuterHead.positions.length);
+  });
+
+  it('every model keeps the tint(alpha) convention: only line-colour vertices are alpha=255', () => {
+    for (const modelId of MODEL_IDS) {
+      const mesh = buildTrainCarMesh('mid', modelId)!;
+      const alphas = new Set(Array.from(mesh.colours, alphaOf));
+      expect(alphas.has(255)).toBe(true);
+      expect(alphas.has(0)).toBe(true);
+      expect([...alphas].every(a => a === 0 || a === 255)).toBe(true);
+    }
+  });
+});
+
 describe('buildSelectionMarkerMesh / buildRouteDotMesh', () => {
   it('are fully tinted (alpha=255) so the instance tint colours them directly', () => {
     for (const mesh of [buildSelectionMarkerMesh()!, buildRouteDotMesh()!]) {
