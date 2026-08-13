@@ -18,7 +18,7 @@ import {
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
   calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
-  trainCostForProtected, costOfProtection, costMultiplierForRailWeight, trainSellRefund,
+  trainCostForProtected, costOfProtection, costMultiplierForRailWeight, trainSellRefund, trainTotalCost,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
@@ -523,6 +523,39 @@ export const useGameLogic = () => {
     if (selectedTrainId === trainId) setSelectedTrainId(null);
   };
 
+  // ★追加: 車庫在籍中の列車を複製する(OpenTTD風の大量増備)。同じ編成(cars/gauge/power/
+  // protection/axleLoadT/serviceId/schedule)を同じ車庫に増やす。countぶん複製を試みるが、
+  // 資金が足りなくなった時点で打ち切る(部分複製OK)。Reactステート更新は1回のバッチにまとめる
+  // (setTrains/setMoneyをループ内で呼ばない)。
+  const cloneTrain = (trainId: string, count: number = 1) => {
+    const source = trains.find(t => t.id === trainId);
+    if (!source || source.status !== 'stored') return;
+    const power = gameRules.electrification !== 'none' ? (source.power ?? 'diesel') : 'diesel';
+    const baseCost = trainCostForProtected(power, source.protection);
+    const perCloneCost = trainTotalCost(baseCost, source.cars);
+    if (perCloneCost <= 0) return;
+
+    const clones: TrainData[] = [];
+    let remainingMoney = money;
+    for (let i = 0; i < count; i += 1) {
+      if (remainingMoney < perCloneCost) break;
+      remainingMoney -= perCloneCost;
+      clones.push({
+        ...source,
+        id: Math.random().toString(36).substr(0, 4),
+        status: 'stored',
+        scheduleIndex: 0,
+        schedule: [...source.schedule],
+      });
+    }
+    if (clones.length === 0) return;
+
+    const totalCost = perCloneCost * clones.length;
+    setTrains(prev => [...prev, ...clones]);
+    setMoney(m => m - totalCost);
+    setCurrentLedger(l => ({ ...l, construction: l.construction + totalCost }));
+  };
+
   // ★追加: 車庫選択(列車選択・駅選択とは排他)。GameScene側から車庫セルクリックで呼ばれる。
   const selectDepot = (x: number, z: number) => {
     setSelectedDepotKey(toKey(x, z));
@@ -974,7 +1007,7 @@ export const useGameLogic = () => {
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal,
     handleTrainArrive,
-    buyTrain, deployTrain, sellTrain,
+    buyTrain, deployTrain, sellTrain, cloneTrain,
     selectedDepotKey, selectDepot,
     addCar, removeCar,
     addSchedule,

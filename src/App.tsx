@@ -216,7 +216,7 @@ export default function App() {
     railMap, stations, trains, towns, townTileIndex, newGame, field, worldSeed, halfExtent, terrainProfile, editedField, baseField, cornerDiffs, selectedTrainId, setSelectedTrainId,
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal, handleTrainArrive,
-    buyTrain, deployTrain, sellTrain,
+    buyTrain, deployTrain, sellTrain, cloneTrain,
     selectedDepotKey, selectDepot,
     addCar, removeCar,
     addSchedule, worldRef, relocateTrainAt,
@@ -357,6 +357,7 @@ export default function App() {
         selectedDepotKey={selectedDepotKey}
         onBuyTrain={buyTrain}
         onSellTrain={sellTrain}
+        onCloneTrain={cloneTrain}
         onSelectTrain={setSelectedTrainId}
       />
 

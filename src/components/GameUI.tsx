@@ -32,7 +32,7 @@ import type { EditedTerrainField } from '../sim/terrainOverlay';
 import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
-import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST } from '../sim/economy';
+import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST, trainTotalCost } from '../sim/economy';
 import { fromKey } from '../utils';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
@@ -155,6 +155,7 @@ interface GameUIProps {
   selectedDepotKey: string | null;
   onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection) => void;
   onSellTrain: (trainId: string) => void;
+  onCloneTrain: (trainId: string, count?: number) => void;
   onSelectTrain: (id: string | null) => void;
 }
 
@@ -218,7 +219,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
   signalKind, setSignalKind,
   stationAxis, setStationAxis,
-  selectedDepotKey, onBuyTrain, onSellTrain, onSelectTrain,
+  selectedDepotKey, onBuyTrain, onSellTrain, onCloneTrain, onSelectTrain,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'lines'>('none');
@@ -404,6 +405,7 @@ export const GameUI: React.FC<GameUIProps> = ({
               onSelectTrain={onSelectTrain}
               onDeploy={onDeploy}
               onSellTrain={onSellTrain}
+              onCloneTrain={onCloneTrain}
               onBuyTrain={onBuyTrain}
             />
           ) : (
@@ -1253,8 +1255,9 @@ const DepotInspector: React.FC<{
   onSelectTrain: (id: string | null) => void;
   onDeploy: (id: string) => void;
   onSellTrain: (id: string) => void;
+  onCloneTrain: (id: string, count?: number) => void;
   onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection) => void;
-}> = ({ x, z, gauge, trains, money, gameRules, onSelectTrain, onDeploy, onSellTrain, onBuyTrain }) => {
+}> = ({ x, z, gauge, trains, money, gameRules, onSelectTrain, onDeploy, onSellTrain, onCloneTrain, onBuyTrain }) => {
   const [power, setPower] = useState<TrainPower>('diesel');
   const [protection, setProtection] = useState<TrainProtection | undefined>(undefined);
 
@@ -1285,22 +1288,40 @@ const DepotInspector: React.FC<{
           <div style={{ fontSize: 11.5, color: T.textFaint }}>在籍している列車はありません</div>
         ) : (
           <div style={{ display: 'grid', gap: 6 }}>
-            {stored.map(t => (
-              <div key={t.id} style={{
-                display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
-                padding: '5px 7px', borderRadius: T.radius, background: 'rgba(255,255,255,0.05)',
-              }}>
-                <span style={{ flex: 1, fontWeight: 600 }}>
-                  {t.id}
-                  <span style={{ marginLeft: 6, fontSize: 11, color: T.textFaint, fontWeight: 400 }}>
-                    {t.cars}両{t.power ? `・${t.power}` : ''}
+            {stored.map(t => {
+              const clonePower = gameRules.electrification !== 'none' ? (t.power ?? 'diesel') : 'diesel';
+              const cloneCost = trainTotalCost(trainCostForProtected(clonePower, t.protection), t.cars);
+              const canClone = money >= cloneCost;
+              const cloneTitle = `1本 ¥${cloneCost.toLocaleString()}`;
+              return (
+                <div key={t.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                  padding: '5px 7px', borderRadius: T.radius, background: 'rgba(255,255,255,0.05)',
+                }}>
+                  <span style={{ flex: 1, fontWeight: 600 }}>
+                    {t.id}
+                    <span style={{ marginLeft: 6, fontSize: 11, color: T.textFaint, fontWeight: 400 }}>
+                      {t.cars}両{t.power ? `・${t.power}` : ''}
+                    </span>
                   </span>
-                </span>
-                <button onClick={() => onSelectTrain(t.id)} style={button({ compact: true })}>選択</button>
-                <button onClick={() => onDeploy(t.id)} style={button({ compact: true, accent: T.positive })}>出庫</button>
-                <button onClick={() => onSellTrain(t.id)} style={button({ compact: true, accent: T.danger })}>売却</button>
-              </div>
-            ))}
+                  <button onClick={() => onSelectTrain(t.id)} style={button({ compact: true })}>選択</button>
+                  <button onClick={() => onDeploy(t.id)} style={button({ compact: true, accent: T.positive })}>出庫</button>
+                  <button
+                    onClick={() => onCloneTrain(t.id, 1)}
+                    disabled={!canClone}
+                    style={button({ compact: true, disabled: !canClone })}
+                    title={cloneTitle}
+                  >複製</button>
+                  <button
+                    onClick={() => onCloneTrain(t.id, 5)}
+                    disabled={!canClone}
+                    style={button({ compact: true, disabled: !canClone })}
+                    title={cloneTitle}
+                  >×5</button>
+                  <button onClick={() => onSellTrain(t.id)} style={button({ compact: true, accent: T.danger })}>売却</button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
