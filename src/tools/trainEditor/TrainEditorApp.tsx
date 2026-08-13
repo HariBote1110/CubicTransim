@@ -8,12 +8,36 @@ import { TRAIN_MODELS, type TrainModelId } from '../../sim/physics';
 import { MODEL_PARTS } from '../../render/trainMeshBuilder';
 import { validateParts, type TrainPart, type TrainCarParts } from '../../render/trainPartsSpec';
 import { UNAVAILABLE_MESSAGE, type WebGpuUnavailableError } from '../../render/webgpuLayer';
+import { ISO_H, ISO_X, ISO_Y, type WebGpuCameraState } from '../../render/webgpuCamera';
+import { clientToScreenPx } from '../../render/picking';
 import { TrainEditorPreview } from './previewController';
+import { pickPart } from './partPicking';
+import { consistTransforms } from './consistLayout';
 import { PartsList } from './PartsList';
 import { PartInspector } from './PartInspector';
 
 const MODEL_IDS: readonly TrainModelId[] = ['commuter', 'suburban', 'express', 'local-express'];
 type Variant = 'head' | 'mid';
+
+const ZOOM_MIN = 60;
+const ZOOM_MAX = 600;
+const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+const snap = (v: number, step: number): number => Math.round(v / step) * step;
+
+type DragMode = 'none' | 'pan' | 'yaw' | 'move-part';
+interface DragState {
+  mode: DragMode;
+  startSx: number;
+  startSy: number;
+  startClientX: number;
+  startPanX: number;
+  startPanZ: number;
+  startYawDeg: number;
+  partYaw: number;
+  partVariant: Variant;
+  partIndex: number;
+  pos0: [number, number, number];
+}
 
 const deepClone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -66,6 +90,7 @@ export const TrainEditorApp: React.FC = () => {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRef = useRef<TrainEditorPreview | null>(null);
+  const dragRef = useRef<DragState | null>(null);
 
   // カメラ・路線色・yawはRAFループから毎フレーム参照するのでrefにも複製する
   // (Stateの再バインドを待たずに次フレームへ反映するため)。
@@ -97,6 +122,11 @@ export const TrainEditorApp: React.FC = () => {
   const handlePartChange = (index: number, next: TrainPart): void => {
     updateVariantParts(list => list.map((p, i) => (i === index ? next : p)));
   };
+  /** variant/indexを明示指定してパーツを差し替える(ドラッグ・キー操作からは`variant` stateの
+   * 反映タイミングに依存させたくないため、こちらを使う)。 */
+  const setPartAt = useCallback((v: Variant, index: number, next: TrainPart): void => {
+    setDoc(prev => ({ ...prev, [v]: prev[v].map((p, i) => (i === index ? next : p)) }));
+  }, []);
   const handleToggleVisible = (index: number): void => {
     setHidden(prev => {
       const next = new Set(prev[variant]);
@@ -169,6 +199,164 @@ export const TrainEditorApp: React.FC = () => {
     file.text().then(text => setJsonText(text)).catch(() => setImportError('ファイルの読み込みに失敗しました。'));
   };
 
+  // --- マウス操作(左ドラッグ=パン/パーツ移動、右・中ドラッグ=yaw、ホイール=ズーム) ---
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>): void => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const { sx, sy } = clientToScreenPx(e.clientX, e.clientY, rect, dpr);
+    canvas.setPointerCapture(e.pointerId);
+
+    if (e.button === 2 || e.button === 1) {
+      dragRef.current = {
+        mode: 'yaw', startSx: sx, startSy: sy, startClientX: e.clientX,
+        startPanX: panX, startPanZ: panZ, startYawDeg: yawDeg,
+        partYaw: 0, partVariant: variant, partIndex: -1, pos0: [0, 0, 0],
+      };
+      return;
+    }
+    if (e.button !== 0) return;
+
+    const camera: WebGpuCameraState = {
+      centreX: panX, centreZ: panZ, pixelsPerUnit: zoom,
+      widthPx: Math.max(1, rect.width * dpr), heightPx: Math.max(1, rect.height * dpr),
+    };
+    const headIdx = doc.head.map((_, i) => i).filter(i => !hidden.head.has(i));
+    const midIdx = doc.mid.map((_, i) => i).filter(i => !hidden.mid.has(i));
+    const hit = pickPart(camera, sx, sy, yawDeg, headIdx.map(i => doc.head[i]), midIdx.map(i => doc.mid[i]));
+
+    if (hit) {
+      const originalIndex = hit.variant === 'head' ? headIdx[hit.index] : midIdx[hit.index];
+      const part = doc[hit.variant][originalIndex];
+      const t = consistTransforms(yawDeg).find(c => c.role === hit.role)!;
+      setVariant(hit.variant);
+      setSelectedIndex(originalIndex);
+      dragRef.current = {
+        mode: 'move-part', startSx: sx, startSy: sy, startClientX: e.clientX,
+        startPanX: panX, startPanZ: panZ, startYawDeg: yawDeg,
+        partYaw: t.yaw, partVariant: hit.variant, partIndex: originalIndex,
+        pos0: [...part.pos] as [number, number, number],
+      };
+    } else {
+      setSelectedIndex(null);
+      dragRef.current = {
+        mode: 'pan', startSx: sx, startSy: sy, startClientX: e.clientX,
+        startPanX: panX, startPanZ: panZ, startYawDeg: yawDeg,
+        partYaw: 0, partVariant: variant, partIndex: -1, pos0: [0, 0, 0],
+      };
+    }
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>): void => {
+    const drag = dragRef.current;
+    if (!drag || drag.mode === 'none') return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const { sx, sy } = clientToScreenPx(e.clientX, e.clientY, rect, dpr);
+    const dsx = sx - drag.startSx;
+    const dsy = sy - drag.startSy;
+
+    if (drag.mode === 'pan') {
+      // screenPxToGround(picking.ts)と同じ逆変換。centreを固定して求めたワールド移動量ぶん、
+      // カーソル下の地点が動かないよう逆向きにcentreをずらす。
+      const a = dsx / (zoom * ISO_X);
+      const b = dsy / (zoom * ISO_Y);
+      setPanX(drag.startPanX - (a + b) / 2);
+      setPanZ(drag.startPanZ - (b - a) / 2);
+      return;
+    }
+    if (drag.mode === 'yaw') {
+      const degPerPx = 0.4;
+      const deg = (((drag.startYawDeg + (e.clientX - drag.startClientX) * degPerPx) % 360) + 360) % 360;
+      setYawDeg(deg);
+      return;
+    }
+    if (drag.mode === 'move-part') {
+      const snapStep = e.altKey ? 0.001 : 0.01;
+      const part = doc[drag.partVariant][drag.partIndex];
+      if (!part) return;
+      if (e.shiftKey) {
+        // 垂直移動: スクリーンy方向の総移動量だけをローカルYへ変換(ISO_Hで割り戻す)。
+        const dy = -dsy / (zoom * ISO_H);
+        const nextY = snap(drag.pos0[1] + dy, snapStep);
+        setPartAt(drag.partVariant, drag.partIndex, { ...part, pos: [drag.pos0[0], nextY, drag.pos0[2]] });
+      } else {
+        const a = dsx / (zoom * ISO_X);
+        const b = dsy / (zoom * ISO_Y);
+        const dx = (a + b) / 2, dz = (b - a) / 2;
+        // ワールド移動量を、掴んだ車体のyawで逆回転してパーツのローカル軸へ変換する
+        // (yawが付いていてもドラッグがカーソルに追従するように)。
+        const cos = Math.cos(drag.partYaw), sin = Math.sin(drag.partYaw);
+        const localDx = dx * cos - dz * sin;
+        const localDz = dx * sin + dz * cos;
+        const nextX = snap(drag.pos0[0] + localDx, snapStep);
+        const nextZ = snap(drag.pos0[2] + localDz, snapStep);
+        setPartAt(drag.partVariant, drag.partIndex, { ...part, pos: [nextX, drag.pos0[1], nextZ] });
+      }
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>): void => {
+    dragRef.current = null;
+    if (canvasRef.current?.hasPointerCapture(e.pointerId)) canvasRef.current.releasePointerCapture(e.pointerId);
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>): void => {
+    e.preventDefault();
+    setZoom(z => clamp(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1), ZOOM_MIN, ZOOM_MAX));
+  };
+
+  // --- キーボード操作(矢印=ローカルx/z、PageUp/Down=ローカルy、Delete=削除) ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      if (selectedIndex === null) return;
+      const list = variant === 'head' ? doc.head : doc.mid;
+      const part = list[selectedIndex];
+      if (!part) return;
+      const step = 0.01;
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          setPartAt(variant, selectedIndex, { ...part, pos: [part.pos[0] - step, part.pos[1], part.pos[2]] });
+          return;
+        case 'ArrowRight':
+          e.preventDefault();
+          setPartAt(variant, selectedIndex, { ...part, pos: [part.pos[0] + step, part.pos[1], part.pos[2]] });
+          return;
+        case 'ArrowUp':
+          e.preventDefault();
+          setPartAt(variant, selectedIndex, { ...part, pos: [part.pos[0], part.pos[1], part.pos[2] - step] });
+          return;
+        case 'ArrowDown':
+          e.preventDefault();
+          setPartAt(variant, selectedIndex, { ...part, pos: [part.pos[0], part.pos[1], part.pos[2] + step] });
+          return;
+        case 'PageUp':
+          e.preventDefault();
+          setPartAt(variant, selectedIndex, { ...part, pos: [part.pos[0], part.pos[1] + step, part.pos[2]] });
+          return;
+        case 'PageDown':
+          e.preventDefault();
+          setPartAt(variant, selectedIndex, { ...part, pos: [part.pos[0], part.pos[1] - step, part.pos[2]] });
+          return;
+        case 'Delete':
+        case 'Backspace':
+          e.preventDefault();
+          handleDelete(selectedIndex);
+          return;
+        default:
+          return;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedIndex, variant, doc, setPartAt]);
+
   // --- プレビュー初期化(WebGPU) ---
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -203,12 +391,18 @@ export const TrainEditorApp: React.FC = () => {
     const timer = setTimeout(() => {
       const preview = previewRef.current;
       if (!preview) return;
-      const visibleHead = doc.head.filter((_, i) => !hidden.head.has(i));
-      const visibleMid = doc.mid.filter((_, i) => !hidden.mid.has(i));
-      preview.updateParts({ head: visibleHead, mid: visibleMid });
+      const headIdx = doc.head.map((_, i) => i).filter(i => !hidden.head.has(i));
+      const midIdx = doc.mid.map((_, i) => i).filter(i => !hidden.mid.has(i));
+      const visibleHead = headIdx.map(i => doc.head[i]);
+      const visibleMid = midIdx.map(i => doc.mid[i]);
+      const highlight = selectedIndex === null ? undefined
+        : variant === 'head'
+          ? (headIdx.includes(selectedIndex) ? { variant: 'head' as const, index: headIdx.indexOf(selectedIndex) } : undefined)
+          : (midIdx.includes(selectedIndex) ? { variant: 'mid' as const, index: midIdx.indexOf(selectedIndex) } : undefined);
+      preview.updateParts({ head: visibleHead, mid: visibleMid }, highlight);
     }, 100);
     return () => clearTimeout(timer);
-  }, [doc, hidden]);
+  }, [doc, hidden, selectedIndex, variant]);
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#0a0e14', fontFamily: 'system-ui, sans-serif' }}>
@@ -241,7 +435,16 @@ export const TrainEditorApp: React.FC = () => {
         </div>
 
         <div style={{ ...panelStyle, flex: 1, position: 'relative', minHeight: 0, padding: 0, overflow: 'hidden' }}>
-          <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+          <canvas
+            ref={canvasRef}
+            style={{ width: '100%', height: '100%', display: 'block', cursor: dragRef.current?.mode === 'pan' ? 'grabbing' : 'grab', touchAction: 'none' }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onWheel={handleWheel}
+            onContextMenu={e => e.preventDefault()}
+          />
           {previewError && (
             <div style={{
               position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
