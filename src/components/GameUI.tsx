@@ -33,6 +33,7 @@ import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
 import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST, trainTotalCost } from '../sim/economy';
+import { TRAIN_MODELS, trainModelOf, type TrainModelId } from '../sim/physics';
 import { fromKey } from '../utils';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
@@ -153,7 +154,7 @@ interface GameUIProps {
   setStationAxis: (axis: StationAxis) => void;
   // ★追加: 車庫インスペクタ(選択中の車庫セル・列車購入/売却)。
   selectedDepotKey: string | null;
-  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection) => void;
+  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection, model?: TrainModelId) => void;
   onSellTrain: (trainId: string) => void;
   onCloneTrain: (trainId: string, count?: number) => void;
   onSelectTrain: (id: string | null) => void;
@@ -939,7 +940,7 @@ const TrainInspector: React.FC<{
 
       {/* 編成 */}
       <div style={{ marginTop: 12 }}>
-        <div style={sectionLabel}>編成 — {train.cars}両</div>
+        <div style={sectionLabel}>編成 — {trainModelOf(train.model).name}・{train.cars}両</div>
         <div style={{ display: 'flex', gap: 3, marginBottom: 7 }}>
           {Array.from({ length: train.cars }).map((_, i) => (
             <div key={i} title={i === 0 ? '先頭車' : `${i + 1}両目`} style={{
@@ -1256,15 +1257,17 @@ const DepotInspector: React.FC<{
   onDeploy: (id: string) => void;
   onSellTrain: (id: string) => void;
   onCloneTrain: (id: string, count?: number) => void;
-  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection) => void;
+  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection, model?: TrainModelId) => void;
 }> = ({ x, z, gauge, trains, money, gameRules, onSelectTrain, onDeploy, onSellTrain, onCloneTrain, onBuyTrain }) => {
   const [power, setPower] = useState<TrainPower>('diesel');
   const [protection, setProtection] = useState<TrainProtection | undefined>(undefined);
+  // 車種(通勤形/近郊形/特急形)。ルールモードによらず常に選べる(3車種はいずれも実在)。
+  const [model, setModel] = useState<TrainModelId>('commuter');
 
   const stored = trains.filter(t => t.status === 'stored' && t.x === x && t.z === z);
   const effectivePower = gameRules.electrification !== 'none' ? power : 'diesel';
   const effectiveProtection = gameRules.signalling === 's3' ? protection : undefined;
-  const cost = trainCostForProtected(effectivePower, effectiveProtection);
+  const cost = trainCostForProtected(effectivePower, effectiveProtection, model);
   const canBuy = money >= cost;
 
   const POWER_OPTIONS: readonly (readonly [TrainPower, string])[] = [
@@ -1272,6 +1275,13 @@ const DepotInspector: React.FC<{
     ...(gameRules.electrification !== 'modes' ? [['electric-ac', '交流電車'], ['electric-acdc', '交直流電車']] as const : []),
     ['diesel', '気動車'],
   ];
+
+  // 車種ごとの一言ヒント(最高速・加減速の傾向)。UI表示専用でロジックには使わない。
+  const MODEL_HINTS: Record<TrainModelId, string> = {
+    commuter: `最高${TRAIN_MODELS.commuter.maxSpeedKmh}km/h・加減速が速い`,
+    suburban: `最高${TRAIN_MODELS.suburban.maxSpeedKmh}km/h・バランス型`,
+    express: `最高${TRAIN_MODELS.express.maxSpeedKmh}km/h・加速はゆるやか`,
+  };
 
   return (
     <div>
@@ -1290,7 +1300,7 @@ const DepotInspector: React.FC<{
           <div style={{ display: 'grid', gap: 6 }}>
             {stored.map(t => {
               const clonePower = gameRules.electrification !== 'none' ? (t.power ?? 'diesel') : 'diesel';
-              const cloneCost = trainTotalCost(trainCostForProtected(clonePower, t.protection), t.cars);
+              const cloneCost = trainTotalCost(trainCostForProtected(clonePower, t.protection, t.model), t.cars);
               const canClone = money >= cloneCost;
               const cloneTitle = `1本 ¥${cloneCost.toLocaleString()}`;
               return (
@@ -1301,7 +1311,7 @@ const DepotInspector: React.FC<{
                   <span style={{ flex: 1, fontWeight: 600 }}>
                     {t.id}
                     <span style={{ marginLeft: 6, fontSize: 11, color: T.textFaint, fontWeight: 400 }}>
-                      {t.cars}両{t.power ? `・${t.power}` : ''}
+                      {trainModelOf(t.model).name}・{t.cars}両{t.power ? `・${t.power}` : ''}
                     </span>
                   </span>
                   <button onClick={() => onSelectTrain(t.id)} style={button({ compact: true })}>選択</button>
@@ -1328,6 +1338,19 @@ const DepotInspector: React.FC<{
 
       <div style={{ marginTop: 13 }}>
         <div style={sectionLabel}>購入</div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 2 }}>
+          {(Object.keys(TRAIN_MODELS) as TrainModelId[]).map(id => (
+            <button
+              key={id}
+              onClick={() => setModel(id)}
+              style={button({ active: model === id, accent: T.depot, compact: true })}
+            >
+              {TRAIN_MODELS[id].name}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 10.5, color: T.textFaint, marginBottom: 6 }}>{MODEL_HINTS[model]}</div>
 
         {gameRules.electrification !== 'none' && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
@@ -1359,7 +1382,7 @@ const DepotInspector: React.FC<{
         )}
 
         <button
-          onClick={() => onBuyTrain(x, z, power, protection)}
+          onClick={() => onBuyTrain(x, z, power, protection, model)}
           disabled={!canBuy}
           style={{ ...button({ disabled: !canBuy, accent: T.depot }), width: '100%' }}
         >

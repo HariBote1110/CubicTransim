@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
 import type { CellData, CellType, TrainData, LineData, ServiceData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
+import type { TrainModelId } from '../sim/physics';
 import { DEFAULT_GAUGE } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
@@ -482,12 +483,15 @@ export const useGameLogic = () => {
 
   // PM2: powerは購入UIから選ぶ(省略時=気動車)。軌間は車庫セルの軌間を自動で継承する
   // (rules.gaugeが有効な場合のみ。無効時はgauge概念が無いためundefinedのまま=旧来どおり)。
-  const buyTrain = (x: number, z: number, power: TrainPower = 'diesel', protection?: TrainProtection) => {
+  const buyTrain = (
+    x: number, z: number, power: TrainPower = 'diesel', protection?: TrainProtection, model?: TrainModelId
+  ) => {
     // PM3: 交流/交直流車は価格が異なる(economy.tsのtrainCostFor)。
     // rules.electrification==='none'ならpower自体を持たせないので常にdiesel価格になる。
     // S3: 保安装置の車上装置分の倍率(trainCostForProtected)をさらに乗算合成する。
     // rules.signalling!=='s3'ならprotection自体を渡さないUIになるので常に基準額のまま。
-    const cost = trainCostForProtected(gameRules.electrification !== 'none' ? power : 'diesel', protection);
+    // 車種(TRAIN_MODELS): modelを渡すとさらにpriceMultiplierが乗算される(省略=通勤形=倍率1.0)。
+    const cost = trainCostForProtected(gameRules.electrification !== 'none' ? power : 'diesel', protection, model);
     if (money < cost) return;
     const depotCell = worldRef.current.railMap.get(toKey(x, z));
     const newTrain: TrainData = {
@@ -503,6 +507,9 @@ export const useGameLogic = () => {
         ...(gameRules.trackClasses
           ? { axleLoadT: AXLE_LOAD_T_BY_POWER[gameRules.electrification !== 'none' ? power : 'diesel'] }
           : {}),
+        // 車種: 選択した車種をそのまま保持する(undefined=未選択=通勤形として読む規約。
+        // physics.tsのtrainModelOf参照)。
+        ...(model ? { model } : {}),
     };
     setTrains(prev => [...prev, newTrain]);
     setMoney(m => m - cost);
@@ -515,7 +522,7 @@ export const useGameLogic = () => {
     const target = trains.find(t => t.id === trainId);
     if (!target || target.status !== 'stored') return;
     const power = gameRules.electrification !== 'none' ? (target.power ?? 'diesel') : 'diesel';
-    const baseCost = trainCostForProtected(power, target.protection);
+    const baseCost = trainCostForProtected(power, target.protection, target.model);
     const refund = trainSellRefund(baseCost, target.cars);
     setTrains(prev => prev.filter(t => t.id !== trainId));
     setMoney(m => m + refund);
@@ -531,7 +538,7 @@ export const useGameLogic = () => {
     const source = trains.find(t => t.id === trainId);
     if (!source || source.status !== 'stored') return;
     const power = gameRules.electrification !== 'none' ? (source.power ?? 'diesel') : 'diesel';
-    const baseCost = trainCostForProtected(power, source.protection);
+    const baseCost = trainCostForProtected(power, source.protection, source.model);
     const perCloneCost = trainTotalCost(baseCost, source.cars);
     if (perCloneCost <= 0) return;
 
