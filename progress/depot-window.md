@@ -23,6 +23,19 @@
 - 車庫ごとに購入設定(動力/保安装置)を独立保持する案 → 状態管理が増える割に効果が薄いため見送り、
   DepotInspector単一ローカルstateに単純化した。
 
+## 複製(0.5.0-Alpha-19a追加)
+- OpenTTD風の大量増備手段として、在籍列車の複製をDepotInspectorへ追加した。行ごとに「複製」(1本)
+  「×5」ボタンを増設し、`useGameLogic.ts`の`cloneTrain(trainId, count=1)`を呼ぶ。
+- 価格は`sim/economy.ts`の新規`trainTotalCost(baseCost, cars)`(TDD)を土台にする。`trainSellRefund`も
+  これを再利用するよう整理した(`Math.round(0.5 * trainTotalCost(...))`、既存テストはそのままgreen)。
+- 複製先は同じ車庫(x/z)・`status: 'stored'`・`scheduleIndex: 0`固定。`cars`/`gauge`/`power`/`protection`/
+  `axleLoadT`/`serviceId`/`schedule`(配列はコピー)は元列車をそのまま引き継ぐ。id生成は`buyTrain`と
+  同じ`Math.random().toString(36).substr(0, 4)`。
+- countぶんループするが、資金が尽きた時点で打ち切る(部分複製OK)。Reactステート更新は
+  `setTrains`/`setMoney`/`setCurrentLedger`をそれぞれ1回ずつのバッチにまとめ、ループ内で毎回
+  呼ばない。
+- ボタンは1本あたりの価格が`money`未満のとき無効化し、`title`に`1本 ¥N,NNN`を表示する。
+
 ## フォローアップ(未実装)
 - 運行中の列車を車庫へ戻す(入庫/回送)操作は本対応のスコープ外。将来的にGameScene/useGameLogicへ
   「最寄りの車庫へ回送」的な指示を追加する余地がある。
