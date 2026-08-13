@@ -169,7 +169,7 @@ export const WebGpuStations: React.FC<Props> = ({
   const buildHouseChunk = useCallback((stationId: string): BakedMeshChunk | null => {
     const placement = housePlacements.get(stationId);
     if (!placement) return null;
-    const entries = buildStationHouseGeometries(placement.position, placement.angle);
+    const entries = buildStationHouseGeometries(placement.position, placement.angle, placement.side);
     return bakeGeometries(entries.map(e => ({ geometry: e.geometry, colour: e.colour })));
   }, [housePlacements]);
 
