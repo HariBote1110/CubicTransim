@@ -17,6 +17,12 @@ export interface LabelOverlayItem {
   content: React.ReactNode;
   /** アンカー位置(既定は中央下寄せ=ラベルの下端がworld座標に来る、Htmlのcenterと近い見た目)。 */
   anchor?: 'bottom-centre' | 'centre';
+  /**
+   * 毎フレーム呼ばれるライブ位置アクセサ(省略時は静的な world を使う)。
+   * React の再レンダー(500ms tick等)を待たずにカメラと同じ鮮度で位置を取得したい項目
+   * (選択中列車のポップアップ等)向け。undefined/null を返した場合は world にフォールバックする。
+   */
+  getWorld?: () => { x: number; y: number; z: number } | null | undefined;
 }
 
 interface Props {
@@ -42,7 +48,8 @@ export const LabelOverlay: React.FC<Props> = ({ cameraStateRef, items }) => {
         for (const item of itemsRef.current) {
           const el = itemRefs.current.get(item.key);
           if (!el) continue;
-          const pos = worldToOverlayPx(item.world, camera, dpr);
+          const world = item.getWorld?.() ?? item.world;
+          const pos = worldToOverlayPx(world, camera, dpr);
           if (!isOnScreen(pos)) {
             el.style.display = 'none';
             continue;

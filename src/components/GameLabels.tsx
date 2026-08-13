@@ -143,6 +143,12 @@ export const GameLabels: React.FC<Props> = ({
           key: `train-${selectedTrainId}`,
           anchor: 'centre',
           world: { x: runtime.renderPos.x, y: runtime.renderPos.y + 1.6, z: runtime.renderPos.z },
+          getWorld: () => {
+            const liveRuntime = world.current?.runtimes.get(selectedTrainId);
+            if (!liveRuntime) return undefined;
+            const p = liveRuntime.renderPos;
+            return { x: p.x, y: p.y + 1.6, z: p.z };
+          },
           content: (
             <div style={{
               background: 'rgba(17,22,28,0.86)', color: '#f4f7fa', padding: '5px 9px',
