@@ -41,6 +41,7 @@ import {
   calculateUpkeep,
   costMultiplierForRailWeight,
   RAIL_WEIGHT_COST_MULTIPLIER,
+  trainSellRefund,
 } from './economy';
 
 describe('economy: 軌道(何キロレール)のコスト倍率', () => {
@@ -78,6 +79,21 @@ describe('economy: 定数', () => {
     expect(ACCIDENT_DOOR_MODIFIER.fullscreen).toBe(0);
     expect(ACCIDENT_HALT_DURATION).toBe(60);
     expect(ACCIDENT_PENALTY).toBe(5_000);
+  });
+});
+
+describe('economy: trainSellRefund', () => {
+  it('基準2両編成なら基準額の50%(CAR_REFUND/CAR_COSTと同じ比率)', () => {
+    expect(trainSellRefund(TRAIN_COST, 2)).toBe(Math.round(0.5 * TRAIN_COST));
+  });
+
+  it('増結ぶん(cars-2両)はCAR_COST換算でbaseCostへ加算してから50%にする', () => {
+    // 4両編成: baseCost + (4-2)*CAR_COST の50%
+    expect(trainSellRefund(TRAIN_COST, 4)).toBe(Math.round(0.5 * (TRAIN_COST + 2 * CAR_COST)));
+  });
+
+  it('端数は四捨五入する', () => {
+    expect(trainSellRefund(5_001, 2)).toBe(Math.round(0.5 * 5_001));
   });
 });
 
