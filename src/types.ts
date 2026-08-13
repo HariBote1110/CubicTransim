@@ -1,4 +1,5 @@
 import type { LineMode } from './sim/lines';
+import type { TrainModelId } from './sim/physics';
 export type TrainType = 'commuter' | 'express';
 /**
  * 'substation'(変電所、PM4)は車庫と同じくrailMapのセル1つとして持つ(専用のMapを
@@ -195,6 +196,12 @@ export interface TrainData {
    * 将来、機関車ごとに異なる軸重を持たせる余地を残すため動力方式と切り離してTrainDataに持たせる。
    */
   axleLoadT?: number;
+  /**
+   * 車種(通勤形/近郊形/特急形。physics.tsのTrainModelId)。購入時に選択する。
+   * 旧セーブ・未選択はundefinedで、読み出しは常に physics.ts の trainModelOf(t.model) で
+   * 行う(=通勤形として扱う)という規約。TrainDataに直接デフォルト値を書き込まない。
+   */
+  model?: TrainModelId;
 }
 
 /**

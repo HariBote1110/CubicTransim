@@ -28,7 +28,7 @@ import type { IntervalSamples } from './lines';
 import { tryReserve, releaseCell, findSafeSegmentEnd, findDepartureSegmentEnd, reservationKey } from './reservation';
 import { blocksOccupiedByOthers, type BlockIndex } from './blocks';
 import {
-  computeAcceleration, applyOverspeedDecay, TRAIN_SPECS, DEFAULT_TRAIN_TYPE,
+  computeAcceleration, applyOverspeedDecay, TRAIN_MODELS, DEFAULT_TRAIN_MODEL, trainModelOf,
   permittedSpeedKmh, rampDecel, brakingDistanceM, BRAKE_JERK_MS3, railWeightSpeedCapKmh,
 } from './physics';
 import {
@@ -51,9 +51,12 @@ import {
 
 export const STOP_DURATION = 3; // seconds (simulation time)
 export const TILE_LENGTH = 30;
-export const MAX_SPEED_KMH = 100.0;
+// 車種(TRAIN_MODELS)を導入した後もMAX_SPEED_KMH/DECEL_KMH_Sは既定車種(通勤形)の
+// フォールバック値として残す(テスト・他コードからの参照互換のため)。実際の走行制御は
+// stepTrain/ensureReservation内でtrainModelOf(train.model)から都度per-train値を取る。
+export const MAX_SPEED_KMH = TRAIN_MODELS[DEFAULT_TRAIN_MODEL].maxSpeedKmh;
 export const ACCEL_KMH_S = 15.0;
-export const DECEL_KMH_S = 20.0;
+export const DECEL_KMH_S = TRAIN_MODELS[DEFAULT_TRAIN_MODEL].serviceDecelKmhS;
 // 減速カーブ計算で見通し距離から安全マージンとして差し引く距離(m)。
 // 信号・予約末端で「手前に止まる」ために使う。駅の停止位置には適用しない
 // (停止位置そのものを狙うのが正しく、マージンを引くと永遠に手前で漸近してしまう)。
@@ -610,7 +613,8 @@ const ensureReservation = (
   // 停止したまま二度と延長できないデッドロックになる。
   // さらに、予約末端で完全停止した状態(制動距離0・残距離=マージン)でも必ず
   // 再試行できるよう RESERVE_EXTEND_SLACK_M の余裕を持たせる。
-  const brakingDistance = brakingDistanceM(rt.speedKmh, DECEL_KMH_S / 3.6, BRAKE_JERK_MS3);
+  const reservationModel = trainModelOf(train.model);
+  const brakingDistance = brakingDistanceM(rt.speedKmh, reservationModel.serviceDecelKmhS / 3.6, BRAKE_JERK_MS3);
   if (remaining > brakingDistance + BRAKING_MARGIN_M + RESERVE_EXTEND_SLACK_M) return;
 
   const nextIdx = findSafeSegmentEnd(world.railMap, rt.route, rt.reservedEndIndex + 1);
@@ -921,6 +925,9 @@ const stepTrain = (
   // rules.electrification!=='feeding'なら常にundefined。
   feedingSectionCounts?: Map<string, number>
 ) => {
+  // 車種(通勤形/近郊形/特急形)。省略(旧セーブ・未選択)は通勤形として扱う。
+  const model = trainModelOf(train.model);
+
   // 種別に所属している列車は路線の有効運行表に従う(共有運行表)。
   const schedule = effectiveSchedule(train, world.lines ?? [], world.services ?? []);
   const targetStationId = schedule.length > 0 ? schedule[train.scheduleIndex % schedule.length] : null;
@@ -945,7 +952,7 @@ const stepTrain = (
   }
 
   if (!targetStationId) {
-    rt.speedKmh = Math.max(0, rt.speedKmh - DECEL_KMH_S * dt);
+    rt.speedKmh = Math.max(0, rt.speedKmh - model.serviceDecelKmhS * dt);
     rt.debugStatus = 'No Schedule';
     return;
   }
@@ -1069,7 +1076,7 @@ const stepTrain = (
         stopAtStation(world, train, rt, targetStationId, rt.grid, rt.prevGrid ?? rt.grid, events);
         return;
       }
-      rt.speedKmh = Math.max(0, rt.speedKmh - DECEL_KMH_S * dt);
+      rt.speedKmh = Math.max(0, rt.speedKmh - model.serviceDecelKmhS * dt);
       rt.debugStatus = 'Waiting for Path...';
       rt.waitTimer += dt;
       return;
@@ -1085,7 +1092,7 @@ const stepTrain = (
   if (rt.reservedEndIndex < 0) {
     // 次のsafe waiting pointまでの区間がまだ1つも予約できていない
     // (他列車がそこを予約中)。その場で待機し、毎tick再試行する。
-    rt.speedKmh = Math.max(0, rt.speedKmh - DECEL_KMH_S * dt);
+    rt.speedKmh = Math.max(0, rt.speedKmh - model.serviceDecelKmhS * dt);
     rt.debugStatus = 'Waiting for reservation...';
     return;
   }
@@ -1156,7 +1163,7 @@ const stepTrain = (
   //   - 込め終わった時点で包絡線は sqrt(2ad) に一致し、有限時間で0へ収束する
   //     (=線形床のような無限クロールにならないので最低速度床が不要)
   //   - 実際の減速度も rampDecel() でジャーク制限し、階段状の減速をなくす
-  const serviceDecelMs2 = DECEL_KMH_S / 3.6;
+  const serviceDecelMs2 = model.serviceDecelKmhS / 3.6;
   // 駅の停止点は「そこに止まりたい位置」そのものなので手前マージンを引かない。
   // 信号・予約末端は手前で止まりたいのでマージンを引く。
   const margin = obstacleType === 'station' ? 0 : BRAKING_MARGIN_M;
@@ -1177,7 +1184,7 @@ const stepTrain = (
   // 一度制動に入ると、実速度はこの包絡線より必ず上に留まる(既に込めているぶん有利なため)
   // ので、制動中に加速側へ戻って脈動することがない。
   const releaseEnvelopeKmh = Math.min(
-    MAX_SPEED_KMH,
+    model.maxSpeedKmh,
     railCapKmh,
     permittedSpeedKmh(usableDistance, serviceDecelMs2, BRAKE_JERK_MS3, 0)
   );
@@ -1226,10 +1233,10 @@ const stepTrain = (
     rt.speedKmh = 0;
     rt.brakeDecelMs2 = serviceDecelMs2;
     rt.braking = true;
-  } else if (rt.speedKmh > MAX_SPEED_KMH) {
+  } else if (rt.speedKmh > model.maxSpeedKmh) {
     // OpenTTD DoUpdateSpeed同様、最高速度超過時は瞬時にクランプせず現在速度の1/10ずつ
     // 緩やかに落とす(applyOverspeedDecay)。
-    rt.speedKmh = applyOverspeedDecay(rt.speedKmh, Math.min(releaseEnvelopeKmh, MAX_SPEED_KMH), dt);
+    rt.speedKmh = applyOverspeedDecay(rt.speedKmh, Math.min(releaseEnvelopeKmh, model.maxSpeedKmh), dt);
     rt.brakeDecelMs2 = 0;
   } else if (rules.trackClasses && rt.speedKmh > hardEnvelopeKmh) {
     // 軌道(何キロレール)の制動曲線(hardEnvelopeKmh)を超えている(前方のレール速度上限に
@@ -1338,9 +1345,9 @@ const stepTrain = (
         // OpenTTD Realisticモデル構造(F/m)を再実装したcomputeAccelerationで増速する。
         // 乗客数に応じて質量が増え、満載時ほど加速が鈍る。
         const accelMs2 = computeAcceleration(
-          { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
+          { spec: model.spec, cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
           useCoasting ? 'coasting' : 'accelerating',
-          DECEL_KMH_S,
+          model.serviceDecelKmhS,
           tractionFactor
         );
         rt.speedKmh = Math.min(releaseEnvelopeKmh, Math.max(0, rt.speedKmh + accelMs2 * 3.6 * dt));

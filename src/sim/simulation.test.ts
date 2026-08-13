@@ -5,7 +5,7 @@ import type { CellData, StationData, TrainData, TownData } from '../types';
 import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH, occupiedCellKeysFromRuntimes } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
 import { carPositions } from './consist';
-import { computeAcceleration, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
+import { computeAcceleration, TRAIN_MODELS, DEFAULT_TRAIN_MODEL, brakingDistanceM, BRAKE_JERK_MS3 } from './physics';
 import { applyBridge, applyRegaugePath, type ConstructionState } from './construction';
 import { OVERPASS_HEIGHT, rampHeightAtPos, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2 } from './trackPath';
 import {
@@ -144,7 +144,7 @@ describe('stepWorld', () => {
     const rt = world.runtimes.get('t1')!;
     // 発進直後(低速域)は牽引力(粘着限界)がほぼ一定なため、加速度もほぼ一定になる。
     const accelMs2 = computeAcceleration(
-      { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars, passengers: 0, speedKmh: 0 },
+      { spec: TRAIN_MODELS[DEFAULT_TRAIN_MODEL].spec, cars: train.cars, passengers: 0, speedKmh: 0 },
       'accelerating',
       DECEL_KMH_S
     );
@@ -630,6 +630,47 @@ describe('stepWorld: 減速カーブ(距離ベースの許容速度)', () => {
     }
 
     expect(rt!.speedKmh).toBeGreaterThanOrEqual(MAX_SPEED_KMH - 0.01);
+  });
+
+  it('車種(TRAIN_MODELS): 近郊形はMAX_SPEED_KMH(=通勤形の100km/h)を超えてTRAIN_MODELS.suburban.maxSpeedKmh(120km/h)まで加速する', () => {
+    // 十分長い直線(250セル=7500m)の途中経過(まだ終点駅に到達しない時間帯)で最高到達速度を
+    // 観測する。終点まで到達させてしまうと停車後にrt.speedKmhが0へ戻り「頭打ち速度」を
+    // 読み取れなくなるため、走行中である200秒(2000tick)だけ進める。
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    const commuterTrain = makeTrain({ id: 't1', schedule: ['stA'] });
+    const commuterWorld = makeWorld(railMap, stations, [commuterTrain]);
+
+    const suburbanRailMap = buildStraightLine(250, 'stA', 2).railMap;
+    const suburbanTrain = makeTrain({ id: 't1', schedule: ['stA'], model: 'suburban' });
+    const suburbanWorld = makeWorld(suburbanRailMap, stations, [suburbanTrain]);
+
+    const dt = 0.1;
+    let commuterMaxKmh = 0;
+    let suburbanMaxKmh = 0;
+    for (let i = 0; i < 2000; i++) {
+      stepWorld(commuterWorld, dt);
+      stepWorld(suburbanWorld, dt);
+      const commuterRt = commuterWorld.runtimes.get('t1')!;
+      const suburbanRt = suburbanWorld.runtimes.get('t1')!;
+      commuterMaxKmh = Math.max(commuterMaxKmh, commuterRt.speedKmh);
+      suburbanMaxKmh = Math.max(suburbanMaxKmh, suburbanRt.speedKmh);
+      expect(commuterRt.speedKmh).toBeLessThanOrEqual(MAX_SPEED_KMH + 1e-6);
+      expect(suburbanRt.speedKmh).toBeLessThanOrEqual(TRAIN_MODELS.suburban.maxSpeedKmh + 1e-6);
+    }
+
+    expect(commuterMaxKmh).toBeGreaterThanOrEqual(MAX_SPEED_KMH - 0.01);
+    expect(suburbanMaxKmh).toBeGreaterThan(MAX_SPEED_KMH);
+  });
+
+  it('車種(TRAIN_MODELS): 特急形は常用減速度(18km/h/s)が通勤形(24km/h/s)より緩やかなぶん、同じ初速からの制動距離が長い', () => {
+    // 制動距離の式(brakingDistanceM)はpermittedSpeedKmhの逆関数であり、simulation.tsの
+    // 速度制御(releaseEnvelopeKmh)と予約延長判定(ensureReservation)が共通で使う式そのもの
+    // なので、ここでの比較がそのままシミュレーション中の制動距離の違いを表す。
+    const commuterBraking = brakingDistanceM(100, TRAIN_MODELS.commuter.serviceDecelKmhS / 3.6, BRAKE_JERK_MS3);
+    const suburbanBraking = brakingDistanceM(100, TRAIN_MODELS.suburban.serviceDecelKmhS / 3.6, BRAKE_JERK_MS3);
+    const expressBraking = brakingDistanceM(100, TRAIN_MODELS.express.serviceDecelKmhS / 3.6, BRAKE_JERK_MS3);
+    expect(expressBraking).toBeGreaterThan(suburbanBraking);
+    expect(suburbanBraking).toBeGreaterThan(commuterBraking);
   });
 });
 
@@ -1770,11 +1811,15 @@ describe('H4: occupiedCellKeysFromRuntimes(改軌のno-op判定に使う在線�
   });
 
   it('走行中の実位置を含む在線集合を渡すと、その区間を含む改軌はno-opになる(旧実装のtrain.x/zベースでは通ってしまっていた)', () => {
-    const railMap = buildRailMap(Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 })));
-    const stKey = toKey(19, 0);
+    // 車種(TRAIN_MODELS)導入で最高速・加減速が車種ごとに変わったため、20セル(=600m)だと
+    // 速い車種が30秒(300tick×0.1s)以内に終点駅へ到達してしまい「まだ走行中」という
+    // このテストの前提が崩れる。60セル(=1800m)に伸ばし、どの車種でも余裕を持って
+    // 走行中に留まるようにする。
+    const railMap = buildRailMap(Array.from({ length: 60 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(59, 0);
     railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
     const stations = new Map<string, StationData>([
-      ['stA', { id: 'stA', name: 'A', cells: [{ x: 19, z: 0 }], center: { x: 19, z: 0 }, platformDoors: 'none' }],
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 59, z: 0 }], center: { x: 59, z: 0 }, platformDoors: 'none' }],
     ]);
     const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
     const world = makeWorld(railMap, stations, [train]);
