@@ -1,4 +1,18 @@
-import type { CellData, StationData, TrainData, TrainGroupData, TownData } from '../types';
+import type { CellData, StationData, TrainData, LineData, ServiceData, TownData } from '../types';
+import { defaultServiceFor } from './lines';
+
+/**
+ * v18以前のセーブに存在した「運用グループ」の形。型はv19で廃止された(types.tsからは
+ * 消えている)が、旧セーブのJSONを読んで移行するためだけにここへ残す。
+ */
+interface LegacyTrainGroupData {
+  id: string;
+  name: string;
+  schedule: string[];
+  headwaySeconds: number;
+  colour: string;
+  mode?: 'loop' | 'shuttle';
+}
 import type { TrainRuntime } from './simulation';
 import { type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
@@ -35,8 +49,16 @@ import { fromKey, toKey, getVectorFromDir, getOppositeDir } from '../utils';
 // 隣接セルの接続状態からの構造推定(坑口・分岐など、高い側の隣接セルが接続ビットを
 // 持たない形状)でdirを誤って反転しうる。v18以降のセーブは常に正しい形式で書かれる
 // ことが保証されるため、deserialiseWorldは version < 18 のときだけ正規化を適用する。
-export interface SaveDataV18 {
-  version: 18 | 17 | 16 | 15;
+// v19(progress/line-service-redesign.md): 「運用グループ」を「路線(LineData)＋種別
+// (ServiceData)」へ刷新した。旧 groups: TrainGroupData[] は廃止し、lines/servicesを
+// 保存する。旧セーブ(v15〜v18)は読込時に「1グループ→1路線+1つの各停種別」へ機械的に
+// 移行する: line.id = group.id を流用、service.id = `${group.id}:default`、
+// train.groupId → 対応する service.id、groupDepartures のキー
+// `${groupId}|${station}` → `${groupId}:default|${station}`(departureKeyの引数が
+// groupIdからserviceIdに変わっただけで、旧groupIdをそのままserviceIdの接頭辞に
+// 使っているので機械的に読み替えられる)。
+export interface SaveDataV19 {
+  version: 19 | 18 | 17 | 16 | 15;
   /** 地形の乱数シード(sim/terrainField.tsのcreateTerrainFieldへそのまま渡す)。 */
   seed: number;
   /** マップの生成半径(-halfExtent..halfExtentのセルを生成する)。 */
@@ -54,10 +76,19 @@ export interface SaveDataV18 {
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
   stopLocation: 'near' | 'middle' | 'far';
-  /** 運用グループ(共有運行表と発車間隔)。 */
-  groups: TrainGroupData[];
-  /** 「グループ×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。 */
-  groupDepartures: [string, number][];
+  /** 路線(物理経路)。 */
+  lines: LineData[];
+  /** 種別(路線に属する各停・快速など)。 */
+  services: ServiceData[];
+  /** 「種別×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。 */
+  serviceDepartures: [string, number][];
+  /**
+   * 旧セーブ(v18以前)の運用グループ。v19では書き出さない(読込専用、移行のためだけに
+   * 型として残す)。
+   */
+  groups?: LegacyTrainGroupData[];
+  /** 旧セーブ(v18以前)の「グループ×駅」最終発車時刻。v19では書き出さない。 */
+  groupDepartures?: [string, number][];
   /** 借入残高。 */
   loan: number;
   /** 駅ごとの行き先つき待ち客。waitingはこの合計なので、こちらが正。 */
@@ -88,7 +119,7 @@ export interface LegacySaveData {
   version: number;
 }
 
-export type SaveData = SaveDataV18 | LegacySaveData;
+export type SaveData = SaveDataV19 | LegacySaveData;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -106,8 +137,9 @@ export function serialiseWorld(
   currentLedger: MonthlyLedger,
   ledgerHistory: MonthlyLedger[],
   stopLocation: 'near' | 'middle' | 'far' = 'middle',
-  groups: TrainGroupData[] = [],
-  groupDepartures: Map<string, number> = new Map(),
+  lines: LineData[] = [],
+  services: ServiceData[] = [],
+  serviceDepartures: Map<string, number> = new Map(),
   loan = 0,
   demand: Map<string, PassengerCohort[]> = new Map(),
   halfExtent: number,
@@ -115,9 +147,9 @@ export function serialiseWorld(
   townDensity: TownDensity = 'normal',
   terrainProfile: TerrainProfile = 'normal',
   rules: GameRules = DEFAULT_GAME_RULES
-): SaveDataV18 {
+): SaveDataV19 {
   return {
-    version: 18,
+    version: 19,
     seed,
     halfExtent,
     cornerDiffs: serialiseCornerDiffs(cornerDiffs),
@@ -135,8 +167,9 @@ export function serialiseWorld(
     currentLedger,
     ledgerHistory,
     stopLocation,
-    groups,
-    groupDepartures: Array.from(groupDepartures.entries()),
+    lines,
+    services,
+    serviceDepartures: Array.from(serviceDepartures.entries()),
     loan,
     demand: Array.from(demand.entries()),
   };
@@ -160,8 +193,9 @@ export interface RestoredWorld {
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
   stopLocation: 'near' | 'middle' | 'far';
-  groups: TrainGroupData[];
-  groupDepartures: Map<string, number>;
+  lines: LineData[];
+  services: ServiceData[];
+  serviceDepartures: Map<string, number>;
   loan: number;
   demand: Map<string, PassengerCohort[]>;
   /** 町密度(省略時=normal)。 */
@@ -213,17 +247,21 @@ export function normaliseUndergroundRampDirs(railMap: Map<string, CellData>): Ma
 }
 
 /**
- * セーブデータの復元。v17と(rules欠落=ライト相当扱いの)v16・(terrainProfile欠落=normal扱いの)v15を受け付ける。
+ * セーブデータの復元。v19と(groups→lines/services移行が必要な)v18・v17・
+ * (rules欠落=ライト相当扱いの)v16・(terrainProfile欠落=normal扱いの)v15を受け付ける。
  * v14以前はterrain/heights Mapを全セル実体化していた旧形式であり、v15(worldSeed+halfExtent+cornerDiffs)とは
  * 互換性が無い。リリース前でセーブ互換は破壊してよい(ユーザー明言)ため、
  * 移行処理は書かずnullを返す(呼び出し側は壊れたセーブと同様に扱う)。
  */
 export function deserialiseWorld(input: SaveData): RestoredWorld | null {
-  if (input.version !== 18 && input.version !== 17 && input.version !== 16 && input.version !== 15) return null;
+  if (
+    input.version !== 19 && input.version !== 18 && input.version !== 17 &&
+    input.version !== 16 && input.version !== 15
+  ) return null;
   // LegacySaveDataのversionは(旧バージョン識別のためだけに)number型なので、上のガードだけでは
-  // TypeScriptの判別共用体narrowingが効かない(number側が15/16/17を許容範囲として残るため)。
-  // ここまで来た時点でversionが15/16/17であることは実行時に確定しているので、明示的に絞り込む。
-  const data = input as SaveDataV18;
+  // TypeScriptの判別共用体narrowingが効かない(number側が15〜18を許容範囲として残るため)。
+  // ここまで来た時点でversionが15〜18であることは実行時に確定しているので、明示的に絞り込む。
+  const data = input as SaveDataV19;
 
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -255,7 +293,42 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
   );
 
   const towns = data.towns.map((town, i) => (town.name ? town : { ...town, name: fallbackTownName(i) }));
-  const trains = data.trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
+
+  // v19移行: 旧「運用グループ」(1グループ=共有運行表+発車間隔)を「路線+各停種別」へ
+  // 機械的に変換する。line.id = group.id をそのまま流用し、種別id は `${group.id}:default`。
+  // train.groupId → 対応する各停種別のserviceId、groupDepartures のキー
+  // `${groupId}|${station}` → `${groupId}:default|${station}` へ読み替える
+  // (departureKeyの引数がgroupIdからserviceIdに変わっただけなので、旧groupIdを
+  // そのままserviceIdの接頭辞として使えば機械的に変換できる)。
+  const legacyGroups = data.groups ?? [];
+  const migratedLines: LineData[] = legacyGroups.map(g => ({
+    id: g.id, name: g.name, colour: g.colour, stops: g.schedule, mode: g.mode,
+  }));
+  const migratedServices: ServiceData[] = legacyGroups.map(g => ({
+    ...defaultServiceFor(g.id),
+    headwaySeconds: g.headwaySeconds,
+  }));
+  const migratedServiceDepartures: [string, number][] = (data.groupDepartures ?? []).map(([key, value]) => {
+    const sep = key.indexOf('|');
+    const groupId = key.slice(0, sep);
+    const stationId = key.slice(sep + 1);
+    return [`${groupId}:default|${stationId}`, value];
+  });
+
+  const lines = data.version < 19 ? migratedLines : (data.lines ?? []);
+  const services = data.version < 19 ? migratedServices : (data.services ?? []);
+  const serviceDepartures = data.version < 19 ? migratedServiceDepartures : (data.serviceDepartures ?? []);
+
+  const trains = data.trains.map(t => {
+    // v18以前のTrainDataにはgroupIdフィールドがあった(型からは既に消えているため、
+    // 旧セーブのJSONに残る可能性のあるプロパティとしてキャストして読む)。
+    const legacyGroupId = (t as TrainData & { groupId?: string }).groupId;
+    return {
+      ...t,
+      cars: t.cars ?? 2,
+      serviceId: data.version < 19 ? (legacyGroupId ? `${legacyGroupId}:default` : undefined) : t.serviceId,
+    };
+  });
 
   // PM3: legacyのelectrified:true(v17前期〜PM2)は「直流」を意味するため、
   // 'dc'へ正規化して読み込む。'ac'/'dc'の文字列はそのまま、undefinedもそのまま。
@@ -284,8 +357,9 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
     currentLedger: data.currentLedger,
     ledgerHistory: data.ledgerHistory,
     stopLocation: data.stopLocation,
-    groups: data.groups ?? [],
-    groupDepartures: new Map(data.groupDepartures ?? []),
+    lines,
+    services,
+    serviceDepartures: new Map(serviceDepartures),
     loan: data.loan,
     demand: new Map(data.demand),
     townDensity: data.townDensity ?? 'normal',

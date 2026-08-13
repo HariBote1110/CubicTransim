@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { CellData, StationData, TrainData, TownData } from '../types';
+import type { CellData, StationData, TrainData, LineData, TownData } from '../types';
 import type { TrainRuntime } from './simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger, normaliseUndergroundRampDirs } from './persistence';
 import { STARTING_MONEY, type MonthlyLedger } from './economy';
@@ -8,8 +8,8 @@ import type { CornerDiffs } from './terrainOverlay';
 import { DEFAULT_GAME_RULES, PLAY_MODE_PRESETS } from './gameRules';
 import { DIR } from '../utils';
 
-describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v15)', () => {
-  it('railMap/stations/trains/runtimes/waiting/money/towns/seed/halfExtent/cornerDiffs/clock/台帳/stopLocation/運用グループ/借入残高/行き先つき待ち客 が JSON 経由でも復元できる', () => {
+describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリップ (v19)', () => {
+  it('railMap/stations/trains/runtimes/waiting/money/towns/seed/halfExtent/cornerDiffs/clock/台帳/stopLocation/路線/種別/借入残高/行き先つき待ち客 が JSON 経由でも復元できる', () => {
     const railMap = new Map<string, CellData>([
       ['0,0', { type: 'rail', connections: 3 }],
       ['1,0', { type: 'station', connections: 15, stationId: 'stA' }],
@@ -56,18 +56,21 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
       { year: 1, month: 4, fares: 900, construction: 0, upkeep: 300, accidents: 5000, interest: 417 },
     ];
 
-    const groups = [
-      { id: 'g1', name: '1系統', schedule: ['stA', 'stB'], headwaySeconds: 45, colour: '#1f8fd6' },
+    const lines: LineData[] = [
+      { id: 'l1', name: '1系統', stops: ['stA', 'stB'], colour: '#1f8fd6' },
     ];
-    const groupDepartures = new Map<string, number>([['g1|stA', 987]]);
+    const services = [
+      { id: 'l1:default', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 45 },
+    ];
+    const serviceDepartures = new Map<string, number>([['l1:default|stA', 987]]);
     const demand = new Map<string, PassengerCohort[]>([['stA', [{ destinationId: 'stB', count: 12.5 }]]]);
 
     const saveData = serialiseWorld(
       railMap, stations, trains, runtimes, waiting, money, towns, seed,
-      clock, currentLedger, ledgerHistory, 'far', groups, groupDepartures, 60_000, demand,
+      clock, currentLedger, ledgerHistory, 'far', lines, services, serviceDepartures, 60_000, demand,
       halfExtent, cornerDiffs
     );
-    expect(saveData.version).toBe(18);
+    expect(saveData.version).toBe(19);
 
     const json = JSON.stringify(saveData);
     const parsed = JSON.parse(json);
@@ -88,10 +91,45 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
     expect(restored!.halfExtent).toBe(halfExtent);
     expect(restored!.cornerDiffs).toEqual(cornerDiffs);
     expect(restored!.stopLocation).toBe('far');
-    expect(restored!.groups).toEqual(groups);
-    expect(restored!.groupDepartures).toEqual(groupDepartures);
+    expect(restored!.lines).toEqual(lines);
+    expect(restored!.services).toEqual(services);
+    expect(restored!.serviceDepartures).toEqual(serviceDepartures);
     expect(restored!.loan).toBe(60_000);
     expect(restored!.demand).toEqual(demand);
+  });
+
+  it('v18セーブ(旧・運用グループ)を読み込むと「路線+各停種別」へ移行される', () => {
+    const legacyGroups = [
+      { id: 'g1', name: '1系統', schedule: ['stA', 'stB'], headwaySeconds: 45, colour: '#1f8fd6', mode: 'shuttle' as const },
+    ];
+    const legacyGroupDepartures: [string, number][] = [['g1|stA', 987]];
+    const trains: TrainData[] = [
+      { id: 't1', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running', cars: 2, groupId: 'g1' } as never,
+    ];
+    const v18 = {
+      version: 18 as const,
+      seed: 1, halfExtent: 45, cornerDiffs: [],
+      railMap: [], stations: [], trains, runtimes: [], waiting: [],
+      money: 1000, towns: [],
+      clock: { elapsed: 0 },
+      currentLedger: emptyLedger(), ledgerHistory: [],
+      stopLocation: 'middle' as const,
+      groups: legacyGroups,
+      groupDepartures: legacyGroupDepartures,
+      loan: 0, demand: [],
+    };
+
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(v18)));
+    expect(restored).not.toBeNull();
+
+    expect(restored!.lines).toEqual([
+      { id: 'g1', name: '1系統', stops: ['stA', 'stB'], colour: '#1f8fd6', mode: 'shuttle' },
+    ]);
+    expect(restored!.services).toEqual([
+      { id: 'g1:default', lineId: 'g1', name: '各停', skipStationIds: [], headwaySeconds: 45 },
+    ]);
+    expect(restored!.serviceDepartures).toEqual(new Map([['g1:default|stA', 987]]));
+    expect(restored!.trains[0].serviceId).toBe('g1:default');
   });
 
   it('v11データ(駅セルにlayerが無い)を読み込むと、v15ではないためnullを返す(セーブ互換は破壊してよい)', () => {
@@ -160,7 +198,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
 
     const saveData = serialiseWorld(
       railMap, stations, [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -174,7 +212,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
   it('townDensityがJSON経由で往復する', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map(), 'dense'
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -185,7 +223,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
   it('townDensityを省略したセーブ(このセッション内のv15旧データ)を読み込むとnormalが既定になる', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const raw = JSON.parse(JSON.stringify(saveData));
@@ -198,7 +236,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
   it('terrainProfileがJSON経由で往復する', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map(), 'normal', 'mountain'
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -209,7 +247,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
   it('terrainProfileを省略したセーブ(v15)はnormal地形として読み込む', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const raw = JSON.parse(JSON.stringify(saveData));
@@ -223,7 +261,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
   it('rulesがJSON経由で往復する', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map(), 'normal', 'mountain', PLAY_MODE_PRESETS.normal
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -234,7 +272,7 @@ describe('persistence: serialiseWorld / deserialiseWorld のラウンドトリ�
   it('rulesを省略したセーブ(v16以前)はDEFAULT_GAME_RULES(ライト相当)として読み込む', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const raw = JSON.parse(JSON.stringify(saveData));
@@ -255,7 +293,7 @@ describe('persistence: PM3 交直流電化(dc/ac)のラウンドトリップ', (
     ]);
     const saveData = serialiseWorld(
       railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -270,7 +308,7 @@ describe('persistence: PM3 交直流電化(dc/ac)のラウンドトリップ', (
     ]);
     const saveData = serialiseWorld(
       railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -285,7 +323,7 @@ describe('persistence: PM3 交直流電化(dc/ac)のラウンドトリップ', (
     ];
     const saveData = serialiseWorld(
       new Map(), new Map(), trains, new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -304,7 +342,7 @@ describe('persistence: 軌道(何キロレール)のラウンドトリップ', (
     const rules = { ...PLAY_MODE_PRESETS.realistic };
     const saveData = serialiseWorld(
       railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map(), 'normal', 'normal', rules
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -317,7 +355,7 @@ describe('persistence: 軌道(何キロレール)のラウンドトリップ', (
   it('trackClassesが無い旧セーブはfalse(概念なし)として読み込む', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map(), 'normal', 'normal', DEFAULT_GAME_RULES
     );
     const raw = JSON.parse(JSON.stringify(saveData));
@@ -336,7 +374,7 @@ describe('persistence: PM4 変電所(substation)のラウンドトリップ', ()
     ]);
     const saveData = serialiseWorld(
       railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -406,7 +444,7 @@ describe('persistence: normaliseUndergroundRampDirs (地下ランプdir逆転の
     railMap.set('0,0', { ...railMap.get('0,0')!, ramp: { dir: DIR.S, base: -1 } });
     const saveData = { ...serialiseWorld(
       railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     ), version: 17 as const };
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
@@ -417,16 +455,16 @@ describe('persistence: normaliseUndergroundRampDirs (地下ランプdir逆転の
   // M5(progress/review-play-modes-branch.md): 正規化を版数で区切らないと、修正後に
   // 書かれた正しいセーブに対しても構造推定の誤判定でdirを反転しうる。v18(=serialiseWorld
   // が今書く版数)ではこのフィールドに触れないことを固定する。
-  it('version 18のセーブは正規化を適用しない(新形式は既に正しいので触らない)', () => {
+  it('version 19のセーブは正規化を適用しない(新形式は既に正しいので触らない)', () => {
     const railMap = buildStructurallyCorrectMap();
-    // v17形式なら反転対象になる不正な状態を人工的に作り、v18では「触らない」ことを見る。
+    // v17形式なら反転対象になる不正な状態を人工的に作り、v18以降では「触らない」ことを見る。
     railMap.set('0,0', { ...railMap.get('0,0')!, ramp: { dir: DIR.S, base: -1 } });
     const saveData = serialiseWorld(
       railMap, new Map(), [], new Map(), new Map(), 1000, [], 1,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       45, new Map()
     );
-    expect(saveData.version).toBe(18);
+    expect(saveData.version).toBe(19);
     const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
     expect(restored).not.toBeNull();
     expect(restored!.railMap.get('0,0')?.ramp?.dir).toBe(DIR.S);
