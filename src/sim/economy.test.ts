@@ -43,7 +43,9 @@ import {
   RAIL_WEIGHT_COST_MULTIPLIER,
   trainSellRefund,
   trainTotalCost,
+  trainCostForProtected,
 } from './economy';
+import { TRAIN_MODELS } from './physics';
 
 describe('economy: 軌道(何キロレール)のコスト倍率', () => {
   it('37kg=0.8倍・50kgN=1.0倍・60kg=1.3倍', () => {
@@ -298,5 +300,26 @@ describe('economy: calculateUpkeep', () => {
 
     expect(calculateUpkeep(world)).toBe((2 + 4) * UPKEEP_PER_CAR + 10 * RAIL_UPKEEP + 2 * STATION_UPKEEP + 1 * DEPOT_UPKEEP);
     expect(calculateUpkeep(world)).toBe(1820);
+  });
+});
+
+describe('economy: trainCostForProtected — 車種(TRAIN_MODELS)の価格倍率', () => {
+  it('modelを省略すると従来通り(通勤形は倍率1.0なので値も変わらない)', () => {
+    expect(trainCostForProtected('diesel', undefined)).toBe(TRAIN_COST);
+    expect(trainCostForProtected('diesel', undefined, 'commuter')).toBe(TRAIN_COST);
+  });
+
+  it('近郊形(×1.3)・特急形(×1.8)は基準額にさらに乗算される', () => {
+    expect(trainCostForProtected('diesel', undefined, 'suburban'))
+      .toBe(Math.round(TRAIN_COST * TRAIN_MODELS.suburban.priceMultiplier));
+    expect(trainCostForProtected('diesel', undefined, 'express'))
+      .toBe(Math.round(TRAIN_COST * TRAIN_MODELS.express.priceMultiplier));
+  });
+
+  it('動力方式・保安装置・車種の3つの倍率が積み上がる', () => {
+    const combined = trainCostForProtected('electric-ac', 'cbtc', 'express');
+    const acCbtc = trainCostForProtected('electric-ac', 'cbtc');
+    expect(combined).toBeGreaterThan(acCbtc);
+    expect(combined).toBe(Math.round(acCbtc * TRAIN_MODELS.express.priceMultiplier));
   });
 });
