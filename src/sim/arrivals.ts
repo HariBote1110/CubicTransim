@@ -4,10 +4,10 @@
 // あくまで目安の予測であり、信号待ちや発車間隔(headway)による停止・減速は
 // 織り込まない(経路上の残距離と速度だけから単純計算する)。実際にはこれより
 // 遅く到着することがある。
-import type { TrainData, TrainGroupData } from '../types';
+import type { TrainData, LineData, ServiceData } from '../types';
 import type { TrainRuntime } from './simulation';
 import { TILE_LENGTH } from './simulation';
-import { effectiveSchedule, findGroup, stopsOnCurrentRun } from './groups';
+import { effectiveSchedule, resolveAssignment, stopsOnCurrentRun } from './lines';
 
 /** 単独運用(グループ未所属)の列車の路線名・ラインカラー表示。 */
 const STANDALONE_LINE_NAME = '単独';
@@ -18,9 +18,11 @@ const MIN_SPEED_FOR_ETA_KMH = 20;
 
 export interface StationArrival {
   trainId: string;
-  groupId: string | null;
+  serviceId: string | null;
   lineName: string;
   lineColour: string;
+  /** 種別名(各停・快速など)。単独運用ならnull。 */
+  serviceName: string | null;
   /** この列車がこの駅を出たあとに向かう先の駅id。運行表が1駅だけ等で決められなければnull。 */
   destinationStationId: string | null;
   cars: number;
@@ -54,14 +56,16 @@ const remainingRouteDistanceM = (rt: TrainRuntime): number => {
  * @param stationId 発車標を出す駅
  * @param trains    全列車
  * @param runtimes  列車id→走行状態
- * @param groups    運用グループ一覧
+ * @param lines     路線一覧
+ * @param services  種別一覧
  * @param maxResults 最大件数(既定5)
  */
 export function computeStationArrivals(
   stationId: string,
   trains: TrainData[],
   runtimes: Map<string, TrainRuntime>,
-  groups: TrainGroupData[],
+  lines: LineData[],
+  services: ServiceData[],
   maxResults = 5
 ): StationArrival[] {
   const results: StationArrival[] = [];
@@ -72,20 +76,21 @@ export function computeStationArrivals(
     const rt = runtimes.get(train.id);
     if (!rt) continue;
 
-    const schedule = effectiveSchedule(train, groups);
+    const schedule = effectiveSchedule(train, lines, services);
     if (schedule.length === 0) continue;
 
     const targetStationId = schedule[train.scheduleIndex % schedule.length];
     if (targetStationId !== stationId) continue;
 
-    const group = findGroup(groups, train.groupId);
-    const lineName = group ? group.name : STANDALONE_LINE_NAME;
-    const lineColour = group ? group.colour : STANDALONE_LINE_COLOUR;
+    const assignment = resolveAssignment(train, lines, services);
+    const lineName = assignment ? assignment.line.name : STANDALONE_LINE_NAME;
+    const lineColour = assignment ? assignment.line.colour : STANDALONE_LINE_COLOUR;
+    const serviceName = assignment ? assignment.service.name : null;
 
     const ahead = stopsOnCurrentRun(
       schedule,
       { index: train.scheduleIndex, direction: train.scheduleDirection ?? 1 },
-      group?.mode ?? 'loop'
+      assignment?.line.mode ?? 'loop'
     );
     const destinationStationId = ahead.length > 0 ? ahead[0] : null;
 
@@ -102,9 +107,10 @@ export function computeStationArrivals(
 
     results.push({
       trainId: train.id,
-      groupId: train.groupId ?? null,
+      serviceId: train.serviceId ?? null,
       lineName,
       lineColour,
+      serviceName,
       destinationStationId,
       cars: train.cars,
       secondsUntilArrival,

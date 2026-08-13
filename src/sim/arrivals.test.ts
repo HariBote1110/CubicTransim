@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computeStationArrivals } from './arrivals';
 import type { TrainRuntime } from './simulation';
-import type { TrainData, TrainGroupData } from '../types';
+import type { TrainData, LineData, ServiceData } from '../types';
 
 // 最小限のTrainRuntimeを作るヘルパー。テストで使わないフィールドはダミー値で埋める。
 const makeRuntime = (overrides: Partial<TrainRuntime> & { id: string }): TrainRuntime => ({
@@ -47,7 +47,7 @@ describe('computeStationArrivals', () => {
       ['t3', makeRuntime({ id: 't3' })],
     ]);
 
-    const result = computeStationArrivals('A', trains, runtimes, []);
+    const result = computeStationArrivals('A', trains, runtimes, [], []);
 
     expect(result.map(r => r.trainId)).toEqual(['t1']);
   });
@@ -62,7 +62,7 @@ describe('computeStationArrivals', () => {
       ['far', makeRuntime({ id: 'far', grid: { x: 0, z: 0 }, route: [{ x: 10, z: 0 }], speedKmh: 60 })],
     ]);
 
-    const result = computeStationArrivals('A', trains, runtimes, []);
+    const result = computeStationArrivals('A', trains, runtimes, [], []);
 
     expect(result.map(r => r.trainId)).toEqual(['near', 'far']);
   });
@@ -77,7 +77,7 @@ describe('computeStationArrivals', () => {
       ['stopped', makeRuntime({ id: 'stopped', route: [], stopRemaining: 2 })],
     ]);
 
-    const result = computeStationArrivals('A', trains, runtimes, []);
+    const result = computeStationArrivals('A', trains, runtimes, [], []);
 
     expect(result[0].trainId).toBe('stopped');
     expect(result[0].secondsUntilArrival).toBe(0);
@@ -90,29 +90,29 @@ describe('computeStationArrivals', () => {
       ['t1', makeRuntime({ id: 't1', grid: { x: 0, z: 0 }, route: [{ x: 5, z: 0 }], speedKmh: 0 })],
     ]);
 
-    const result = computeStationArrivals('A', trains, runtimes, []);
+    const result = computeStationArrivals('A', trains, runtimes, [], []);
 
     expect(result[0].secondsUntilArrival).toBeGreaterThan(0);
     expect(Number.isFinite(result[0].secondsUntilArrival)).toBe(true);
   });
 
   it('行き先が路線の運行モード(環状/折返し)に従って決まる', () => {
-    const loopGroup: TrainGroupData = {
-      id: 'g1', name: '1系統', schedule: ['A', 'B', 'C'], headwaySeconds: 0, colour: '#111', mode: 'loop',
-    };
-    const shuttleGroup: TrainGroupData = {
-      id: 'g2', name: '2系統', schedule: ['A', 'B', 'C'], headwaySeconds: 0, colour: '#222', mode: 'shuttle',
-    };
+    const loopLine: LineData = { id: 'l1', name: '1系統', stops: ['A', 'B', 'C'], colour: '#111', mode: 'loop' };
+    const shuttleLine: LineData = { id: 'l2', name: '2系統', stops: ['A', 'B', 'C'], colour: '#222', mode: 'shuttle' };
+    const loopService: ServiceData = { id: 's1', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 0 };
+    const shuttleService: ServiceData = { id: 's2', lineId: 'l2', name: '各停', skipStationIds: [], headwaySeconds: 0 };
     const trains: TrainData[] = [
-      makeTrain({ id: 'loopTrain', groupId: 'g1', schedule: [], scheduleIndex: 0, scheduleDirection: 1 }),
-      makeTrain({ id: 'shuttleTrain', groupId: 'g2', schedule: [], scheduleIndex: 0, scheduleDirection: 1 }),
+      makeTrain({ id: 'loopTrain', serviceId: 's1', schedule: [], scheduleIndex: 0, scheduleDirection: 1 }),
+      makeTrain({ id: 'shuttleTrain', serviceId: 's2', schedule: [], scheduleIndex: 0, scheduleDirection: 1 }),
     ];
     const runtimes = new Map<string, TrainRuntime>([
       ['loopTrain', makeRuntime({ id: 'loopTrain', route: [{ x: 1, z: 0 }], speedKmh: 50 })],
       ['shuttleTrain', makeRuntime({ id: 'shuttleTrain', route: [{ x: 1, z: 0 }], speedKmh: 50 })],
     ]);
 
-    const result = computeStationArrivals('A', trains, runtimes, [loopGroup, shuttleGroup]);
+    const result = computeStationArrivals(
+      'A', trains, runtimes, [loopLine, shuttleLine], [loopService, shuttleService]
+    );
 
     const loop = result.find(r => r.trainId === 'loopTrain');
     const shuttle = result.find(r => r.trainId === 'shuttleTrain');
@@ -122,6 +122,7 @@ describe('computeStationArrivals', () => {
     expect(shuttle?.destinationStationId).toBe('B');
     expect(loop?.lineName).toBe('1系統');
     expect(shuttle?.lineName).toBe('2系統');
+    expect(loop?.serviceName).toBe('各停');
   });
 
   it('路線に所属していない単独運用の列車も扱える', () => {
@@ -132,10 +133,11 @@ describe('computeStationArrivals', () => {
       ['solo', makeRuntime({ id: 'solo', route: [{ x: 1, z: 0 }], speedKmh: 50 })],
     ]);
 
-    const result = computeStationArrivals('A', trains, runtimes, []);
+    const result = computeStationArrivals('A', trains, runtimes, [], []);
 
     expect(result).toHaveLength(1);
-    expect(result[0].groupId).toBeNull();
+    expect(result[0].serviceId).toBeNull();
+    expect(result[0].serviceName).toBeNull();
     expect(result[0].destinationStationId).toBe('B');
   });
 });

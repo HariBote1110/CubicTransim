@@ -826,12 +826,16 @@ describe('stepWorld: 旅客の行き先と経路検索', () => {
   it('乗換が必要な行き先の客は、乗換駅で降りてその駅の待ち客になる', () => {
     const { railMap, stations } = buildThreeStationLine();
     // g1は stA-stB、g2は stB-stC。stA→stCはstBで乗換が要る。
-    const t1 = makeTrain({ id: 't1', x: 2, z: 0, schedule: [], groupId: 'g1' });
-    const t2 = makeTrain({ id: 't2', x: 7, z: 0, schedule: [], groupId: 'g2' });
+    const t1 = makeTrain({ id: 't1', x: 2, z: 0, schedule: [], serviceId: 's1' });
+    const t2 = makeTrain({ id: 't2', x: 7, z: 0, schedule: [], serviceId: 's2' });
     const world = makeWorld(railMap, stations, [t1, t2], () => 1, []);
-    world.groups = [
-      { id: 'g1', name: 'g1', schedule: ['stA', 'stB'], headwaySeconds: 0, colour: '#fff' },
-      { id: 'g2', name: 'g2', schedule: ['stB', 'stC'], headwaySeconds: 0, colour: '#fff' },
+    world.lines = [
+      { id: 'l1', name: 'l1', stops: ['stA', 'stB'], colour: '#fff' },
+      { id: 'l2', name: 'l2', stops: ['stB', 'stC'], colour: '#fff' },
+    ];
+    world.services = [
+      { id: 's1', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 0 },
+      { id: 's2', lineId: 'l2', name: '各停', skipStationIds: [], headwaySeconds: 0 },
     ];
     seedWaiting(world, 'stA', 'stC', 10);
 
@@ -840,7 +844,8 @@ describe('stepWorld: 旅客の行き先と経路検索', () => {
       evs.forEach(e => {
         if (e.type === 'arrive') {
           const train = world.trains.find(t => t.id === e.trainId)!;
-          const schedule = world.groups!.find(g => g.id === train.groupId)!.schedule;
+          const service = world.services!.find(s => s.id === train.serviceId)!;
+          const schedule = world.lines!.find(l => l.id === service.lineId)!.stops;
           train.scheduleIndex = (train.scheduleIndex + 1) % schedule.length;
         }
       });
@@ -948,12 +953,13 @@ describe('stepWorld: 折返し運転と乗車の向き', () => {
 
   const shuttleWorld = () => {
     const { railMap, stations } = buildShuttleLine();
-    const train = makeTrain({ x: 5, z: 0, schedule: [], groupId: 'g1', scheduleIndex: 1 });
+    const train = makeTrain({ x: 5, z: 0, schedule: [], serviceId: 's1', scheduleIndex: 1 });
     const world = makeWorld(railMap, stations, [train], () => 1, []);
-    world.groups = [{
-      id: 'g1', name: '1系統', schedule: ['stA', 'stB', 'stC'],
-      headwaySeconds: 0, colour: '#fff', mode: 'shuttle',
+    world.lines = [{
+      id: 'l1', name: '1系統', stops: ['stA', 'stB', 'stC'],
+      colour: '#fff', mode: 'shuttle',
     }];
+    world.services = [{ id: 's1', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 0 }];
     return { world, train };
   };
 
@@ -987,6 +993,61 @@ describe('stepWorld: 折返し運転と乗車の向き', () => {
 
     const rt = world.runtimes.get('t1')!;
     expect(rt.load?.map(c => [c.destinationId, c.count])).toEqual([['stC', 10]]);
+  });
+});
+
+// stA(0) --- stB(5) --- stC(10) の3駅一直線(快速の通過駅検証用)。
+const buildShuttleLineABC = () => {
+  const cells = Array.from({ length: 11 }, (_, i) => ({ x: i, z: 0 }));
+  const railMap = buildRailMap(cells);
+  const stations = new Map<string, StationData>();
+  const place = (id: string, x: number) => {
+    railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: id });
+    stations.set(id, { id, name: id, cells: [{ x, z: 0 }], center: { x, z: 0 }, platformDoors: 'none' });
+  };
+  place('stA', 0); place('stB', 5); place('stC', 10);
+  return { railMap, stations };
+};
+
+describe('stepWorld: 通過駅を持つ種別(快速)', () => {
+  it('快速種別に所属する列車は、通過駅(stB)を目的地の並びに含めない', () => {
+    const { railMap, stations } = buildShuttleLineABC();
+    const train = makeTrain({ x: 0, z: 0, schedule: [], serviceId: 'rapid' });
+    const world = makeWorld(railMap, stations, [train], () => 1, []);
+    world.lines = [{ id: 'l1', name: '1系統', stops: ['stA', 'stB', 'stC'], colour: '#fff' }];
+    world.services = [{ id: 'rapid', lineId: 'l1', name: '快速', skipStationIds: ['stB'], headwaySeconds: 0 }];
+
+    let arrivedAt: string[] = [];
+    for (let i = 0; i < 10000 && arrivedAt.length < 2; i++) {
+      const evs = stepWorld(world, 0.1);
+      for (const e of evs) {
+        if (e.type === 'arrive') {
+          const rt = world.runtimes.get(train.id)!;
+          if (rt.lastStopStationId) arrivedAt.push(rt.lastStopStationId);
+          train.scheduleIndex = (train.scheduleIndex + 1) % 2;
+        }
+      }
+    }
+
+    // 有効運行表からstBが除かれているため、快速は一度もstBに停まらずstA/stCだけを往復する。
+    expect(arrivedAt).not.toContain('stB');
+    expect(arrivedAt.length).toBeGreaterThan(0);
+    expect(arrivedAt.every(id => id === 'stA' || id === 'stC')).toBe(true);
+  });
+
+  it('通過駅で待つ客は快速には乗れない(乗車判定もskipStationIdsに従う)', () => {
+    const { railMap, stations } = buildShuttleLineABC();
+    const train = makeTrain({ x: 5, z: 0, schedule: [], serviceId: 'rapid', scheduleIndex: 1 });
+    const world = makeWorld(railMap, stations, [train], () => 1, []);
+    world.lines = [{ id: 'l1', name: '1系統', stops: ['stA', 'stB', 'stC'], colour: '#fff', mode: 'shuttle' }];
+    world.services = [{ id: 'rapid', lineId: 'l1', name: '快速', skipStationIds: ['stB'], headwaySeconds: 0 }];
+    // stBは有効運行表に無いので、その駅を発着地とする経路はサービス網に乗らず、
+    // 待ち客は乗せられずに残る。
+    seedWaiting(world, 'stB', 'stC', 10);
+
+    for (let i = 0; i < 3000; i++) stepWorld(world, 0.1);
+
+    expect(world.waiting.get('stB')).toBe(10);
   });
 });
 

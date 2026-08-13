@@ -1,5 +1,5 @@
 import { toKey } from '../utils';
-import type { CellData, StationData, TrainData, TrainGroupData, TownData, Level, TrainProtection } from '../types';
+import type { CellData, StationData, TrainData, LineData, ServiceData, TownData, Level, TrainProtection } from '../types';
 import { DEFAULT_GAUGE } from '../types';
 import type { TerrainField } from './terrainField';
 import {
@@ -23,8 +23,8 @@ import {
   RAMP_POS_LEVEL1, RAMP_POS_LEVEL2,
 } from './trackPath';
 import { groundRailCentreHeight } from './slopes';
-import { effectiveSchedule, findGroup, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './groups';
-import type { IntervalSamples } from './groups';
+import { effectiveSchedule, resolveAssignment, findService, departureKey, headwayHoldSeconds, stopsOnCurrentRun, recordInterval } from './lines';
+import type { IntervalSamples } from './lines';
 import { tryReserve, releaseCell, findSafeSegmentEnd, findDepartureSegmentEnd, reservationKey } from './reservation';
 import { blocksOccupiedByOthers, type BlockIndex } from './blocks';
 import {
@@ -178,7 +178,7 @@ export interface TrainRuntime {
   // (ジャーク余裕を織り込んだ包絡線)と実速度が交差し続け、込める/緩めるを毎tick
   // 繰り返して速度が脈動する。
   braking?: boolean;
-  // 停車を終えて発車待ちの駅id。発車間隔(グループダイヤ)の判定はこの間だけ行い、
+  // 停車を終えて発車待ちの駅id。発車間隔(種別ダイヤ)の判定はこの間だけ行い、
   // 実際に発車した時点でクリアする。線路上で経路待ちをしている状態と区別するために持つ。
   pendingDepartureFrom?: string | null;
   // 車内の旅客を行き先つきの塊で持つ。passengersはこの合計(質量計算と描画のために残している)。
@@ -228,12 +228,14 @@ export interface SimWorld {
   // 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定として持つ。
   // 旧セーブ(v7以前)には存在しないため任意とし、既定値は'middle'(既存の編成中央基準)。
   stopLocation?: 'near' | 'middle' | 'far';
-  // 運用グループ(共有運行表と発車間隔)。旧セーブ(v8以前)には存在しないため任意。
-  groups?: TrainGroupData[];
-  // 「グループ×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。
-  groupDepartures?: Map<string, number>;
-  // 「路線×駅」ごとの実測の発車間隔。設定値どおりに走れているかの表示に使う(セーブ対象外)。
-  groupIntervals?: IntervalSamples;
+  // 路線(物理経路)。旧セーブ(v8以前)には存在しないため任意。
+  lines?: LineData[];
+  // 種別(路線に属する各停・快速など)。旧セーブ(v18以前)には存在しないため任意。
+  services?: ServiceData[];
+  // 「種別×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。
+  serviceDepartures?: Map<string, number>;
+  // 「種別×駅」ごとの実測の発車間隔。設定値どおりに走れているかの表示に使う(セーブ対象外)。
+  serviceIntervals?: IntervalSamples;
   // 駅ごとの待ち客(行き先つきの塊)。waitingはこの合計を写したもので、表示・セーブ用。
   demand?: Map<string, PassengerCohort[]>;
   // 旅客が移動できるサービス網と経路キャッシュ。運行表が変わるまで使い回す(セーブ対象外)。
@@ -270,18 +272,22 @@ export interface SimWorld {
 }
 
 /**
- * サービス網と経路キャッシュを最新に保つ。運行表・グループ・配備状況が変わったときだけ
+ * サービス網と経路キャッシュを最新に保つ。運行表・路線・種別・配備状況が変わったときだけ
  * 組み直し、経路キャッシュを捨てる(走らなくなった区間へ旅客を送り続けないため)。
+ * 署名には解決済みの有効運行表を含める(種別のskipStationIds編集や路線のstops編集を
+ * 検知するため。serviceId自体は変わらなくても実際に停まる駅は変わりうる)。
  */
 const ensureService = (world: SimWorld): { graph: ServiceGraph; cache: RouteCache } => {
-  const groups = world.groups ?? [];
+  const lines = world.lines ?? [];
+  const services = world.services ?? [];
   const signature = [
-    world.trains.map(t => `${t.id}:${t.status}:${t.groupId ?? ''}:${t.schedule.join('>')}`).join('|'),
-    groups.map(g => `${g.id}:${g.schedule.join('>')}`).join('|'),
+    world.trains
+      .map(t => `${t.id}:${t.status}:${t.serviceId ?? ''}:${effectiveSchedule(t, lines, services).join('>')}`)
+      .join('|'),
   ].join('#');
 
   if (world.serviceSignature !== signature || !world.serviceGraph || !world.routeCache) {
-    world.serviceGraph = buildServiceGraph(world.trains, groups);
+    world.serviceGraph = buildServiceGraph(world.trains, lines, services);
     world.routeCache = createRouteCache();
     world.serviceSignature = signature;
   }
@@ -792,7 +798,7 @@ const stopAtStation = (
   // 整数に切り捨て、端数は駅に残す(passengersが常に整数であることを保証する)。
   const carCount = train.cars ?? 2;
   const trainCapacity = carCount * CAPACITY_PER_CAR;
-  const lineId = train.groupId ?? train.id;
+  const lineId = train.serviceId ?? train.id;
   const onboard = rt.load.reduce((sum, c) => sum + c.count, 0);
 
   const firstLegOf = (destinationId: string) => {
@@ -803,13 +809,13 @@ const stopAtStation = (
 
   // この列車がこの先どの駅に停まるか(折返し運転なら折り返した先も含む)。
   // 目的地と逆向きに発車する列車に乗ってしまわないよう、乗車判定に使う。
-  const line = findGroup(world.groups ?? [], train.groupId);
-  const schedule = effectiveSchedule(train, world.groups ?? []);
+  const assignment = resolveAssignment(train, world.lines ?? [], world.services ?? []);
+  const schedule = effectiveSchedule(train, world.lines ?? [], world.services ?? []);
   const ahead = new Set(
     stopsOnCurrentRun(
       schedule,
       { index: train.scheduleIndex, direction: train.scheduleDirection ?? 1 },
-      line?.mode ?? 'loop'
+      assignment?.line.mode ?? 'loop'
     )
   );
 
@@ -882,27 +888,27 @@ const stopAtStation = (
 const departureHoldSeconds = (world: SimWorld, train: TrainData, rt: TrainRuntime): number => {
   const stationId = rt.pendingDepartureFrom;
   if (!stationId) return 0;
-  const group = findGroup(world.groups ?? [], train.groupId);
-  if (!group) return 0;
-  const last = world.groupDepartures?.get(departureKey(group.id, stationId));
-  return headwayHoldSeconds(group.headwaySeconds, last, world.clock?.elapsed ?? 0);
+  const service = findService(world.services ?? [], train.serviceId);
+  if (!service) return 0;
+  const last = world.serviceDepartures?.get(departureKey(service.id, stationId));
+  return headwayHoldSeconds(service.headwaySeconds, last, world.clock?.elapsed ?? 0);
 };
 
-/** 発車したことをグループの発車時刻表へ記録し、発車待ち状態を解除する。 */
+/** 発車したことを種別の発車時刻表へ記録し、発車待ち状態を解除する。 */
 const recordDeparture = (world: SimWorld, train: TrainData, rt: TrainRuntime): void => {
   const stationId = rt.pendingDepartureFrom;
   rt.pendingDepartureFrom = null;
   if (!stationId) return;
-  const group = findGroup(world.groups ?? [], train.groupId);
-  if (!group) return;
-  if (!world.groupDepartures) world.groupDepartures = new Map();
-  if (!world.groupIntervals) world.groupIntervals = new Map();
+  const service = findService(world.services ?? [], train.serviceId);
+  if (!service) return;
+  if (!world.serviceDepartures) world.serviceDepartures = new Map();
+  if (!world.serviceIntervals) world.serviceIntervals = new Map();
 
   const now = world.clock?.elapsed ?? 0;
-  const key = departureKey(group.id, stationId);
+  const key = departureKey(service.id, stationId);
   // 設定した発車間隔どおりに走れているかを見るため、実測値も残す。
-  recordInterval(world.groupIntervals, group.id, stationId, world.groupDepartures.get(key), now);
-  world.groupDepartures.set(key, now);
+  recordInterval(world.serviceIntervals, service.id, stationId, world.serviceDepartures.get(key), now);
+  world.serviceDepartures.set(key, now);
 };
 
 const stepTrain = (
@@ -915,8 +921,8 @@ const stepTrain = (
   // rules.electrification!=='feeding'なら常にundefined。
   feedingSectionCounts?: Map<string, number>
 ) => {
-  // グループに所属している列車はグループの運行表に従う(共有運行表)。
-  const schedule = effectiveSchedule(train, world.groups ?? []);
+  // 種別に所属している列車は路線の有効運行表に従う(共有運行表)。
+  const schedule = effectiveSchedule(train, world.lines ?? [], world.services ?? []);
   const targetStationId = schedule.length > 0 ? schedule[train.scheduleIndex % schedule.length] : null;
 
   // 人身事故による運転見合わせ中: stopRemainingより優先して完全停止する
@@ -958,7 +964,7 @@ const stepTrain = (
       return;
     }
 
-    // 発車間隔(グループダイヤ)の判定。同じグループの列車が同じ駅を発車してから
+    // 発車間隔(種別ダイヤ)の判定。同じ種別の列車が同じ駅を発車してから
     // headway秒経つまでその場で待つ。これだけで団子運転がほどけて等間隔になる。
     const hold = departureHoldSeconds(world, train, rt);
     if (hold > 0) {
@@ -1042,7 +1048,7 @@ const stepTrain = (
         rt.lastStopStationId,
         new Set([...rt.trail, ...newPath].map(reservationKey))
       );
-      // 実際に発車したので、グループの「その駅の最終発車時刻」を更新する。
+      // 実際に発車したので、種別の「その駅の最終発車時刻」を更新する。
       recordDeparture(world, train, rt);
       // 予約はここでは取得しない(=まだ何も予約できていない状態)。この直後の
       // ensureReservation呼び出しで、次のsafe waiting pointまでの区間を実際に取得する。
@@ -1411,12 +1417,12 @@ const stepTrain = (
 };
 
 // 駅ごとの輸送力(その駅に停車する運行を持つ列車の編成定員合計)。
-// resolveTownSpawnTick(sim/towns.ts)は trains/groups の型を知らないため、ここで集計してから渡す。
+// resolveTownSpawnTick(sim/towns.ts)は trains/lines/services の型を知らないため、ここで集計してから渡す。
 const computeStationTransportInfos = (world: SimWorld): StationTransportInfo[] => {
   const capacities = new Map<string, number>();
   for (const train of world.trains) {
     if (train.status !== 'running') continue;
-    const schedule = effectiveSchedule(train, world.groups ?? []);
+    const schedule = effectiveSchedule(train, world.lines ?? [], world.services ?? []);
     if (schedule.length === 0) continue;
     const capacity = (train.cars ?? 2) * CAPACITY_PER_CAR;
     for (const stationId of new Set(schedule)) {
