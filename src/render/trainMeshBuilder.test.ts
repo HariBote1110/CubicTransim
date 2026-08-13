@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildTrainCarMesh, buildSelectionMarkerMesh, buildRouteDotMesh, PLACEHOLDER_CAR_DIMENSIONS } from './trainMeshBuilder';
+import {
+  buildTrainCarMesh, buildSelectionMarkerMesh, buildRouteDotMesh, PLACEHOLDER_CAR_DIMENSIONS,
+  buildCarMeshFromParts, MODEL_PARTS,
+} from './trainMeshBuilder';
+import { validateParts } from './trainPartsSpec';
 
 const alphaOf = (packed: number): number => (packed >>> 24) & 0xff;
 
@@ -78,6 +82,38 @@ describe('buildTrainCarMesh（車種ごとの見た目)', () => {
       expect(alphas.has(255)).toBe(true);
       expect(alphas.has(0)).toBe(true);
       expect([...alphas].every(a => a === 0 || a === 255)).toBe(true);
+    }
+  });
+});
+
+describe('MODEL_PARTS（宣言的パーツデータ）', () => {
+  const MODEL_IDS = ['commuter', 'suburban', 'express', 'local-express'] as const;
+
+  it('buildTrainCarMesh is a thin wrapper over MODEL_PARTS + buildCarMeshFromParts', () => {
+    for (const modelId of MODEL_IDS) {
+      for (const variant of ['head', 'mid'] as const) {
+        const direct = buildTrainCarMesh(variant, modelId)!;
+        const fromParts = buildCarMeshFromParts(MODEL_PARTS[modelId][variant])!;
+        expect(fromParts.positions).toEqual(direct.positions);
+        expect(fromParts.colours).toEqual(direct.colours);
+      }
+    }
+  });
+
+  it('round-trips through JSON without changing the built vertex data', () => {
+    const parts = MODEL_PARTS.express.head;
+    const roundTripped = JSON.parse(JSON.stringify(parts));
+    const direct = buildCarMeshFromParts(parts)!;
+    const fromRoundTrip = buildCarMeshFromParts(roundTripped)!;
+    expect(fromRoundTrip.positions).toEqual(direct.positions);
+    expect(fromRoundTrip.colours).toEqual(direct.colours);
+  });
+
+  it('every model/variant part set passes validateParts', () => {
+    for (const modelId of MODEL_IDS) {
+      for (const variant of ['head', 'mid'] as const) {
+        expect(validateParts(MODEL_PARTS[modelId][variant])).toEqual([]);
+      }
     }
   });
 });
