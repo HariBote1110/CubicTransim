@@ -662,6 +662,25 @@ describe('stepWorld: 減速カーブ(距離ベースの許容速度)', () => {
     expect(suburbanMaxKmh).toBeGreaterThan(MAX_SPEED_KMH);
   });
 
+  it('車種(TRAIN_MODELS): 特急形(ローカル)はTRAIN_MODELS[\'local-express\'].maxSpeedKmh(110km/h)で頭打ちになる', () => {
+    // 幹線特急(130km/h)と違い、無制限のレール(cap無し)を敷いても110km/hで頭打ちになることを確認する。
+    // 近郊形の頭打ちテスト(120km/h)と同じ手法(200秒だけ進めて走行中の最高速度を観測)を流用する。
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    const localExpressTrain = makeTrain({ id: 't1', schedule: ['stA'], model: 'local-express' });
+    const world = makeWorld(railMap, stations, [localExpressTrain]);
+
+    const dt = 0.1;
+    let maxKmh = 0;
+    for (let i = 0; i < 2000; i++) {
+      stepWorld(world, dt);
+      const rt = world.runtimes.get('t1')!;
+      maxKmh = Math.max(maxKmh, rt.speedKmh);
+      expect(rt.speedKmh).toBeLessThanOrEqual(TRAIN_MODELS['local-express'].maxSpeedKmh + 1e-6);
+    }
+
+    expect(maxKmh).toBeGreaterThan(MAX_SPEED_KMH);
+  });
+
   it('車種(TRAIN_MODELS): 特急形は常用減速度(18km/h/s)が通勤形(24km/h/s)より緩やかなぶん、同じ初速からの制動距離が長い', () => {
     // 制動距離の式(brakingDistanceM)はpermittedSpeedKmhの逆関数であり、simulation.tsの
     // 速度制御(releaseEnvelopeKmh)と予約延長判定(ensureReservation)が共通で使う式そのもの

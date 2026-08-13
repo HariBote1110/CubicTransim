@@ -168,4 +168,23 @@ describe('車種(TRAIN_MODELS): 通勤形/近郊形/特急形', () => {
     expect(trainModelOf(undefined)).toBe(TRAIN_MODELS.commuter);
     expect(trainModelOf('express')).toBe(TRAIN_MODELS.express);
   });
+
+  it('特急形(幹線)は「特急形（幹線）」の表示名を持つ', () => {
+    expect(TRAIN_MODELS.express.name).toBe('特急形（幹線）');
+  });
+
+  it('特急形(ローカル): 最高110km/h・常用減速20km/h/s・50kgレールで性能を出し切れる', () => {
+    expect(TRAIN_MODELS['local-express'].name).toBe('特急形（ローカル）');
+    expect(TRAIN_MODELS['local-express'].maxSpeedKmh).toBe(110);
+    expect(TRAIN_MODELS['local-express'].serviceDecelKmhS).toBe(20);
+    expect(TRAIN_MODELS['local-express'].spec).toEqual({ enginePower: 1700, carMassEmpty: 31, maxTractiveEffort: 300 });
+    expect(TRAIN_MODELS['local-express'].priceMultiplier).toBe(1.4);
+    expect(trainModelOf('local-express')).toBe(TRAIN_MODELS['local-express']);
+  });
+
+  it('TRAIN_MODELSは4車種を持つ', () => {
+    expect(Object.keys(TRAIN_MODELS).sort()).toEqual(
+      ['commuter', 'express', 'local-express', 'suburban'].sort(),
+    );
+  });
 });

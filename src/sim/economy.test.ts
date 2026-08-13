@@ -322,4 +322,9 @@ describe('economy: trainCostForProtected — 車種(TRAIN_MODELS)の価格倍率
     expect(combined).toBeGreaterThan(acCbtc);
     expect(combined).toBe(Math.round(acCbtc * TRAIN_MODELS.express.priceMultiplier));
   });
+
+  it('特急形(ローカル)(×1.4)も基準額にさらに乗算される', () => {
+    expect(trainCostForProtected('diesel', undefined, 'local-express'))
+      .toBe(Math.round(TRAIN_COST * TRAIN_MODELS['local-express'].priceMultiplier));
+  });
 });
