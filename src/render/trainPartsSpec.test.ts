@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPartGeometry, validateParts, type TrainPart } from './trainPartsSpec';
+import { buildPartGeometry, partBounds, validateParts, type TrainPart } from './trainPartsSpec';
 
 const box = (overrides: Partial<TrainPart> = {}): TrainPart => ({
   kind: 'box',
@@ -56,6 +56,18 @@ describe('buildPartGeometry', () => {
     const r = rotated.boundingBox!;
     expect(r.max.x - r.min.x).toBeCloseTo(p.max.y - p.min.y, 5);
     expect(r.max.y - r.min.y).toBeCloseTo(p.max.x - p.min.x, 5);
+  });
+});
+
+describe('partBounds', () => {
+  it('matches buildPartGeometry bounding box, including translation', () => {
+    const part = box({ size: [0.2, 0.1, 0.3], pos: [1, 2, 3] });
+    const g = buildPartGeometry(part);
+    g.computeBoundingBox();
+    const bb = g.boundingBox!;
+    const b = partBounds(part);
+    expect(b.min).toEqual([bb.min.x, bb.min.y, bb.min.z]);
+    expect(b.max).toEqual([bb.max.x, bb.max.y, bb.max.z]);
   });
 });
 

@@ -113,6 +113,17 @@ export function buildPartGeometry(part: TrainPart): THREE.BufferGeometry {
   return geometry;
 }
 
+/** 1パーツぶんのローカル空間AABB(回転・平行移動を反映済み)。エディタの画面上ピッキングが使う。 */
+export function partBounds(part: TrainPart): { min: [number, number, number]; max: [number, number, number] } {
+  const g = buildPartGeometry(part);
+  g.computeBoundingBox();
+  const bb = g.boundingBox!;
+  return {
+    min: [bb.min.x, bb.min.y, bb.min.z],
+    max: [bb.max.x, bb.max.y, bb.max.z],
+  };
+}
+
 // progress/train-model-format.md の寸法制約(1車両ぶん)。
 const LENGTH_LIMIT = 0.92;
 const WIDTH_LIMIT = 0.50;
