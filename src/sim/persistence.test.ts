@@ -331,6 +331,24 @@ describe('persistence: PM3 交直流電化(dc/ac)のラウンドトリップ', (
     expect(restored!.trains.find(t => t.id === 'a')?.power).toBe('electric-ac');
     expect(restored!.trains.find(t => t.id === 'b')?.power).toBe('electric-acdc');
   });
+
+  it('TrainDataのmodel(車種)がJSON経由で往復し、省略した旧セーブはundefinedのまま読み込まれる', () => {
+    const trains: TrainData[] = [
+      { id: 'a', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'stored', cars: 2, model: 'suburban' },
+      { id: 'b', x: 1, z: 1, schedule: [], scheduleIndex: 0, status: 'stored', cars: 2, model: 'express' },
+      { id: 'c', x: 2, z: 2, schedule: [], scheduleIndex: 0, status: 'stored', cars: 2 },
+    ];
+    const saveData = serialiseWorld(
+      new Map(), new Map(), trains, new Map(), new Map(), 1000, [], 1,
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
+      45, new Map()
+    );
+    const restored = deserialiseWorld(JSON.parse(JSON.stringify(saveData)));
+    expect(restored).not.toBeNull();
+    expect(restored!.trains.find(t => t.id === 'a')?.model).toBe('suburban');
+    expect(restored!.trains.find(t => t.id === 'b')?.model).toBe('express');
+    expect(restored!.trains.find(t => t.id === 'c')?.model).toBeUndefined();
+  });
 });
 
 describe('persistence: 軌道(何キロレール)のラウンドトリップ', () => {
