@@ -682,12 +682,17 @@ export function buildUndergroundOpeningPart(dir: number, x = 0, z = 0): Undergro
 // 1本だけ立てる。電線は間引かず全セルの中心線に沿って敷く(ポールが疎でも
 // 線が途切れないように)。地下は呼び出し側(railGeometry.ts)が呼ばないことで
 // スコープ外にする(第三軌条の見た目は未実装、progress/play-modes-plan.md参照)。
+// マスト高さは車両屋根(クーラー天面がoriginY+0.713)を電線がクリアするよう、
+// マージンを見込んでoriginY+0.85に設定(0.55だと電線が0.5でクーラーへ食い込んでいた)。
+// 電線はアームの取付高さ(マスト頂部−アーム厚半分)から少し垂れ下がった位置に張ることで、
+// マスト・アーム・電線の高さ関係を常に一致させる(アームより上に電線が浮く矛盾を解消)。
 const CATENARY_POLE_SPACING = 3;
 const CATENARY_MAST_WIDTH = 0.05;
-const CATENARY_MAST_HEIGHT = 0.55;
+const CATENARY_MAST_HEIGHT = 0.85;
 const CATENARY_ARM_LENGTH = 0.22;
 const CATENARY_ARM_THICKNESS = 0.05;
-const CATENARY_WIRE_HEIGHT = 0.5;
+const CATENARY_WIRE_DROP = 0.025;
+const CATENARY_WIRE_HEIGHT = CATENARY_MAST_HEIGHT - CATENARY_ARM_THICKNESS / 2 - CATENARY_WIRE_DROP;
 const CATENARY_WIRE_THICKNESS = 0.03;
 const CATENARY_OFFSET = BALLAST_WIDTH / 2 + 0.12;
 
