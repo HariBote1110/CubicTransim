@@ -9,6 +9,7 @@ import {
   undergroundCellCandidateFromGroundClick,
   undergroundLevelSearchOrder,
   computeStationHousePlacement,
+  decideStationHouseSide,
 } from './stationLayers';
 import { createTerrainField } from '../sim/terrainField';
 import { DIR, toKey } from '../utils';
@@ -194,5 +195,41 @@ describe('computeStationHousePlacement: 地下のみの駅の地上ビュー表�
     ]);
     const placement = computeStationHousePlacement(station, railMap, field, false);
     expect(placement!.houseHidden).toBe(false);
+  });
+});
+
+// 駅舎が既定の+X側に線路/別セルが既に置かれているとき、-X側へ逃がすための
+// 左右判定(buildStationHouseGeometriesのside引数)。地形は見ず、呼び出し側が
+// 渡す占有判定(isOccupied)だけを見る純粋関数なので、南北・東西どちらの軸でも
+// 同じ規則で動くことをテストする。
+describe('decideStationHouseSide', () => {
+  // 南北軸(DIR.N|DIR.S)では+X側の隣接セルは(cx-1, cz)、東西軸(DIR.E|DIR.W)では
+  // (cx, cz-1)になる(trackAxisVectorFromConnectionsの軸ベクトルを90度回転した位置)。
+
+  it('南北軸: +X側が占有・-X側が空なら-1を返す', () => {
+    const isOccupied = (x: number, z: number) => x === -1 && z === 0;
+    const side = decideStationHouseSide(0, 0, DIR.N | DIR.S, isOccupied);
+    expect(side).toBe(-1);
+  });
+
+  it('南北軸: 両側とも空なら既定の1を返す', () => {
+    const side = decideStationHouseSide(0, 0, DIR.N | DIR.S, () => false);
+    expect(side).toBe(1);
+  });
+
+  it('南北軸: 両側とも占有なら回避不能なので1を返す', () => {
+    const side = decideStationHouseSide(0, 0, DIR.N | DIR.S, () => true);
+    expect(side).toBe(1);
+  });
+
+  it('東西軸: +X側が占有・-X側が空なら-1を返す', () => {
+    const isOccupied = (x: number, z: number) => x === 0 && z === -1;
+    const side = decideStationHouseSide(0, 0, DIR.E | DIR.W, isOccupied);
+    expect(side).toBe(-1);
+  });
+
+  it('東西軸: 両側とも空なら既定の1を返す', () => {
+    const side = decideStationHouseSide(0, 0, DIR.E | DIR.W, () => false);
+    expect(side).toBe(1);
   });
 });
