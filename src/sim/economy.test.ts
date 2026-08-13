@@ -42,6 +42,7 @@ import {
   costMultiplierForRailWeight,
   RAIL_WEIGHT_COST_MULTIPLIER,
   trainSellRefund,
+  trainTotalCost,
 } from './economy';
 
 describe('economy: 軌道(何キロレール)のコスト倍率', () => {
@@ -94,6 +95,16 @@ describe('economy: trainSellRefund', () => {
 
   it('端数は四捨五入する', () => {
     expect(trainSellRefund(5_001, 2)).toBe(Math.round(0.5 * 5_001));
+  });
+});
+
+describe('economy: trainTotalCost', () => {
+  it('基準2両編成ならbaseCostそのまま', () => {
+    expect(trainTotalCost(TRAIN_COST, 2)).toBe(TRAIN_COST);
+  });
+
+  it('増結ぶん(cars-2両)はCAR_COST換算でbaseCostへ加算する', () => {
+    expect(trainTotalCost(TRAIN_COST, 4)).toBe(TRAIN_COST + 2 * CAR_COST);
   });
 });
 
