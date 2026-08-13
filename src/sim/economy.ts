@@ -5,6 +5,7 @@ import type { CellData, PlatformDoorType, TownData, TrainPower, TrainProtection,
 import type { TerrainField } from './terrainField';
 import { applyRailPathDetailed, resolveGroundRailPlan, MAX_BRIDGE_LENGTH, type GroundRailCellRole } from './construction';
 import { SLOPE_RAIL_COST_MULTIPLIER } from './slopes';
+import { trainModelOf, type TrainModelId } from './physics';
 import type { SimWorld } from './simulation';
 
 export const STARTING_MONEY = 50_000;
@@ -251,10 +252,18 @@ export function weakerProtection(
 }
 
 // S3: 動力方式の価格(trainCostFor)に保安装置の倍率を乗算合成する。
-export function trainCostForProtected(power: TrainPower, protection?: TrainProtection): number {
+// 車種(TRAIN_MODELS、physics.ts)のpriceMultiplierも渡せば、動力方式×保安装置×車種の
+// 3つの倍率をすべて積み上げて丸める(丸めは最後に一度だけ)。modelを省略した場合は
+// 通勤形(priceMultiplier=1.0)扱いなので、既存の呼び出し元は挙動が変わらない。
+export function trainCostForProtected(
+  power: TrainPower,
+  protection?: TrainProtection,
+  model?: TrainModelId
+): number {
   const base = trainCostFor(power);
-  if (!protection) return base;
-  return Math.round(base * PROTECTION_TRAIN_PRICE_MULTIPLIER[protection]);
+  const protectionMultiplier = protection ? PROTECTION_TRAIN_PRICE_MULTIPLIER[protection] : 1;
+  const modelMultiplier = trainModelOf(model).priceMultiplier;
+  return Math.round(base * protectionMultiplier * modelMultiplier);
 }
 
 // 車庫での列車売却(在籍中の列車のみ)の払い戻し額。CAR_REFUND/CAR_COST(=50%)と
