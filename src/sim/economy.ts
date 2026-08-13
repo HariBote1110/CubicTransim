@@ -262,8 +262,14 @@ export function trainCostForProtected(power: TrainPower, protection?: TrainProte
 // 反映済みのtrainCostForProtectedの結果)に、増結ぶん(cars-2両、負にはならない)を
 // CAR_COST換算で足してから半額にする。
 export function trainSellRefund(baseCost: number, cars: number): number {
+  return Math.round(0.5 * trainTotalCost(baseCost, cars));
+}
+
+// 編成として組み上がった状態での総額(基準2両ぶんのbaseCost + 増結ぶんのCAR_COST)。
+// 複製(cloneTrain)・売却(trainSellRefund)いずれもこれを土台にする。
+export function trainTotalCost(baseCost: number, cars: number): number {
   const extraCars = Math.max(0, cars - 2);
-  return Math.round(0.5 * (baseCost + extraCars * CAR_COST));
+  return baseCost + extraCars * CAR_COST;
 }
 
 // S3: 保安装置を選んだ場合の地上設備の追加費用(建設セル数×単価)。
