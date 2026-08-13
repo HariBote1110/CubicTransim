@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  computeAcceleration, applyOverspeedDecay, TRAIN_SPECS,
+  computeAcceleration, applyOverspeedDecay, TRAIN_MODELS, DEFAULT_TRAIN_MODEL, trainModelOf,
   permittedSpeedKmh, brakingDistanceM, rampDecel, BRAKE_JERK_MS3,
   railWeightSpeedCapKmh, RAIL_WEIGHT_SPEED_CAP_KMH, AXLE_LOAD_T_BY_POWER,
 } from './physics';
 
 describe('computeAcceleration', () => {
-  const spec = TRAIN_SPECS.commuter;
+  const spec = TRAIN_MODELS.commuter.spec;
 
   it('F/m構造: 満載時は空車より加速度が小さい(=同じ距離への到達時間が長い)', () => {
     const empty = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 0 }, 'accelerating', 20);
@@ -136,5 +136,36 @@ describe('軌道(何キロレール): レール種別の速度上限・動力方
     expect(AXLE_LOAD_T_BY_POWER.electric).toBe(12);
     expect(AXLE_LOAD_T_BY_POWER['electric-ac']).toBe(12);
     expect(AXLE_LOAD_T_BY_POWER['electric-acdc']).toBe(13);
+  });
+});
+
+describe('車種(TRAIN_MODELS): 通勤形/近郊形/特急形', () => {
+  it('既定は通勤形(commuter)', () => {
+    expect(DEFAULT_TRAIN_MODEL).toBe('commuter');
+  });
+
+  it('通勤形: 最高100km/h・常用減速24km/h/s', () => {
+    expect(TRAIN_MODELS.commuter.maxSpeedKmh).toBe(100);
+    expect(TRAIN_MODELS.commuter.serviceDecelKmhS).toBe(24);
+    expect(TRAIN_MODELS.commuter.priceMultiplier).toBe(1.0);
+  });
+
+  it('近郊形: 最高120km/h・常用減速20km/h/s', () => {
+    expect(TRAIN_MODELS.suburban.maxSpeedKmh).toBe(120);
+    expect(TRAIN_MODELS.suburban.serviceDecelKmhS).toBe(20);
+    expect(TRAIN_MODELS.suburban.priceMultiplier).toBe(1.3);
+  });
+
+  it('特急形: 最高130km/h・常用減速18km/h/s(3車種中もっとも減速が緩やか)', () => {
+    expect(TRAIN_MODELS.express.maxSpeedKmh).toBe(130);
+    expect(TRAIN_MODELS.express.serviceDecelKmhS).toBe(18);
+    expect(TRAIN_MODELS.express.priceMultiplier).toBe(1.8);
+    expect(TRAIN_MODELS.express.serviceDecelKmhS).toBeLessThan(TRAIN_MODELS.commuter.serviceDecelKmhS);
+    expect(TRAIN_MODELS.express.serviceDecelKmhS).toBeLessThan(TRAIN_MODELS.suburban.serviceDecelKmhS);
+  });
+
+  it('trainModelOfはundefinedを通勤形(既定・旧セーブ互換)として解決する', () => {
+    expect(trainModelOf(undefined)).toBe(TRAIN_MODELS.commuter);
+    expect(trainModelOf('express')).toBe(TRAIN_MODELS.express);
   });
 });
