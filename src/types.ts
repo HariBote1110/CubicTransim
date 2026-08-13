@@ -1,4 +1,4 @@
-import type { LineMode } from './sim/groups';
+import type { LineMode } from './sim/lines';
 export type TrainType = 'commuter' | 'express';
 /**
  * 'substation'(変電所、PM4)は車庫と同じくrailMapのセル1つとして持つ(専用のMapを
@@ -180,9 +180,9 @@ export interface TrainData {
   // 折返し運転で運行表を辿る向き(1=順方向、-1=逆方向)。環状運転では常に1。
   // 旧セーブには存在しないため、読み出しは常に (scheduleDirection ?? 1) で行う。
   scheduleDirection?: 1 | -1;
-  // 所属する運用グループのid。未所属(単独運用)はundefined。
-  // グループに所属している間は schedule ではなくグループの運行表に従う。
-  groupId?: string;
+  // 所属する種別(路線×Service)のid。未所属(単独運用)はundefined。
+  // 種別に所属している間は schedule ではなく路線の有効運行表(sim/lines.tsのeffectiveSchedule)に従う。
+  serviceId?: string;
   /** 軌間(PM2)。購入時に車庫セルの軌間を継承する。旧セーブ・rules.gauge=falseでは省略。 */
   gauge?: RailGauge;
   /** 動力方式(PM2)。省略時は気動車扱い(どこでも走行可)。 */
@@ -198,24 +198,41 @@ export interface TrainData {
 }
 
 /**
- * 運用グループ(軽量なグループダイヤ)。
- * 運行表をグループで共有し、発車間隔を設定すると駅で自動的に等間隔運転になる。
- * 詳細は sim/groups.ts を参照。
+ * 路線。停車駅の全リスト(物理経路)と走らせ方を持つ。
+ * 路線には常に1つ以上の種別(ServiceData)が属する。詳細は sim/lines.ts を参照。
+ * (progress/line-service-redesign.md)
  */
-export interface TrainGroupData {
+export interface LineData {
   id: string;
   name: string;
-  /** グループで共有する停車駅の並び */
-  schedule: string[];
-  /** 発車間隔(シミュレーション秒)。0なら等間隔化しない */
-  headwaySeconds: number;
   /** ラインカラー(車両の帯とUIのバッジに使う) */
   colour: string;
+  /** 停車駅の全リスト(物理経路)。種別の有効運行表はここから通過駅を除いたもの。 */
+  stops: string[];
   /**
    * 走らせ方。'loop'は環状運転(末尾の次は先頭)、'shuttle'は折返し運転(終端で向きを反転)。
-   * 旧セーブには存在しないため、読み出しは常に (mode ?? 'loop') で行う。
+   * 物理経路の特性なので路線側に持つ。旧セーブには存在しないため、
+   * 読み出しは常に (mode ?? 'loop') で行う。
    */
   mode?: LineMode;
+}
+
+/**
+ * 種別(各停・快速など)。路線に属し、通過駅と発車間隔を持つ。
+ * 発車間隔(headway)を設定すると、駅を発車するときに「同じ種別の列車が同じ駅を
+ * 発車してから headway 秒経っているか」を見て、足りなければその場で待つ。
+ * これだけで団子運転が自然にほどけ、等間隔運転になる。
+ */
+export interface ServiceData {
+  id: string;
+  /** 属する路線のid */
+  lineId: string;
+  /** 種別名(各停・快速…) */
+  name: string;
+  /** この種別が通過(スキップ)する駅id */
+  skipStationIds: string[];
+  /** 発車間隔(シミュレーション秒)。0なら等間隔化しない */
+  headwaySeconds: number;
 }
 
 export const RAIL_COLOUR = '#555555';
