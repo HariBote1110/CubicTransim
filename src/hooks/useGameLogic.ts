@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
+import type { CellData, CellType, TrainData, LineData, ServiceData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
 import { DEFAULT_GAUGE } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
@@ -39,8 +39,11 @@ import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
 import { generateRegionTowns } from '../sim/towns';
 import type { TownDensity } from '../sim/towns';
 import { TownTileCache } from '../sim/townTiles';
-import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
-import type { LineMode } from '../sim/groups';
+import {
+  effectiveSchedule, resolveAssignment, findLine, findService, serviceStops,
+  nextLineName, nextLineColour, nextStop, createLineWithDefaultService,
+} from '../sim/lines';
+import type { LineMode } from '../sim/lines';
 import { relocateTrain } from '../sim/relocate';
 import { createDebugScenario } from '../sim/debugScenario';
 import type { DebugScenarioWorld } from '../sim/debugScenarios';
@@ -121,8 +124,9 @@ export const useGameLogic = () => {
   // ★追加: 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定。既定値'middle'。
   const [stopLocation, setStopLocation] = useState<'near' | 'middle' | 'far'>('middle');
 
-  // ★追加: 運用グループ(共有運行表＋発車間隔)。所属列車はグループの運行表に従う。
-  const [groups, setGroups] = useState<TrainGroupData[]>([]);
+  // ★追加: 路線＋種別(共有運行表＋発車間隔)。所属列車は種別の有効運行表に従う。
+  const [lines, setLines] = useState<LineData[]>([]);
+  const [services, setServices] = useState<ServiceData[]>([]);
 
   // ★追加: 月次収支台帳。今月の途中経過(currentLedger)と、確定済み直近12ヶ月(ledgerHistory)。
   const [currentLedger, setCurrentLedger] = useState<MonthlyLedger>(emptyLedger());
@@ -142,8 +146,9 @@ export const useGameLogic = () => {
     terrainField: field,
     clock: { elapsed: 0 },
     stopLocation: 'middle',
-    groups: [],
-    groupDepartures: new Map(),
+    lines: [],
+    services: [],
+    serviceDepartures: new Map(),
   });
 
   useEffect(() => {
@@ -176,8 +181,12 @@ export const useGameLogic = () => {
   }, [stopLocation]);
 
   useEffect(() => {
-    worldRef.current.groups = groups;
-  }, [groups]);
+    worldRef.current.lines = lines;
+  }, [lines]);
+
+  useEffect(() => {
+    worldRef.current.services = services;
+  }, [services]);
 
   // PM2: プレイモードのルールフラグ集合をSimWorldへ鏡写しする(stepWorldの経路探索が
   // rules.gauge/electrificationを参照するため)。newGame/loadGameでも即座に上書きするが、
@@ -454,14 +463,16 @@ export const useGameLogic = () => {
   const handleTrainArrive = (trainId: string, currentIndex: number) => {
     setTrains(prev => prev.map(t => {
       if (t.id !== trainId) return t;
-      // グループ所属中は共有運行表を使う。路線の運行モード(環状/折返し)に従って次の駅へ。
-      const schedule = effectiveSchedule(t, worldRef.current.groups ?? []);
+      // 種別所属中は路線の有効運行表を使う。路線の運行モード(環状/折返し)に従って次の駅へ。
+      const lns = worldRef.current.lines ?? [];
+      const svcs = worldRef.current.services ?? [];
+      const schedule = effectiveSchedule(t, lns, svcs);
       if (schedule.length === 0) return t;
-      const line = findGroup(worldRef.current.groups ?? [], t.groupId);
+      const assignment = resolveAssignment(t, lns, svcs);
       const next = nextStop(
         { index: currentIndex, direction: t.scheduleDirection ?? 1 },
         schedule.length,
-        line?.mode ?? 'loop'
+        assignment?.line.mode ?? 'loop'
       );
       return { ...t, scheduleIndex: next.index, scheduleDirection: next.direction };
     }));
@@ -578,12 +589,13 @@ export const useGameLogic = () => {
 
   const addSchedule = (trainId: string, stationId: string) => {
     if (!isEditingSchedule) return;
-    // グループに所属している列車の運行表を編集する場合は、グループの共有運行表に足す
-    // (同じグループの列車すべてに反映される)。
+    // 種別に所属している列車の運行表を編集する場合は、路線の停車駅並びに足す
+    // (同じ路線の他種別・他列車にも反映される)。
     const target = trains.find(t => t.id === trainId);
-    const group = findGroup(groups, target?.groupId);
-    if (group) {
-      setGroups(prev => prev.map(g => (g.id === group.id ? { ...g, schedule: [...g.schedule, stationId] } : g)));
+    const assignment = target ? resolveAssignment(target, lines, services) : null;
+    if (assignment) {
+      const lineId = assignment.line.id;
+      setLines(prev => prev.map(l => (l.id === lineId ? { ...l, stops: [...l.stops, stationId] } : l)));
       return;
     }
     setTrains(prev => prev.map(t => (
@@ -591,63 +603,120 @@ export const useGameLogic = () => {
     )));
   };
 
-  // --- 運用グループ ---
+  // --- 路線＋種別 ---
 
-  /** 新しいグループを作る。列車を指定するとその運行表を引き継いで所属させる。 */
-  const createGroup = (seedTrainId?: string) => {
+  /** 新しい路線を作る(既定種別「各停」を自動生成)。列車を指定するとその運行表を引き継いで所属させる。 */
+  const createLine = (seedTrainId?: string) => {
     const seed = seedTrainId ? trains.find(t => t.id === seedTrainId) : undefined;
-    const group: TrainGroupData = {
-      id: `g${Math.random().toString(36).slice(2, 8)}`,
-      name: nextGroupName(groups),
-      schedule: seed ? [...seed.schedule] : [],
-      headwaySeconds: 0,
-      colour: nextGroupColour(groups),
-    };
-    setGroups(prev => [...prev, group]);
+    const id = `l${Math.random().toString(36).slice(2, 8)}`;
+    const { line, service } = createLineWithDefaultService(
+      id, nextLineName(lines), nextLineColour(lines), seed ? [...seed.schedule] : [], 'loop'
+    );
+    setLines(prev => [...prev, line]);
+    setServices(prev => [...prev, service]);
     if (seed) {
-      setTrains(prev => prev.map(t => (t.id === seed.id ? { ...t, groupId: group.id } : t)));
+      setTrains(prev => prev.map(t => (t.id === seed.id ? { ...t, serviceId: service.id, scheduleIndex: 0 } : t)));
     }
-    return group.id;
+    return line.id;
   };
 
-  /** 列車の所属グループを変える(nullで未所属に戻す)。 */
-  const assignTrainToGroup = (trainId: string, groupId: string | null) => {
-    setTrains(prev => prev.map(t => {
-      if (t.id !== trainId) return t;
-      // 巡回位置は共有運行表の長さを超えないように丸める
-      const next = groupId ? findGroup(groups, groupId) : undefined;
-      const len = next ? next.schedule.length : t.schedule.length;
-      const index = len > 0 ? t.scheduleIndex % len : 0;
-      return { ...t, groupId: groupId ?? undefined, scheduleIndex: index };
-    }));
+  /** 路線に停車駅を追加する(地図上の駅クリックからの編集フロー用)。 */
+  const addLineStop = (lineId: string, stationId: string) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, stops: [...l.stops, stationId] } : l)));
+  };
+
+  const clearLineStops = (lineId: string) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, stops: [] } : l)));
+  };
+
+  const renameLine = (lineId: string, name: string) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, name } : l)));
   };
 
   // ★追加: 路線の運行モード(環状/折返し)を切り替える。
-  const setGroupMode = (groupId: string, mode: LineMode) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, mode } : g)));
+  const setLineMode = (lineId: string, mode: LineMode) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, mode } : l)));
   };
 
-  const setGroupHeadway = (groupId: string, headwaySeconds: number) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, headwaySeconds } : g)));
+  /** 路線を削除する。所属列車は現在の有効運行表を自前の運行表として引き継ぎ、単独運用に戻る。 */
+  const deleteLine = (lineId: string) => {
+    const lineServiceIds = new Set(services.filter(s => s.lineId === lineId).map(s => s.id));
+    setTrains(prev => prev.map(t => {
+      if (!t.serviceId || !lineServiceIds.has(t.serviceId)) return t;
+      const schedule = effectiveSchedule(t, lines, services);
+      const index = schedule.length > 0 ? t.scheduleIndex % schedule.length : 0;
+      return { ...t, serviceId: undefined, schedule, scheduleIndex: index };
+    }));
+    setServices(prev => prev.filter(s => s.lineId !== lineId));
+    setLines(prev => prev.filter(l => l.id !== lineId));
   };
 
-  const renameGroup = (groupId: string, name: string) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, name } : g)));
+  // 種別名の候補(未使用のものを先頭から選ぶ)。
+  const SERVICE_NAME_PRESETS = ['各停', '快速', '特快', '急行', '準急', '特急'];
+
+  /** 路線に新しい種別を追加する(既定: 通過駅なし・発車間隔なし)。 */
+  const createService = (lineId: string): string => {
+    const lineServices = services.filter(s => s.lineId === lineId);
+    const used = new Set(lineServices.map(s => s.name));
+    const name = SERVICE_NAME_PRESETS.find(n => !used.has(n)) ?? `種別${lineServices.length + 1}`;
+    const id = `s${Math.random().toString(36).slice(2, 8)}`;
+    const service: ServiceData = { id, lineId, name, skipStationIds: [], headwaySeconds: 0 };
+    setServices(prev => [...prev, service]);
+    return id;
   };
 
-  const clearGroupSchedule = (groupId: string) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, schedule: [] } : g)));
+  const renameService = (serviceId: string, name: string) => {
+    setServices(prev => prev.map(s => (s.id === serviceId ? { ...s, name } : s)));
   };
 
-  /** グループを削除し、所属列車はグループの運行表を自分の運行表として引き継ぐ。 */
-  const deleteGroup = (groupId: string) => {
-    const group = findGroup(groups, groupId);
-    setTrains(prev => prev.map(t => (
-      t.groupId === groupId
-        ? { ...t, groupId: undefined, schedule: group ? [...group.schedule] : t.schedule }
-        : t
-    )));
-    setGroups(prev => prev.filter(g => g.id !== groupId));
+  const setServiceHeadway = (serviceId: string, headwaySeconds: number) => {
+    setServices(prev => prev.map(s => (s.id === serviceId ? { ...s, headwaySeconds } : s)));
+  };
+
+  /** 駅の通過/停車を切り替える(skipStationIdsのトグル)。 */
+  const toggleServiceStop = (serviceId: string, stationId: string) => {
+    setServices(prev => prev.map(s => {
+      if (s.id !== serviceId) return s;
+      const skip = new Set(s.skipStationIds);
+      if (skip.has(stationId)) skip.delete(stationId); else skip.add(stationId);
+      return { ...s, skipStationIds: Array.from(skip) };
+    }));
+  };
+
+  /**
+   * 種別を削除する。路線の最後の1種別は削除できない(no-op)。
+   * 所属列車は同じ路線の先頭種別へ付け替え、巡回位置を新しい有効運行表の長さに丸める。
+   */
+  const deleteService = (serviceId: string) => {
+    const service = findService(services, serviceId);
+    if (!service) return;
+    const siblings = services.filter(s => s.lineId === service.lineId);
+    if (siblings.length <= 1) return;
+    const fallback = siblings.find(s => s.id !== serviceId);
+    if (!fallback) return;
+    const line = findLine(lines, service.lineId);
+    const fallbackStops = line ? serviceStops(line, fallback) : [];
+    setTrains(prev => prev.map(t => {
+      if (t.serviceId !== serviceId) return t;
+      const index = fallbackStops.length > 0 ? t.scheduleIndex % fallbackStops.length : 0;
+      return { ...t, serviceId: fallback.id, scheduleIndex: index };
+    }));
+    setServices(prev => prev.filter(s => s.id !== serviceId));
+  };
+
+  /** 列車の所属種別を変える(nullで単独運用に戻す)。 */
+  const assignTrainToService = (trainId: string, serviceId: string | null) => {
+    setTrains(prev => prev.map(t => {
+      if (t.id !== trainId) return t;
+      const nextServiceId = serviceId ?? undefined;
+      // 巡回位置は新しい有効運行表の長さを超えないように丸める
+      const nextSchedule = nextServiceId
+        ? effectiveSchedule({ ...t, serviceId: nextServiceId }, lines, services)
+        : t.schedule;
+      const len = nextSchedule.length;
+      const index = len > 0 ? t.scheduleIndex % len : 0;
+      return { ...t, serviceId: nextServiceId, scheduleIndex: index };
+    }));
   };
 
   const selectTrain = (id: string | null) => {
@@ -731,7 +800,7 @@ export const useGameLogic = () => {
     const saveData = serialiseWorld(
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, worldSeed,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
-      groups, worldRef.current.groupDepartures ?? new Map(), loan,
+      lines, services, worldRef.current.serviceDepartures ?? new Map(), loan,
       worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity, terrainProfile, gameRules
     );
     localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
@@ -765,7 +834,8 @@ export const useGameLogic = () => {
     setCurrentLedger(restored.currentLedger);
     setLedgerHistory(restored.ledgerHistory);
     setStopLocation(restored.stopLocation);
-    setGroups(restored.groups);
+    setLines(restored.lines);
+    setServices(restored.services);
 
     // runtimes/waiting は DynamicTrain/StationLabel が Map インスタンスを参照し続けているため、
     // 差し替えず中身だけ入れ替える。clockも同様にworldRef上のオブジェクトを直接更新する。
@@ -775,8 +845,9 @@ export const useGameLogic = () => {
     restored.waiting.forEach((count, id) => worldRef.current.waiting.set(id, count));
     worldRef.current.clock = restored.clock;
     worldRef.current.stopLocation = restored.stopLocation;
-    worldRef.current.groups = restored.groups;
-    worldRef.current.groupDepartures = restored.groupDepartures;
+    worldRef.current.lines = restored.lines;
+    worldRef.current.services = restored.services;
+    worldRef.current.serviceDepartures = restored.serviceDepartures;
     worldRef.current.demand = restored.demand;
     // 経路キャッシュは列車・運行表が入れ替わったので捨てる(次のstepWorldで組み直される)。
     worldRef.current.serviceSignature = undefined;
@@ -804,7 +875,8 @@ export const useGameLogic = () => {
       setCornerDiffs(cornerDiffsFromField(overrideField, halfExtent, scenario.fieldBounds));
     }
     setTowns(scenario.towns ?? []);
-    setGroups(scenario.groups ?? []);
+    setLines(scenario.lines ?? []);
+    setServices(scenario.services ?? []);
     if (scenario.money !== undefined) setMoney(scenario.money);
     setSelectedTrainId(null);
     setSelectedStationId(null);
@@ -841,7 +913,8 @@ export const useGameLogic = () => {
     setTrains([]);
     setTownDensity(selectedDensity);
     setTowns(generateRegionTowns(seed + 1, selectedHalfExtent, newField, selectedDensity));
-    setGroups([]);
+    setLines([]);
+    setServices([]);
     setMoney(STARTING_MONEY);
     setLoan(0);
     setCurrentLedger(emptyLedger());
@@ -911,14 +984,20 @@ export const useGameLogic = () => {
     // ★追加: 駅停車位置設定(Near/Middle/Far)
     stopLocation,
     setStopLocation,
-    // ★追加: 運用グループ(共有運行表＋発車間隔)
-    groups,
-    createGroup,
-    assignTrainToGroup,
-    setGroupHeadway,
-    setGroupMode,
-    renameGroup,
-    clearGroupSchedule,
-    deleteGroup,
+    // ★追加: 路線＋種別(共有運行表＋発車間隔)
+    lines,
+    services,
+    createLine,
+    addLineStop,
+    clearLineStops,
+    renameLine,
+    setLineMode,
+    deleteLine,
+    createService,
+    renameService,
+    setServiceHeadway,
+    toggleServiceStop,
+    deleteService,
+    assignTrainToService,
   };
 };

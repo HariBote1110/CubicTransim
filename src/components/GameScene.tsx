@@ -39,7 +39,7 @@ import { WebGpuTrackNetwork } from './WebGpuTrackNetwork';
 import { WebGpuStations } from './WebGpuStations';
 import { WebGpuTrackExtras } from './WebGpuTrackExtras';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, TrainData, TrainGroupData, StationData, TownData } from '../types';
+import type { CellData, TrainData, LineData, ServiceData, StationData, TownData } from '../types';
 import { carPositions } from '../sim/consist';
 import { toKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
@@ -132,7 +132,8 @@ interface GameSceneProps {
   onAddSchedule: (trainId: string, stationId: string) => void;
   onSelectStation: (id: string | null) => void;
   onPreviewChange?: (path: { x: number; z: number }[]) => void;
-  groups?: TrainGroupData[];
+  lines?: LineData[];
+  services?: ServiceData[];
   onRelocateTrain?: (trainId: string, x: number, z: number) => void;
 }
 
@@ -141,7 +142,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
   cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, stationAxis, selectedTrainId,
   isEditingSchedule, simSpeed,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
-  onPreviewChange, groups = [], onRelocateTrain,
+  onPreviewChange, lines = [], services = [], onRelocateTrain,
 }) => {
   const inputRef = useRef<HTMLDivElement>(null);
   const [chunkView, setChunkView] = useState<ChunkView>({ targetCell: { x: 0, z: 0 }, viewRadiusCells: 24 });
@@ -691,7 +692,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
         elevatedTunnelIndex={elevatedTunnelIndex}
         world={world}
         selectedTrainId={selectedTrainId}
-        groups={groups}
+        lines={lines}
+        services={services}
         undergroundView={undergroundView}
         selectedLevel={buildLevel}
         draggingTrainId={draggingTrainId}

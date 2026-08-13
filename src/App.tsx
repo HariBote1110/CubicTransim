@@ -230,8 +230,8 @@ export default function App() {
     currentLedger, ledgerHistory, handleMonthEnd,
     handleTownGrowth,
     stopLocation, setStopLocation,
-    groups, createGroup, assignTrainToGroup, setGroupHeadway, setGroupMode,
-    renameGroup, clearGroupSchedule, deleteGroup,
+    lines, services, createLine, clearLineStops, renameLine, setLineMode, deleteLine,
+    createService, renameService, setServiceHeadway, toggleServiceStop, deleteService, assignTrainToService,
     gameRules,
   } = useGameLogic();
 
@@ -289,7 +289,8 @@ export default function App() {
         onAddSchedule={addSchedule}
         onSelectStation={selectStation}
         onPreviewChange={handlePreviewChange}
-        groups={groups}
+        lines={lines}
+        services={services}
         onRelocateTrain={relocateTrainAt}
       />
 
@@ -334,14 +335,19 @@ export default function App() {
         stopLocation={stopLocation}
         onSetStopLocation={setStopLocation}
         previewPath={previewPath}
-        groups={groups}
-        onCreateGroup={createGroup}
-        onAssignGroup={assignTrainToGroup}
-        onSetHeadway={setGroupHeadway}
-        onSetMode={setGroupMode}
-        onRenameGroup={renameGroup}
-        onClearGroupSchedule={clearGroupSchedule}
-        onDeleteGroup={deleteGroup}
+        lines={lines}
+        services={services}
+        onCreateLine={createLine}
+        onClearLineStops={clearLineStops}
+        onRenameLine={renameLine}
+        onSetLineMode={setLineMode}
+        onDeleteLine={deleteLine}
+        onCreateService={createService}
+        onRenameService={renameService}
+        onSetServiceHeadway={setServiceHeadway}
+        onToggleServiceStop={toggleServiceStop}
+        onDeleteService={deleteService}
+        onAssignService={assignTrainToService}
         gameRules={gameRules}
         railOptions={railOptions}
         setRailOptions={setRailOptions}

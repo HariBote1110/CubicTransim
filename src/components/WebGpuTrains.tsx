@@ -15,12 +15,12 @@
 import React, { useRef } from 'react';
 import { FRAME_ORDER } from '../render/frameLoop';
 import { useFrameLoop } from '../hooks/useFrameLoop';
-import type { CellData, TrainData, TrainGroupData } from '../types';
+import type { CellData, TrainData, LineData, ServiceData } from '../types';
 import type { TerrainField } from '../sim/terrainField';
 import type { SimWorld } from '../sim/simulation';
 import { carPositions } from '../sim/consist';
 import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
-import { findGroup } from '../sim/groups';
+import { resolveAssignment } from '../sim/lines';
 import { carGroupPosition, headingToYawPitch } from '../render/trainInstanceMath';
 import { buildTrainCarMesh, buildSelectionMarkerMesh, buildRouteDotMesh } from '../render/trainMeshBuilder';
 import { loadTrainModel, TRAIN_MODEL_REGISTRY } from '../render/trainModelLoader';
@@ -50,7 +50,8 @@ interface Props {
   elevatedTunnelIndex: ElevatedTunnelIndex;
   world: React.RefObject<SimWorld>;
   selectedTrainId: string | null;
-  groups?: TrainGroupData[];
+  lines?: LineData[];
+  services?: ServiceData[];
   undergroundView?: boolean;
   selectedLevel?: number;
   draggingTrainId?: string | null;
@@ -96,7 +97,7 @@ class InstanceBuffer {
 
 export const WebGpuTrains: React.FC<Props> = ({
   layerRef, trains, railMap, field, elevatedTunnelIndex, world, selectedTrainId,
-  groups = [], undergroundView = false, selectedLevel = 0, draggingTrainId = null, dragCell = null,
+  lines = [], services = [], undergroundView = false, selectedLevel = 0, draggingTrainId = null, dragCell = null,
 }) => {
   const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
   const headBuf = useRef(new InstanceBuffer());
@@ -151,7 +152,7 @@ export const WebGpuTrains: React.FC<Props> = ({
       const isSelected = train.id === selectedTrainId;
       const lineColourHex = isSelected
         ? PALETTE.carLineSelected
-        : (findGroup(groups, train.groupId)?.colour ?? PALETTE.carLine);
+        : (resolveAssignment(train, lines, services)?.line.colour ?? PALETTE.carLine);
       const [tintR, tintG, tintB] = parseColourHex(lineColourHex);
 
       if (draggingTrainId === train.id && dragCell) {
