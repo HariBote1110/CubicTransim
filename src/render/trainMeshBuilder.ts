@@ -263,13 +263,21 @@ export const MODEL_PARTS: Record<TrainModelId, TrainCarParts> = Object.fromEntri
   }]),
 ) as Record<TrainModelId, TrainCarParts>;
 
-/** パーツ配列(頭上の逆三角錐)を、tint(路線色)/焼き込み色の規約に従って1メッシュへ焼き込む。 */
-export function buildCarMeshFromParts(parts: TrainPart[]): BakedMeshChunk | null {
+/**
+ * パーツ配列(頭上の逆三角錐)を、tint(路線色)/焼き込み色の規約に従って1メッシュへ焼き込む。
+ * `highlightIndex` はエディタ専用のオプション(ゲーム本体は未使用=undefinedのまま呼ぶ)。
+ * 指定したパーツだけ `highlightColour` で不透明に塗り替え、選択状態を可視化する。
+ */
+export function buildCarMeshFromParts(
+  parts: TrainPart[],
+  highlightIndex?: number,
+  highlightColour = '#ff2e63',
+): BakedMeshChunk | null {
   const geometries = parts.map(part => buildPartGeometry(part));
   const baked = bakeGeometries(parts.map((part, i) => ({
     geometry: geometries[i],
-    colour: part.colour,
-    options: { alpha: part.tint ? 255 : 0, unlit: true },
+    colour: i === highlightIndex ? highlightColour : part.colour,
+    options: { alpha: i === highlightIndex ? 255 : (part.tint ? 255 : 0), unlit: true },
   })));
   for (const g of geometries) g.dispose();
   return baked;

@@ -10,12 +10,10 @@ import { OVERPASS_HEIGHT } from '../../sim/trackPath';
 import { buildCarMeshFromParts } from '../../render/trainMeshBuilder';
 import { parseColourHex } from '../../render/bakedMesh';
 import type { TrainCarParts } from '../../render/trainPartsSpec';
+import { consistTransforms } from './consistLayout';
 
 const MESH_ID_HEAD = 0x9100_0001;
 const MESH_ID_MID = 0x9100_0002;
-
-/** 車間spacing(ゲーム本体のcarPositions呼び出しと同じ1.0)。 */
-const CAR_SPACING = 1.0;
 
 export interface PreviewCameraState {
   centreX: number;
@@ -43,10 +41,14 @@ export class TrainEditorPreview {
     return new TrainEditorPreview(controller, canvas);
   }
 
-  /** 編集中のパーツから head/mid メッシュを再構築し、wgpu へ再登録する。 */
-  updateParts(parts: TrainCarParts): void {
-    const head = buildCarMeshFromParts(parts.head);
-    const mid = buildCarMeshFromParts(parts.mid);
+  /**
+   * 編集中のパーツから head/mid メッシュを再構築し、wgpu へ再登録する。
+   * `highlight` を渡すと、対応するバリアントのその index のパーツだけ選択色で塗り替える
+   * (エディタの選択ハイライト用。undefinedなら通常描画)。
+   */
+  updateParts(parts: TrainCarParts, highlight?: { variant: 'head' | 'mid'; index: number }): void {
+    const head = buildCarMeshFromParts(parts.head, highlight?.variant === 'head' ? highlight.index : undefined);
+    const mid = buildCarMeshFromParts(parts.mid, highlight?.variant === 'mid' ? highlight.index : undefined);
     if (head) this.controller.registerInstancedMesh(MESH_ID_HEAD, head);
     if (mid) this.controller.registerInstancedMesh(MESH_ID_MID, mid);
   }
@@ -59,21 +61,19 @@ export class TrainEditorPreview {
    */
   updateInstances(lineColourHex: string, yawDeg: number): void {
     const [tintR, tintG, tintB] = parseColourHex(lineColourHex);
-    const yaw = (yawDeg * Math.PI) / 180;
-    const sin = Math.sin(yaw);
-    const cos = Math.cos(yaw);
-    // ローカルz(spacing方向)をyawぶん回した先のワールド(x,z)。
-    const rotate = (localZ: number): [number, number] => [localZ * sin, localZ * cos];
-
     // head(先頭、+Z向き) / mid(中間) / tail(headを180°回転して流用、ゲーム本体と同じ規約)を
-    // spacing 1.0 で一直線に並べる。編成の中心(mid)が原点に来るようにする。
+    // consistTransforms(picking側と共有)の並びで一直線に並べる。
+    const transforms = consistTransforms(yawDeg);
     const headData = new Float32Array(MESH_INSTANCE_STRIDE * 2);
     const midData = new Float32Array(MESH_INSTANCE_STRIDE);
-    const [hx, hz] = rotate(CAR_SPACING);
-    const [tx, tz] = rotate(-CAR_SPACING);
-    this.writeInstance(headData, 0, hx, 0, hz, yaw, tintR, tintG, tintB);
-    this.writeInstance(headData, 1, tx, 0, tz, yaw + Math.PI, tintR, tintG, tintB);
-    this.writeInstance(midData, 0, 0, 0, 0, yaw, tintR, tintG, tintB);
+    let headSlot = 0;
+    for (const t of transforms) {
+      if (t.variant === 'head') {
+        this.writeInstance(headData, headSlot++, t.x, t.y, t.z, t.yaw, tintR, tintG, tintB);
+      } else {
+        this.writeInstance(midData, 0, t.x, t.y, t.z, t.yaw, tintR, tintG, tintB);
+      }
+    }
 
     this.controller.setInstances(MESH_ID_HEAD, headData);
     this.controller.setInstances(MESH_ID_MID, midData);
