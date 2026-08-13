@@ -206,7 +206,9 @@ export const TrainEditorApp: React.FC = () => {
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     const { sx, sy } = clientToScreenPx(e.clientX, e.clientY, rect, dpr);
-    canvas.setPointerCapture(e.pointerId);
+    // ブラウザ・入力デバイスによっては合成的なポインタイベントでcaptureが例外を投げることが
+    // あるため(実ブラウザ操作には影響しない)、失敗してもドラッグ自体は継続させる。
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* noop */ }
 
     if (e.button === 2 || e.button === 1) {
       dragRef.current = {

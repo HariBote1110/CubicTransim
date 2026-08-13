@@ -273,11 +273,14 @@ export function buildCarMeshFromParts(
   highlightIndex?: number,
   highlightColour = '#ff2e63',
 ): BakedMeshChunk | null {
+  // 注意: alpha はインスタンス描画では「路線色(tint)を掛ける重み」であって不透明度ではない
+  // (bakedMesh.ts BakeOptions.alpha参照)。ハイライトはtint機構を使わず、パーツ自身の
+  // 頂点色をhighlightColourへ差し替えるだけにする(alphaはtint規約どおり据え置く)。
   const geometries = parts.map(part => buildPartGeometry(part));
   const baked = bakeGeometries(parts.map((part, i) => ({
     geometry: geometries[i],
     colour: i === highlightIndex ? highlightColour : part.colour,
-    options: { alpha: i === highlightIndex ? 255 : (part.tint ? 255 : 0), unlit: true },
+    options: { alpha: part.tint ? 255 : 0, unlit: true },
   })));
   for (const g of geometries) g.dispose();
   return baked;
