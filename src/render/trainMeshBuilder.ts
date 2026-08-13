@@ -97,7 +97,7 @@ export function buildTrainCarMesh(variant: PlaceholderCarVariant): BakedMeshChun
   const baked = bakeGeometries(entries.map(e => ({
     geometry: e.geometry,
     colour: e.colour,
-    options: { alpha: e.tint ? 255 : 0 },
+    options: { alpha: e.tint ? 255 : 0, unlit: true },
   })));
   for (const e of entries) e.geometry.dispose();
   return baked;
@@ -107,7 +107,7 @@ export function buildTrainCarMesh(variant: PlaceholderCarVariant): BakedMeshChun
 export function buildSelectionMarkerMesh(): BakedMeshChunk | null {
   const geometry = new THREE.ConeGeometry(0.16, 0.28, 4);
   geometry.rotateX(Math.PI); // 先端を下に向ける(three.js版のrotation=[PI,0,0]と同じ見た目)
-  const baked = bakeGeometries([{ geometry, colour: '#ffffff', options: { alpha: 255 } }]);
+  const baked = bakeGeometries([{ geometry, colour: '#ffffff', options: { alpha: 255, unlit: true } }]);
   geometry.dispose();
   return baked;
 }
@@ -115,7 +115,7 @@ export function buildSelectionMarkerMesh(): BakedMeshChunk | null {
 /** 経路プレビューのドット(小球で近似)。白ベースで全面tint。 */
 export function buildRouteDotMesh(): BakedMeshChunk | null {
   const geometry = new THREE.OctahedronGeometry(0.09, 1);
-  const baked = bakeGeometries([{ geometry, colour: '#ffffff', options: { alpha: 255 } }]);
+  const baked = bakeGeometries([{ geometry, colour: '#ffffff', options: { alpha: 255, unlit: true } }]);
   geometry.dispose();
   return baked;
 }

@@ -38,9 +38,22 @@ fn world_y_to_levels(y_world: f32) -> f32 {
   return y_world * camera.pixels_per_cell * ISO_H / max(camera.height_scale, 1e-6);
 }
 
+// R4f: 列車はインスタンスごとに yaw/pitch で回転するため、TS側(bakedMesh.ts)で
+// 固定光源のランバート陰影を頂点色へ焼き込むと、回転しても陰影が付いてこない
+// (坂やtail車両の反転ピッチで特に破綻する)。そこでインスタンスメッシュだけは
+// TS側は基本色をそのまま渡し(unlit)、ここで回転後のワールド位置から
+// screen-space微分で面法線を求め、bakedMesh.ts の lambertFactor と同じ式・同じ
+// 太陽方向で毎フレーム陰影を計算する(地形/静的メッシュチャンクは従来どおり
+// 焼き込み陰影のままで、このシェーダの変更対象ではない)。
+const SUN_DIRECTION: vec3<f32> = vec3<f32>(-0.632021, 0.716357, 0.294980);
+const AMBIENT_TERM: f32 = 0.2;
+const HEMISPHERE_TERM: f32 = 0.28;
+const SUN_TERM: f32 = 0.55;
+
 struct Out {
   @builtin(position) position: vec4<f32>,
   @location(0) colour: vec4<f32>,
+  @location(1) world_pos: vec3<f32>,
 };
 
 @vertex fn vs_main(
@@ -71,10 +84,19 @@ struct Out {
   o.position = project(world.x, world.z, world_y_to_levels(world.y));
   let tinted = colour.rgb * mix(vec3<f32>(1.0), inst_tint, colour.a);
   o.colour = vec4<f32>(tinted, 1.0);
+  o.world_pos = world;
   return o;
 }
 
 @fragment fn fs_main(in: Out) -> @location(0) vec4<f32> {
+  // 微分命令は非一様分岐の外(関数先頭)で無条件に呼ぶこと(WGSLの制約)。
+  let dx = dpdx(in.world_pos);
+  let dy = dpdy(in.world_pos);
+  let normal = normalize(cross(dy, dx));
+  let sun = max(0.0, dot(normal, SUN_DIRECTION));
+  let hemi = 0.5 + 0.5 * normal.y;
+  let lambert = min(1.0, AMBIENT_TERM + HEMISPHERE_TERM * hemi + SUN_TERM * sun);
+
   let factor = select(camera.dim, 1.0, class_params.layer_class == 1u);
-  return vec4<f32>(in.colour.rgb * factor, in.colour.a);
+  return vec4<f32>(in.colour.rgb * lambert * factor, in.colour.a);
 }

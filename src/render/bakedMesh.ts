@@ -65,6 +65,15 @@ export interface BakeOptions {
    * - インスタンス描画では「路線色(tint)を掛ける重み」(mesh_instanced.wgsl 参照)
    */
   alpha?: number;
+  /**
+   * true: ランバート陰影を焼き込まず、基本色をそのまま頂点色にする(既定 false)。
+   * 列車(インスタンス描画)専用。mesh_instanced.wgsl 側がインスタンスの回転(yaw/pitch)を
+   * 踏まえてフラグメントシェーダで陰影を計算するため、頂点色に固定光源の陰影を
+   * 二重に焼き込まない(焼き込んだままだとyaw/pitchで回転しても陰影が回らず、
+   * 坂やtail車両の反転ピッチで見た目がおかしくなる)。地形・静的メッシュチャンクは
+   * 従来どおり焼き込み陰影を使うので既定値は変えない。
+   */
+  unlit?: boolean;
 }
 
 export interface ShadedVertices {
@@ -83,6 +92,7 @@ export function bakeFlatShaded(
 ): ShadedVertices {
   const multiplier = options.multiplier ?? 1;
   const alpha = options.alpha ?? 255;
+  const unlit = options.unlit ?? false;
   const triangles = Math.floor(positions.length / 9);
   const colours = new Uint32Array(triangles * 3);
   for (let t = 0; t < triangles; t++) {
@@ -93,11 +103,11 @@ export function bakeFlatShaded(
     const bx = positions[o + 6] - positions[o];
     const by = positions[o + 7] - positions[o + 1];
     const bz = positions[o + 8] - positions[o + 2];
-    const factor = lambertFactor(
+    const factor = (unlit ? 1 : lambertFactor(
       ay * bz - az * by,
       az * bx - ax * bz,
       ax * by - ay * bx,
-    ) * multiplier;
+    )) * multiplier;
     const packed = packRgba(rgb[0] * 255 * factor, rgb[1] * 255 * factor, rgb[2] * 255 * factor, alpha);
     colours[t * 3] = packed;
     colours[t * 3 + 1] = packed;

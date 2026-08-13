@@ -198,7 +198,7 @@ function bakeNode(json: GlTF, bin: DataView, nodeIndex: number): BakedMeshChunk 
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   let cursor = 0;
   for (const tri of triangles) {
-    const shaded = bakeFlatShaded(new Float32Array(tri.positions), tri.colour, { alpha: tri.tint ? 255 : 0 });
+    const shaded = bakeFlatShaded(new Float32Array(tri.positions), tri.colour, { alpha: tri.tint ? 255 : 0, unlit: true });
     positions.set(shaded.positions, cursor * 3);
     colours.set(shaded.colours, cursor);
     for (let v = 0; v < 3; v++) {
