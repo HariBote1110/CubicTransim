@@ -3,7 +3,7 @@
 // 起動ダイアログの「デバッグモード」から選ぶ、目視確認用の小さな自己完結の世界の
 // カタログ。各シナリオは construction.ts の apply系関数で世界を組み立てる
 // (createDebugScenario と同じ流儀)。セーブデータは使わず、その場で生成する。
-import type { CellData, StationData, TownData, TrainData, TrainGroupData } from '../types';
+import type { CellData, StationData, TownData, TrainData, LineData, ServiceData } from '../types';
 import { DIR, toKey } from '../utils';
 import {
   applyElevatedPath,
@@ -15,11 +15,11 @@ import {
 import { createDebugScenario } from './debugScenario';
 import type { TerrainField } from './terrainField';
 import type { CornerDiffsBounds } from './terrainOverlay';
-import { GROUP_COLOURS } from './groups';
+import { LINE_COLOURS, defaultServiceFor } from './lines';
 
 /**
  * シナリオが構築する世界。旧 DebugScenario(railMap/stations/trains)の上位互換で、
- * 地形・標高・町・運用グループ・所持金の上書きを任意で持てる。
+ * 地形・標高・町・路線/種別・所持金の上書きを任意で持てる。
  * useGameLogic.loadDebugScenario はこの形をそのまま受け取って state に流し込む。
  */
 export interface DebugScenarioWorld {
@@ -39,7 +39,8 @@ export interface DebugScenarioWorld {
   /** 通常の乱数地形を使いたい場合、worldSeedをこの値に差し替える(cornerDiffsはクリアされる)。 */
   worldSeedOverride?: number;
   towns?: TownData[];
-  groups?: TrainGroupData[];
+  lines?: LineData[];
+  services?: ServiceData[];
   /** 指定した場合のみ所持金を上書きする(未指定なら現在の所持金のまま)。 */
   money?: number;
 }
@@ -220,10 +221,10 @@ function buildPassingLoopScenario(): DebugScenarioWorld {
   };
 }
 
-// --- 5. 分岐と運用グループ -------------------------------------------------
+// --- 5. 分岐と路線/種別 -------------------------------------------------
 
 // 幹線の東端で分岐し、直進の本線(z=0)と斜めに逸れる支線(z=2)へ分かれる。
-// 本線側の列車は運用グループ(共有運行表・折返し)に所属し、分岐器を通って走る。
+// 本線側の列車は路線(共有運行表・折返し)の既定種別に所属し、分岐器を通って走る。
 // 支線側は単独運用の列車が支線内で往復する(単線の幹線での競合を避ける)。
 function buildJunctionScenario(): DebugScenarioWorld {
   let state = emptyState();
@@ -244,24 +245,25 @@ function buildJunctionScenario(): DebugScenarioWorld {
   const mainSchedule = [west, stationIdAt(state, 5, 0), stationIdAt(state, 10, 0)];
   const branchSchedule = [stationIdAt(state, 5, 2), stationIdAt(state, 10, 2)];
 
-  const group: TrainGroupData = {
-    id: 'debug-group-main',
+  const mainLine: LineData = {
+    id: 'debug-line-main',
     name: '本線系統',
-    schedule: mainSchedule,
-    headwaySeconds: 0,
-    colour: GROUP_COLOURS[0],
+    stops: mainSchedule,
+    colour: LINE_COLOURS[0],
     mode: 'shuttle',
   };
+  const mainService = defaultServiceFor(mainLine.id);
 
   return {
     railMap: state.railMap,
     stations: state.stations,
-    groups: [group],
+    lines: [mainLine],
+    services: [mainService],
     trains: [
       {
         id: 'debug-main', x: -4, z: 0,
         schedule: mainSchedule, scheduleIndex: 0, status: 'running', cars: 2,
-        groupId: group.id,
+        serviceId: mainService.id,
       },
       {
         id: 'debug-branch', x: 7, z: 2,
@@ -339,9 +341,9 @@ export const DEBUG_SCENARIOS: DebugScenarioDef[] = [
     build: buildPassingLoopScenario,
   },
   {
-    id: 'junction-groups',
-    label: '分岐と運用グループ',
-    description: '分岐器で本線と支線に分かれ、本線列車は運用グループで折返し運転',
+    id: 'junction-lines',
+    label: '分岐と路線/種別',
+    description: '分岐器で本線と支線に分かれ、本線列車は路線の既定種別で折返し運転',
     build: buildJunctionScenario,
   },
   {
