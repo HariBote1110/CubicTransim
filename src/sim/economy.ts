@@ -257,6 +257,15 @@ export function trainCostForProtected(power: TrainPower, protection?: TrainProte
   return Math.round(base * PROTECTION_TRAIN_PRICE_MULTIPLIER[protection]);
 }
 
+// 車庫での列車売却(在籍中の列車のみ)の払い戻し額。CAR_REFUND/CAR_COST(=50%)と
+// 同じ比率を編成全体に適用する: 基準2両ぶんの価格(baseCost、power/protectionを
+// 反映済みのtrainCostForProtectedの結果)に、増結ぶん(cars-2両、負にはならない)を
+// CAR_COST換算で足してから半額にする。
+export function trainSellRefund(baseCost: number, cars: number): number {
+  const extraCars = Math.max(0, cars - 2);
+  return Math.round(0.5 * (baseCost + extraCars * CAR_COST));
+}
+
 // S3: 保安装置を選んだ場合の地上設備の追加費用(建設セル数×単価)。
 export function costOfProtection(cellCount: number, protection?: TrainProtection): number {
   if (!protection) return 0;
