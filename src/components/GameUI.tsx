@@ -1280,7 +1280,8 @@ const DepotInspector: React.FC<{
   const MODEL_HINTS: Record<TrainModelId, string> = {
     commuter: `最高${TRAIN_MODELS.commuter.maxSpeedKmh}km/h・加減速が速い`,
     suburban: `最高${TRAIN_MODELS.suburban.maxSpeedKmh}km/h・バランス型`,
-    express: `最高${TRAIN_MODELS.express.maxSpeedKmh}km/h・加速はゆるやか`,
+    express: `最高${TRAIN_MODELS.express.maxSpeedKmh}km/h・幹線向け(60kgレール前提)`,
+    'local-express': `最高${TRAIN_MODELS['local-express'].maxSpeedKmh}km/h・50kgレールで性能を出し切れる`,
   };
 
   return (

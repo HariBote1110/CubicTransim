@@ -14,7 +14,7 @@ export interface TrainSpec {
 
 // 車種(TrainModelId)。TrainData.model(types.ts)に持たせる購入時の選択肢。
 // 'commuter'が既定かつ旧セーブ互換(model省略=通勤形として読む。trainModelOfを参照)。
-export type TrainModelId = 'commuter' | 'suburban' | 'express';
+export type TrainModelId = 'commuter' | 'suburban' | 'express' | 'local-express';
 
 export interface TrainModel {
   /** UI表示名(日本語)。 */
@@ -50,11 +50,21 @@ export const TRAIN_MODELS: Record<TrainModelId, TrainModel> = {
     priceMultiplier: 1.3,
   },
   express: {
-    name: '特急形',
+    name: '特急形（幹線）',
     maxSpeedKmh: 130,
     serviceDecelKmhS: 18,
     spec: { enginePower: 2000, carMassEmpty: 34, maxTractiveEffort: 320 },
     priceMultiplier: 1.8,
+  },
+  // 通勤路網に混ざる幹線特急(express)に対し、こちらは50kgレール(上限110km/h)だけで
+  // 性能を出し切れる軽快なローカル線特急(E257転用イメージ)。60kgレール敷設が要らない分、
+  // 価格倍率はexpressより低い。
+  'local-express': {
+    name: '特急形（ローカル）',
+    maxSpeedKmh: 110,
+    serviceDecelKmhS: 20,
+    spec: { enginePower: 1700, carMassEmpty: 31, maxTractiveEffort: 300 },
+    priceMultiplier: 1.4,
   },
 };
 
