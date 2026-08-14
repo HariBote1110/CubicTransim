@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useGameLogic } from './hooks/useGameLogic';
+import { useGameLogic, SAVE_KEY } from './hooks/useGameLogic';
 import { GameScene } from './components/GameScene';
 import { GameUI } from './components/GameUI';
 import type { BuildMode } from './components/GameUI';
@@ -232,7 +232,16 @@ export default function App() {
     lines, services, createLine, clearLineStops, renameLine, setLineMode, deleteLine,
     createService, renameService, setServiceHeadway, toggleServiceStop, deleteService, assignTrainToService,
     gameRules,
+    toast,
   } = useGameLogic();
+
+  const [hasSave] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SAVE_KEY) !== null;
+    } catch {
+      return false;
+    }
+  });
 
   return (
     <div ref={rootRef} style={{ width: '100vw', height: '100vh', background: '#cfe3ef', position: 'relative', overflow: 'hidden' }}>
@@ -368,6 +377,21 @@ export default function App() {
             {!showDebugScenarios ? (
               <>
                 <p style={{ color: '#b9c3cc', lineHeight: 1.55 }}>マップサイズを選んで開始してください。</p>
+                {hasSave && (
+                  <button
+                    style={{ ...themeButton({ active: true, accent: T.positive }), width: '100%', textAlign: 'left', marginBottom: T.gap }}
+                    onClick={() => {
+                      loadGame();
+                      setRailOptions({ gauge: DEFAULT_GAUGE });
+                      setShowStartupOptions(false);
+                    }}
+                  >
+                    <div style={{ fontWeight: 700 }}>セーブデータから再開</div>
+                    <div style={{ fontSize: 11, fontWeight: 400, color: T.accentInk, marginTop: 2 }}>
+                      前回の続きから開始します
+                    </div>
+                  </button>
+                )}
                 <div style={{ display: 'grid', gap: T.gap, marginBottom: T.gap }}>
                   {MAP_SIZE_OPTIONS.map(opt => (
                     <button
@@ -500,6 +524,20 @@ export default function App() {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {toast && (
+        <div
+          style={{
+            position: 'absolute', left: '50%', bottom: 24, transform: 'translateX(-50%)',
+            padding: '10px 18px', borderRadius: T.radius, fontSize: 13, fontWeight: 600,
+            color: T.text, background: toast.kind === 'error' ? 'rgba(120, 24, 24, 0.92)' : 'rgba(24, 60, 40, 0.92)',
+            border: `1px solid ${toast.kind === 'error' ? T.danger : T.positive}`,
+            boxShadow: T.shadow, zIndex: 20, pointerEvents: 'none',
+          }}
+        >
+          {toast.message}
         </div>
       )}
 

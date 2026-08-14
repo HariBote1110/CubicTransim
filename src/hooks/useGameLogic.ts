@@ -49,7 +49,16 @@ import { relocateTrain } from '../sim/relocate';
 import { createDebugScenario } from '../sim/debugScenario';
 import type { DebugScenarioWorld } from '../sim/debugScenarios';
 
-const SAVE_KEY = 'cubictransim-save-v1';
+export const SAVE_KEY = 'cubictransim-save-v1';
+
+/** セーブ/ロード結果などをユーザーへ一時的に知らせる通知。 */
+export interface ToastNotice {
+  id: number;
+  message: string;
+  kind: 'success' | 'error';
+}
+
+const TOAST_DURATION_MS = 3000;
 
 // 台帳履歴として保持する直近ヶ月数。
 const LEDGER_HISTORY_LIMIT = 12;
@@ -123,6 +132,17 @@ export const useGameLogic = () => {
   // ★追加: 借入残高。序盤に建設しすぎて列車を買えず詰むのを防ぐための資金繰り手段。
   // 月末に残高に応じた利息を支払う(sim/loans.ts)。
   const [loan, setLoan] = useState<number>(0);
+
+  // ★追加: セーブ/ロードの成否をユーザーへ知らせる一時通知。TOAST_DURATION_MS後に自動で消える。
+  const [toast, setToast] = useState<ToastNotice | null>(null);
+  const showToast = (message: string, kind: ToastNotice['kind']) => {
+    setToast({ id: Date.now(), message, kind });
+  };
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), TOAST_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   // ★追加: 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定。既定値'middle'。
   const [stopLocation, setStopLocation] = useState<'near' | 'middle' | 'far'>('middle');
@@ -867,22 +887,17 @@ export const useGameLogic = () => {
       lines, services, worldRef.current.serviceDepartures ?? new Map(), loan,
       worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity, terrainProfile, gameRules
     );
-    localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
+      showToast('セーブしました', 'success');
+    } catch (err) {
+      console.warn('Failed to save game (localStorage quota or serialisation error).', err);
+      showToast('セーブに失敗しました（データが大きすぎます）', 'error');
+    }
   };
 
-  const loadGame = () => {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) {
-      console.warn('No save data found.');
-      return;
-    }
-    const saveData = JSON.parse(raw) as SaveData;
-    const restored = deserialiseWorld(saveData);
-    if (!restored) {
-      console.warn('Save data is incompatible with the current version and was discarded.');
-      return;
-    }
-
+  /** 復元済みワールドをReact stateとworldRefへ適用する(loadGame/loadFromSaveの共通処理)。 */
+  const applyRestoredWorld = (restored: NonNullable<ReturnType<typeof deserialiseWorld>>) => {
     setRailMap(restored.railMap);
     setStations(restored.stations);
     setTrains(restored.trains);
@@ -893,6 +908,7 @@ export const useGameLogic = () => {
     setTerrainProfile(restored.terrainProfile);
     setGameRules(restored.rules);
     setWorldSeed(restored.seed);
+    setHalfExtent(restored.halfExtent);
     setCornerDiffs(restored.cornerDiffs);
     setDebugFieldOverride(null);
     setCurrentLedger(restored.currentLedger);
@@ -915,6 +931,32 @@ export const useGameLogic = () => {
     worldRef.current.demand = restored.demand;
     // 経路キャッシュは列車・運行表が入れ替わったので捨てる(次のstepWorldで組み直される)。
     worldRef.current.serviceSignature = undefined;
+  };
+
+  const loadGame = () => {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) {
+      console.warn('No save data found.');
+      showToast('セーブデータが見つかりませんでした', 'error');
+      return;
+    }
+    let saveData: SaveData;
+    try {
+      saveData = JSON.parse(raw) as SaveData;
+    } catch (err) {
+      console.warn('Save data is not valid JSON.', err);
+      showToast('セーブデータが読み込めませんでした（旧バージョンまたは破損）', 'error');
+      return;
+    }
+    const restored = deserialiseWorld(saveData);
+    if (!restored) {
+      console.warn('Save data is incompatible with the current version and was discarded.');
+      showToast('セーブデータが読み込めませんでした（旧バージョンまたは破損）', 'error');
+      return;
+    }
+
+    applyRestoredWorld(restored);
+    showToast('セーブデータを読み込みました', 'success');
   };
 
   /**
@@ -1027,6 +1069,7 @@ export const useGameLogic = () => {
     saveGame,
     loadGame,
     loadDebugScenario,
+    toast,
     // ★追加: 経済システム
     money,
     addIncome,
