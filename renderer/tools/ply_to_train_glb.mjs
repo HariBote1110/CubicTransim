@@ -7,7 +7,7 @@
 //     --kuha "Stormworks_train_model/E233 0 KUHA.ply" \
 //     --moha "Stormworks_train_model/E233 0 MOHA.ply" \
 //     --out public/models/trains/e233.glb \
-//     [--voxel 1.0] [--flip]
+//     [--voxel 1.0] [--flip] [--body-width 0.44] [--max-tris 500]
 //
 // KUHA(先頭車)→ car_head、MOHA(中間車)→ car_mid。SAHA は今回未使用(将来 car_tail 用に流用可)。
 
@@ -20,6 +20,8 @@ import { validateTrainGlb } from './validate_train_glb.mjs';
 
 const NATIVE_CELL_SIZE = 0.25; // Stormworksのボクセルグリッド
 const TARGET_LENGTH = 0.86; // progress/train-model-format.md 推奨値
+const DEFAULT_BODY_WIDTH = 0.44; // src/render/trainPartsSpec.ts の車両幅に合わせたデフォルメ目標
+const HEIGHT_LIMIT = 0.60; // src/render/trainPartsSpec.ts の HEIGHT_LIMIT
 
 function parseArgs(argv) {
   const args = {
@@ -28,6 +30,8 @@ function parseArgs(argv) {
     out: 'public/models/trains/e233.glb',
     voxel: 1.25,
     flip: false,
+    bodyWidth: DEFAULT_BODY_WIDTH,
+    maxTris: undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -36,6 +40,8 @@ function parseArgs(argv) {
     else if (a === '--out') args.out = argv[++i];
     else if (a === '--voxel') args.voxel = Number(argv[++i]);
     else if (a === '--flip') args.flip = true;
+    else if (a === '--body-width') args.bodyWidth = Number(argv[++i]);
+    else if (a === '--max-tris') args.maxTris = Number(argv[++i]);
   }
   return args;
 }
@@ -61,9 +67,15 @@ function main() {
   console.log(`KUHA: 実グリッドボクセル=${kuha.nativeVoxelCount} 間引き後=${kuha.voxelCount} 面メッシュ三角形=${kuha.triangles.length}`);
   console.log(`MOHA: 実グリッドボクセル=${moha.nativeVoxelCount} 間引き後=${moha.voxelCount} 面メッシュ三角形=${moha.triangles.length}`);
 
-  // 先頭車(KUHA)の全長を基準スケールとし、中間車にも同じ係数を適用する(編成内の相対サイズを保つ)。
-  const headTransform = transformTriangles(kuha.triangles, { targetLength: TARGET_LENGTH, flip: args.flip });
-  const midTransform = transformTriangles(moha.triangles, { targetLength: TARGET_LENGTH, scale: headTransform.scale, flip: args.flip });
+  // 先頭車(KUHA)の全長を基準スケール(Z)とし、中間車にも同じZスケールを適用する(編成内の相対的な全長比を保つ)。
+  // X/Y(断面)は bodyWidth/heightLimit にフィットする非一様スケールを各車それぞれで求める
+  // (実寸のリアルな縮尺は細すぎてこのゲームのデフォルメ体型に合わないため)。
+  const headTransform = transformTriangles(kuha.triangles, {
+    targetLength: TARGET_LENGTH, flip: args.flip, bodyWidth: args.bodyWidth, heightLimit: HEIGHT_LIMIT,
+  });
+  const midTransform = transformTriangles(moha.triangles, {
+    targetLength: TARGET_LENGTH, scale: headTransform.scale, flip: args.flip, bodyWidth: args.bodyWidth, heightLimit: HEIGHT_LIMIT,
+  });
 
   console.log(`car_head 三角形数=${headTransform.triangles.length} aabb=${headTransform.aabb.map((v) => v.toFixed(3)).join(',')}`);
   console.log(`car_mid  三角形数=${midTransform.triangles.length} aabb=${midTransform.aabb.map((v) => v.toFixed(3)).join(',')}`);
@@ -73,7 +85,7 @@ function main() {
     { name: 'car_mid', triangles: midTransform.triangles },
   ]);
 
-  const { ok, checks } = validateTrainGlb(buffer);
+  const { ok, checks } = validateTrainGlb(buffer, args.maxTris !== undefined ? { maxTris: args.maxTris } : {});
   console.log('\n--- validate_train_glb ---');
   for (const check of checks) {
     console.log(`  [${check.ok ? 'PASS' : 'FAIL'}] ${check.name} — ${check.detail}`);
