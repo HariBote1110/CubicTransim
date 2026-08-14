@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parsePly, voxelizeFaces, downsampleVoxels, greedyMeshVoxels, transformTriangles } from './plyMeshLib.mjs';
+import { parsePly, voxelizeFaces, downsampleVoxels, greedyMeshVoxels, transformTriangles, buildTrainGlbBuffer } from './plyMeshLib.mjs';
+import { validateTrainGlb } from './validate_train_glb.mjs';
 
 /** 1個の0.25セル(原点を最小角とする立方体)ぶんの6面12三角形PLYテキストを作る。 */
 function singleVoxelPly(colour = [200, 100, 50]) {
@@ -181,5 +182,38 @@ describe('transformTriangles', () => {
     const flipped = transformTriangles(triangles, { targetLength: 1, scale: 1, flip: true });
     expect(flipped.triangles[0].positions[0]).toBeCloseTo(-plain.triangles[0].positions[0], 10);
     expect(flipped.triangles[0].positions[2]).toBeCloseTo(-plain.triangles[0].positions[2], 10);
+  });
+});
+
+describe('buildTrainGlbBuffer', () => {
+  it('produces a glb that passes validateTrainGlb with car_head/car_mid and correct colours', () => {
+    const boxTriangles = (colour) => {
+      const voxels = new Map([['0,0,0', { x: 0, y: 0, z: 0, colour }]]);
+      const raw = greedyMeshVoxels(voxels, 0.25);
+      return transformTriangles(raw, { targetLength: 0.5 }).triangles;
+    };
+    const buffer = buildTrainGlbBuffer([
+      { name: 'car_head', triangles: boxTriangles([200, 50, 50]) },
+      { name: 'car_mid', triangles: boxTriangles([50, 200, 50]) },
+    ]);
+    const { ok, checks } = validateTrainGlb(buffer);
+    const failed = checks.filter((c) => !c.ok);
+    expect(failed).toEqual([]);
+    expect(ok).toBe(true);
+  });
+
+  it('groups triangles of the same colour into one material/primitive', () => {
+    const voxels = new Map([
+      ['0,0,0', { x: 0, y: 0, z: 0, colour: [10, 10, 10] }],
+      ['1,0,0', { x: 1, y: 0, z: 0, colour: [10, 10, 10] }],
+    ]);
+    const triangles = transformTriangles(greedyMeshVoxels(voxels, 0.25), { targetLength: 0.5 }).triangles;
+    const buffer = buildTrainGlbBuffer([
+      { name: 'car_head', triangles },
+      { name: 'car_mid', triangles },
+    ]);
+    const json = JSON.parse(buffer.subarray(20, 20 + buffer.readUInt32LE(12)).toString('utf8'));
+    expect(json.materials.length).toBe(1);
+    expect(json.meshes[0].primitives.length).toBe(1);
   });
 });

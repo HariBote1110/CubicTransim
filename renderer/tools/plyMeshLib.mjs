@@ -327,3 +327,119 @@ export function transformTriangles(triangles, options) {
 
   return { triangles: transformed, scale, aabb: [...outMin, ...outMax] };
 }
+
+/** 色を配列キー(丸め後)にする。同一色は1マテリアルへ束ねるための正規化。 */
+const colourKey = (rgb) => rgb.map((c) => Math.round(c)).join(',');
+
+/**
+ * 三角形リストを色ごとにグルーピングして glb の「1ノード=1メッシュ、色ごとに1プリミティブ+
+ * 専用マテリアル」を組み立てる。既存のテスト用フィクスチャ(glbTestFixtures.mjs)は
+ * ノードあたり単一プリミティブ・材質なし前提で本番出力に使えないため、この関数を新設した。
+ * 頂点は非インデックス(三角形スープ)のまま出力する(重複コストよりデデュープの複雑さを避けた。
+ * 本ツールの出力は数百三角形程度で glb サイズへの影響は軽微)。
+ *
+ * @param {{ name: string, triangles: {positions:number[],colour:[number,number,number]}[] }[]} carNodes
+ * @returns {Buffer}
+ */
+export function buildTrainGlbBuffer(carNodes) {
+  const GLB_MAGIC = 0x46546c67;
+  const CHUNK_TYPE_JSON = 0x4e4f534a;
+  const CHUNK_TYPE_BIN = 0x004e4942;
+  const pad4 = (buf, fill = 0) => {
+    const remainder = buf.length % 4;
+    if (remainder === 0) return buf;
+    return Buffer.concat([buf, Buffer.alloc(4 - remainder, fill)]);
+  };
+
+  const binParts = [];
+  let binOffset = 0;
+  const bufferViews = [];
+  const accessors = [];
+  const meshes = [];
+  const nodes = [];
+  const materials = [];
+  const materialIndexByColour = new Map();
+
+  const pushBufferView = (float32Array) => {
+    const bytes = Buffer.from(float32Array.buffer, float32Array.byteOffset, float32Array.byteLength);
+    const padded = pad4(bytes);
+    binParts.push(padded);
+    bufferViews.push({ buffer: 0, byteOffset: binOffset, byteLength: bytes.length });
+    binOffset += padded.length;
+    return bufferViews.length - 1;
+  };
+
+  const materialIndexFor = (colour0to255) => {
+    const key = colourKey(colour0to255);
+    if (materialIndexByColour.has(key)) return materialIndexByColour.get(key);
+    const baseColorFactor = [colour0to255[0] / 255, colour0to255[1] / 255, colour0to255[2] / 255, 1];
+    materials.push({ name: `colour_${key.replace(/,/g, '_')}`, pbrMetallicRoughness: { baseColorFactor } });
+    const index = materials.length - 1;
+    materialIndexByColour.set(key, index);
+    return index;
+  };
+
+  for (const carNode of carNodes) {
+    // 色ごとにグルーピング
+    const byColour = new Map();
+    for (const tri of carNode.triangles) {
+      const key = colourKey(tri.colour);
+      let group = byColour.get(key);
+      if (!group) { group = { colour: tri.colour, positions: [] }; byColour.set(key, group); }
+      group.positions.push(...tri.positions);
+    }
+
+    const primitives = [];
+    for (const group of byColour.values()) {
+      const posFlat = new Float32Array(group.positions);
+      const posViewIndex = pushBufferView(posFlat);
+      const min = [Infinity, Infinity, Infinity];
+      const max = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < posFlat.length; i += 3) {
+        for (let k = 0; k < 3; k++) {
+          const val = posFlat[i + k];
+          if (val < min[k]) min[k] = val;
+          if (val > max[k]) max[k] = val;
+        }
+      }
+      accessors.push({ bufferView: posViewIndex, componentType: 5126, count: posFlat.length / 3, type: 'VEC3', min, max });
+      primitives.push({
+        attributes: { POSITION: accessors.length - 1 },
+        material: materialIndexFor(group.colour),
+        mode: 4,
+      });
+    }
+
+    meshes.push({ primitives });
+    nodes.push({ name: carNode.name, mesh: meshes.length - 1 });
+  }
+
+  const bin = Buffer.concat(binParts);
+  const json = {
+    asset: { version: '2.0', generator: 'ply_to_train_glb.mjs' },
+    scene: 0,
+    scenes: [{ nodes: nodes.map((_, i) => i) }],
+    nodes,
+    meshes,
+    materials,
+    accessors,
+    bufferViews,
+    buffers: [{ byteLength: bin.length }],
+  };
+
+  const jsonBytes = pad4(Buffer.from(JSON.stringify(json), 'utf8'), 0x20);
+  const binBytes = pad4(bin, 0);
+  const totalLength = 12 + 8 + jsonBytes.length + 8 + binBytes.length;
+  const out = Buffer.alloc(totalLength);
+  out.writeUInt32LE(GLB_MAGIC, 0);
+  out.writeUInt32LE(2, 4);
+  out.writeUInt32LE(totalLength, 8);
+  let offset = 12;
+  out.writeUInt32LE(jsonBytes.length, offset); offset += 4;
+  out.writeUInt32LE(CHUNK_TYPE_JSON, offset); offset += 4;
+  jsonBytes.copy(out, offset); offset += jsonBytes.length;
+  out.writeUInt32LE(binBytes.length, offset); offset += 4;
+  out.writeUInt32LE(CHUNK_TYPE_BIN, offset); offset += 4;
+  binBytes.copy(out, offset); offset += binBytes.length;
+  return out;
+}
