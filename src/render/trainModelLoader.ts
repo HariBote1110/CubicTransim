@@ -251,7 +251,9 @@ export function decodeTrainModel(buffer: ArrayBuffer): LoadedTrainModel | null {
  * 車種id(TrainType等) → glbモデルid の対応表。R4c時点ではすべてプレースホルダのままで、
  * 実モデル納品後にここへ登録するだけで良い(progress/train-model-format.md参照)。
  */
-export const TRAIN_MODEL_REGISTRY: Readonly<Record<string, string>> = {};
+export const TRAIN_MODEL_REGISTRY: Readonly<Record<string, string>> = {
+  commuter: 'e233',
+};
 
 /** tint規約の確認用(alpha=255→packRgbaのトップバイトが255になる)にexportしておく。 */
 export const TINT_ALPHA_FULL = packRgba(255, 255, 255, 255) >>> 24;
