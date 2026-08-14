@@ -118,13 +118,62 @@ export function voxelizeFaces(ply, cellSize = 0.25) {
   return out;
 }
 
+const NEIGHBOUR_OFFSETS = [
+  [1, 0, 0], [-1, 0, 0],
+  [0, 1, 0], [0, -1, 0],
+  [0, 0, 1], [0, 0, -1],
+];
+
+/** 色の彩度([0,1]、グレーほど0に近い)。RGBの(max-min)/maxで近似する。 */
+function saturationOf([r, g, b]) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max === 0 ? 0 : (max - min) / max;
+}
+
 /**
- * 整数係数でボクセルを間引く。子ボクセルの色は多数決。
+ * ある近接1コーナー粗ボクセル内で最終色を1つ選ぶ。
+ * 露出面重みの最大値に対して既定80%(NEAR_TIE_RATIO)以上の候補を「僅差」とみなし、
+ * その中で最も彩度が高い色を採用する(彩度は僅差判定を通過した候補間のタイブレークのみに使い、
+ * 単独で重みを覆すことはない)。
+ * @param {Map<string,{colour:[number,number,number],weight:number}>} weightsByColour
+ */
+function pickDominantColour(weightsByColour) {
+  const candidates = [...weightsByColour.values()];
+  candidates.sort((a, b) => b.weight - a.weight);
+  const topWeight = candidates[0].weight;
+  const nearTieThreshold = topWeight * NEAR_TIE_RATIO;
+  let best = candidates[0];
+  for (const candidate of candidates) {
+    if (candidate.weight < nearTieThreshold) break;
+    if (saturationOf(candidate.colour) > saturationOf(best.colour)) best = candidate;
+  }
+  return best.colour;
+}
+
+const NEAR_TIE_RATIO = 0.8;
+
+/**
+ * 整数係数でボクセルを間引く。子ボクセルの色は「露出面(実グリッドで他の実体ボクセルと
+ * 接していない面)の数」で重み付けした多数決で決める。完全に囲まれた内部の充填ボクセルは
+ * 露出面0となり結果に一切寄与しないため、薄い表面色(帯など)が内部の塗りつぶし色に
+ * 埋もれなくなる。重みが僅差(既定80%以内)の場合は、より彩度の高い色を優先する
+ * (単独では重みを覆さないタイブレーク専用)。
  * @param {Map<string,{x:number,y:number,z:number,colour:[number,number,number]}>} voxels
  * @param {number} factor 1なら間引きなし
  */
 export function downsampleVoxels(voxels, factor) {
   if (factor <= 1) return new Map(voxels);
+
+  const solidAt = (x, y, z) => voxels.has(`${x},${y},${z}`);
+  const exposedFaceCount = (v) => {
+    let count = 0;
+    for (const [dx, dy, dz] of NEIGHBOUR_OFFSETS) {
+      if (!solidAt(v.x + dx, v.y + dy, v.z + dz)) count += 1;
+    }
+    return count;
+  };
+
   const groups = new Map();
   for (const v of voxels.values()) {
     const cx = Math.floor(v.x / factor);
@@ -133,21 +182,18 @@ export function downsampleVoxels(voxels, factor) {
     const key = `${cx},${cy},${cz}`;
     let group = groups.get(key);
     if (!group) {
-      group = { x: cx, y: cy, z: cz, votes: new Map() };
+      group = { x: cx, y: cy, z: cz, weights: new Map() };
       groups.set(key, group);
     }
+    const weight = exposedFaceCount(v);
     const colourKey = v.colour.join(',');
-    const vote = group.votes.get(colourKey) ?? { colour: v.colour, count: 0 };
-    vote.count += 1;
-    group.votes.set(colourKey, vote);
+    const entry = group.weights.get(colourKey) ?? { colour: v.colour, weight: 0 };
+    entry.weight += weight;
+    group.weights.set(colourKey, entry);
   }
   const out = new Map();
   for (const [key, group] of groups) {
-    let best = null;
-    for (const vote of group.votes.values()) {
-      if (!best || vote.count > best.count) best = vote;
-    }
-    out.set(key, { x: group.x, y: group.y, z: group.z, colour: best.colour });
+    out.set(key, { x: group.x, y: group.y, z: group.z, colour: pickDominantColour(group.weights) });
   }
   return out;
 }
