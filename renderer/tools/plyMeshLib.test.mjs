@@ -218,6 +218,48 @@ describe('transformTriangles', () => {
     expect(flipped.triangles[0].positions[0]).toBeCloseTo(-plain.triangles[0].positions[0], 10);
     expect(flipped.triangles[0].positions[2]).toBeCloseTo(-plain.triangles[0].positions[2], 10);
   });
+
+  it('non-uniform mode: Z scales to targetLength independently of X/Y, and X/Y share one factor fitting bodyWidth/heightLimit', () => {
+    // actual: X extent=8 (width), Y extent=2 (height), Z extent=10 (length)
+    const triangles = [
+      { positions: [-4, 0, 0, 4, 0, 0, -4, 2, 0], colour: [1, 1, 1] },
+      { positions: [-4, 0, 10, 4, 0, 10, -4, 2, 10], colour: [1, 1, 1] },
+    ];
+    // widthTarget/actualWidth = 0.44/8 = 0.055, heightLimit/actualHeight = 0.60/2 = 0.30
+    // -> xyScale should be the smaller, 0.055
+    const { triangles: out, aabb } = transformTriangles(triangles, {
+      targetLength: 0.86,
+      bodyWidth: 0.44,
+      heightLimit: 0.6,
+    });
+    const xyScale = 0.44 / 8;
+    const zScale = 0.86 / 10;
+    expect(aabb[3] - aabb[0]).toBeCloseTo(8 * xyScale, 10); // X extent uses xyScale, not zScale
+    expect(aabb[4] - aabb[1]).toBeCloseTo(2 * xyScale, 10); // Y extent uses xyScale
+    expect(aabb[5] - aabb[2]).toBeCloseTo(0.86, 10); // Z extent uses targetLength
+    expect(aabb[1]).toBeCloseTo(0, 10); // minY still floored to 0
+    expect((aabb[0] + aabb[3]) / 2).toBeCloseTo(0, 10); // still centred on X
+    void out;
+    void zScale;
+  });
+
+  it('non-uniform mode: heightLimit is the binding constraint when the body is tall and narrow', () => {
+    // actual: X extent=2 (width), Y extent=6 (height), Z extent=10 (length)
+    const triangles = [
+      { positions: [-1, 0, 0, 1, 0, 0, -1, 6, 0], colour: [1, 1, 1] },
+      { positions: [-1, 0, 10, 1, 0, 10, -1, 6, 10], colour: [1, 1, 1] },
+    ];
+    // widthTarget/actualWidth = 0.44/2 = 0.22, heightLimit/actualHeight = 0.60/6 = 0.10
+    // -> xyScale should be the smaller, 0.10 (height-bound)
+    const { aabb } = transformTriangles(triangles, {
+      targetLength: 0.86,
+      bodyWidth: 0.44,
+      heightLimit: 0.6,
+    });
+    const xyScale = 0.6 / 6;
+    expect(aabb[3] - aabb[0]).toBeCloseTo(2 * xyScale, 10);
+    expect(aabb[4] - aabb[1]).toBeCloseTo(6 * xyScale, 10);
+  });
 });
 
 describe('buildTrainGlbBuffer', () => {
