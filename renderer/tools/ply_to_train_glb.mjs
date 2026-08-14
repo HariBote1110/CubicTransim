@@ -26,7 +26,7 @@ function parseArgs(argv) {
     kuha: 'Stormworks_train_model/E233 0 KUHA.ply',
     moha: 'Stormworks_train_model/E233 0 MOHA.ply',
     out: 'public/models/trains/e233.glb',
-    voxel: 1.0,
+    voxel: 1.25,
     flip: false,
   };
   for (let i = 0; i < argv.length; i++) {
