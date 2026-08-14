@@ -11,6 +11,7 @@
 // trainMeshBuilder.ts のプレースホルダへフォールバックする)。
 
 import { bakeFlatShaded, packRgba, type BakedMeshChunk } from './bakedMesh';
+import { RAIL_SUPPORT_OFFSET } from './trainInstanceMath';
 
 const GLB_MAGIC = 0x46546c67;
 const CHUNK_TYPE_JSON = 0x4e4f534a;
@@ -199,6 +200,10 @@ function bakeNode(json: GlTF, bin: DataView, nodeIndex: number): BakedMeshChunk 
   let cursor = 0;
   for (const tri of triangles) {
     const shaded = bakeFlatShaded(new Float32Array(tri.positions), tri.colour, { alpha: tri.tint ? 255 : 0, unlit: true });
+    // 作画規約(progress/train-model-format.md)ではy=0=レール上面。実行時の車体原点は
+    // レール上面よりRAIL_SUPPORT_OFFSET高い位置にあるため、ここで焼き込み時にその分を
+    // 差し引き、作画のy=0が実際の車輪接地面に一致するようにする。
+    for (let v = 0; v < 3; v++) shaded.positions[v * 3 + 1] -= RAIL_SUPPORT_OFFSET;
     positions.set(shaded.positions, cursor * 3);
     colours.set(shaded.colours, cursor);
     for (let v = 0; v < 3; v++) {
