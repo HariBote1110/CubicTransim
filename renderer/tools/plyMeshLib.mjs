@@ -151,7 +151,7 @@ function pickDominantColour(weightsByColour) {
   return best.colour;
 }
 
-const NEAR_TIE_RATIO = 0.8;
+const NEAR_TIE_RATIO = 0.5;
 
 /**
  * 整数係数でボクセルを間引く。子ボクセルの色は「露出面(実グリッドで他の実体ボクセルと
