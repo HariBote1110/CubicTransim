@@ -112,6 +112,41 @@ describe('downsampleVoxels', () => {
     const v = [...down.values()][0];
     expect(v.x).toBe(-1); expect(v.y).toBe(-1); expect(v.z).toBe(-1);
   });
+
+  it('ignores fully interior (unexposed) voxels when deciding coarse colour', () => {
+    // 4x4x4の中実ブロック。表面(外殻)は銀色、内部(完全に囲まれた2x2x2)は多数を占める別色。
+    // 多数決では内部色が勝つはずだが、露出面重み付けなら内部は重み0で表面色が勝つ。
+    const voxels = new Map();
+    const silver = [194, 195, 199];
+    const interiorColour = [1, 1, 1];
+    for (let x = 0; x < 4; x++) for (let y = 0; y < 4; y++) for (let z = 0; z < 4; z++) {
+      const isInterior = x >= 1 && x <= 2 && y >= 1 && y <= 2 && z >= 1 && z <= 2;
+      const colour = isInterior ? interiorColour : silver;
+      voxels.set(`${x},${y},${z}`, { x, y, z, colour });
+    }
+    const down = downsampleVoxels(voxels, 4);
+    expect(down.size).toBe(1);
+    const v = [...down.values()][0];
+    expect(v.colour).toEqual(silver);
+  });
+
+  it('prefers a saturated colour over grey when exposed-face weights are near-tied', () => {
+    // グレーは3個並んだ列(端は5面露出、中央は隣接2個で4面露出、合計14)。
+    // オレンジは互いに離れた孤立ボクセル2個(各6面露出、合計12)。
+    // 単純な露出重みの多数決ならグレー(14)が勝つが、12/14≈0.857で20%以内の僅差のため、
+    // 彩度タイブレークにより、より彩度の高いオレンジが勝つ。
+    const voxels = new Map();
+    const grey = [194, 195, 199];
+    const orange = [223, 151, 87];
+    const greyPositions = [[0, 0, 0], [1, 0, 0], [2, 0, 0]];
+    const orangePositions = [[0, 3, 3], [3, 0, 3]];
+    for (const [x, y, z] of greyPositions) voxels.set(`${x},${y},${z}`, { x, y, z, colour: grey });
+    for (const [x, y, z] of orangePositions) voxels.set(`${x},${y},${z}`, { x, y, z, colour: orange });
+    const down = downsampleVoxels(voxels, 4);
+    expect(down.size).toBe(1);
+    const v = [...down.values()][0];
+    expect(v.colour).toEqual(orange);
+  });
 });
 
 describe('greedyMeshVoxels', () => {
