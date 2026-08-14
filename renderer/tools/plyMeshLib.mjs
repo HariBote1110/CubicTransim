@@ -318,15 +318,22 @@ export function greedyMeshVoxels(voxels, cellSize) {
 
 /**
  * 三角形スープをゲーム仕様へ変換する: X/Zをセンタリング、最小Y=0へシフト、
- * 全長(Z幅)が targetLength になるよう一様スケール、必要ならY軸180°回転(flip)。
+ * 全長(Z幅)が targetLength になるようスケール、必要ならY軸180°回転(flip)。
+ *
+ * bodyWidth/heightLimit を指定すると非一様スケーリング(断面フィット)になる:
+ * Z(全長)は targetLength(またはscale)へ従来どおりスケールする一方、X/Yは
+ * 実寸の断面アスペクト比を保ったまま min(bodyWidth/実幅, heightLimit/実高さ) の
+ * 単一係数を共有してスケールする(ゲームの車両プロポーションに合わせるため、
+ * 実寸のリアルな縮尺だと細すぎて見えるデフォルメ対応)。
  * @param {{positions:number[],colour:[number,number,number]}[]} triangles
- * @param {{ targetLength: number, scale?: number, flip?: boolean }} options
- *   scale を渡すと targetLength を無視してそのスケールを使う(編成内で共通スケールを揃えるため)。
- * @returns {{ triangles: {positions:number[],colour:[number,number,number]}[], scale: number, aabb: number[] }}
+ * @param {{ targetLength: number, scale?: number, flip?: boolean, bodyWidth?: number, heightLimit?: number }} options
+ *   scale を渡すと targetLength を無視してそのZスケールを使う(編成内で全長スケールを揃えるため)。
+ *   bodyWidth/heightLimit を渡すと非一様モードになり、X/Yはscale/targetLengthと独立に断面フィットする。
+ * @returns {{ triangles: {positions:number[],colour:[number,number,number]}[], scale: number, xyScale: number, aabb: number[] }}
  */
 export function transformTriangles(triangles, options) {
-  const { targetLength, flip = false } = options;
-  if (triangles.length === 0) return { triangles: [], scale: 1, aabb: [0, 0, 0, 0, 0, 0] };
+  const { targetLength, flip = false, bodyWidth, heightLimit } = options;
+  if (triangles.length === 0) return { triangles: [], scale: 1, xyScale: 1, aabb: [0, 0, 0, 0, 0, 0] };
 
   let min = [Infinity, Infinity, Infinity];
   let max = [-Infinity, -Infinity, -Infinity];
@@ -345,11 +352,21 @@ export function transformTriangles(triangles, options) {
   const lengthZ = max[2] - min[2];
   const scale = options.scale ?? (lengthZ > 0 ? targetLength / lengthZ : 1);
 
+  const nonUniform = bodyWidth !== undefined && heightLimit !== undefined;
+  let xyScale = scale;
+  if (nonUniform) {
+    const widthX = max[0] - min[0];
+    const heightY = max[1] - min[1];
+    const widthFactor = widthX > 0 ? bodyWidth / widthX : Infinity;
+    const heightFactor = heightY > 0 ? heightLimit / heightY : Infinity;
+    xyScale = Math.min(widthFactor, heightFactor);
+  }
+
   const transformed = triangles.map((tri) => {
     const positions = new Array(9);
     for (let vi = 0; vi < 3; vi++) {
-      let x = (tri.positions[vi * 3] - centreX) * scale;
-      let y = (tri.positions[vi * 3 + 1] - minY) * scale;
+      let x = (tri.positions[vi * 3] - centreX) * xyScale;
+      let y = (tri.positions[vi * 3 + 1] - minY) * xyScale;
       let z = (tri.positions[vi * 3 + 2] - centreZ) * scale;
       if (flip) { x = -x; z = -z; }
       positions[vi * 3] = x;
@@ -371,7 +388,7 @@ export function transformTriangles(triangles, options) {
     }
   }
 
-  return { triangles: transformed, scale, aabb: [...outMin, ...outMax] };
+  return { triangles: transformed, scale, xyScale, aabb: [...outMin, ...outMax] };
 }
 
 /** 色を配列キー(丸め後)にする。同一色は1マテリアルへ束ねるための正規化。 */
