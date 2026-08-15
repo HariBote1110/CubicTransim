@@ -58,14 +58,18 @@ impl LayerClass {
 /// 長さが食い違う場合は短いほうに合わせる(JS からの呼び出しを落とさないための防御)。
 pub fn interleave_vertices(positions: &[f32], colours: &[u32]) -> Vec<u8> {
     let count = (positions.len() / 3).min(colours.len());
-    let mut out = Vec::with_capacity(count * VERTEX_STRIDE_BYTES);
+    let mut out_u32 = vec![0u32; count * (VERTEX_STRIDE_BYTES / 4)];
+    let pos_slice: &[u32] = bytemuck::cast_slice(positions);
     for i in 0..count {
-        out.extend_from_slice(&positions[i * 3].to_le_bytes());
-        out.extend_from_slice(&positions[i * 3 + 1].to_le_bytes());
-        out.extend_from_slice(&positions[i * 3 + 2].to_le_bytes());
-        out.extend_from_slice(&colours[i].to_le_bytes());
+        out_u32[i * 4] = pos_slice[i * 3];
+        out_u32[i * 4 + 1] = pos_slice[i * 3 + 1];
+        out_u32[i * 4 + 2] = pos_slice[i * 3 + 2];
+        out_u32[i * 4 + 3] = colours[i];
     }
-    out
+
+    // Convert to target-endian bytes (WebGPU typically runs on little-endian,
+    // and wasm32 is always little-endian).
+    bytemuck::cast_slice(&out_u32).to_vec()
 }
 
 /// インスタンス配列を「地表」「地下」の2本へ振り分ける(flags の bit0 で判定)。
@@ -75,8 +79,8 @@ pub fn interleave_vertices(positions: &[f32], colours: &[u32]) -> Vec<u8> {
 /// 端数(stride に満たない末尾)は無視する。
 pub fn split_instances_by_class(data: &[f32]) -> (Vec<u8>, Vec<u8>) {
     let count = data.len() / INSTANCE_STRIDE_FLOATS;
-    let mut surface = Vec::new();
-    let mut underground = Vec::new();
+    let mut surface = Vec::with_capacity(count * INSTANCE_STRIDE_BYTES);
+    let mut underground = Vec::with_capacity(count * INSTANCE_STRIDE_BYTES);
     for i in 0..count {
         let chunk = &data[i * INSTANCE_STRIDE_FLOATS..(i + 1) * INSTANCE_STRIDE_FLOATS];
         let flags = chunk[8] as u32;
@@ -85,9 +89,7 @@ pub fn split_instances_by_class(data: &[f32]) -> (Vec<u8>, Vec<u8>) {
         } else {
             &mut surface
         };
-        for v in chunk {
-            target.extend_from_slice(&v.to_le_bytes());
-        }
+        target.extend_from_slice(bytemuck::cast_slice(chunk));
     }
     (surface, underground)
 }
