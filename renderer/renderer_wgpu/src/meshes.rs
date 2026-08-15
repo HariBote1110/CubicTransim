@@ -1,20 +1,37 @@
 /// 頂点1つのバイト数: position(f32x3) + colour(unorm8x4)。
 pub const VERTEX_STRIDE_BYTES: usize = 16;
 
-/// インスタンス1つあたりの f32 個数。
+/// インスタンス1つあたりのワード数(f32 換算の個数)。
 ///
-/// レイアウト(TS 側 `setInstances` が渡すフラット配列と同じ並び):
+/// レイアウト(TS 側 `setInstances` が渡すフラット配列と同じ並び。stride 24 バイト):
 ///   0: x, 1: y, 2: z            — ワールド位置(y はワールド単位)
 ///   3: yaw   — +Y 軸まわり(three.js の rotateY と同符号、`angleFromVector` 準拠)
 ///   4: pitch — 進行方向まわりの傾き(勾配の可視化に使う)
-///   5..7: tintR, tintG, tintB   — 頂点色へ掛ける色(路線色など、0..1)
-///   8: flags — bit0=1 で地下クラス(深度Always・地下ビュー以外では非表示)
-///   9: 予約(16バイト境界に揃えるためのパディング。常に 0 を書く)
-pub const INSTANCE_STRIDE_FLOATS: usize = 10;
+///   5: tint+flags — `pack_tint_and_flags` で詰めた u32。頂点属性としては unorm8x4
+///      (R,G,B が路線色。A は**シェーダが読まない**ので flags を同居させている)
+///
+/// 旧レイアウトは 40 バイトで、flags 専用の f32 と 16 バイト境界のためのパディングを
+/// 持っていた。シェーダが読むのは位置・回転・tint だけ(`mesh_instanced.wgsl` 参照)で、
+/// flags は CPU 側のクラス振り分けにしか使わないため、tint の未使用 A バイトへ畳んだ。
+/// インスタンス配列は毎フレーム丸ごと GPU へ送るので、stride の縮小がそのまま
+/// 転送量の削減になる(40 → 24 バイト、40% 減)。
+pub const INSTANCE_STRIDE_FLOATS: usize = 6;
 pub const INSTANCE_STRIDE_BYTES: usize = INSTANCE_STRIDE_FLOATS * 4;
+
+/// tint+flags を詰めたワードの位置(インスタンス先頭からのワード数)。
+pub const INSTANCE_TINT_WORD: usize = 5;
 
 /// インスタンスフラグ: 地下クラスとして描く。
 pub const INSTANCE_FLAG_UNDERGROUND: u32 = 1;
+
+/// 路線色(0..1)と flags を1ワードへ詰める。unorm8x4 として読ませるので
+/// R,G,B の順に下位バイトから並べ、シェーダが読まない A バイトへ flags を置く。
+///
+/// 範囲外や NaN の tint はクランプする(`as u8` の飽和変換に任せると NaN が 0 になる)。
+pub fn pack_tint_and_flags(tint: [f32; 3], flags: u32) -> u32 {
+    let to_byte = |v: f32| (v * 255.0 + 0.5) as u8 as u32; // NaN/範囲外は飽和変換で丸まる
+    to_byte(tint[0]) | (to_byte(tint[1]) << 8) | (to_byte(tint[2]) << 16) | ((flags & 0xff) << 24)
+}
 
 /// メッシュチャンクの描画クラス。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,8 +107,14 @@ pub fn interleave_vertices_into(dst: &mut [u8], positions: &[f32], colours: &[u3
 /// `split_instances_into` の宛先2本をちょうどのサイズで確保するために使う。
 pub fn underground_instance_count(data: &[f32]) -> usize {
     data.chunks_exact(INSTANCE_STRIDE_FLOATS)
-        .filter(|chunk| chunk[8] as u32 & INSTANCE_FLAG_UNDERGROUND != 0)
+        .filter(|chunk| instance_is_underground(chunk))
         .count()
+}
+
+/// インスタンス1件が地下クラスか。flags は tint ワードの最上位バイトに入っている。
+#[inline]
+fn instance_is_underground(chunk: &[f32]) -> bool {
+    (chunk[INSTANCE_TINT_WORD].to_bits() >> 24) & INSTANCE_FLAG_UNDERGROUND != 0
 }
 
 /// インスタンスバッファの最小確保サイズ(これ未満は切り上げる)。
@@ -128,7 +151,7 @@ pub fn split_instances_into(surface: &mut [u8], underground: &mut [u8], data: &[
     let (mut si, mut ui) = (0usize, 0usize);
     for chunk in data.chunks_exact(INSTANCE_STRIDE_FLOATS) {
         let src: &[u8] = bytemuck::cast_slice(chunk);
-        let (dst, at) = if chunk[8] as u32 & INSTANCE_FLAG_UNDERGROUND != 0 {
+        let (dst, at) = if instance_is_underground(chunk) {
             (&mut *underground, &mut ui)
         } else {
             (&mut *surface, &mut si)
@@ -197,13 +220,48 @@ mod tests {
         assert_eq!(&dst[12..16], &0xaaaa_aaaau32.to_le_bytes());
     }
 
+    /// インスタンス1件を組み立てる(テスト用)。tint は 0..1、flags は bit0=地下。
+    fn instance(x: f32, tint: [f32; 3], flags: u32) -> Vec<f32> {
+        let mut out = vec![0.0f32; INSTANCE_STRIDE_FLOATS];
+        out[0] = x;
+        out[INSTANCE_TINT_WORD] = f32::from_bits(pack_tint_and_flags(tint, flags));
+        out
+    }
+
+    /// stride は 24 バイト = 6 ワード(位置3 + 回転2 + tint/flags 1)。
+    /// 旧レイアウト(40バイト)にあった flags 用の f32 と末尾のパディングを畳んだもの。
+    #[test]
+    fn instance_stride_is_twenty_four_bytes() {
+        assert_eq!(INSTANCE_STRIDE_FLOATS, 6);
+        assert_eq!(INSTANCE_STRIDE_BYTES, 24);
+        assert_eq!(INSTANCE_TINT_WORD, 5);
+    }
+
+    /// tint は unorm8x4 の R,G,B へ、flags は使われない A バイトへ詰める。
+    #[test]
+    fn tint_and_flags_pack_into_one_word() {
+        let packed = pack_tint_and_flags([1.0, 0.0, 0.0], 0);
+        assert_eq!(packed & 0xff, 255, "R");
+        assert_eq!((packed >> 8) & 0xff, 0, "G");
+        assert_eq!((packed >> 24) & 0xff, 0, "A(flags)");
+
+        let packed = pack_tint_and_flags([0.0, 0.0, 1.0], INSTANCE_FLAG_UNDERGROUND);
+        assert_eq!((packed >> 16) & 0xff, 255, "B");
+        assert_eq!((packed >> 24) & 0xff, INSTANCE_FLAG_UNDERGROUND, "A(flags)");
+    }
+
+    /// 範囲外の tint はクランプする(NaN も 0 に倒して不正なバイトを作らない)。
+    #[test]
+    fn tint_is_clamped_to_the_unit_range() {
+        assert_eq!(pack_tint_and_flags([2.0, -1.0, f32::NAN], 0) & 0xff_ffff, 0xff);
+    }
+
     #[test]
     fn splits_instances_by_the_underground_flag() {
-        let mut data = vec![0.0f32; INSTANCE_STRIDE_FLOATS * 3];
-        data[0] = 1.0; // instance 0: surface
-        data[INSTANCE_STRIDE_FLOATS] = 2.0; // instance 1: underground
-        data[INSTANCE_STRIDE_FLOATS + 8] = INSTANCE_FLAG_UNDERGROUND as f32;
-        data[INSTANCE_STRIDE_FLOATS * 2] = 3.0; // instance 2: surface
+        let mut data = Vec::new();
+        data.extend(instance(1.0, [1.0, 1.0, 1.0], 0)); // instance 0: surface
+        data.extend(instance(2.0, [1.0, 1.0, 1.0], INSTANCE_FLAG_UNDERGROUND)); // 1: underground
+        data.extend(instance(3.0, [1.0, 1.0, 1.0], 0)); // instance 2: surface
         assert_eq!(underground_instance_count(&data), 1);
         let (surface, underground) = split_to_vecs(&data);
         assert_eq!(surface.len(), 2 * INSTANCE_STRIDE_BYTES);

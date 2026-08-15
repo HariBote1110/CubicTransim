@@ -15,7 +15,7 @@ import type { TownData } from '../types';
 import type { TerrainField } from '../sim/terrainField';
 import { OVERPASS_HEIGHT } from '../sim/trackPath';
 import { bakeGeometries, parseColourHex } from '../render/bakedMesh';
-import { MESH_INSTANCE_STRIDE } from '../render/webgpuLayer';
+import { MESH_INSTANCE_STRIDE, MESH_INSTANCE_TINT_WORD, packTintAndFlags } from '../render/webgpuLayer';
 import type { WebGpuTerrainLayerController } from '../render/webgpuLayer';
 import { toWebGpuCameraState, type GameCameraState, type ViewportSize } from '../render/cameraState';
 import { FRAME_ORDER } from '../render/frameLoop';
@@ -106,6 +106,7 @@ export const WebGpuTownMarkers: React.FC<Props> = ({
       dataRef.current = new Float32Array(towns.length * MESH_INSTANCE_STRIDE);
     }
     const data = dataRef.current;
+    const words = new Uint32Array(data.buffer);
     for (let i = 0; i < towns.length; i++) {
       const town = towns[i];
       const [r, g, b] = parseColourHex(TOWN_MARKER_TIER_COLOURS[townMarkerTierIndex(town.population)]);
@@ -115,11 +116,7 @@ export const WebGpuTownMarkers: React.FC<Props> = ({
       data[offset + 2] = town.centre.z;
       data[offset + 3] = 0;
       data[offset + 4] = 0;
-      data[offset + 5] = r;
-      data[offset + 6] = g;
-      data[offset + 7] = b;
-      data[offset + 8] = 0;
-      data[offset + 9] = 0;
+      words[offset + MESH_INSTANCE_TINT_WORD] = packTintAndFlags(r, g, b, 0);
     }
     controller.setInstances(MESH_ID_TOWN_MARKER, data);
   });

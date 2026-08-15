@@ -61,10 +61,10 @@ struct Out {
   @location(1) colour: vec4<f32>,
   @location(2) inst_pos: vec3<f32>,
   @location(3) inst_rot: vec2<f32>,   // (yaw, pitch)
-  @location(4) inst_tint: vec3<f32>,
+  @location(4) inst_tint: vec4<f32>,  // unorm8x4。A は flags なので使わない
 ) -> Out {
-  // flags(インスタンス配列の 8 番目)はクラス振り分け(meshes::split_instances_by_class)で
-  // CPU 側が既に使い切っているため、頂点属性としては読まない。
+  // flags は tint の A バイトに同居しているが、クラス振り分け(meshes::split_instances_into)で
+  // CPU 側が既に使い切っているため、シェーダでは読まない。
   // ピッチ(進行方向 +Z まわりの傾き)→ ヨー(+Y まわり)の順に回す。
   // three.js の rotateY(theta) がローカル +Z を (sin θ, 0, cos θ) へ写すのと同じ符号規約
   // (render/palette.ts の angleFromVector)。
@@ -82,7 +82,7 @@ struct Out {
 
   var o: Out;
   o.position = project(world.x, world.z, world_y_to_levels(world.y));
-  let tinted = colour.rgb * mix(vec3<f32>(1.0), inst_tint, colour.a);
+  let tinted = colour.rgb * mix(vec3<f32>(1.0), inst_tint.rgb, colour.a);
   o.colour = vec4<f32>(tinted, 1.0);
   o.world_pos = world;
   return o;

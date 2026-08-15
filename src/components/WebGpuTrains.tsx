@@ -27,7 +27,8 @@ import { loadTrainModel, TRAIN_MODEL_REGISTRY } from '../render/trainModelLoader
 import { parseColourHex } from '../render/bakedMesh';
 import { PALETTE } from '../render/palette';
 import { DEFAULT_TRAIN_MODEL, type TrainModelId } from '../sim/physics';
-import { MESH_INSTANCE_STRIDE, MESH_INSTANCE_FLAG_UNDERGROUND } from '../render/webgpuLayer';
+import { MESH_INSTANCE_FLAG_UNDERGROUND } from '../render/webgpuLayer';
+import { InstanceBuffer } from '../render/instanceBuffer';
 import type { WebGpuTerrainLayerController } from '../render/webgpuLayer';
 import type { WebGpuLayerRef } from './WebGpuTerrainLayer';
 
@@ -64,42 +65,6 @@ interface Props {
   dragCell?: { x: number; z: number } | null;
 }
 
-/** 伸長可能なFloat32Arrayバッファ。フレームごとの確保を避けるため、必要な時だけ倍化する。 */
-class InstanceBuffer {
-  data = new Float32Array(MESH_INSTANCE_STRIDE * 16);
-  count = 0;
-
-  reset(): void {
-    this.count = 0;
-  }
-
-  push(
-    x: number, y: number, z: number, yaw: number, pitch: number,
-    tintR: number, tintG: number, tintB: number, flags: number,
-  ): void {
-    const offset = this.count * MESH_INSTANCE_STRIDE;
-    if (offset + MESH_INSTANCE_STRIDE > this.data.length) {
-      const grown = new Float32Array(this.data.length * 2);
-      grown.set(this.data);
-      this.data = grown;
-    }
-    this.data[offset] = x;
-    this.data[offset + 1] = y;
-    this.data[offset + 2] = z;
-    this.data[offset + 3] = yaw;
-    this.data[offset + 4] = pitch;
-    this.data[offset + 5] = tintR;
-    this.data[offset + 6] = tintG;
-    this.data[offset + 7] = tintB;
-    this.data[offset + 8] = flags;
-    this.data[offset + 9] = 0;
-    this.count += 1;
-  }
-
-  view(): Float32Array {
-    return this.data.subarray(0, this.count * MESH_INSTANCE_STRIDE);
-  }
-}
 
 export const WebGpuTrains: React.FC<Props> = ({
   layerRef, trains, railMap, field, elevatedTunnelIndex, world, selectedTrainId,
