@@ -33,7 +33,8 @@ fn put_f32(out: &mut [u8], offset: usize, v: f32) {
 }
 
 pub use crate::meshes::{
-    interleave_vertices, split_instances_by_class, LayerClass, INSTANCE_STRIDE_BYTES,
+    interleave_vertices_into, interleaved_vertex_bytes, split_instances_into,
+    underground_instance_count, LayerClass, INSTANCE_STRIDE_BYTES,
     INSTANCE_STRIDE_FLOATS, VERTEX_STRIDE_BYTES,
 };
 pub use crate::projection::{aabb_visible, CullCamera, ISO_H, ISO_X, ISO_Y};

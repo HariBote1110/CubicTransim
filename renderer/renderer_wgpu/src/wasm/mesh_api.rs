@@ -1,5 +1,35 @@
 use super::*;
 
+/// 頂点バッファを「マップ済みで作成 → その領域へ直接交互配置 → unmap」で用意する。
+///
+/// `create_buffer_init` は中身をいったん呼び出し側の `Vec<u8>` に組んでから
+/// コピーするので、その中間バッファ(頂点数×16バイト)を丸ごと省ける。
+/// 頂点が0件のときは `None`(呼び出し側でチャンク削除に倒す)。
+fn create_interleaved_vertex_buffer(
+    device: &wgpu::Device,
+    label: &'static str,
+    positions: &[f32],
+    colours: &[u32],
+) -> Option<wgpu::Buffer> {
+    let size = interleaved_vertex_bytes(positions, colours);
+    if size == 0 {
+        return None;
+    }
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: size as u64,
+        usage: wgpu::BufferUsages::VERTEX,
+        mapped_at_creation: true,
+    });
+    interleave_vertices_into(
+        &mut buffer.slice(..).get_mapped_range_mut(),
+        positions,
+        colours,
+    );
+    buffer.unmap();
+    Some(buffer)
+}
+
 #[wasm_bindgen]
 impl CanvasRenderer {
     /// R4a: ジオラマ物のメッシュチャンクを1つ登録(同じ id は置き換え)する。
@@ -26,18 +56,15 @@ impl CanvasRenderer {
             self.mesh_chunks.remove(&id);
             return;
         }
-        let vertex_bytes = interleave_vertices(positions, colours);
-        if vertex_bytes.is_empty() {
+        let Some(vertices) = create_interleaved_vertex_buffer(
+            &self.device,
+            "mesh-chunk-vertices",
+            positions,
+            colours,
+        ) else {
             self.mesh_chunks.remove(&id);
             return;
-        }
-        let vertices = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("mesh-chunk-vertices"),
-                contents: &vertex_bytes,
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        };
         let index_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -79,18 +106,15 @@ impl CanvasRenderer {
             self.instanced_meshes.remove(&mesh_id);
             return;
         }
-        let vertex_bytes = interleave_vertices(positions, colours);
-        if vertex_bytes.is_empty() {
+        let Some(vertices) = create_interleaved_vertex_buffer(
+            &self.device,
+            "instanced-mesh-vertices",
+            positions,
+            colours,
+        ) else {
             self.instanced_meshes.remove(&mesh_id);
             return;
-        }
-        let vertices = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("instanced-mesh-vertices"),
-                contents: &vertex_bytes,
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        };
         let index_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -115,20 +139,48 @@ impl CanvasRenderer {
     /// 未登録の mesh_id は無視する。
     #[wasm_bindgen(js_name = setInstances)]
     pub fn set_instances(&mut self, mesh_id: u32, data: &[f32]) {
-        let (surface_bytes, underground_bytes) = split_instances_by_class(data);
-        let make = |device: &wgpu::Device, bytes: &[u8]| -> Option<(wgpu::Buffer, u32)> {
-            if bytes.is_empty() {
+        // 先に地下の件数を数えて2本のバッファをちょうどのサイズで作り、そのマップ領域へ
+        // 直接振り分ける。中間の Vec を持たないぶん、インスタンス数×40バイト×2 の
+        // 一時確保がまるごと消える。
+        let underground_count = underground_instance_count(data);
+        let surface_count = data.len() / INSTANCE_STRIDE_FLOATS - underground_count;
+        let make = |device: &wgpu::Device, count: usize| -> Option<wgpu::Buffer> {
+            if count == 0 {
                 return None;
             }
-            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instance-data"),
-                contents: bytes,
+                size: (count * INSTANCE_STRIDE_BYTES) as u64,
                 usage: wgpu::BufferUsages::VERTEX,
-            });
-            Some((buffer, (bytes.len() / INSTANCE_STRIDE_BYTES) as u32))
+                mapped_at_creation: true,
+            }))
         };
-        let surface = make(&self.device, &surface_bytes);
-        let underground = make(&self.device, &underground_bytes);
+        let surface_buffer = make(&self.device, surface_count);
+        let underground_buffer = make(&self.device, underground_count);
+        {
+            let (mut no_surface, mut no_underground) = ([0u8; 0], [0u8; 0]);
+            let mut surface_view = surface_buffer
+                .as_ref()
+                .map(|b| b.slice(..).get_mapped_range_mut());
+            let mut underground_view = underground_buffer
+                .as_ref()
+                .map(|b| b.slice(..).get_mapped_range_mut());
+            split_instances_into(
+                surface_view.as_deref_mut().unwrap_or(&mut no_surface),
+                underground_view
+                    .as_deref_mut()
+                    .unwrap_or(&mut no_underground),
+                data,
+            );
+        }
+        let finish = |buffer: Option<wgpu::Buffer>, count: usize| {
+            buffer.map(|b| {
+                b.unmap();
+                (b, count as u32)
+            })
+        };
+        let surface = finish(surface_buffer, surface_count);
+        let underground = finish(underground_buffer, underground_count);
         if let Some(mesh) = self.instanced_meshes.get_mut(&mesh_id) {
             mesh.surface = surface;
             mesh.underground = underground;

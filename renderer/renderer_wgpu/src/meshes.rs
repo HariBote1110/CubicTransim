@@ -52,46 +52,68 @@ impl LayerClass {
     }
 }
 
-/// position(f32x3 のフラット配列)と colour(頂点ごとの RGBA8 パック値)を
-/// GPU 頂点バッファのバイト列(stride 16)へ交互配置する。
+/// 交互配置した頂点バッファのバイト数。
 ///
 /// 長さが食い違う場合は短いほうに合わせる(JS からの呼び出しを落とさないための防御)。
-pub fn interleave_vertices(positions: &[f32], colours: &[u32]) -> Vec<u8> {
-    let count = (positions.len() / 3).min(colours.len());
-    let mut out_u32 = vec![0u32; count * (VERTEX_STRIDE_BYTES / 4)];
-    let pos_slice: &[u32] = bytemuck::cast_slice(positions);
-    for i in 0..count {
-        out_u32[i * 4] = pos_slice[i * 3];
-        out_u32[i * 4 + 1] = pos_slice[i * 3 + 1];
-        out_u32[i * 4 + 2] = pos_slice[i * 3 + 2];
-        out_u32[i * 4 + 3] = colours[i];
-    }
-
-    // Convert to target-endian bytes (WebGPU typically runs on little-endian,
-    // and wasm32 is always little-endian).
-    bytemuck::cast_slice(&out_u32).to_vec()
+/// `interleave_vertices_into` の宛先(GPU バッファ)を確保するサイズはこれで決める。
+pub fn interleaved_vertex_bytes(positions: &[f32], colours: &[u32]) -> usize {
+    (positions.len() / 3).min(colours.len()) * VERTEX_STRIDE_BYTES
 }
 
-/// インスタンス配列を「地表」「地下」の2本へ振り分ける(flags の bit0 で判定)。
+/// position(f32x3 のフラット配列)と colour(頂点ごとの RGBA8 パック値)を
+/// `dst` へ交互配置する(stride 16)。
+///
+/// 中間バッファを作らず GPU バッファのマップ領域へ直接書くための形。`dst` の長さが
+/// 足りない場合は入る分だけ書いて残りを捨てる(呼び出しを落とさないための防御)。
+///
+/// バイト順はネイティブ順。wasm32 は常にリトルエンディアンで、ネイティブ実行も
+/// 現状 LE のホストしか想定していない(テストが LE 前提で assert している)。
+pub fn interleave_vertices_into(dst: &mut [u8], positions: &[f32], colours: &[u32]) {
+    let count = (positions.len() / 3)
+        .min(colours.len())
+        .min(dst.len() / VERTEX_STRIDE_BYTES);
+    // chunks_exact 同士を zip すると境界チェックが消え、12バイトのコピーが
+    // ベクトル化される(要素ごとに書くより 2〜3 倍速い)。
+    let pos: &[u8] = bytemuck::cast_slice(&positions[..count * 3]);
+    for ((vertex, xyz), &colour) in dst[..count * VERTEX_STRIDE_BYTES]
+        .chunks_exact_mut(VERTEX_STRIDE_BYTES)
+        .zip(pos.chunks_exact(12))
+        .zip(&colours[..count])
+    {
+        vertex[..12].copy_from_slice(xyz);
+        vertex[12..].copy_from_slice(&colour.to_ne_bytes());
+    }
+}
+
+/// 地下クラス(flags の bit0)のインスタンス数。端数(stride に満たない末尾)は無視する。
+///
+/// `split_instances_into` の宛先2本をちょうどのサイズで確保するために使う。
+pub fn underground_instance_count(data: &[f32]) -> usize {
+    data.chunks_exact(INSTANCE_STRIDE_FLOATS)
+        .filter(|chunk| chunk[8] as u32 & INSTANCE_FLAG_UNDERGROUND != 0)
+        .count()
+}
+
+/// インスタンス配列を「地表」「地下」の2本へ振り分けて書き込む(flags の bit0 で判定)。
 ///
 /// パイプライン状態(深度比較)はドロー単位でしか変えられないため、クラスの
 /// 振り分けは CPU 側で行い、それぞれを別のインスタンスバッファ+別ドローにする。
-/// 端数(stride に満たない末尾)は無視する。
-pub fn split_instances_by_class(data: &[f32]) -> (Vec<u8>, Vec<u8>) {
-    let count = data.len() / INSTANCE_STRIDE_FLOATS;
-    let mut surface = Vec::with_capacity(count * INSTANCE_STRIDE_BYTES);
-    let mut underground = Vec::with_capacity(count * INSTANCE_STRIDE_BYTES);
-    for i in 0..count {
-        let chunk = &data[i * INSTANCE_STRIDE_FLOATS..(i + 1) * INSTANCE_STRIDE_FLOATS];
-        let flags = chunk[8] as u32;
-        let target = if flags & INSTANCE_FLAG_UNDERGROUND != 0 {
-            &mut underground
+/// 端数(stride に満たない末尾)は無視し、宛先が足りないクラスは残りを捨てる。
+pub fn split_instances_into(surface: &mut [u8], underground: &mut [u8], data: &[f32]) {
+    let (mut si, mut ui) = (0usize, 0usize);
+    for chunk in data.chunks_exact(INSTANCE_STRIDE_FLOATS) {
+        let src: &[u8] = bytemuck::cast_slice(chunk);
+        let (dst, at) = if chunk[8] as u32 & INSTANCE_FLAG_UNDERGROUND != 0 {
+            (&mut *underground, &mut ui)
         } else {
-            &mut surface
+            (&mut *surface, &mut si)
         };
-        target.extend_from_slice(bytemuck::cast_slice(chunk));
+        let Some(slot) = dst.get_mut(*at..*at + INSTANCE_STRIDE_BYTES) else {
+            continue;
+        };
+        slot.copy_from_slice(src);
+        *at += INSTANCE_STRIDE_BYTES;
     }
-    (surface, underground)
 }
 
 #[cfg(test)]
