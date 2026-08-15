@@ -94,6 +94,31 @@ pub fn underground_instance_count(data: &[f32]) -> usize {
         .count()
 }
 
+/// インスタンスバッファの最小確保サイズ(これ未満は切り上げる)。
+const MIN_INSTANCE_BUFFER_BYTES: usize = 64;
+
+/// インスタンスバッファを確保し直すべきかを決める。`None` なら現状のまま使い回す。
+///
+/// インスタンス配列は毎フレーム丸ごと差し替わるので、そのたびに GPU バッファを作ると
+/// 内容の量に関わらず1回あたり数マイクロ秒の固定費がかかる。容量に余裕があるかぎり
+/// 使い回し、増えるときだけ2の冪へ切り上げて確保することで作り直しの頻度を落とす。
+/// 逆に使用率が 1/4 を切ったら縮めて VRAM を抱え込まないようにする。
+pub fn instance_buffer_capacity(required: usize, current: usize) -> Option<usize> {
+    if required == 0 {
+        return if current == 0 { None } else { Some(0) };
+    }
+    let fits = required <= current;
+    let far_too_large = required * 4 < current;
+    if fits && !far_too_large {
+        return None;
+    }
+    Some(
+        required
+            .next_power_of_two()
+            .max(MIN_INSTANCE_BUFFER_BYTES),
+    )
+}
+
 /// インスタンス配列を「地表」「地下」の2本へ振り分けて書き込む(flags の bit0 で判定)。
 ///
 /// パイプライン状態(深度比較)はドロー単位でしか変えられないため、クラスの
@@ -211,6 +236,41 @@ mod tests {
         let mut underground = [0u8; 0];
         split_instances_into(&mut surface, &mut underground, &data);
         assert_eq!(&surface[0..4], &1.0f32.to_le_bytes());
+    }
+
+    #[test]
+    fn instance_buffer_is_reused_while_it_is_big_enough() {
+        // 足りていれば作り直さない(毎フレームの GPU バッファ確保を避けるのが目的)
+        assert_eq!(instance_buffer_capacity(4096, 4096), None);
+        assert_eq!(instance_buffer_capacity(3000, 4096), None);
+    }
+
+    #[test]
+    fn instance_buffer_grows_to_a_power_of_two() {
+        // 少しずつ増えるたびに作り直さないよう、2の冪へ切り上げて余裕を持たせる
+        assert_eq!(instance_buffer_capacity(4097, 4096), Some(8192));
+        assert_eq!(instance_buffer_capacity(40, 0), Some(64));
+    }
+
+    /// 最小容量を下回る要求でも、確保サイズが 0 や極小にならないこと。
+    #[test]
+    fn instance_buffer_has_a_floor() {
+        assert_eq!(instance_buffer_capacity(40, 0), Some(64));
+        assert_eq!(instance_buffer_capacity(1, 0), Some(64));
+    }
+
+    #[test]
+    fn instance_buffer_shrinks_when_far_too_large() {
+        // 使用率が1/4を切ったら縮める(列車を大量に売った後などに VRAM を抱え込まない)
+        assert_eq!(instance_buffer_capacity(1000, 65536), Some(1024));
+        // 1/4 ちょうどは維持(境界で往復しない)
+        assert_eq!(instance_buffer_capacity(16384, 65536), None);
+    }
+
+    #[test]
+    fn instance_buffer_is_released_when_empty() {
+        assert_eq!(instance_buffer_capacity(0, 65536), Some(0));
+        assert_eq!(instance_buffer_capacity(0, 0), None);
     }
 
     #[test]

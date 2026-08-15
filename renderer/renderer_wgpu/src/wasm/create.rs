@@ -458,6 +458,7 @@ impl CanvasRenderer {
             mesh_camera_bind_group,
             mesh_chunks: HashMap::new(),
             instanced_meshes: HashMap::new(),
+            instance_staging: Vec::new(),
             persp_mesh_pipelines,
             persp_instanced_pipelines,
             persp_camera_buffer,

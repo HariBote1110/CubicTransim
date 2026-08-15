@@ -30,6 +30,32 @@ fn create_interleaved_vertex_buffer(
     Some(buffer)
 }
 
+/// インスタンスバッファ1本を更新する。容量が足りていればバッファは作り直さず、
+/// `write_buffer` で中身だけ差し替える(毎フレームの GPU バッファ確保を避ける)。
+fn upload_instance_buffer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    slot: &mut InstanceBuffer,
+    count: usize,
+    src: &[u8],
+) {
+    if let Some(capacity) = instance_buffer_capacity(src.len(), slot.capacity) {
+        slot.capacity = capacity;
+        slot.buffer = (capacity > 0).then(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("instance-data"),
+                size: capacity as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        });
+    }
+    slot.count = count as u32;
+    if let (Some(buffer), false) = (slot.buffer.as_ref(), src.is_empty()) {
+        queue.write_buffer(buffer, 0, src);
+    }
+}
+
 #[wasm_bindgen]
 impl CanvasRenderer {
     /// R4a: ジオラマ物のメッシュチャンクを1つ登録(同じ id は置き換え)する。
@@ -128,8 +154,8 @@ impl CanvasRenderer {
                 vertices,
                 indices: index_buffer,
                 index_count: indices.len() as u32,
-                surface: None,
-                underground: None,
+                surface: InstanceBuffer::default(),
+                underground: InstanceBuffer::default(),
             },
         );
     }
@@ -139,52 +165,47 @@ impl CanvasRenderer {
     /// 未登録の mesh_id は無視する。
     #[wasm_bindgen(js_name = setInstances)]
     pub fn set_instances(&mut self, mesh_id: u32, data: &[f32]) {
-        // 先に地下の件数を数えて2本のバッファをちょうどのサイズで作り、そのマップ領域へ
-        // 直接振り分ける。中間の Vec を持たないぶん、インスタンス数×40バイト×2 の
-        // 一時確保がまるごと消える。
+        // インスタンス配列は毎フレーム丸ごと差し替わる。GPU バッファを毎回作り直すと
+        // 中身の量に関わらず1回あたり数マイクロ秒の固定費がかかるので、容量に余裕が
+        // あるかぎり使い回して `write_buffer` で中身だけ差し替える。
+        //
+        // 振り分けは常設のステージング(`instance_staging`)へ一度で行う。地表を前半、
+        // 地下を後半に置いた1本の連続領域なので、そのまま2回の write_buffer に渡せる。
+        // ステージングは伸びるだけで、定常状態では確保が起きない。
+        let Some(mesh) = self.instanced_meshes.get_mut(&mesh_id) else {
+            return;
+        };
         let underground_count = underground_instance_count(data);
         let surface_count = data.len() / INSTANCE_STRIDE_FLOATS - underground_count;
-        let make = |device: &wgpu::Device, count: usize| -> Option<wgpu::Buffer> {
-            if count == 0 {
-                return None;
-            }
-            Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("instance-data"),
-                size: (count * INSTANCE_STRIDE_BYTES) as u64,
-                usage: wgpu::BufferUsages::VERTEX,
-                mapped_at_creation: true,
-            }))
-        };
-        let surface_buffer = make(&self.device, surface_count);
-        let underground_buffer = make(&self.device, underground_count);
+        let surface_bytes = surface_count * INSTANCE_STRIDE_BYTES;
+        let underground_bytes = underground_count * INSTANCE_STRIDE_BYTES;
+
+        if self.instance_staging.len() < surface_bytes + underground_bytes {
+            self.instance_staging
+                .resize(surface_bytes + underground_bytes, 0);
+        }
         {
-            let (mut no_surface, mut no_underground) = ([0u8; 0], [0u8; 0]);
-            let mut surface_view = surface_buffer
-                .as_ref()
-                .map(|b| b.slice(..).get_mapped_range_mut());
-            let mut underground_view = underground_buffer
-                .as_ref()
-                .map(|b| b.slice(..).get_mapped_range_mut());
-            split_instances_into(
-                surface_view.as_deref_mut().unwrap_or(&mut no_surface),
-                underground_view
-                    .as_deref_mut()
-                    .unwrap_or(&mut no_underground),
-                data,
-            );
+            let (surface_dst, rest) = self.instance_staging.split_at_mut(surface_bytes);
+            split_instances_into(surface_dst, &mut rest[..underground_bytes], data);
         }
-        let finish = |buffer: Option<wgpu::Buffer>, count: usize| {
-            buffer.map(|b| {
-                b.unmap();
-                (b, count as u32)
-            })
-        };
-        let surface = finish(surface_buffer, surface_count);
-        let underground = finish(underground_buffer, underground_count);
-        if let Some(mesh) = self.instanced_meshes.get_mut(&mesh_id) {
-            mesh.surface = surface;
-            mesh.underground = underground;
-        }
+
+        let (surface_src, underground_src) = self.instance_staging
+            [..surface_bytes + underground_bytes]
+            .split_at(surface_bytes);
+        upload_instance_buffer(
+            &self.device,
+            &self.queue,
+            &mut mesh.surface,
+            surface_count,
+            surface_src,
+        );
+        upload_instance_buffer(
+            &self.device,
+            &self.queue,
+            &mut mesh.underground,
+            underground_count,
+            underground_src,
+        );
     }
 
 }
