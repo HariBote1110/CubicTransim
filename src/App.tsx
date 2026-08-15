@@ -19,6 +19,7 @@ import {
   createCameraState, type GameCameraState, type ViewportSize,
 } from './render/cameraState';
 import { frameLoop } from './render/frameLoop';
+import { riderState, type RiderMode } from './render/passengerView';
 
 // ★追加(P5): 新規ゲーム開始時のマップサイズ選択肢。halfExtentはsim/persistence.tsの
 // v15セーブに含まれる値で、マップは-halfExtent..halfExtentのセル(一辺 2*halfExtent+1)。
@@ -149,6 +150,21 @@ export default function App() {
   const [simSpeed, setSimSpeed] = useState<0 | 1 | 2 | 4>(1);
   // 建設プレビュー中のセル列。GameScene(カーソル/ドラッグ)からGameUI(コスト表示)へ橋渡しする。
   const [previewPath, setPreviewPath] = useState<{ x: number; z: number }[]>([]);
+  // D2/D3: 乗客視点(乗車モード)。真実源はrender/passengerView.tsのriderState(モジュール単位の
+  // ミュータブルフラグ、フレームループが直接読む)で、このReactステートはUI表示(ボタン・
+  // オーバーレイ・HUD)を再レンダリングさせるための鏡写し。
+  const [ridingTrainId, setRidingTrainId] = useState<string | null>(null);
+  const [ridingMode, setRidingMode] = useState<RiderMode>('passenger');
+  const handleBoardTrain = useCallback((trainId: string, mode: RiderMode) => {
+    riderState.trainId = trainId;
+    riderState.mode = mode;
+    setRidingTrainId(trainId);
+    setRidingMode(mode);
+  }, []);
+  const handleAlightTrain = useCallback(() => {
+    riderState.trainId = null;
+    setRidingTrainId(null);
+  }, []);
 
   const webGpuLayerRef = useRef<WebGpuTerrainLayerController | null>(null);
   const [unavailableReason, setUnavailableReason] = useState<WebGpuUnavailableReason | null>(null);
@@ -300,6 +316,9 @@ export default function App() {
         lines={lines}
         services={services}
         onRelocateTrain={relocateTrainAt}
+        ridingTrainId={ridingTrainId}
+        ridingMode={ridingMode}
+        onAlightTrain={handleAlightTrain}
       />
 
       <GameUI
@@ -368,6 +387,10 @@ export default function App() {
         onSellTrain={sellTrain}
         onCloneTrain={cloneTrain}
         onSelectTrain={setSelectedTrainId}
+        ridingTrainId={ridingTrainId}
+        ridingMode={ridingMode}
+        onBoardTrain={handleBoardTrain}
+        onAlightTrain={handleAlightTrain}
       />
 
       {showStartupOptions && (

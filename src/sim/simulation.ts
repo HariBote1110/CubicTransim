@@ -48,6 +48,10 @@ import {
   SPAD_CHANCE,
   weakerProtection,
 } from './economy';
+import {
+  easyModeSpeedCapKmh, manualCommandedAccelMs2, equippedProtectionActive,
+  canManualForceEntry, classifyStopAccuracy, type ManualDriveState,
+} from './manualDrive';
 
 export const STOP_DURATION = 3; // seconds (simulation time)
 export const TILE_LENGTH = 30;
@@ -83,6 +87,10 @@ export const BRAKE_RELEASE_MARGIN_KMH = 3.0;
 // PBS予約を延長する判定の余裕(m)。予約末端で完全停止した状態からでも
 // 必ず延長を再試行できるようにするための下駄。
 export const RESERVE_EXTEND_SLACK_M = 1.0;
+// D4(手動運転): 「停止した」とみなす速度のしきい値(km/h)。完全な0を待つと
+// dtの粗さで判定が揺れるため、失速判定(STALL_SPEED_THRESHOLD_KMH)と同じ考え方の
+// 近傍値を使う。
+export const MANUAL_STOP_DETECT_KMH = 1.0;
 
 // layer省略(または0)は地平、1〜3は立体交差の高架側(レベル)。列車自体には層を
 // 持たせず、pathfindingが解決した層をルート/現在地セルにそのまま載せて運ぶ。
@@ -198,6 +206,12 @@ export interface TrainRuntime {
   // 1回)。待機が解消(予約成功)したらundefinedへ戻し、次に別の信号で待ったときに
   // また判定できるようにする。セーブ対象外(他の走行状態フィールドと同様)。
   spadCheckedFor?: string;
+  // D4(手動運転): 駅への進入中に速度がほぼ0まで落ちた(=プレイヤーが早めに/その場で
+  // 停止した)ことを検知するためのラッチ。同じ進入では1回だけ採点する
+  // (obstacleType!=='station'に戻ったら false へリセットされる)。
+  manualWasStopped?: boolean;
+  // D4: 直近の停車採点結果(HUD表示・タリー集計用)。セーブ対象外。
+  manualLastStopScore?: { distanceM: number; withinTolerance: boolean; toleranceM: number };
 }
 
 /** 車内の旅客の塊。alightAtで降りて、そこが目的地でなければ乗り換える。 */
@@ -272,6 +286,13 @@ export interface SimWorld {
    * 誰も参照しない(挙動変更ゼロ)。
    */
   blocks?: BlockIndex;
+  /**
+   * D4(手動運転、progress/dream-modes-plan.md フェーズD4)。同時に手動運転できる列車は
+   * 1本まで。undefinedなら全列車が従来どおり自動運転。セーブ対象外(乗車状態はD2/D3の
+   * riderState/ridingTrainIdと同じくReact側のUI状態であり、SimWorldはその時点の
+   * ノッチ・難易度・タリーを鏡写しされるだけ)。
+   */
+  manualDrive?: ManualDriveState;
 }
 
 /**
@@ -327,7 +348,10 @@ export type SimEvent =
   | { type: 'stallRescue'; trainId: string; penalty: number }
   | { type: 'monthEnd'; year: number; month: number }
   // 月末の町の成長。React側は towns state をこの配列で置き換える。
-  | { type: 'townGrowth'; towns: TownData[] };
+  | { type: 'townGrowth'; towns: TownData[] }
+  // D4(手動運転): 駅への進入中に停止した(採点された)瞬間に1回だけ発行する。
+  // HUD側のトースト表示・タリー加算のトリガー。
+  | { type: 'manualStop'; trainId: string; distanceM: number; withinTolerance: boolean; toleranceM: number };
 
 const normalize = (x: number, z: number) => {
   const len = Math.sqrt(x * x + z * z) || 1;
@@ -429,7 +453,9 @@ const buildBlockedSet = (world: SimWorld, selfId: string): Set<string> => {
 // 始まるかのどちらかなので、これがそのセグメントへ「くぐって入る」信号になる。
 // 信号が無ければundefined(=閉塞信号扱いに準ずる)。s0/s1配下では呼び出し側が種別を
 // 見ないため未使用。
-const entrySignalKindFor = (
+// D3(マージ後): 運転台HUD(render/cabHud.ts)がblocksSegmentEntryと組み合わせて
+// 「次信号の現示」をブロック状態から求めるのに再利用するためexportした。
+export const entrySignalKindFor = (
   world: SimWorld,
   rt: TrainRuntime,
   startIdx: number
@@ -501,7 +527,10 @@ const pathOverlapsOthers = (
 // S3(保安装置)はS2の判定をそのまま含んだ上で(「S3はS2挙動を包含する」設計どおり)、
 // Effect B(CBTC移動閉塞)を追加する: segmentの全セルとtrainProtectionがともに'cbtc'なら
 // ブロック全体判定を丸ごとバイパスしてfalse(=S0と同じ、セル単位の排他のみ)を返す。
-const blocksSegmentEntry = (
+// D3(マージ後): 運転台HUD(render/cabHud.ts)が「次信号の現示」をreservedEndIndexの
+// 遅延(まだ延長を試みていないだけの区間)に引きずられず、実際のブロック占有状態から
+// 求めるために、この述語をそのまま(ensureReservationと同じ引数の組み立てで)呼ぶ。
+export const blocksSegmentEntry = (
   world: SimWorld,
   rules: GameRules,
   trainId: string,
@@ -540,6 +569,9 @@ const blocksSegmentEntry = (
 // 待機中の再判定を防ぐ(1approachにつき1回のラッチ)。有効な保安装置は地上(track)と
 // 車上(train)の弱い方(weakerProtection)。信号セルが無い(entryKindがundefined、
 // =閉塞境界ではあるが信号を経由しない安全点由来)場合は判定しない。
+// D4(手動運転・むずかしい): force=trueなら rules.signalling!=='s3' でも判定する
+// (manualForcesEntryが「保安装置が実際に効かない区間をプレイヤーが力行で押し切ろうと
+// している」と判定したときに使う。SPAD確率テーブル自体はS3と共用)。
 const evaluateSpadOnce = (
   world: SimWorld,
   rules: GameRules,
@@ -547,9 +579,10 @@ const evaluateSpadOnce = (
   rt: TrainRuntime,
   signalGrid: Grid | undefined,
   entryKind: CellData['signalKind'] | undefined,
-  events: SimEvent[]
+  events: SimEvent[],
+  force = false
 ): void => {
-  if (rules.signalling !== 's3') return;
+  if (!force && rules.signalling !== 's3') return;
   if (!signalGrid || entryKind === undefined) return;
   const signalKey = toKey(signalGrid.x, signalGrid.z);
   if (rt.spadCheckedFor === signalKey) return; // 同じ信号への待機中はこのapproachで判定済み
@@ -568,6 +601,18 @@ const evaluateSpadOnce = (
       kind: 'spad',
     });
   }
+};
+
+// D4(手動運転・むずかしい): 保安装置が実際に有効でない区間で、プレイヤーが力行ノッチを
+// 入れて信号を押し切ろうとしているか。trueなら呼び出し元(ensureReservation)は
+// blocksSegmentEntryの結果を無視して予約を強行し、evaluateSpadOnce(force=true)で
+// SPADと同じ確率判定に委ねる。保安装置が実際に効く区間(equippedProtectionActive)
+// では常にfalse(=通常どおり信号を守らせる)。
+const manualForcesEntry = (world: SimWorld, train: TrainData, signalGrid: Grid | undefined): boolean => {
+  const manual = world.manualDrive;
+  if (!manual || manual.trainId !== train.id || !signalGrid) return false;
+  const trackProtection = world.railMap.get(toKey(signalGrid.x, signalGrid.z))?.protection;
+  return canManualForceEntry(manual.notch, manual.difficulty, trackProtection, train.protection);
 };
 
 const ensureReservation = (
@@ -591,9 +636,13 @@ const ensureReservation = (
     const segment = rt.route.slice(0, idx + 1);
     const entryKind = entrySignalKindFor(world, rt, 0);
     if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection, rt.route, 0)) {
-      rt.debugStatus = 'Waiting for block to clear...';
-      evaluateSpadOnce(world, rules, train, rt, rt.route[0], entryKind, events);
-      return;
+      if (manualForcesEntry(world, train, rt.route[0])) {
+        evaluateSpadOnce(world, rules, train, rt, rt.route[0], entryKind, events, true);
+      } else {
+        rt.debugStatus = 'Waiting for block to clear...';
+        evaluateSpadOnce(world, rules, train, rt, rt.route[0], entryKind, events);
+        return;
+      }
     }
     rt.spadCheckedFor = undefined;
     if (tryReserve(world.reservations, train.id, segment)) {
@@ -621,8 +670,12 @@ const ensureReservation = (
   const segment = rt.route.slice(rt.reservedEndIndex + 1, nextIdx + 1);
   const entryKind = entrySignalKindFor(world, rt, rt.reservedEndIndex + 1);
   if (blocksSegmentEntry(world, rules, train.id, segment, entryKind, train.protection, rt.route, rt.reservedEndIndex + 1)) {
-    evaluateSpadOnce(world, rules, train, rt, rt.route[rt.reservedEndIndex + 1], entryKind, events);
-    return; // ブロックが空くまで現在の末端で待機
+    if (manualForcesEntry(world, train, rt.route[rt.reservedEndIndex + 1])) {
+      evaluateSpadOnce(world, rules, train, rt, rt.route[rt.reservedEndIndex + 1], entryKind, events, true);
+    } else {
+      evaluateSpadOnce(world, rules, train, rt, rt.route[rt.reservedEndIndex + 1], entryKind, events);
+      return; // ブロックが空くまで現在の末端で待機
+    }
   }
   rt.spadCheckedFor = undefined;
   if (tryReserve(world.reservations, train.id, segment)) {
@@ -630,8 +683,10 @@ const ensureReservation = (
   }
 };
 
-// 現在位置(rt.grid + progress)からroute[idx]までの弧長距離(m)
-const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
+// 現在位置(rt.grid + progress)からroute[idx]までの弧長距離(m)。
+// D3: 運転台HUD(render/cabHud.ts)が「次の停止点までの距離」を求めるのにも使う
+// (stepTrainの速度制御と同じ式を再利用し、重複実装しないため export した)。
+export const distanceAlongRouteTo = (rt: TrainRuntime, idx: number): number => {
   const route = rt.route;
   const first = route[0];
   const currentTileGeoDist = Math.sqrt((first.x - rt.grid.x) ** 2 + (first.z - rt.grid.z) ** 2);
@@ -712,7 +767,8 @@ const segmentLengthInto = (rt: TrainRuntime, idx: number): number => {
 
 // 現在位置から実際の停止点(経路末尾セルの手前 stopProgress の位置)までの距離(m)。
 // stopProgress=1(セル中心停車)なら distanceAlongRouteTo(末尾) と一致する。
-const distanceToStopPoint = (rt: TrainRuntime): number => {
+// D3: distanceAlongRouteTo と同じ理由で export した(render/cabHud.ts が再利用する)。
+export const distanceToStopPoint = (rt: TrainRuntime): number => {
   const last = rt.route.length - 1;
   const f = rt.stopProgress ?? 1;
   const base = distanceAlongRouteTo(rt, last);
@@ -913,6 +969,80 @@ const recordDeparture = (world: SimWorld, train: TrainData, rt: TrainRuntime): v
   // 設定した発車間隔どおりに走れているかを見るため、実測値も残す。
   recordInterval(world.serviceIntervals, service.id, stationId, world.serviceDepartures.get(key), now);
   world.serviceDepartures.set(key, now);
+};
+
+// D4(手動運転、progress/dream-modes-plan.md フェーズD4): ふつう/むずかしいでの
+// プレイヤー入力による速度制御。既存の自動ブレーキの各分岐(immediateBlock〜だらだら
+// 加速)を丸ごと置き換え、ノッチ由来の加速度をそのまま積分する。hardEnvelopeKmh
+// (既存の自動制御と同じ、rules.trackClasses・停止点の両方を織り込んだ絶対に超えては
+// ならない上限)だけを「保安装置による自動ブレーキ」の代わりに再利用することで、
+// 新しい制動モデルを持ち込まずに済ませている。かんたん(ATO)はこの関数を呼ばず、
+// 既存の自動制御をそのまま使う(releaseEnvelopeKmhをノッチでキャップするだけ)。
+const applyManualSpeedControl = (
+  world: SimWorld,
+  train: TrainData,
+  rt: TrainRuntime,
+  manual: ManualDriveState,
+  dt: number,
+  immediateBlock: boolean,
+  hardEnvelopeKmh: number,
+  serviceDecelMs2: number,
+  obstacleType: 'station' | 'signal' | 'none',
+  events: SimEvent[]
+): void => {
+  if (immediateBlock) {
+    // 物理的な衝突安全網(他列車の直前占有)は難易度に関わらず常に効く。
+    rt.speedKmh = 0;
+    rt.brakeDecelMs2 = serviceDecelMs2;
+    rt.braking = true;
+  } else {
+    const trackProtection = world.railMap.get(toKey(rt.grid.x, rt.grid.z))?.protection;
+    // ふつうは線路の保安装置装備に関わらず常時ON。むずかしいは実際に装備している
+    // (SPAD確率0%の)保安装置のときだけON(manualDrive.tsのequippedProtectionActive)。
+    const protectionActive = manual.difficulty === 'normal'
+      || equippedProtectionActive(trackProtection, train.protection);
+
+    const model = trainModelOf(train.model);
+    const fullAccelMs2 = computeAcceleration(
+      { spec: model.spec, cars: train.cars ?? 2, passengers: rt.passengers, speedKmh: rt.speedKmh },
+      'accelerating',
+      model.serviceDecelKmhS,
+      1
+    );
+    const commandedMs2 = manualCommandedAccelMs2(manual.notch, fullAccelMs2, serviceDecelMs2, EMERGENCY_DECEL_KMH_S / 3.6);
+    let next = Math.min(model.maxSpeedKmh, Math.max(0, rt.speedKmh + commandedMs2 * 3.6 * dt));
+
+    if (protectionActive && next > hardEnvelopeKmh) {
+      // 照査パターン超過。既存の非常制動(EMERGENCY_DECEL_KMH_S)と同じ式で追いつく。
+      next = Math.max(hardEnvelopeKmh, rt.speedKmh - EMERGENCY_DECEL_KMH_S * dt);
+    } else if (!protectionActive && rt.speedKmh > hardEnvelopeKmh) {
+      // むずかしい・無装備: 誰も守ってくれないので超過秒数だけタリーへ記録する。
+      manual.tally.overspeedSeconds += dt;
+    }
+
+    rt.speedKmh = next;
+    rt.brakeDecelMs2 = commandedMs2 < 0 ? -commandedMs2 : 0;
+    rt.braking = commandedMs2 < 0;
+  }
+
+  // 停車精度の採点: 駅への進入中(obstacleType==='station')に速度がほぼ0まで落ちた
+  // 瞬間を1回だけ判定する(distanceToStopPointは既存のstepTrainと同じ関数を再利用)。
+  // 進入が終わる(obstacleType!=='station'に戻る)とラッチを解除し、次の駅でまた
+  // 採点できるようにする。
+  if (obstacleType === 'station' && rt.speedKmh < MANUAL_STOP_DETECT_KMH) {
+    if (!rt.manualWasStopped) {
+      rt.manualWasStopped = true;
+      const distanceM = distanceToStopPoint(rt);
+      const { withinTolerance, toleranceM } = classifyStopAccuracy(distanceM, manual.difficulty);
+      manual.tally.stops += 1;
+      manual.tally.totalAbsErrorM += Math.abs(distanceM);
+      if (withinTolerance) manual.tally.withinToleranceStops += 1;
+      rt.manualLastStopScore = { distanceM, withinTolerance, toleranceM };
+      events.push({ type: 'manualStop', trainId: train.id, distanceM, withinTolerance, toleranceM });
+    }
+  } else if (obstacleType !== 'station') {
+    rt.manualWasStopped = false;
+  }
 };
 
 const stepTrain = (
@@ -1179,6 +1309,11 @@ const stepTrain = (
   const routeDistances = cumulativeRouteDistances(rt);
   const railCapKmh = railApproachCapKmh(world, rt, rules, serviceDecelMs2, BRAKE_JERK_MS3, routeDistances);
 
+  // D4(手動運転): この列車が手動運転の対象か。かんたん(ATO)はここで求めたノッチの
+  // 速度キャップをreleaseEnvelopeKmhへ織り込むだけ(自動制御自体は無改造で流用する)。
+  // ふつう/むずかしいは下のif/elseチェーンを丸ごとapplyManualSpeedControlへ委ねる。
+  const manual = world.manualDrive && world.manualDrive.trainId === train.id ? world.manualDrive : undefined;
+
   // ブレーキ指令のしきい値。「今ブレーキを緩解している状態から、ジャークで常用最大まで
   // 立ち上げて停止する」のに必要な距離を織り込んだ包絡線。これを超えたら制動に入る。
   // 一度制動に入ると、実速度はこの包絡線より必ず上に留まる(既に込めているぶん有利なため)
@@ -1186,7 +1321,8 @@ const stepTrain = (
   const releaseEnvelopeKmh = Math.min(
     model.maxSpeedKmh,
     railCapKmh,
-    permittedSpeedKmh(usableDistance, serviceDecelMs2, BRAKE_JERK_MS3, 0)
+    permittedSpeedKmh(usableDistance, serviceDecelMs2, BRAKE_JERK_MS3, 0),
+    manual && manual.difficulty === 'easy' ? easyModeSpeedCapKmh(manual.notch, MAX_SPEED_KMH) : Infinity
   );
   // ジャーク制限を無視した常用ブレーキの包絡線。絶対に超えてはならない上限で、
   // 終盤は sqrt(2ad) に従って有限時間で0へ収束する(=だらだらクロールしない)。
@@ -1229,7 +1365,12 @@ const stepTrain = (
     rt.braking = false;
   }
 
-  if (immediateBlock) {
+  if (manual && manual.difficulty !== 'easy') {
+    // D4: ふつう/むずかしいはプレイヤーのノッチが速度を直接支配する。以下の自動制御
+    // チェーン(immediateBlock〜だらだら加速)は使わない(かんたんは上でreleaseEnvelopeKmh
+    // をキャップしただけで、このelse節の自動制御をそのまま通る)。
+    applyManualSpeedControl(world, train, rt, manual, dt, immediateBlock, hardEnvelopeKmh, serviceDecelMs2, obstacleType, events);
+  } else if (immediateBlock) {
     rt.speedKmh = 0;
     rt.brakeDecelMs2 = serviceDecelMs2;
     rt.braking = true;

@@ -35,6 +35,7 @@ import type { RailBuildOptions } from '../sim/construction';
 import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST, trainTotalCost } from '../sim/economy';
 import { TRAIN_MODELS, trainModelOf, type TrainModelId } from '../sim/physics';
 import { fromKey } from '../utils';
+import type { RiderMode } from '../render/passengerView';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -158,6 +159,11 @@ interface GameUIProps {
   onSellTrain: (trainId: string) => void;
   onCloneTrain: (trainId: string, count?: number) => void;
   onSelectTrain: (id: string | null) => void;
+  // D2/D3: 乗客視点(乗車モード)。ridingTrainId=null なら乗車していない。
+  ridingTrainId: string | null;
+  ridingMode: RiderMode;
+  onBoardTrain: (trainId: string, mode: RiderMode) => void;
+  onAlightTrain: () => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -221,6 +227,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   signalKind, setSignalKind,
   stationAxis, setStationAxis,
   selectedDepotKey, onBuyTrain, onSellTrain, onCloneTrain, onSelectTrain,
+  ridingTrainId, ridingMode, onBoardTrain, onAlightTrain,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
   const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'lines'>('none');
@@ -250,6 +257,13 @@ export const GameUI: React.FC<GameUIProps> = ({
     const id = setInterval(() => {
       setPassengers(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.passengers ?? 0) : 0);
       setStuckSeconds(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.waitTimer ?? 0) : 0);
+      // D2: 乗車中の列車がワールドから消えた(到着後の回収・車庫入りなど)場合、この低頻度
+      // ポーリングで気づいて降車する。フレームごとの自動降車はWebGpuRenderDriver側(D2実装
+      // メモ参照)がriderState.trainIdを直接クリアするが、React側のUI表示(ridingTrainId)は
+      // ここで追随させる必要がある。
+      if (ridingTrainId && !world.current?.runtimes.get(ridingTrainId)) {
+        onAlightTrain();
+      }
       setWaitingByStation(new Map(world.current?.waiting ?? []));
       const samples = world.current?.serviceIntervals;
       setActualIntervals(new Map(
@@ -279,7 +293,7 @@ export const GameUI: React.FC<GameUIProps> = ({
       );
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [selectedTrainId, selectedStationId, world, stations, lines, services]);
+  }, [selectedTrainId, selectedStationId, world, stations, lines, services, ridingTrainId, onAlightTrain]);
 
   // キーボードショートカット: 1〜6で建設モード、Spaceで一時停止、Escで選択解除。
   // 線路(rail)・駅(station)ツール選択中はArrowUp/Downで建設レベルを0(地平)〜
@@ -294,7 +308,10 @@ export const GameUI: React.FC<GameUIProps> = ({
         && (t.mode !== 'substation' || gameRules.electrification === 'feeding'));
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
-      if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); return; }
+      if (e.key === 'Escape') {
+        if (ridingTrainId) { onAlightTrain(); return; }
+        setBuildMode('none'); setOpenPanel('none'); return;
+      }
       if ((buildMode === 'rail' || buildMode === 'station')
         && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         e.preventDefault();
@@ -306,7 +323,7 @@ export const GameUI: React.FC<GameUIProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge, gameRules.electrification]);
+  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge, gameRules.electrification, ridingTrainId, onAlightTrain]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
@@ -383,6 +400,10 @@ export const GameUI: React.FC<GameUIProps> = ({
               services={services}
               onCreateLine={onCreateLine}
               onAssignService={onAssignService}
+              isRiding={ridingTrainId === selectedTrain.id}
+              ridingMode={ridingMode}
+              onBoard={(mode) => onBoardTrain(selectedTrain.id, mode)}
+              onAlight={onAlightTrain}
             />
           ) : selectedStation ? (
             <StationInspector
@@ -888,10 +909,15 @@ const TrainInspector: React.FC<{
   services: ServiceData[];
   onCreateLine: (seedTrainId?: string) => string;
   onAssignService: (trainId: string, serviceId: string | null) => void;
+  /** D2/D3: この列車に乗車中か、どのモードか。 */
+  isRiding: boolean;
+  ridingMode: RiderMode;
+  onBoard: (mode: RiderMode) => void;
+  onAlight: () => void;
 }> = ({
   train, stations, passengers, stuckSeconds, money, isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar, scheduleClipboard, onCopySchedule, onPasteSchedule,
-  lines, services, onCreateLine, onAssignService,
+  lines, services, onCreateLine, onAssignService, isRiding, ridingMode, onBoard, onAlight,
 }) => {
   const stored = train.status === 'stored';
   const assignment = resolveAssignment(train, lines, services);
@@ -913,6 +939,28 @@ const TrainInspector: React.FC<{
           {stored ? '車庫' : '運行中'}
         </div>
       </div>
+
+      {/* D2/D3: 乗客視点(乗車モード)。車庫在籍中の列車は乗る意味が無いので出さない。
+          客席/運転台の2ボタン。乗車中のモードのボタンは押すと降車、もう片方は
+          押すと(降車せず)そのモードへ切り替わる。 */}
+      {!stored && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
+          <button
+            onClick={() => (isRiding && ridingMode === 'passenger' ? onAlight() : onBoard('passenger'))}
+            style={{ ...button({ active: isRiding && ridingMode === 'passenger', compact: true }), flex: 1 }}
+            title={isRiding && ridingMode === 'passenger' ? '降車してクォータービューへ戻る(Escキーでも可)' : '客席からこの列車に乗って車窓を眺める'}
+          >
+            {isRiding && ridingMode === 'passenger' ? '降車' : '乗車(客席)'}
+          </button>
+          <button
+            onClick={() => (isRiding && ridingMode === 'cab' ? onAlight() : onBoard('cab'))}
+            style={{ ...button({ active: isRiding && ridingMode === 'cab', compact: true }), flex: 1 }}
+            title={isRiding && ridingMode === 'cab' ? '降車してクォータービューへ戻る(Escキーでも可)' : '運転台からこの列車に乗ってHUDを見る'}
+          >
+            {isRiding && ridingMode === 'cab' ? '降車' : '運転台'}
+          </button>
+        </div>
+      )}
 
       {!stored && stuckSeconds >= STUCK_WARNING_SECONDS && (
         <div style={{

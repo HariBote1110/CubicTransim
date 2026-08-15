@@ -53,6 +53,10 @@ import { rectCells } from '../sim/terrainOverlay';
 import type { TownTileCache } from '../sim/townTiles';
 import { townIntersectsCellRange } from '../sim/townTiles';
 import { WebGpuRenderDriver, WEBGPU_UNDERGROUND_DIM_FACTOR, type WebGpuLayerRef } from './WebGpuTerrainLayer';
+import {
+  riderState, computeRiderCamera, PASSENGER_CHUNK_VIEW_RADIUS_CELLS, type RiderMode,
+} from '../render/passengerView';
+import { CabHud } from './CabHud';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
@@ -118,6 +122,12 @@ interface GameSceneProps {
   isEditingSchedule: boolean;
   simSpeed: number;
   money: number;
+  /** D2: 乗車中の列車id(null=乗車していない)。App.tsxのridingTrainIdをそのまま鏡写しする。 */
+  ridingTrainId?: string | null;
+  /** D3: 乗車モード(客席/運転台)。運転台のときだけCabHudを出す。 */
+  ridingMode?: RiderMode;
+  /** D2: 降車(Escキー・降車ボタン共通)。 */
+  onAlightTrain?: () => void;
 
   onCommitPath: (
     path: { x: number; z: number }[],
@@ -140,7 +150,7 @@ interface GameSceneProps {
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, towns, townTiles, field, halfExtent, webGpuLayer,
   cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, stationAxis, selectedTrainId,
-  isEditingSchedule, simSpeed,
+  isEditingSchedule, simSpeed, ridingTrainId = null, ridingMode = 'passenger', onAlightTrain,
   onCommitPath, removeSignal, onSimEvent, onSelectTrain, onSelectDepot, onAddSchedule, onSelectStation,
   onPreviewChange, lines = [], services = [], onRelocateTrain,
 }) => {
@@ -227,9 +237,36 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   // 可視チャンクの追跡。カメラが動いたフレームだけ、最短 CHUNK_VIEW_INTERVAL_MS 間隔で
   // 再計算する(旧 CameraChunkTracker のスロットルと同じ意味)。
+  //
+  // D2: 乗車中(riderState.trainId)はクォータービューのカメラ(cameraRef)が凍結される
+  // (WebGpuRenderDriverが供給を止めるため)ので、可視チャンクもカメラ由来ではなく
+  // ライダーの視点位置から求める(既存のChunkView仕組みをそのまま再利用する「最小限の
+  // 正しいアプローチ」)。半径はD1の透視地形メッシュ半径と同じPASSENGER_CHUNK_VIEW_RADIUS_CELLS。
   const lastChunkRunRef = useRef(0);
   const lastCameraSigRef = useRef('');
   useFrameLoop(FRAME_ORDER.camera, () => {
+    const ridingId = riderState.trainId;
+    if (ridingId) {
+      const cam = world.current ? computeRiderCamera(world.current, ridingId, riderState.mode) : null;
+      if (cam) {
+        const now = performance.now();
+        if (now - lastChunkRunRef.current < CHUNK_VIEW_INTERVAL_MS) return;
+        lastChunkRunRef.current = now;
+        lastCameraSigRef.current = ''; // 降車後にクォータービュー側の再計算を強制する
+        const next: ChunkView = {
+          targetCell: { x: Math.round(cam.eye[0]), z: Math.round(cam.eye[2]) },
+          viewRadiusCells: PASSENGER_CHUNK_VIEW_RADIUS_CELLS,
+        };
+        setChunkView(prev => (
+          prev.targetCell.x === next.targetCell.x
+          && prev.targetCell.z === next.targetCell.z
+          && prev.viewRadiusCells === next.viewRadiusCells
+            ? prev
+            : next
+        ));
+        return;
+      }
+    }
     const camera = cameraRef.current;
     const viewport = viewportRef.current;
     const signature = `${camera.centreX},${camera.centreZ},${camera.zoom},${viewport.cssWidth},${viewport.cssHeight}`;
@@ -575,7 +612,13 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <div
         ref={inputRef}
         data-testid="game-input-layer"
-        style={{ position: 'absolute', inset: 0, touchAction: 'none', cursor: buildMode === 'none' ? 'default' : 'crosshair' }}
+        style={{
+          position: 'absolute', inset: 0, touchAction: 'none',
+          cursor: buildMode === 'none' ? 'default' : 'crosshair',
+          // D2: 乗車中は建設・選択などの入力を一切受け付けない(乗車は「眺めるだけ」の
+          // ビューモード)。ポインタイベントごと無効化するのが最小の実装。
+          pointerEvents: ridingTrainId ? 'none' : 'auto',
+        }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -585,12 +628,44 @@ export const GameScene: React.FC<GameSceneProps> = ({
         onContextMenu={(event) => event.preventDefault()}
       />
 
+      {ridingTrainId && (
+        <div
+          data-testid="passenger-view-overlay"
+          style={{
+            position: 'absolute', top: 16, right: 16, zIndex: 20,
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '8px 12px', borderRadius: T.radius,
+            background: 'rgba(15,20,26,0.72)', border: `1px solid ${T.line}`,
+            color: T.text, fontSize: 12.5,
+          }}
+        >
+          <span>乗車中({ridingMode === 'cab' ? '運転台' : '客席'}): 列車 {ridingTrainId}</span>
+          <button
+            onClick={onAlightTrain}
+            style={{
+              padding: '4px 10px', borderRadius: T.radiusPill, border: `1px solid ${T.line}`,
+              background: T.accent, color: '#0b0f14', fontWeight: 700, fontSize: 12, cursor: 'pointer',
+            }}
+            title="降車してクォータービューへ戻る(Escキーでも可)"
+          >
+            降車
+          </button>
+        </div>
+      )}
+
+      {/* D3: 運転台視点のときだけHUDを出す。 */}
+      {ridingTrainId && ridingMode === 'cab' && (
+        <CabHud world={world} trainId={ridingTrainId} />
+      )}
+
       <WebGpuRenderDriver
         layerRef={webGpuLayer}
         cameraRef={cameraRef}
         viewportRef={viewportRef}
         dim={isLevelDimmed(0, undergroundView, buildLevel) ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
         stateRef={webGpuCameraStateRef}
+        field={field}
+        world={world}
       />
 
       <SimulationDriver world={world} onSimEvent={onSimEvent} speed={simSpeed} />
@@ -681,7 +756,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
         world={world}
         field={field}
         housePlacements={housePlacements}
-        hidden={farViewHidden}
+        // D3: 乗車中(客席/運転台どちらも)はラベルオーバーレイを隠す。凍結されたiso
+        // カメラ(webGpuCameraStateRef)を経由して投影しているため、透視カメラ中は
+        // 位置が合わない(follow-up: 透視投影でのラベル再計算はD3スコープ外)。
+        hidden={farViewHidden || !!ridingTrainId}
       />
 
       <WebGpuTrains
