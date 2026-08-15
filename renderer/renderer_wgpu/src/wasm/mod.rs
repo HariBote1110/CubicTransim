@@ -33,7 +33,8 @@ fn put_f32(out: &mut [u8], offset: usize, v: f32) {
 }
 
 pub use crate::meshes::{
-    interleave_vertices, split_instances_by_class, LayerClass, INSTANCE_STRIDE_BYTES,
+    instance_buffer_capacity, interleave_vertices_into, interleaved_vertex_bytes,
+    split_instances_into, underground_instance_count, LayerClass, INSTANCE_STRIDE_BYTES,
     INSTANCE_STRIDE_FLOATS, VERTEX_STRIDE_BYTES,
 };
 pub use crate::projection::{aabb_visible, CullCamera, ISO_H, ISO_X, ISO_Y};
@@ -103,9 +104,29 @@ struct InstancedMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
-    /// (バッファ, インスタンス数)。クラスごとに別ドローになるので2本持つ。
-    surface: Option<(wgpu::Buffer, u32)>,
-    underground: Option<(wgpu::Buffer, u32)>,
+    /// クラスごとに別ドローになるので2本持つ。毎フレーム差し替わるので
+    /// バッファは容量に余裕があるかぎり使い回す(`InstanceBuffer`)。
+    surface: InstanceBuffer,
+    underground: InstanceBuffer,
+}
+
+/// 使い回し前提のインスタンスバッファ。`capacity` は確保済みバイト数、
+/// `count` は今フレーム実際に描くインスタンス数(容量以下)。
+#[derive(Default)]
+struct InstanceBuffer {
+    buffer: Option<wgpu::Buffer>,
+    capacity: usize,
+    count: u32,
+}
+
+impl InstanceBuffer {
+    /// 描画に使える (バッファ, インスタンス数)。0件なら None。
+    fn draw(&self) -> Option<(&wgpu::Buffer, u32)> {
+        if self.count == 0 {
+            return None;
+        }
+        self.buffer.as_ref().map(|b| (b, self.count))
+    }
 }
 
 /// D1: レンダリングモード。既定は Quarter(クォータービュー、既存挙動と完全一致)。
@@ -150,6 +171,8 @@ pub struct CanvasRenderer {
     mesh_camera_bind_group: wgpu::BindGroup,
     mesh_chunks: HashMap<u32, MeshChunk>,
     instanced_meshes: HashMap<u32, InstancedMesh>,
+    /// インスタンス振り分けの常設ステージング(伸びるだけ。毎フレームの確保を避ける)。
+    instance_staging: Vec<u8>,
 
     /// D1: 透視投影(乗客視点スパイク)のパイプライン一式。クォータービュー用の
     /// 上記フィールドとは完全に別経路(mesh_pipeline::create_perspective_all)。

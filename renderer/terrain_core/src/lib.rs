@@ -241,9 +241,12 @@ fn derive_octave_seed(seed: u32, index: usize) -> u32 {
 /// r²(3−2r) = r_num²(3w−2r_num)/w³. Round half-up to the fixed grid.
 #[inline]
 fn smooth_q(x: i32, wave: i32) -> (i32, u32) {
-    let mut grid = x.div_euclid(wave);
-    let rem = x.rem_euclid(wave);
-    if rem == wave { grid += 1; }
+    let mut grid = x / wave;
+    let mut rem = x % wave;
+    if rem < 0 {
+        grid -= 1;
+        rem += wave;
+    }
     let r = rem as u64;
     let w = wave as u64;
     let n = r * r * (3 * w - 2 * r);

@@ -286,20 +286,17 @@ impl CanvasRenderer {
         pass.set_bind_group(1, &self.class_bind_groups[class.as_u32() as usize], &[]);
         let mut draws = 0usize;
         for mesh in self.instanced_meshes.values() {
-            let slice = match class {
-                LayerClass::Underground => mesh.underground.as_ref(),
-                _ => mesh.surface.as_ref(),
+            let instances = match class {
+                LayerClass::Underground => mesh.underground.draw(),
+                _ => mesh.surface.draw(),
             };
-            let Some((buffer, count)) = slice else {
+            let Some((buffer, count)) = instances else {
                 continue;
             };
-            if *count == 0 {
-                continue;
-            }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, buffer.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, 0..*count);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..count);
             draws += 1;
         }
         draws
@@ -315,20 +312,17 @@ impl CanvasRenderer {
         pass.set_bind_group(1, &self.class_bind_groups[class.as_u32() as usize], &[]);
         let mut draws = 0usize;
         for mesh in self.instanced_meshes.values() {
-            let slice = match class {
-                LayerClass::Underground => mesh.underground.as_ref(),
-                _ => mesh.surface.as_ref(),
+            let instances = match class {
+                LayerClass::Underground => mesh.underground.draw(),
+                _ => mesh.surface.draw(),
             };
-            let Some((buffer, count)) = slice else {
+            let Some((buffer, count)) = instances else {
                 continue;
             };
-            if *count == 0 {
-                continue;
-            }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, buffer.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, 0..*count);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..count);
             draws += 1;
         }
         draws

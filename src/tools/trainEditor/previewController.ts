@@ -4,6 +4,8 @@
 import {
   WebGpuTerrainLayerController,
   MESH_INSTANCE_STRIDE,
+  MESH_INSTANCE_TINT_WORD,
+  packTintAndFlags,
   type WebGpuUnavailableError,
 } from '../../render/webgpuLayer';
 import { OVERPASS_HEIGHT } from '../../sim/trackPath';
@@ -90,11 +92,8 @@ export class TrainEditorPreview {
     data[offset + 2] = z;
     data[offset + 3] = yawRad;
     data[offset + 4] = 0;
-    data[offset + 5] = tintR;
-    data[offset + 6] = tintG;
-    data[offset + 7] = tintB;
-    data[offset + 8] = 0;
-    data[offset + 9] = 0;
+    new Uint32Array(data.buffer)[offset + MESH_INSTANCE_TINT_WORD] =
+      packTintAndFlags(tintR, tintG, tintB, 0);
   }
 
   render(state: { centreX: number; centreZ: number; pixelsPerUnit: number }): void {

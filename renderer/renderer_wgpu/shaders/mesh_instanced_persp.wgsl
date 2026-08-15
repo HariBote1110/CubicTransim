@@ -22,7 +22,7 @@ struct Out {
   @location(1) colour: vec4<f32>,
   @location(2) inst_pos: vec3<f32>,
   @location(3) inst_rot: vec2<f32>,   // (yaw, pitch)
-  @location(4) inst_tint: vec3<f32>,
+  @location(4) inst_tint: vec4<f32>,  // unorm8x4。A は flags なので使わない
 ) -> Out {
   let cp = cos(inst_rot.y);
   let sp = sin(inst_rot.y);
@@ -38,7 +38,7 @@ struct Out {
 
   var o: Out;
   o.position = camera.view_proj * vec4<f32>(world, 1.0);
-  let tinted = colour.rgb * mix(vec3<f32>(1.0), inst_tint, colour.a);
+  let tinted = colour.rgb * mix(vec3<f32>(1.0), inst_tint.rgb, colour.a);
   o.colour = vec4<f32>(tinted, 1.0);
   o.world_pos = world;
   return o;

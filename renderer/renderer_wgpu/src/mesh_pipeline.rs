@@ -6,11 +6,12 @@ const MESH_VERTEX_ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
     1 => Unorm8x4,
 ];
 /// インスタンスバッファのレイアウト(meshes::INSTANCE_STRIDE_FLOATS のコメント参照)。
-/// flags(offset 32)と予約(offset 36)はシェーダから読まないので属性を張らない。
+/// tint は unorm8x4 で読む。A バイトには flags が入っているが、これは CPU 側の
+/// クラス振り分け専用でシェーダは参照しない(`mesh_instanced.wgsl`)。
 const MESH_INSTANCE_ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
     2 => Float32x3,
     3 => Float32x2,
-    4 => Float32x3,
+    4 => Unorm8x4,
 ];
 
 pub fn mesh_vertex_layout() -> wgpu::VertexBufferLayout<'static> {

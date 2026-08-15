@@ -71,13 +71,32 @@ interface CanvasRendererHandle {
 }
 
 /**
- * インスタンス1件あたりの f32 個数。wasm 側 `meshes::INSTANCE_STRIDE_FLOATS` と同じ値。
- * 並びは [x, y, z, yaw, pitch, tintR, tintG, tintB, flags, 予約]。
+ * インスタンス1件あたりのワード数(4バイト単位)。wasm 側 `meshes::INSTANCE_STRIDE_FLOATS`
+ * と同じ値。並びは [x, y, z, yaw, pitch, tint+flags]で、最後の1ワードだけ u32 として書く。
+ *
+ * インスタンス配列は毎フレーム丸ごと GPU へ送るので、stride がそのまま転送量になる。
+ * 旧レイアウトは tint を f32×3、flags を f32、さらに16バイト境界のパディングを持つ
+ * 40バイトだったが、シェーダが読むのは位置・回転・tint だけなので 24バイトへ畳んだ。
  */
-export const MESH_INSTANCE_STRIDE = 10;
+export const MESH_INSTANCE_STRIDE = 6;
+
+/** tint+flags を詰めたワードの位置(インスタンス先頭からのワード数)。 */
+export const MESH_INSTANCE_TINT_WORD = 5;
 
 /** インスタンスの flags: 地下クラスとして描く(深度Always・地下ビュー限定)。 */
 export const MESH_INSTANCE_FLAG_UNDERGROUND = 1;
+
+/**
+ * 路線色(0..1)と flags を1ワードへ詰める。wasm 側 `meshes::pack_tint_and_flags` と
+ * 同じ規約で、unorm8x4 として読ませるため R,G,B を下位バイトから並べ、シェーダが
+ * 読まない A バイトへ flags を置く。
+ */
+export function packTintAndFlags(r: number, g: number, b: number, flags: number): number {
+  const toByte = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255))) | 0;
+  return (
+    (toByte(r) | (toByte(g) << 8) | (toByte(b) << 16) | ((flags & 0xff) << 24)) >>> 0
+  );
+}
 
 /** メッシュチャンクの描画クラス(wasm 側 `meshes::LayerClass` と同じ数値)。 */
 export const MESH_LAYER_CLASS = {

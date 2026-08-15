@@ -9,7 +9,9 @@
 //! 呼ぶネイティブチェック群と同じ位置づけ)。
 
 use quarterview_renderer_wgpu::mesh_pipeline;
-use quarterview_renderer_wgpu::meshes::{interleave_vertices, LayerClass, INSTANCE_STRIDE_FLOATS};
+use quarterview_renderer_wgpu::meshes::{
+    interleave_vertices_into, interleaved_vertex_bytes, LayerClass, INSTANCE_STRIDE_FLOATS,
+};
 use wgpu::util::DeviceExt;
 
 #[path = "bench_common/mod.rs"]
@@ -50,7 +52,9 @@ fn class_buffer(device: &wgpu::Device, class: LayerClass) -> wgpu::Buffer {
 fn full_screen_triangle(colour: u32) -> (Vec<u8>, Vec<u32>) {
     let positions: [f32; 9] = [-40.0, 0.0, -40.0, 40.0, 0.0, -40.0, 0.0, 0.0, 60.0];
     let colours = [colour; 3];
-    (interleave_vertices(&positions, &colours), vec![0, 1, 2])
+    let mut vertices = vec![0u8; interleaved_vertex_bytes(&positions, &colours)];
+    interleave_vertices_into(&mut vertices, &positions, &colours);
+    (vertices, vec![0, 1, 2])
 }
 
 fn read_centre_pixel(
