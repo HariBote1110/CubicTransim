@@ -98,10 +98,27 @@ pub fn split_instances_by_class(data: &[f32]) -> (Vec<u8>, Vec<u8>) {
 mod tests {
     use super::*;
 
+    /// テスト用: 宛先を用意して `interleave_vertices_into` を呼ぶ。
+    fn interleave_to_vec(positions: &[f32], colours: &[u32]) -> Vec<u8> {
+        let mut out = vec![0u8; interleaved_vertex_bytes(positions, colours)];
+        interleave_vertices_into(&mut out, positions, colours);
+        out
+    }
+
+    /// テスト用: 宛先を用意して `split_instances_into` を呼ぶ。
+    fn split_to_vecs(data: &[f32]) -> (Vec<u8>, Vec<u8>) {
+        let total = data.len() / INSTANCE_STRIDE_FLOATS;
+        let under = underground_instance_count(data);
+        let mut surface = vec![0u8; (total - under) * INSTANCE_STRIDE_BYTES];
+        let mut underground = vec![0u8; under * INSTANCE_STRIDE_BYTES];
+        split_instances_into(&mut surface, &mut underground, data);
+        (surface, underground)
+    }
+
     #[test]
     fn interleaves_position_and_colour_into_16_byte_vertices() {
         let bytes =
-            interleave_vertices(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0xff00_00ff, 0x00ff_00ff]);
+            interleave_to_vec(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0xff00_00ff, 0x00ff_00ff]);
         assert_eq!(bytes.len(), 2 * VERTEX_STRIDE_BYTES);
         assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
         assert_eq!(&bytes[12..16], &0xff00_00ffu32.to_le_bytes());
@@ -110,8 +127,27 @@ mod tests {
 
     #[test]
     fn interleave_clamps_to_the_shorter_input() {
-        let bytes = interleave_vertices(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[0xffff_ffff]);
+        let positions = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert_eq!(
+            interleaved_vertex_bytes(&positions, &[0xffff_ffff]),
+            VERTEX_STRIDE_BYTES
+        );
+        let bytes = interleave_to_vec(&positions, &[0xffff_ffff]);
         assert_eq!(bytes.len(), VERTEX_STRIDE_BYTES);
+        assert_eq!(&bytes[0..4], &1.0f32.to_le_bytes());
+    }
+
+    /// 宛先が足りないときは書ける分だけ書いて落ちない(JS からの呼び出しを守る)。
+    #[test]
+    fn interleave_into_never_overruns_a_short_destination() {
+        let mut dst = [0u8; VERTEX_STRIDE_BYTES];
+        interleave_vertices_into(
+            &mut dst,
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            &[0xaaaa_aaaa, 0xbbbb_bbbb],
+        );
+        assert_eq!(&dst[0..4], &1.0f32.to_le_bytes());
+        assert_eq!(&dst[12..16], &0xaaaa_aaaau32.to_le_bytes());
     }
 
     #[test]
@@ -121,7 +157,8 @@ mod tests {
         data[INSTANCE_STRIDE_FLOATS] = 2.0; // instance 1: underground
         data[INSTANCE_STRIDE_FLOATS + 8] = INSTANCE_FLAG_UNDERGROUND as f32;
         data[INSTANCE_STRIDE_FLOATS * 2] = 3.0; // instance 2: surface
-        let (surface, underground) = split_instances_by_class(&data);
+        assert_eq!(underground_instance_count(&data), 1);
+        let (surface, underground) = split_to_vecs(&data);
         assert_eq!(surface.len(), 2 * INSTANCE_STRIDE_BYTES);
         assert_eq!(underground.len(), INSTANCE_STRIDE_BYTES);
         assert_eq!(&surface[0..4], &1.0f32.to_le_bytes());
@@ -135,9 +172,23 @@ mod tests {
     #[test]
     fn split_ignores_a_trailing_partial_instance() {
         let data = vec![0.0f32; INSTANCE_STRIDE_FLOATS + 3];
-        let (surface, underground) = split_instances_by_class(&data);
+        assert_eq!(underground_instance_count(&data), 0);
+        let (surface, underground) = split_to_vecs(&data);
         assert_eq!(surface.len(), INSTANCE_STRIDE_BYTES);
         assert!(underground.is_empty());
+    }
+
+    /// 宛先が足りないときは、そのクラスの残りを捨てて落ちない。
+    #[test]
+    fn split_into_never_overruns_a_short_destination() {
+        let mut data = vec![0.0f32; INSTANCE_STRIDE_FLOATS * 3];
+        data[0] = 1.0;
+        data[INSTANCE_STRIDE_FLOATS] = 2.0;
+        data[INSTANCE_STRIDE_FLOATS * 2] = 3.0;
+        let mut surface = [0u8; INSTANCE_STRIDE_BYTES];
+        let mut underground = [0u8; 0];
+        split_instances_into(&mut surface, &mut underground, &data);
+        assert_eq!(&surface[0..4], &1.0f32.to_le_bytes());
     }
 
     #[test]
