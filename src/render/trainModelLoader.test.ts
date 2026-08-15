@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { decodeTrainModel } from './trainModelLoader';
 import { buildGlb, boxPositionsIndices } from '../../renderer/tools/glbTestFixtures.mjs';
+import { RAIL_SUPPORT_OFFSET } from './trainInstanceMath';
 
 const toArrayBuffer = (buf: Uint8Array): ArrayBuffer =>
   buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
@@ -48,5 +49,19 @@ describe('decodeTrainModel', () => {
     expect(model).not.toBeNull();
     expect(Array.from(model!.head.colours, alphaOf).every(a => a === 255)).toBe(true);
     expect(Array.from(model!.mid.colours, alphaOf).every(a => a === 0)).toBe(true);
+  });
+
+  it('shifts baked geometry down by RAIL_SUPPORT_OFFSET so authored y=0 (rail top) lands on the wheel-contact plane', () => {
+    // Authored per progress/train-model-format.md: box spans y=[0, 0.2], i.e. rail top at y=0.
+    const head = boxPositionsIndices(0, 0.1, 0, 0.2, 0.1, 0.4);
+    const mid = boxPositionsIndices(0, 0.1, 0, 0.2, 0.1, 0.4);
+    const glb = buildGlb([
+      { name: 'car_head', ...head },
+      { name: 'car_mid', ...mid },
+    ]);
+    const model = decodeTrainModel(toArrayBuffer(glb));
+    expect(model).not.toBeNull();
+    const [, minY] = model!.head.aabb;
+    expect(minY).toBeCloseTo(-RAIL_SUPPORT_OFFSET, 5);
   });
 });

@@ -92,3 +92,8 @@ node renderer/tools/validate_train_glb.mjs public/models/trains/<車種id>.glb
 - レール上面はセル基準高さ +0.13。モデルの y=0 がそこに接地する
 - 車種 id はゲーム内の列車タイプ選択と対応する(登録は開発側で行うので、モデル制作者は
   .glb を納品するだけでよい)
+- 実行時の車体原点はレール上面より `RAIL_SUPPORT_OFFSET`(0.37, src/render/trainInstanceMath.ts)
+  だけ高い位置にある(手続き生成メッシュがy=-0.37まで伸びて車輪をレールに接地させているため)。
+  `trainModelLoader.ts` の `bakeNode` はglb焼き込み時に全頂点をy -= RAIL_SUPPORT_OFFSETし、
+  この節の「y=0=レール上面」という作画規約を実際の接地面に一致させている
+  (修正前はこの相殺が無く、外部.glbモデルがレールより0.37浮いて表示される不具合があった)

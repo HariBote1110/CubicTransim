@@ -24,7 +24,8 @@ export const Y_TOLERANCE = 1e-4;
  * @param {Buffer|Uint8Array} bytes
  * @returns {{ ok: boolean, checks: { name: string, ok: boolean, detail: string }[] }}
  */
-export function validateTrainGlb(bytes) {
+export function validateTrainGlb(bytes, options = {}) {
+  const maxTris = options.maxTris ?? TRIANGLE_BUDGET.full;
   const checks = [];
   const record = (name, ok, detail) => checks.push({ name, ok, detail });
 
@@ -67,7 +68,7 @@ export function validateTrainGlb(bytes) {
 
     const geometry = collectNodeGeometry(json, bin, index);
     const isLod1 = name.endsWith('_lod1');
-    const budget = isLod1 ? TRIANGLE_BUDGET.lod1 : TRIANGLE_BUDGET.full;
+    const budget = isLod1 ? TRIANGLE_BUDGET.lod1 : maxTris;
     record(
       `${name}: 三角形数 <= ${budget}`,
       geometry.triangleCount <= budget,
@@ -96,13 +97,17 @@ export function validateTrainGlb(bytes) {
 }
 
 function main() {
-  const filePath = process.argv[2];
+  const rawArgs = process.argv.slice(2);
+  const filePath = rawArgs.find((a) => !a.startsWith('--'));
+  const maxTrisIndex = rawArgs.indexOf('--max-tris');
+  const maxTris = maxTrisIndex >= 0 ? Number(rawArgs[maxTrisIndex + 1]) : undefined;
   if (!filePath) {
-    console.error('使い方: node renderer/tools/validate_train_glb.mjs <path/to/model.glb>');
+    console.error('使い方: node renderer/tools/validate_train_glb.mjs <path/to/model.glb> [--max-tris <n>]');
+    console.error('  --max-tris <n>  本体プリミティブの三角形数上限を既定の500から緩和する(手作業モデル向けの既定500を推奨。手動downsample元のような自動生成モデルの一時検証用)');
     process.exit(2);
   }
   const bytes = readFileSync(filePath);
-  const { ok, checks } = validateTrainGlb(bytes);
+  const { ok, checks } = validateTrainGlb(bytes, maxTris !== undefined ? { maxTris } : {});
   console.log(`検査対象: ${filePath}`);
   for (const check of checks) {
     console.log(`  [${check.ok ? 'PASS' : 'FAIL'}] ${check.name} — ${check.detail}`);

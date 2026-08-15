@@ -15,24 +15,30 @@
 import React, { useRef } from 'react';
 import { FRAME_ORDER } from '../render/frameLoop';
 import { useFrameLoop } from '../hooks/useFrameLoop';
-import type { CellData, TrainData, TrainGroupData } from '../types';
+import type { CellData, TrainData, LineData, ServiceData } from '../types';
 import type { TerrainField } from '../sim/terrainField';
 import type { SimWorld } from '../sim/simulation';
 import { carPositions } from '../sim/consist';
 import { isTrainHiddenInTunnel, type ElevatedTunnelIndex } from '../sim/tunnel';
-import { findGroup } from '../sim/groups';
+import { resolveAssignment } from '../sim/lines';
 import { carGroupPosition, headingToYawPitch } from '../render/trainInstanceMath';
 import { buildTrainCarMesh, buildSelectionMarkerMesh, buildRouteDotMesh } from '../render/trainMeshBuilder';
 import { loadTrainModel, TRAIN_MODEL_REGISTRY } from '../render/trainModelLoader';
 import { parseColourHex } from '../render/bakedMesh';
 import { PALETTE } from '../render/palette';
+import { DEFAULT_TRAIN_MODEL, type TrainModelId } from '../sim/physics';
 import { MESH_INSTANCE_STRIDE, MESH_INSTANCE_FLAG_UNDERGROUND } from '../render/webgpuLayer';
 import type { WebGpuTerrainLayerController } from '../render/webgpuLayer';
 import type { WebGpuLayerRef } from './WebGpuTerrainLayer';
 
-/** R4c専用のインスタンスメッシュid名前空間(meshChunkRegistry.tsとは別体系。固定4種のみ)。 */
-const MESH_ID_HEAD = 0x9000_0001;
-const MESH_ID_MID = 0x9000_0002;
+/** R4c専用のインスタンスメッシュid名前空間(meshChunkRegistry.tsとは別体系。固定4種のみ)。
+ *  0.5.0-Alpha-22aで車種ごとに見た目を分けるため、head/midは車種×2の8種へ拡張した
+ *  (旧MESH_ID_HEAD=0x9000_0001/MESH_ID_MID=0x9000_0002は退役。selection/route_dotの
+ *  idはそのまま流用する)。 */
+const TRAIN_MODEL_IDS: readonly TrainModelId[] = ['commuter', 'suburban', 'express', 'local-express'];
+const MESH_ID_CAR_BASE = 0x9000_0010;
+const meshIdHead = (modelId: TrainModelId): number => MESH_ID_CAR_BASE + 2 * TRAIN_MODEL_IDS.indexOf(modelId);
+const meshIdMid = (modelId: TrainModelId): number => MESH_ID_CAR_BASE + 2 * TRAIN_MODEL_IDS.indexOf(modelId) + 1;
 const MESH_ID_SELECTION = 0x9000_0003;
 const MESH_ID_ROUTE_DOT = 0x9000_0004;
 
@@ -50,7 +56,8 @@ interface Props {
   elevatedTunnelIndex: ElevatedTunnelIndex;
   world: React.RefObject<SimWorld>;
   selectedTrainId: string | null;
-  groups?: TrainGroupData[];
+  lines?: LineData[];
+  services?: ServiceData[];
   undergroundView?: boolean;
   selectedLevel?: number;
   draggingTrainId?: string | null;
@@ -96,11 +103,16 @@ class InstanceBuffer {
 
 export const WebGpuTrains: React.FC<Props> = ({
   layerRef, trains, railMap, field, elevatedTunnelIndex, world, selectedTrainId,
-  groups = [], undergroundView = false, selectedLevel = 0, draggingTrainId = null, dragCell = null,
+  lines = [], services = [], undergroundView = false, selectedLevel = 0, draggingTrainId = null, dragCell = null,
 }) => {
   const lastControllerRef = useRef<WebGpuTerrainLayerController | null>(null);
-  const headBuf = useRef(new InstanceBuffer());
-  const midBuf = useRef(new InstanceBuffer());
+  // 車種ごとのhead/midインスタンスバッファ(Record<TrainModelId, ...>)。
+  const carBuffersRef = useRef<Record<TrainModelId, { head: InstanceBuffer; mid: InstanceBuffer }>>(
+    Object.fromEntries(TRAIN_MODEL_IDS.map(id => [id, { head: new InstanceBuffer(), mid: new InstanceBuffer() }])) as Record<
+      TrainModelId,
+      { head: InstanceBuffer; mid: InstanceBuffer }
+    >,
+  );
   const selectionBuf = useRef(new InstanceBuffer());
   const dotBuf = useRef(new InstanceBuffer());
 
@@ -110,37 +122,41 @@ export const WebGpuTrains: React.FC<Props> = ({
 
     if (lastControllerRef.current !== controller) {
       lastControllerRef.current = controller;
-      // まずプレースホルダを即時登録する(glbロードは非同期・失敗しうるため、
+      // まずプレースホルダを車種ごとに即時登録する(glbロードは非同期・失敗しうるため、
       // 列車が一瞬でも無表示にならないようにする)。実モデルが用意されている車種は
       // ロード完了後に同じidへ再登録して差し替える(setInstancesは既存インスタンス
       // 配列をそのまま使い回せるので、差し替え中も列車の位置は飛ばない)。
-      const head = buildTrainCarMesh('head');
-      const mid = buildTrainCarMesh('mid');
+      for (const modelId of TRAIN_MODEL_IDS) {
+        const head = buildTrainCarMesh('head', modelId);
+        const mid = buildTrainCarMesh('mid', modelId);
+        if (head) controller.registerInstancedMesh(meshIdHead(modelId), head);
+        if (mid) controller.registerInstancedMesh(meshIdMid(modelId), mid);
+      }
       const marker = buildSelectionMarkerMesh();
       const dot = buildRouteDotMesh();
-      if (head) controller.registerInstancedMesh(MESH_ID_HEAD, head);
-      if (mid) controller.registerInstancedMesh(MESH_ID_MID, mid);
       if (marker) controller.registerInstancedMesh(MESH_ID_SELECTION, marker);
       if (dot) controller.registerInstancedMesh(MESH_ID_ROUTE_DOT, dot);
 
       // R4c: 車種id→glbモデルidの対応表(現時点ではTRAIN_MODEL_REGISTRYが空なので
       // 全車種がプレースホルダのまま。モデル納品後はここに登録するだけで自動的に使われる)。
-      const modelId = TRAIN_MODEL_REGISTRY['commuter'];
-      if (modelId) {
-        loadTrainModel(modelId).then(model => {
+      for (const modelId of TRAIN_MODEL_IDS) {
+        const glbId = TRAIN_MODEL_REGISTRY[modelId];
+        if (!glbId) continue;
+        loadTrainModel(glbId).then(model => {
           if (!model || lastControllerRef.current !== controller) return;
-          controller.registerInstancedMesh(MESH_ID_HEAD, model.head);
-          controller.registerInstancedMesh(MESH_ID_MID, model.mid);
+          controller.registerInstancedMesh(meshIdHead(modelId), model.head);
+          controller.registerInstancedMesh(meshIdMid(modelId), model.mid);
         });
       }
     }
 
-    const head = headBuf.current;
-    const mid = midBuf.current;
+    const buffers = carBuffersRef.current;
+    for (const modelId of TRAIN_MODEL_IDS) {
+      buffers[modelId].head.reset();
+      buffers[modelId].mid.reset();
+    }
     const selection = selectionBuf.current;
     const dots = dotBuf.current;
-    head.reset();
-    mid.reset();
     selection.reset();
     dots.reset();
 
@@ -148,10 +164,13 @@ export const WebGpuTrains: React.FC<Props> = ({
       if (train.status === 'stored') continue;
       const runtime = world.current?.runtimes.get(train.id);
       if (!runtime) continue;
+      const modelId: TrainModelId = train.model ?? DEFAULT_TRAIN_MODEL;
+      const head = buffers[modelId].head;
+      const mid = buffers[modelId].mid;
       const isSelected = train.id === selectedTrainId;
       const lineColourHex = isSelected
         ? PALETTE.carLineSelected
-        : (findGroup(groups, train.groupId)?.colour ?? PALETTE.carLine);
+        : (resolveAssignment(train, lines, services)?.line.colour ?? PALETTE.carLine);
       const [tintR, tintG, tintB] = parseColourHex(lineColourHex);
 
       if (draggingTrainId === train.id && dragCell) {
@@ -183,8 +202,9 @@ export const WebGpuTrains: React.FC<Props> = ({
         const isTail = i === positions.length - 1 && positions.length > 1;
         const isHeadOrTail = i === 0 || isTail;
         const finalYaw = isTail ? yaw + Math.PI : yaw;
+        const finalPitch = isTail ? -pitch : pitch;
         const buf = isHeadOrTail ? head : mid;
-        buf.push(groupPos.x, groupPos.y, groupPos.z, finalYaw, pitch, tintR, tintG, tintB, flags);
+        buf.push(groupPos.x, groupPos.y, groupPos.z, finalYaw, finalPitch, tintR, tintG, tintB, flags);
 
         if (isSelected && i === 0) {
           selection.push(groupPos.x, groupPos.y + 0.85, groupPos.z, 0, 0, tintR, tintG, tintB, 0);
@@ -198,8 +218,10 @@ export const WebGpuTrains: React.FC<Props> = ({
       }
     }
 
-    controller.setInstances(MESH_ID_HEAD, head.view());
-    controller.setInstances(MESH_ID_MID, mid.view());
+    for (const modelId of TRAIN_MODEL_IDS) {
+      controller.setInstances(meshIdHead(modelId), buffers[modelId].head.view());
+      controller.setInstances(meshIdMid(modelId), buffers[modelId].mid.view());
+    }
     controller.setInstances(MESH_ID_SELECTION, selection.view());
     controller.setInstances(MESH_ID_ROUTE_DOT, dots.view());
   });

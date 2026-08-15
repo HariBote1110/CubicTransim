@@ -9,7 +9,7 @@ describe('applyRestoredWorldState', () => {
   it('restored.halfExtentでsetHalfExtentを呼ぶ', () => {
     const saveData = serialiseWorld(
       new Map(), new Map(), [], new Map(), new Map(), 1000, [], 42,
-      { elapsed: 0 }, emptyLedger(), [], 'middle', [], new Map(), 0, new Map(),
+      { elapsed: 0 }, emptyLedger(), [], 'middle', [], [], new Map(), 0, new Map(),
       96, new Map(), 'normal', 'normal'
     );
     const restored = deserialiseWorld(saveData);
@@ -33,7 +33,8 @@ describe('applyRestoredWorldState', () => {
       setCurrentLedger: vi.fn(),
       setLedgerHistory: vi.fn(),
       setStopLocation: vi.fn(),
-      setGroups: vi.fn(),
+      setLines: vi.fn(),
+      setServices: vi.fn(),
     };
 
     applyRestoredWorldState(restored!, setters);

@@ -45,6 +45,11 @@ export interface EditedTerrainField extends TerrainField {
   readonly diffs: CornerDiffs;
 }
 
+/** field が EditedTerrainField(diffsを持つ実データ地形)かどうかを判定する型ガード。 */
+export function isEditedTerrainField(field: TerrainField): field is EditedTerrainField {
+  return 'diffs' in field;
+}
+
 const chunkCoordOf = (v: number): number => Math.floor(v / OVERLAY_CHUNK_SIZE);
 const chunkKeyOf = (cx: number, cz: number): string => `${cx},${cz}`;
 const localIndexOf = (x: number, z: number, cx: number, cz: number): number => {
@@ -297,8 +302,23 @@ export function applyCornerEdit(
     }
   }
 
-  // 3. 確定: 変化したコーナーだけ diffs へ反映する。基底値へ戻ったコーナーは
-  //    オーバーライドを削除する(疎性維持: 編集で往復して元に戻った箇所を残さない)。
+  // 3. 確定: 変化したコーナーだけ diffs へ反映する(applyCornerFillとも共有するcommitCornerUpdates)。
+  return commitCornerUpdates(base, editedField, updated);
+}
+
+/**
+ * updated(コーナー座標キー→新しい標高)を editedField.diffs へ確定反映する共通処理。
+ * applyCornerEdit/applyCornerFill の両方が使う「基底値へ戻ったコーナーはオーバーライドを
+ * 削除する(疎性維持)」ロジックを1箇所にまとめたもの。updatedに変化がなければ
+ * 同一参照のnoopを返す(CubicTransim全体の「同一参照no-op」規約)。
+ */
+function commitCornerUpdates(
+  base: TerrainField,
+  editedField: EditedTerrainField,
+  updated: Map<string, number>
+): CornerEditResult {
+  const noop: CornerEditResult = { field: editedField, changedCorners: 0 };
+
   const touchedChunks = new Set<string>();
   const nextDiffs: CornerDiffs = new Map(editedField.diffs);
   const ensureMutableChunk = (cx: number, cz: number): Map<number, number> => {
@@ -330,6 +350,72 @@ export function applyCornerEdit(
   if (changedCorners === 0) return noop;
 
   return { field: createEditedTerrainField(base, nextDiffs), changedCorners };
+}
+
+/** applyCornerFill が受け取る「このコーナーをこの標高まで引き上げたい」という要求。 */
+export interface CornerFillTarget extends Pos {
+  height: number;
+}
+
+/**
+ * P-terraform: 指定したコーナー群を、それぞれの目標標高まで直接引き上げ(埋め立て)、
+ * 1-Lipschitzをapplyの'raise'モードと同じ方向つきBFS伝播で回復する。
+ *
+ * applyCornerEdit(矩形選択・±1固定)と違い、こちらは「コーナー座標の配列 + 各々の
+ * 目標標高」という任意集合を受け取り、必要な段数を一度に引き上げる。OpenTTD風の
+ * 自動整地(construction.tsのresolveGroundRailPlanWithAutoFill)が、1つのotherスロープ
+ * セルの低いコーナーだけをそのセルの最高コーナーまで一気に持ち上げるために使う。
+ *
+ * target.height が現在の標高以下のコーナーは無視する(埋め立てのみ・切り下げはしない)。
+ * ブロック規則・同一参照no-op規約はapplyCornerEditと同じ。
+ */
+export function applyCornerFill(
+  base: TerrainField,
+  editedField: EditedTerrainField,
+  targets: ReadonlyArray<CornerFillTarget>,
+  blockers: EditBlockers
+): CornerEditResult {
+  const noop: CornerEditResult = { field: editedField, changedCorners: 0 };
+  if (targets.length === 0) return noop;
+
+  const isCornerBlocked = (cx: number, cz: number): boolean => {
+    for (const [dx, dz] of TOUCHING_CELL_OFFSETS) {
+      if (blockers.isCellBlocked(cx + dx, cz + dz)) return true;
+    }
+    return false;
+  };
+
+  const updated = new Map<string, number>();
+  const heightAt = (x: number, z: number): number => updated.get(cornerKey(x, z)) ?? editedField.cornerHeightAt(x, z);
+
+  const queue: Pos[] = [];
+  for (const t of targets) {
+    const current = heightAt(t.x, t.z);
+    const target = Math.min(TERRAIN_HEIGHT_MAX, t.height);
+    if (target <= current) continue;
+    if (isCornerBlocked(t.x, t.z)) return noop;
+    updated.set(cornerKey(t.x, t.z), target);
+    queue.push({ x: t.x, z: t.z });
+  }
+  if (updated.size === 0) return noop;
+
+  // raiseモードと同じ伝播規則: 隣接コーナーがh-1未満なら段差1以下までh-1に引き上げる。
+  while (queue.length > 0) {
+    const { x, z } = queue.shift()!;
+    const h = heightAt(x, z);
+    for (const [dx, dz] of NEIGHBOUR_OFFSETS) {
+      const nx = x + dx;
+      const nz = z + dz;
+      const nHeight = heightAt(nx, nz);
+      if (nHeight < h - 1) {
+        if (isCornerBlocked(nx, nz)) return noop;
+        updated.set(cornerKey(nx, nz), h - 1);
+        queue.push({ x: nx, z: nz });
+      }
+    }
+  }
+
+  return commitCornerUpdates(base, editedField, updated);
 }
 
 // --- 描画チャンクキャッシュ向けのリビジョン参照(P4) ---

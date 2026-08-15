@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, RailGauge, TrainPower } from '../types';
+import type { CellData, CellType, TrainData, LineData, ServiceData, StationData, PlatformDoorType, RailGauge, RailWeight, TrainPower, SignalKind, TrainProtection } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import {
   RAIL_COST, STATION_COST, DEPOT_COST, SIGNAL_COST, TERRAIN_EDIT_COST, CAPACITY_PER_CAR,
   CAR_COST, CAR_REFUND, SUBSTATION_COST,
@@ -11,23 +12,30 @@ import { ANNUAL_INTEREST_RATE, LOAN_LIMIT, LOAN_STEP, maxAdditionalLoan, monthly
 import type { PassengerCohort } from '../sim/passengers';
 import { evaluateBuild } from '../sim/buildPreview';
 import type { TownTileIndex } from '../sim/townTiles';
-import { effectiveSchedule, findGroup, membersOf, HEADWAY_CHOICES, averageInterval, suggestsShuttle } from '../sim/groups';
-import type { LineMode } from '../sim/groups';
+import {
+  effectiveSchedule, resolveAssignment,
+  membersOf, HEADWAY_CHOICES, averageInterval, suggestsShuttle,
+} from '../sim/lines';
+import type { LineMode } from '../sim/lines';
 import type { BuildPreview } from '../sim/buildPreview';
 import type { SimWorld } from '../sim/simulation';
+import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { computeStationArrivals } from '../sim/arrivals';
 import type { StationArrival } from '../sim/arrivals';
 import type { AccidentNotice } from '../hooks/useGameLogic';
 import { T, panel, button, sectionLabel, formatYen } from '../ui/theme';
 import { MAX_ELEVATED_LEVEL, stepElevatedLevel } from '../sim/trackPath';
-import type { BuildLevel } from '../sim/construction';
+import type { BuildLevel, StationAxis } from '../sim/construction';
 import { UNDERGROUND_RAIL_COST_MULTIPLIER, UNDERGROUND_STATION_COST } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import type { EditedTerrainField } from '../sim/terrainOverlay';
 import { buildEditBlockers } from '../sim/terrainOverlay';
 import type { GameRules } from '../sim/gameRules';
 import type { RailBuildOptions } from '../sim/construction';
-import { REGAUGE_COST_PER_CELL, trainCostFor } from '../sim/economy';
+import { REGAUGE_COST_PER_CELL, trainCostForProtected, PROTECTION_COST, trainTotalCost } from '../sim/economy';
+import { TRAIN_MODELS, trainModelOf, type TrainModelId } from '../sim/physics';
+import { fromKey } from '../utils';
+import type { RiderMode } from '../render/passengerView';
 
 // ゲーム内日付表示の更新間隔(ms)。他のポーリングと同様、低頻度で十分。
 const CLOCK_POLL_INTERVAL_MS = 500;
@@ -39,12 +47,35 @@ export type BuildMode = CellType | 'none' | 'remove' | 'signal' | 'raise' | 'low
 
 // PM2: 軌間の選択肢(基本ラインナップ2種+拡張ラインナップ2種)。
 const BASIC_GAUGES: { value: RailGauge; label: string }[] = [
-  { value: 1067, label: '狭軌' },
+  { value: DEFAULT_GAUGE, label: '狭軌' },
   { value: 1435, label: '標準軌' },
 ];
 const EXTENDED_GAUGES: { value: RailGauge; label: string }[] = [
   { value: 762, label: '特殊狭軌' },
   { value: 1372, label: '馬車軌間' },
+];
+
+// 軌道(何キロレール): レール種別の選択肢(リアリスティックのみ)。
+const RAIL_WEIGHT_OPTIONS: { value: RailWeight; label: string; hint: string }[] = [
+  { value: 37, label: '37kg', hint: '軽量・安価(速度上限70km/h、許容軸重12t)。コスト×0.8' },
+  { value: 50, label: '50kgN', hint: '標準(速度上限110km/h、許容軸重16t)。コスト×1.0' },
+  { value: 60, label: '60kg', hint: '重量・高価(速度上限なし、軸重無制限)。コスト×1.3' },
+];
+
+// S2: 信号種別の選択肢(progress/signalling-plan.md)。
+const SIGNAL_KIND_OPTIONS: { value: SignalKind; label: string; hint: string }[] = [
+  { value: 'block', label: '閉塞', hint: 'ブロック全体の占有で他列車の進入を止める(既定)' },
+  { value: 'home', label: '場内', hint: '同じブロック内でも、自分の経路セルが他列車と重ならなければ進入できる(駅構内向け)' },
+  { value: 'departure', label: '出発', hint: '停車中はこの先を予約しない。発車後は先のブロックが空くまで待つ' },
+];
+
+// S3: 保安装置の選択肢(progress/signalling-plan.md)。
+const PROTECTION_OPTIONS: { value: TrainProtection | undefined; label: string; hint: string }[] = [
+  { value: undefined, label: 'なし', hint: '無防備。信号冒進(SPAD)の確率が最も高い' },
+  { value: 'ats-s', label: 'ATS-S', hint: `警報のみ(確認で通過できる)。地上設備 +¥${PROTECTION_COST['ats-s']}/マス` },
+  { value: 'ats-p', label: 'ATS-P', hint: `パターン照査で自動ブレーキ。地上設備 +¥${PROTECTION_COST['ats-p']}/マス` },
+  { value: 'atc', label: 'ATC', hint: `車内信号・段階速度制御。地上設備 +¥${PROTECTION_COST.atc}/マス` },
+  { value: 'cbtc', label: 'CBTC', hint: `無線移動閉塞。地上設備 +¥${PROTECTION_COST.cbtc}/マス。車上装置も揃えば移動閉塞になる` },
 ];
 
 interface GameUIProps {
@@ -93,15 +124,20 @@ interface GameUIProps {
   onSetStopLocation: (loc: 'near' | 'middle' | 'far') => void;
   /** 建設プレビュー中のセル列(GameSceneのカーソル/ドラッグから流れてくる) */
   previewPath: { x: number; z: number }[];
-  // ★追加: 運用グループ(共有運行表＋発車間隔)
-  groups: TrainGroupData[];
-  onCreateGroup: (seedTrainId?: string) => string;
-  onAssignGroup: (trainId: string, groupId: string | null) => void;
-  onSetHeadway: (groupId: string, headwaySeconds: number) => void;
-  onSetMode: (groupId: string, mode: LineMode) => void;
-  onRenameGroup: (groupId: string, name: string) => void;
-  onClearGroupSchedule: (groupId: string) => void;
-  onDeleteGroup: (groupId: string) => void;
+  // ★追加: 路線＋種別(共有運行表＋発車間隔)
+  lines: LineData[];
+  services: ServiceData[];
+  onCreateLine: (seedTrainId?: string) => string;
+  onClearLineStops: (lineId: string) => void;
+  onRenameLine: (lineId: string, name: string) => void;
+  onSetLineMode: (lineId: string, mode: LineMode) => void;
+  onDeleteLine: (lineId: string) => void;
+  onCreateService: (lineId: string) => string;
+  onRenameService: (serviceId: string, name: string) => void;
+  onSetServiceHeadway: (serviceId: string, headwaySeconds: number) => void;
+  onToggleServiceStop: (serviceId: string, stationId: string) => void;
+  onDeleteService: (serviceId: string) => void;
+  onAssignService: (trainId: string, serviceId: string | null) => void;
   // PM2: プレイモードのルールフラグ集合。rules.gauge=falseなら軌間/電化UIは一切出さない。
   gameRules: GameRules;
   // PM2: 線路(rail)ツール専用の軌間/電化選択。
@@ -110,9 +146,24 @@ interface GameUIProps {
   // PM2 Stage B: 改軌ツール専用の目的軌間。
   regaugeTargetGauge: RailGauge | undefined;
   setRegaugeTargetGauge: (gauge: RailGauge | undefined) => void;
-  // PM2: 車庫(depot)ツールで列車を購入するときの動力方式選択。
-  purchasePower: TrainPower;
-  setPurchasePower: (power: TrainPower) => void;
+  // S2: 信号(signal)ツール専用の種別選択。rules.signalling==='s2'のときだけUIに出す。
+  signalKind: SignalKind;
+  setSignalKind: (kind: SignalKind) => void;
+  // OpenTTD式の駅方向指定: 駅(station)ツールでプレイヤーが選ぶ軸('ns'/'ew')。
+  // 地平駅の建設判定で権威的に使う(高架/地下駅は別機構のため参照しない)。
+  stationAxis: StationAxis;
+  setStationAxis: (axis: StationAxis) => void;
+  // ★追加: 車庫インスペクタ(選択中の車庫セル・列車購入/売却)。
+  selectedDepotKey: string | null;
+  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection, model?: TrainModelId) => void;
+  onSellTrain: (trainId: string) => void;
+  onCloneTrain: (trainId: string, count?: number) => void;
+  onSelectTrain: (id: string | null) => void;
+  // D2/D3: 乗客視点(乗車モード)。ridingTrainId=null なら乗車していない。
+  ridingTrainId: string | null;
+  ridingMode: RiderMode;
+  onBoardTrain: (trainId: string, mode: RiderMode) => void;
+  onAlightTrain: () => void;
 }
 
 // --- 建設ツールの定義(表記は日本語に統一し、ショートカットキーを併記する) ---
@@ -127,7 +178,7 @@ const BUILD_TOOLS: {
   { mode: 'none', label: '選択', key: '1', accent: '#8b98a6', hint: '列車や駅をクリックして選ぶ' },
   { mode: 'rail', label: '線路', key: '2', accent: T.accent, cost: `¥${RAIL_COST}/マス`, hint: `ドラッグで敷設。水上は橋(5倍)、山は隧道(8倍)、地下は掘割(${UNDERGROUND_RAIL_COST_MULTIPLIER}倍)。高架/地下の端に当てると坂で自動接続。↑/↓で建設レベル(高架/地下)を切替` },
   { mode: 'station', label: '駅', key: '3', accent: T.station, cost: `¥${STATION_COST.toLocaleString()}`, hint: `線路の上に置くと隣接セルと繋がって長いホームになる。地下駅は¥${UNDERGROUND_STATION_COST.toLocaleString()}。↑/↓で建設レベル(高架/地下)を切替` },
-  { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '車庫をクリックすると列車を購入できる' },
+  { mode: 'depot', label: '車庫', key: '4', accent: T.depot, cost: `¥${DEPOT_COST.toLocaleString()}`, hint: '選択ツールで車庫をクリックすると車両の購入・管理ができる' },
   { mode: 'signal', label: '信号', key: '5', accent: T.signal, cost: `¥${SIGNAL_COST.toLocaleString()}`, hint: 'Shift+クリックで撤去' },
   { mode: 'remove', label: '撤去', key: '6', accent: T.danger, cost: '無料', hint: '払い戻しはありません' },
   { mode: 'raise', label: '盛土', key: '7', accent: T.terrain, cost: `¥${TERRAIN_EDIT_COST}/マス`, hint: 'ドラッグした矩形範囲を1段盛り上げる。段差1以下を保つため周囲も自動でならされる(その分も課金)。線路・町・水の上は不可' },
@@ -170,13 +221,16 @@ export const GameUI: React.FC<GameUIProps> = ({
   loan, onBorrow, onRepay,
   stopLocation, onSetStopLocation,
   previewPath,
-  groups, onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup,
-  onClearGroupSchedule, onDeleteGroup,
+  lines, services, onCreateLine, onClearLineStops, onRenameLine, onSetLineMode, onDeleteLine,
+  onCreateService, onRenameService, onSetServiceHeadway, onToggleServiceStop, onDeleteService, onAssignService,
   gameRules, railOptions, setRailOptions, regaugeTargetGauge, setRegaugeTargetGauge,
-  purchasePower, setPurchasePower,
+  signalKind, setSignalKind,
+  stationAxis, setStationAxis,
+  selectedDepotKey, onBuyTrain, onSellTrain, onCloneTrain, onSelectTrain,
+  ridingTrainId, ridingMode, onBoardTrain, onAlightTrain,
 }) => {
   const [gameDate, setGameDate] = useState({ year: 1, month: 1, day: 1 });
-  const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'groups'>('none');
+  const [openPanel, setOpenPanel] = useState<'none' | 'finance' | 'settings' | 'lines'>('none');
   const [passengers, setPassengers] = useState(0);
   // 選択中の列車が経路待ちで動けていない秒数(TrainRuntime.waitTimer)。長時間ならUIで警告する。
   const [stuckSeconds, setStuckSeconds] = useState(0);
@@ -188,7 +242,7 @@ export const GameUI: React.FC<GameUIProps> = ({
   const [stationArrivals, setStationArrivals] = useState<StationArrival[]>([]);
   // 路線パネルで停車駅ごとの待ち人数を出すための、駅id→待ち人数。
   const [waitingByStation, setWaitingByStation] = useState<Map<string, number>>(new Map());
-  // 路線id→実績の平均運転間隔(秒)。設定値どおりに走れているかを見るため。
+  // 種別id→実績の平均運転間隔(秒)。設定値どおりに走れているかを見るため。
   const [actualIntervals, setActualIntervals] = useState<Map<string, number>>(new Map());
 
   // sim層が持つ値(時計・乗客数・待ち人数)は毎tick変わるため、UIからは低頻度でポーリングする。
@@ -203,11 +257,18 @@ export const GameUI: React.FC<GameUIProps> = ({
     const id = setInterval(() => {
       setPassengers(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.passengers ?? 0) : 0);
       setStuckSeconds(selectedTrainId ? (world.current?.runtimes.get(selectedTrainId)?.waitTimer ?? 0) : 0);
+      // D2: 乗車中の列車がワールドから消えた(到着後の回収・車庫入りなど)場合、この低頻度
+      // ポーリングで気づいて降車する。フレームごとの自動降車はWebGpuRenderDriver側(D2実装
+      // メモ参照)がriderState.trainIdを直接クリアするが、React側のUI表示(ridingTrainId)は
+      // ここで追随させる必要がある。
+      if (ridingTrainId && !world.current?.runtimes.get(ridingTrainId)) {
+        onAlightTrain();
+      }
       setWaitingByStation(new Map(world.current?.waiting ?? []));
-      const samples = world.current?.groupIntervals;
+      const samples = world.current?.serviceIntervals;
       setActualIntervals(new Map(
         samples
-          ? groups.map(g => [g.id, averageInterval(samples, g.id)] as const)
+          ? services.map(s => [s.id, averageInterval(samples, s.id)] as const)
               .filter((entry): entry is readonly [string, number] => entry[1] !== null)
           : []
       ));
@@ -227,12 +288,12 @@ export const GameUI: React.FC<GameUIProps> = ({
       // 発車標: 駅を選んでいるときだけ計算する(全駅ぶんを毎回計算しない)。
       setStationArrivals(
         world.current
-          ? computeStationArrivals(selectedStationId, world.current.trains, world.current.runtimes, groups)
+          ? computeStationArrivals(selectedStationId, world.current.trains, world.current.runtimes, lines, services)
           : []
       );
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [selectedTrainId, selectedStationId, world, stations, groups]);
+  }, [selectedTrainId, selectedStationId, world, stations, lines, services, ridingTrainId, onAlightTrain]);
 
   // キーボードショートカット: 1〜6で建設モード、Spaceで一時停止、Escで選択解除。
   // 線路(rail)・駅(station)ツール選択中はArrowUp/Downで建設レベルを0(地平)〜
@@ -247,7 +308,10 @@ export const GameUI: React.FC<GameUIProps> = ({
         && (t.mode !== 'substation' || gameRules.electrification === 'feeding'));
       if (tool) { setBuildMode(tool.mode); return; }
       if (e.code === 'Space') { e.preventDefault(); setSimSpeed(simSpeed === 0 ? 1 : 0); return; }
-      if (e.key === 'Escape') { setBuildMode('none'); setOpenPanel('none'); return; }
+      if (e.key === 'Escape') {
+        if (ridingTrainId) { onAlightTrain(); return; }
+        setBuildMode('none'); setOpenPanel('none'); return;
+      }
       if ((buildMode === 'rail' || buildMode === 'station')
         && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         e.preventDefault();
@@ -259,10 +323,12 @@ export const GameUI: React.FC<GameUIProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge, gameRules.electrification]);
+  }, [setBuildMode, setSimSpeed, simSpeed, buildMode, buildLevel, setBuildLevel, gameRules.gauge, gameRules.electrification, ridingTrainId, onAlightTrain]);
 
   const selectedTrain = trains.find(t => t.id === selectedTrainId);
   const selectedStation = selectedStationId ? stations.get(selectedStationId) : undefined;
+  const selectedDepotPos = selectedDepotKey ? fromKey(selectedDepotKey) : null;
+  const selectedDepotCell = selectedDepotPos ? railMap.get(selectedDepotKey!) : undefined;
   const activeTool = BUILD_TOOLS.find(t => t.mode === buildMode);
 
   // 建設プレビュー(コスト・可否)。建設ロジックそのものに問い合わせて判定する。
@@ -271,13 +337,19 @@ export const GameUI: React.FC<GameUIProps> = ({
     const blockers = buildEditBlockers({ halfExtent, railMap, townTileIndex: townTiles, baseField });
     return evaluateBuild(buildMode, previewPath, railMap, stations, field, money, buildLevel, townTiles, {
       base: baseField, editedField, blockers,
-    }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge' ? { targetGauge: regaugeTargetGauge ?? 1067 } : undefined);
-  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge]);
+    }, buildMode === 'rail' ? railOptions : {}, buildMode === 'regauge'
+      // H4: commitPath(useGameLogic.ts)と同じくoccupiedCellKeysFromRuntimesで
+      // 走行中の実位置を見る。省略(=常に空集合)だとプレビューが実際の可否と食い違う。
+      ? { targetGauge: regaugeTargetGauge ?? DEFAULT_GAUGE, occupiedCells: occupiedCellKeysFromRuntimes(world.current?.runtimes ?? new Map()) }
+      : undefined,
+    stationAxis);
+  }, [buildMode, previewPath, railMap, stations, field, baseField, editedField, money, buildLevel, townTiles, halfExtent, railOptions, regaugeTargetGauge, world, stationAxis]);
 
   // 折返し推奨の判定は経路探索を伴うので、路線・線路・駅が変わったときだけ計算する。
+  // suggestsShuttleは物理経路(路線のstops)に対して評価する(種別のサブセットではない)。
   const shuttleSuggestions = useMemo(
-    () => new Map(groups.map(g => [g.id, suggestsShuttle(g.schedule, railMap, stations)])),
-    [groups, railMap, stations]
+    () => new Map(lines.map(l => [l.id, suggestsShuttle(l.stops, railMap, stations)])),
+    [lines, railMap, stations]
   );
 
   const monthProfit =
@@ -324,9 +396,14 @@ export const GameUI: React.FC<GameUIProps> = ({
               scheduleClipboard={scheduleClipboard}
               onCopySchedule={onCopySchedule}
               onPasteSchedule={onPasteSchedule}
-              groups={groups}
-              onCreateGroup={onCreateGroup}
-              onAssignGroup={onAssignGroup}
+              lines={lines}
+              services={services}
+              onCreateLine={onCreateLine}
+              onAssignService={onAssignService}
+              isRiding={ridingTrainId === selectedTrain.id}
+              ridingMode={ridingMode}
+              onBoard={(mode) => onBoardTrain(selectedTrain.id, mode)}
+              onAlight={onAlightTrain}
             />
           ) : selectedStation ? (
             <StationInspector
@@ -338,6 +415,20 @@ export const GameUI: React.FC<GameUIProps> = ({
               demand={stationDemand}
               money={money}
               onUpgradeDoors={onUpgradeDoors}
+            />
+          ) : selectedDepotPos && selectedDepotCell?.type === 'depot' ? (
+            <DepotInspector
+              x={selectedDepotPos.x}
+              z={selectedDepotPos.z}
+              gauge={selectedDepotCell.gauge}
+              trains={trains}
+              money={money}
+              gameRules={gameRules}
+              onSelectTrain={onSelectTrain}
+              onDeploy={onDeploy}
+              onSellTrain={onSellTrain}
+              onCloneTrain={onCloneTrain}
+              onBuyTrain={onBuyTrain}
             />
           ) : (
             <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
@@ -389,10 +480,10 @@ export const GameUI: React.FC<GameUIProps> = ({
             収支
           </button>
           <button
-            onClick={() => setOpenPanel(p => (p === 'groups' ? 'none' : 'groups'))}
-            style={button({ active: openPanel === 'groups', accent: T.station, compact: true })}
+            onClick={() => setOpenPanel(p => (p === 'lines' ? 'none' : 'lines'))}
+            style={button({ active: openPanel === 'lines', accent: T.station, compact: true })}
           >
-            運用
+            路線
           </button>
           <button
             onClick={() => setOpenPanel(p => (p === 'settings' ? 'none' : 'settings'))}
@@ -426,21 +517,26 @@ export const GameUI: React.FC<GameUIProps> = ({
           </div>
         )}
 
-        {openPanel === 'groups' && (
-          <GroupPanel
-            groups={groups}
+        {openPanel === 'lines' && (
+          <LinePanel
+            lines={lines}
+            services={services}
             trains={trains}
             stations={stations}
             waitingByStation={waitingByStation}
             actualIntervals={actualIntervals}
             shuttleSuggestions={shuttleSuggestions}
-            onCreateGroup={onCreateGroup}
-            onAssignGroup={onAssignGroup}
-            onSetHeadway={onSetHeadway}
-            onSetMode={onSetMode}
-            onRenameGroup={onRenameGroup}
-            onClearGroupSchedule={onClearGroupSchedule}
-            onDeleteGroup={onDeleteGroup}
+            onCreateLine={onCreateLine}
+            onClearLineStops={onClearLineStops}
+            onRenameLine={onRenameLine}
+            onSetLineMode={onSetLineMode}
+            onDeleteLine={onDeleteLine}
+            onCreateService={onCreateService}
+            onRenameService={onRenameService}
+            onSetServiceHeadway={onSetServiceHeadway}
+            onToggleServiceStop={onToggleServiceStop}
+            onDeleteService={onDeleteService}
+            onAssignService={onAssignService}
           />
         )}
 
@@ -463,7 +559,9 @@ export const GameUI: React.FC<GameUIProps> = ({
               background: 'rgba(153, 27, 27, 0.92)', border: '1px solid rgba(255,255,255,0.22)',
               padding: '8px 14px', fontSize: 12.5, fontWeight: 700, color: '#fff',
             })}>
-              ⚠ {stations.get(a.stationId)?.name ?? a.stationId} で人身事故 — 運転見合わせ中
+              {a.kind === 'spad'
+                ? `⚠ ${a.stationId} で信号冒進(SPAD) — 運転見合わせ中`
+                : `⚠ ${stations.get(a.stationId)?.name ?? a.stationId} で人身事故 — 運転見合わせ中`}
             </div>
           ))}
         </div>
@@ -503,6 +601,54 @@ export const GameUI: React.FC<GameUIProps> = ({
           </div>
         )}
 
+        {/* OpenTTD式の駅方向指定: 駅ツール選択中は軸(南北/東西)を明示選択させる。
+            高架/地下駅(buildLevel!==0)は軸の概念を持たない別機構なので、地平駅
+            (buildLevel===0)のときだけ出す。 */}
+        {buildMode === 'station' && buildLevel === 0 && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>駅の向き</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button
+                onClick={() => setStationAxis('ns')}
+                style={{ ...button({ active: stationAxis === 'ns', accent: T.station, compact: true }), minWidth: 48 }}
+                title="南北方向のホームにする"
+              >
+                南北
+              </button>
+              <button
+                onClick={() => setStationAxis('ew')}
+                style={{ ...button({ active: stationAxis === 'ew', accent: T.station, compact: true }), minWidth: 48 }}
+                title="東西方向のホームにする"
+              >
+                東西
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* S2: 信号種別の選択(信号ツール、rules.signalling==='s2'のときのみ)。 */}
+        {buildMode === 'signal' && gameRules.signalling === 's2' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>信号種別</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {SIGNAL_KIND_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setSignalKind(opt.value)}
+                  style={button({ active: signalKind === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* PM2: 軌間・電化の選択(線路ツール、rules.gauge=trueのときのみ)。 */}
         {buildMode === 'rail' && gameRules.gauge && (
           <div style={panel({
@@ -514,7 +660,7 @@ export const GameUI: React.FC<GameUIProps> = ({
                 <button
                   key={g.value}
                   onClick={() => setRailOptions({ ...railOptions, gauge: g.value })}
-                  style={button({ active: (railOptions.gauge ?? 1067) === g.value, accent: T.accent, compact: true })}
+                  style={button({ active: (railOptions.gauge ?? DEFAULT_GAUGE) === g.value, accent: T.accent, compact: true })}
                 >
                   {g.label}
                 </button>
@@ -560,27 +706,43 @@ export const GameUI: React.FC<GameUIProps> = ({
           </div>
         )}
 
-        {/* PM2/PM3: 車庫ツールでの列車購入時の動力方式選択(rules.electrification!=='none'のみ)。
-            交流/交直流はrules.electrificationが'boundaries'以上のときのみ選べる(design decision 2)。
-            軌間は車庫セルの軌間を自動継承する(useGameLogic.tsのbuyTrain)ため選択させない。 */}
-        {buildMode === 'depot' && gameRules.electrification !== 'none' && (
+        {/* 軌道(何キロレール): レール種別の選択(線路ツール、rules.trackClasses=trueのときのみ)。
+            省略時は50kgN(DEFAULT_RAIL_WEIGHT)扱いなので既定選択も50kgNにしておく。 */}
+        {buildMode === 'rail' && gameRules.trackClasses && (
           <div style={panel({
             display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
           })}>
-            <span style={{ color: T.textMuted }}>購入する動力</span>
+            <span style={{ color: T.textMuted }}>レール種別</span>
             <div style={{ display: 'flex', gap: 4 }}>
-              {([
-                ['electric', '電車'],
-                ...(gameRules.electrification !== 'modes' ? [['electric-ac', '交流電車'], ['electric-acdc', '交直流電車']] as const : []),
-                ['diesel', '気動車'],
-              ] as const).map(([value, label]) => (
+              {RAIL_WEIGHT_OPTIONS.map(opt => (
                 <button
-                  key={value}
-                  onClick={() => setPurchasePower(value)}
-                  style={button({ active: purchasePower === value, accent: T.depot, compact: true })}
-                  title={`¥${trainCostFor(value).toLocaleString()}`}
+                  key={opt.value}
+                  onClick={() => setRailOptions({ ...railOptions, railWeight: opt.value })}
+                  style={button({ active: (railOptions.railWeight ?? 50) === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
                 >
-                  {label}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* S3: 保安装置の選択(線路ツール、rules.signalling==='s3'のときのみ)。 */}
+        {buildMode === 'rail' && gameRules.signalling === 's3' && (
+          <div style={panel({
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', fontSize: 12.5,
+          })}>
+            <span style={{ color: T.textMuted }}>保安装置</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {PROTECTION_OPTIONS.map(opt => (
+                <button
+                  key={opt.label}
+                  onClick={() => setRailOptions({ ...railOptions, protection: opt.value })}
+                  style={button({ active: railOptions.protection === opt.value, accent: T.accent, compact: true })}
+                  title={opt.hint}
+                >
+                  {opt.label}
                 </button>
               ))}
             </div>
@@ -598,7 +760,7 @@ export const GameUI: React.FC<GameUIProps> = ({
                 <button
                   key={g.value}
                   onClick={() => setRegaugeTargetGauge(g.value)}
-                  style={button({ active: (regaugeTargetGauge ?? 1067) === g.value, accent: T.bridge, compact: true })}
+                  style={button({ active: (regaugeTargetGauge ?? DEFAULT_GAUGE) === g.value, accent: T.bridge, compact: true })}
                 >
                   {g.label}
                 </button>
@@ -649,13 +811,37 @@ const SLOPE_ISSUE_MESSAGES: Record<NonNullable<BuildPreview['slopeIssue']>, stri
   'tunnel-exit-mismatch': 'トンネル出口の標高が合いません',
 };
 
+// 建設不可の具体理由(buildPreview.tsのfailure、construction.tsのBuildFailureReason)
+// ごとの表示文言。地上レールのother-slope等(GroundRailPlanFailureReason)は
+// SLOPE_ISSUE_MESSAGESと同じ文言をここにも持たせ、モードを問わず単一のマップで
+// 引けるようにする(値は意図的に重複させている。表示文言の一本化はしない=
+// 「slopeIssue専用の言い回し」を保つため)。
+const FAILURE_MESSAGES: Record<NonNullable<BuildPreview['failure']>, string> = {
+  water: '水面には建設できません',
+  'not-flat': '平らな地面が必要です',
+  'town-tile': '町のタイルには建設できません',
+  'house-tile': '家のあるタイルは通れません',
+  occupied: '他の構造物があります',
+  'ramp-conflict': '坂と干渉します',
+  'needs-adjacent-electrified-rail': '隣接する電化線路が必要です',
+  'needs-rail': '信号は線路の上に設置します',
+  'station-axis-mismatch': '線路の向きと合いません',
+  'other-slope': SLOPE_ISSUE_MESSAGES['other-slope'],
+  'direction-blocked': SLOPE_ISSUE_MESSAGES['direction-blocked'],
+  'edge-discontinuous': SLOPE_ISSUE_MESSAGES['edge-discontinuous'],
+  'tunnel-exit-mismatch': SLOPE_ISSUE_MESSAGES['tunnel-exit-mismatch'],
+};
+
 // --- 建設フィードバック(コストと可否) ---
 const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string }> = ({
   preview, toolLabel,
 }) => {
   if (!preview || preview.cellCount === 0) return null;
 
-  const { reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, slopeIssue } = preview;
+  const {
+    reason, cost, cellCount, bridgeCells, tunnelCells, overpassCells, rampCells, mode, level, failure,
+    terraformCorners,
+  } = preview;
   // 'incomplete-path'(高架/地下の線路でまだ1マスしか指していない)は建設不可ではなく
   // 「操作の途中」なので、警告色ではなく控えめな案内にする(0.5.0-Alpha-4c)。
   const tone =
@@ -666,7 +852,7 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
   const message =
     reason === 'insufficient-funds' ? '資金が足りません'
     : reason === 'incomplete-path' ? 'ドラッグして2マス以上の経路を指定してください'
-    : reason === 'no-effect' ? (slopeIssue ? SLOPE_ISSUE_MESSAGES[slopeIssue] : 'ここには建設できません')
+    : reason === 'no-effect' ? (failure ? FAILURE_MESSAGES[failure] : 'ここには建設できません')
     : null;
   const isElevatedRail = mode === 'rail' && level > 0;
 
@@ -682,6 +868,8 @@ const BuildFeedback: React.FC<{ preview: BuildPreview | null; toolLabel: string 
   } else if (overpassCells > 0) {
     detail.push(`橋桁 ${overpassCells}(4倍)`);
   }
+  // P-terraform: other-slope(三角形の斜面など)を自動整地(埋め立て)して建設した場合の内訳。
+  if (terraformCorners) detail.push(`整地含む ${terraformCorners}`);
 
   return (
     <div style={panel({
@@ -717,17 +905,24 @@ const TrainInspector: React.FC<{
   scheduleClipboard: string[] | null;
   onCopySchedule: (id: string) => void;
   onPasteSchedule: (id: string) => void;
-  groups: TrainGroupData[];
-  onCreateGroup: (seedTrainId?: string) => string;
-  onAssignGroup: (trainId: string, groupId: string | null) => void;
+  lines: LineData[];
+  services: ServiceData[];
+  onCreateLine: (seedTrainId?: string) => string;
+  onAssignService: (trainId: string, serviceId: string | null) => void;
+  /** D2/D3: この列車に乗車中か、どのモードか。 */
+  isRiding: boolean;
+  ridingMode: RiderMode;
+  onBoard: (mode: RiderMode) => void;
+  onAlight: () => void;
 }> = ({
   train, stations, passengers, stuckSeconds, money, isEditingSchedule, setIsEditingSchedule,
   onDeploy, onAddCar, onRemoveCar, scheduleClipboard, onCopySchedule, onPasteSchedule,
-  groups, onCreateGroup, onAssignGroup,
+  lines, services, onCreateLine, onAssignService, isRiding, ridingMode, onBoard, onAlight,
 }) => {
   const stored = train.status === 'stored';
-  const group = findGroup(groups, train.groupId);
-  const schedule = effectiveSchedule(train, groups);
+  const assignment = resolveAssignment(train, lines, services);
+  const schedule = effectiveSchedule(train, lines, services);
+  const skipSet = new Set(assignment?.service.skipStationIds ?? []);
   const capacity = train.cars * CAPACITY_PER_CAR;
   const load = capacity > 0 ? passengers / capacity : 0;
   const canAdd = train.cars < 8 && money >= CAR_COST;
@@ -744,6 +939,28 @@ const TrainInspector: React.FC<{
           {stored ? '車庫' : '運行中'}
         </div>
       </div>
+
+      {/* D2/D3: 乗客視点(乗車モード)。車庫在籍中の列車は乗る意味が無いので出さない。
+          客席/運転台の2ボタン。乗車中のモードのボタンは押すと降車、もう片方は
+          押すと(降車せず)そのモードへ切り替わる。 */}
+      {!stored && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
+          <button
+            onClick={() => (isRiding && ridingMode === 'passenger' ? onAlight() : onBoard('passenger'))}
+            style={{ ...button({ active: isRiding && ridingMode === 'passenger', compact: true }), flex: 1 }}
+            title={isRiding && ridingMode === 'passenger' ? '降車してクォータービューへ戻る(Escキーでも可)' : '客席からこの列車に乗って車窓を眺める'}
+          >
+            {isRiding && ridingMode === 'passenger' ? '降車' : '乗車(客席)'}
+          </button>
+          <button
+            onClick={() => (isRiding && ridingMode === 'cab' ? onAlight() : onBoard('cab'))}
+            style={{ ...button({ active: isRiding && ridingMode === 'cab', compact: true }), flex: 1 }}
+            title={isRiding && ridingMode === 'cab' ? '降車してクォータービューへ戻る(Escキーでも可)' : '運転台からこの列車に乗ってHUDを見る'}
+          >
+            {isRiding && ridingMode === 'cab' ? '降車' : '運転台'}
+          </button>
+        </div>
+      )}
 
       {!stored && stuckSeconds >= STUCK_WARNING_SECONDS && (
         <div style={{
@@ -771,7 +988,7 @@ const TrainInspector: React.FC<{
 
       {/* 編成 */}
       <div style={{ marginTop: 12 }}>
-        <div style={sectionLabel}>編成 — {train.cars}両</div>
+        <div style={sectionLabel}>編成 — {trainModelOf(train.model).name}・{train.cars}両</div>
         <div style={{ display: 'flex', gap: 3, marginBottom: 7 }}>
           {Array.from({ length: train.cars }).map((_, i) => (
             <div key={i} title={i === 0 ? '先頭車' : `${i + 1}両目`} style={{
@@ -803,55 +1020,104 @@ const TrainInspector: React.FC<{
         )}
       </div>
 
-      {/* 運用グループ */}
+      {/* 運用(路線＋種別) */}
       <div style={{ marginTop: 13 }}>
         <div style={sectionLabel}>運用</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           <button
-            onClick={() => onAssignGroup(train.id, null)}
-            style={button({ active: !group, compact: true })}
+            onClick={() => onAssignService(train.id, null)}
+            style={button({ active: !assignment, compact: true })}
           >
             単独
           </button>
-          {groups.map(g => (
+          {lines.map(l => (
             <button
-              key={g.id}
-              onClick={() => onAssignGroup(train.id, g.id)}
+              key={l.id}
+              onClick={() => {
+                const first = services.find(s => s.lineId === l.id);
+                if (first) onAssignService(train.id, first.id);
+              }}
               style={{
-                ...button({ active: group?.id === g.id, accent: g.colour, compact: true }),
+                ...button({ active: assignment?.line.id === l.id, accent: l.colour, compact: true }),
                 display: 'flex', alignItems: 'center', gap: 5,
               }}
-              title={`${g.name} に所属させる`}
+              title={`${l.name} に所属させる`}
             >
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: g.colour }} />
-              {g.name}
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: l.colour }} />
+              {l.name}
             </button>
           ))}
-          <button onClick={() => onCreateGroup(train.id)} style={button({ compact: true })} title="この列車の運行表で新しいグループを作る">
+          <button onClick={() => onCreateLine(train.id)} style={button({ compact: true })} title="この列車の運行表で新しい路線を作る">
             ＋新規
           </button>
         </div>
-        {group && (
-          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 6, lineHeight: 1.6 }}>
-            {group.name} の運行表を共有中。発車間隔
-            {group.headwaySeconds > 0 ? ` ${group.headwaySeconds}秒` : ' なし'}（「運用」パネルで変更）
-          </div>
+        {assignment && (
+          <>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 6 }}>
+              {services.filter(s => s.lineId === assignment.line.id).map(s => (
+                <button
+                  key={s.id}
+                  onClick={() => onAssignService(train.id, s.id)}
+                  style={button({ active: assignment.service.id === s.id, accent: assignment.line.colour, compact: true })}
+                  title={`${s.name} に所属させる`}
+                >
+                  {s.name}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 6, lineHeight: 1.6 }}>
+              {assignment.line.name} {assignment.service.name} の運行表に従う。発車間隔
+              {assignment.service.headwaySeconds > 0 ? ` ${assignment.service.headwaySeconds}秒` : ' なし'}（「路線」パネルで変更）
+            </div>
+          </>
         )}
       </div>
 
       {/* 運行表 */}
       <div style={{ marginTop: 13 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={sectionLabel}>{group ? `運行表（${group.name}で共有）` : '運行表'}</div>
-          <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
-            <button onClick={() => onCopySchedule(train.id)} style={button({ compact: true })} title="運行表をコピー">複製</button>
-            {scheduleClipboard && (
-              <button onClick={() => onPasteSchedule(train.id)} style={button({ compact: true })} title="運行表を貼り付け">貼付</button>
-            )}
+          <div style={sectionLabel}>
+            {assignment ? `運行表（${assignment.line.name} ${assignment.service.name}の運行表）` : '運行表'}
           </div>
+          {!assignment && (
+            <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+              <button onClick={() => onCopySchedule(train.id)} style={button({ compact: true })} title="運行表をコピー">複製</button>
+              {scheduleClipboard && (
+                <button onClick={() => onPasteSchedule(train.id)} style={button({ compact: true })} title="運行表を貼り付け">貼付</button>
+              )}
+            </div>
+          )}
         </div>
 
-        {schedule.length === 0 ? (
+        {assignment ? (
+          assignment.line.stops.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: T.textFaint }}>停車駅がありません</div>
+          ) : (
+            <div style={{ maxHeight: 108, overflowY: 'auto', fontSize: 12 }}>
+              {assignment.line.stops.map((sid, idx) => {
+                const skipped = skipSet.has(sid);
+                const effectiveIdx = schedule.indexOf(sid);
+                const isNext = !skipped && effectiveIdx === train.scheduleIndex;
+                return (
+                  <div key={`${sid}-${idx}`} style={{
+                    display: 'flex', alignItems: 'center', gap: 7, padding: '3px 0',
+                    color: skipped ? T.textFaint : isNext ? T.text : T.textMuted,
+                    fontWeight: isNext ? 700 : 400,
+                    textDecoration: skipped ? 'line-through' : 'none',
+                  }}>
+                    <span style={{
+                      width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                      background: isNext ? T.accent : 'rgba(255,255,255,0.1)',
+                      color: isNext ? T.accentInk : T.textMuted,
+                      fontSize: 10, fontWeight: 700, display: 'grid', placeItems: 'center',
+                    }}>{idx + 1}</span>
+                    {stations.get(sid)?.name ?? sid}
+                  </div>
+                );
+              })}
+            </div>
+          )
+        ) : schedule.length === 0 ? (
           <div style={{ fontSize: 11.5, color: T.textFaint }}>停車駅がありません</div>
         ) : (
           <div style={{ maxHeight: 108, overflowY: 'auto', fontSize: 12 }}>
@@ -893,7 +1159,9 @@ const TrainInspector: React.FC<{
       </button>
       {isEditingSchedule && (
         <div style={{ fontSize: 11.5, color: T.station, marginTop: 6, textAlign: 'center' }}>
-          地図上の駅をクリックして停車駅を追加
+          {assignment
+            ? `地図上の駅をクリックすると${assignment.line.name}の停車駅に追加`
+            : '地図上の駅をクリックして停車駅を追加'}
         </div>
       )}
     </div>
@@ -949,8 +1217,16 @@ const StationInspector: React.FC<{
                 <span style={{
                   width: 8, height: 8, borderRadius: '50%', background: a.lineColour, flexShrink: 0,
                 }} />
-                <span style={{ color: T.textMuted, flexShrink: 0, maxWidth: 64, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ color: T.textMuted, flexShrink: 0, maxWidth: 88, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {a.lineName}
+                  {a.serviceName && (
+                    <span style={{
+                      marginLeft: 4, fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: T.radiusPill,
+                      background: `${a.lineColour}2a`, color: a.lineColour,
+                    }}>
+                      {a.serviceName}
+                    </span>
+                  )}
                 </span>
                 <span style={{ flex: 1, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {(a.destinationStationId ? stations.get(a.destinationStationId)?.name : null) ?? a.trainId} ゆき
@@ -1010,6 +1286,160 @@ const StationInspector: React.FC<{
         <div style={{ fontSize: 11, color: T.textFaint, lineHeight: 1.6 }}>
           ホームドアを設置すると人身事故の発生確率が下がります。
         </div>
+      </div>
+    </div>
+  );
+};
+
+// --- 車庫インスペクタ ---
+// OpenTTD式: 車庫セルをクリックすると即購入ではなく、このパネルで在籍列車の一覧・
+// 出庫/売却・新規購入(動力/保安装置選択)を行う。
+const DepotInspector: React.FC<{
+  x: number;
+  z: number;
+  gauge: RailGauge | undefined;
+  trains: TrainData[];
+  money: number;
+  gameRules: GameRules;
+  onSelectTrain: (id: string | null) => void;
+  onDeploy: (id: string) => void;
+  onSellTrain: (id: string) => void;
+  onCloneTrain: (id: string, count?: number) => void;
+  onBuyTrain: (x: number, z: number, power?: TrainPower, protection?: TrainProtection, model?: TrainModelId) => void;
+}> = ({ x, z, gauge, trains, money, gameRules, onSelectTrain, onDeploy, onSellTrain, onCloneTrain, onBuyTrain }) => {
+  const [power, setPower] = useState<TrainPower>('diesel');
+  const [protection, setProtection] = useState<TrainProtection | undefined>(undefined);
+  // 車種(通勤形/近郊形/特急形)。ルールモードによらず常に選べる(3車種はいずれも実在)。
+  const [model, setModel] = useState<TrainModelId>('commuter');
+
+  const stored = trains.filter(t => t.status === 'stored' && t.x === x && t.z === z);
+  const effectivePower = gameRules.electrification !== 'none' ? power : 'diesel';
+  const effectiveProtection = gameRules.signalling === 's3' ? protection : undefined;
+  const cost = trainCostForProtected(effectivePower, effectiveProtection, model);
+  const canBuy = money >= cost;
+
+  const POWER_OPTIONS: readonly (readonly [TrainPower, string])[] = [
+    ['electric', '電車'],
+    ...(gameRules.electrification !== 'modes' ? [['electric-ac', '交流電車'], ['electric-acdc', '交直流電車']] as const : []),
+    ['diesel', '気動車'],
+  ];
+
+  // 車種ごとの一言ヒント(最高速・加減速の傾向)。UI表示専用でロジックには使わない。
+  const MODEL_HINTS: Record<TrainModelId, string> = {
+    commuter: `最高${TRAIN_MODELS.commuter.maxSpeedKmh}km/h・加減速が速い`,
+    suburban: `最高${TRAIN_MODELS.suburban.maxSpeedKmh}km/h・バランス型`,
+    express: `最高${TRAIN_MODELS.express.maxSpeedKmh}km/h・幹線向け(60kgレール前提)`,
+    'local-express': `最高${TRAIN_MODELS['local-express'].maxSpeedKmh}km/h・50kgレールで性能を出し切れる`,
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: T.depot }}>車庫</div>
+        <div style={{ fontSize: 11, color: T.textFaint }}>
+          ({x}, {z}){gauge ? `・軌間${gauge}mm` : ''}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <div style={sectionLabel}>在籍列車 — {stored.length}本</div>
+        {stored.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: T.textFaint }}>在籍している列車はありません</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {stored.map(t => {
+              const clonePower = gameRules.electrification !== 'none' ? (t.power ?? 'diesel') : 'diesel';
+              const cloneCost = trainTotalCost(trainCostForProtected(clonePower, t.protection, t.model), t.cars);
+              const canClone = money >= cloneCost;
+              const cloneTitle = `1本 ¥${cloneCost.toLocaleString()}`;
+              return (
+                <div key={t.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                  padding: '5px 7px', borderRadius: T.radius, background: 'rgba(255,255,255,0.05)',
+                }}>
+                  <span style={{ flex: 1, fontWeight: 600 }}>
+                    {t.id}
+                    <span style={{ marginLeft: 6, fontSize: 11, color: T.textFaint, fontWeight: 400 }}>
+                      {trainModelOf(t.model).name}・{t.cars}両{t.power ? `・${t.power}` : ''}
+                    </span>
+                  </span>
+                  <button onClick={() => onSelectTrain(t.id)} style={button({ compact: true })}>選択</button>
+                  <button onClick={() => onDeploy(t.id)} style={button({ compact: true, accent: T.positive })}>出庫</button>
+                  <button
+                    onClick={() => onCloneTrain(t.id, 1)}
+                    disabled={!canClone}
+                    style={button({ compact: true, disabled: !canClone })}
+                    title={cloneTitle}
+                  >複製</button>
+                  <button
+                    onClick={() => onCloneTrain(t.id, 5)}
+                    disabled={!canClone}
+                    style={button({ compact: true, disabled: !canClone })}
+                    title={cloneTitle}
+                  >×5</button>
+                  <button onClick={() => onSellTrain(t.id)} style={button({ compact: true, accent: T.danger })}>売却</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 13 }}>
+        <div style={sectionLabel}>購入</div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 2 }}>
+          {(Object.keys(TRAIN_MODELS) as TrainModelId[]).map(id => (
+            <button
+              key={id}
+              onClick={() => setModel(id)}
+              style={button({ active: model === id, accent: T.depot, compact: true })}
+            >
+              {TRAIN_MODELS[id].name}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 10.5, color: T.textFaint, marginBottom: 6 }}>{MODEL_HINTS[model]}</div>
+
+        {gameRules.electrification !== 'none' && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+            {POWER_OPTIONS.map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setPower(value)}
+                style={button({ active: power === value, accent: T.depot, compact: true })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {gameRules.signalling === 's3' && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+            {PROTECTION_OPTIONS.map(opt => (
+              <button
+                key={opt.label}
+                onClick={() => setProtection(opt.value)}
+                style={button({ active: protection === opt.value, accent: T.depot, compact: true })}
+                title={opt.hint}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <button
+          onClick={() => onBuyTrain(x, z, power, protection, model)}
+          disabled={!canBuy}
+          style={{ ...button({ disabled: !canBuy, accent: T.depot }), width: '100%' }}
+        >
+          ＋列車を購入 ¥{cost.toLocaleString()}
+        </button>
+        {!canBuy && (
+          <div style={{ fontSize: 11, color: T.danger, marginTop: 4 }}>資金が足りません</div>
+        )}
       </div>
     </div>
   );
@@ -1122,56 +1552,64 @@ const FinancePanel: React.FC<{ currentLedger: MonthlyLedger; ledgerHistory: Mont
   );
 };
 
-// --- 運用グループのパネル ---
+// --- 路線＋種別のパネル ---
 const LINE_MODE_LABEL: Record<LineMode, string> = { loop: '環状', shuttle: '折返し' };
 
-const GroupPanel: React.FC<{
-  groups: TrainGroupData[];
+const LinePanel: React.FC<{
+  lines: LineData[];
+  services: ServiceData[];
   trains: TrainData[];
   stations: Map<string, StationData>;
   waitingByStation: Map<string, number>;
+  /** 種別id→実績の平均運転間隔(秒)。 */
   actualIntervals: Map<string, number>;
   /** 路線id→「折返しにしたほうがよい」か。経路探索を伴うので呼び出し側でメモ化する。 */
   shuttleSuggestions: Map<string, boolean>;
-  onCreateGroup: (seedTrainId?: string) => string;
-  onAssignGroup: (trainId: string, groupId: string | null) => void;
-  onSetHeadway: (groupId: string, headwaySeconds: number) => void;
-  onSetMode: (groupId: string, mode: LineMode) => void;
-  onRenameGroup: (groupId: string, name: string) => void;
-  onClearGroupSchedule: (groupId: string) => void;
-  onDeleteGroup: (groupId: string) => void;
+  onCreateLine: (seedTrainId?: string) => string;
+  onClearLineStops: (lineId: string) => void;
+  onRenameLine: (lineId: string, name: string) => void;
+  onSetLineMode: (lineId: string, mode: LineMode) => void;
+  onDeleteLine: (lineId: string) => void;
+  onCreateService: (lineId: string) => string;
+  onRenameService: (serviceId: string, name: string) => void;
+  onSetServiceHeadway: (serviceId: string, headwaySeconds: number) => void;
+  onToggleServiceStop: (serviceId: string, stationId: string) => void;
+  onDeleteService: (serviceId: string) => void;
+  onAssignService: (trainId: string, serviceId: string | null) => void;
 }> = ({
-  groups, trains, stations, waitingByStation, actualIntervals, shuttleSuggestions,
-  onCreateGroup, onAssignGroup, onSetHeadway, onSetMode, onRenameGroup, onClearGroupSchedule, onDeleteGroup,
+  lines, services, trains, stations, waitingByStation, actualIntervals, shuttleSuggestions,
+  onCreateLine, onClearLineStops, onRenameLine, onSetLineMode, onDeleteLine,
+  onCreateService, onRenameService, onSetServiceHeadway, onToggleServiceStop, onDeleteService, onAssignService,
 }) => (
-  <div style={panel({ padding: 14, width: 330, maxHeight: '64vh', overflowY: 'auto' })}>
+  <div style={panel({ padding: 14, width: 340, maxHeight: '72vh', overflowY: 'auto' })}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
       <div style={sectionLabel}>路線</div>
-      <button onClick={() => onCreateGroup()} style={{ ...button({ compact: true }), marginBottom: 6 }}>
-        ＋新規
+      <button onClick={() => onCreateLine()} style={{ ...button({ compact: true }), marginBottom: 6 }}>
+        ＋路線を作成
       </button>
     </div>
 
-    {groups.length === 0 ? (
+    {lines.length === 0 ? (
       <div style={{ fontSize: 11.5, color: T.textMuted, lineHeight: 1.7 }}>
-        路線は「停車駅の並び」と「発車間隔」を決め、そこに列車を割り当てて運行します。
-        同じ路線の列車は運行表を共有するので、1本ずつ組み直す必要がありません。
+        路線は「停車駅の並び」を決め、そこに複数の種別（各停・快速など）を作って
+        列車を割り当てて運行します。同じ種別の列車は運行表を共有するので、
+        1本ずつ組み直す必要がありません。
         <br />
-        列車を選んで「運用」から作成してください。
+        「＋路線を作成」で空の路線を作り、選んで駅を割り当ててください。
       </div>
     ) : (
-      groups.map(g => {
-        const members = membersOf(trains, g.id);
+      lines.map(l => {
+        const lineServices = services.filter(s => s.lineId === l.id);
         return (
-          <div key={g.id} style={{
+          <div key={l.id} style={{
             border: `1px solid ${T.line}`, borderRadius: T.radiusSm,
             padding: 10, marginBottom: 8, background: 'rgba(255,255,255,0.03)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <span style={{ width: 9, height: 9, borderRadius: '50%', background: g.colour, flexShrink: 0 }} />
+              <span style={{ width: 9, height: 9, borderRadius: '50%', background: l.colour, flexShrink: 0 }} />
               <input
-                value={g.name}
-                onChange={e => onRenameGroup(g.id, e.target.value)}
+                value={l.name}
+                onChange={e => onRenameLine(l.id, e.target.value)}
                 style={{
                   flex: 1, minWidth: 0, background: 'transparent', border: 'none',
                   color: T.text, fontSize: 13, fontWeight: 700, fontFamily: T.font,
@@ -1179,30 +1617,8 @@ const GroupPanel: React.FC<{
                 }}
               />
               <span style={{ fontSize: 11, color: T.textMuted, whiteSpace: 'nowrap' }}>
-                {members.length}本
+                {lineServices.reduce((sum, s) => sum + membersOf(trains, s.id).length, 0)}本
               </span>
-            </div>
-
-            <div style={{ marginTop: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 11, color: T.textMuted }}>発車間隔</span>
-                <span style={{ fontSize: 11, color: T.textFaint, fontVariantNumeric: 'tabular-nums' }}>
-                  {actualIntervals.has(g.id)
-                    ? `実績 ${Math.round(actualIntervals.get(g.id)!)}秒`
-                    : '実績 計測中'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
-                {HEADWAY_CHOICES.map(sec => (
-                  <button
-                    key={sec}
-                    onClick={() => onSetHeadway(g.id, sec)}
-                    style={{ ...button({ active: g.headwaySeconds === sec, accent: g.colour, compact: true }), minWidth: 40 }}
-                  >
-                    {sec === 0 ? 'なし' : `${sec}秒`}
-                  </button>
-                ))}
-              </div>
             </div>
 
             <div style={{ marginTop: 9 }}>
@@ -1211,15 +1627,15 @@ const GroupPanel: React.FC<{
                 {(['loop', 'shuttle'] as LineMode[]).map(m => (
                   <button
                     key={m}
-                    onClick={() => onSetMode(g.id, m)}
-                    style={{ ...button({ active: (g.mode ?? 'loop') === m, accent: g.colour, compact: true }), flex: 1 }}
+                    onClick={() => onSetLineMode(l.id, m)}
+                    style={{ ...button({ active: (l.mode ?? 'loop') === m, accent: l.colour, compact: true }), flex: 1 }}
                     title={m === 'loop' ? '最後の駅の次は先頭の駅へ戻る' : '終端で折り返して来た道を戻る'}
                   >
                     {LINE_MODE_LABEL[m]}
                   </button>
                 ))}
               </div>
-              {(g.mode ?? 'loop') === 'loop' && shuttleSuggestions.get(g.id) && (
+              {(l.mode ?? 'loop') === 'loop' && shuttleSuggestions.get(l.id) && (
                 <div style={{ fontSize: 10.5, color: T.warning, marginTop: 5, lineHeight: 1.5 }}>
                   終端から始発まで来た道を丸ごと回送しています。折返しを選ぶと無駄がなくなります。
                 </div>
@@ -1228,13 +1644,13 @@ const GroupPanel: React.FC<{
 
             <div style={{ marginTop: 9 }}>
               <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>停車駅</div>
-              {g.schedule.length === 0 ? (
+              {l.stops.length === 0 ? (
                 <div style={{ fontSize: 11.5, color: T.textFaint, lineHeight: 1.6 }}>
                   未設定（列車を選び「運行表を編集」で駅をクリック）
                 </div>
               ) : (
                 <div style={{ display: 'grid', gap: 2 }}>
-                  {g.schedule.map((sid, i) => (
+                  {l.stops.map((sid, i) => (
                     <div key={`${sid}-${i}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
                       <span style={{ color: T.textMuted }}>
                         {i + 1}. {stations.get(sid)?.name ?? sid}
@@ -1248,59 +1664,46 @@ const GroupPanel: React.FC<{
               )}
             </div>
 
-            <div style={{ marginTop: 9 }}>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>所属列車</div>
-              {members.length === 0 ? (
-                <div style={{ fontSize: 11.5, color: T.textFaint }}>まだ割り当てられていません</div>
-              ) : (
-                <div style={{ display: 'grid', gap: 3 }}>
-                  {members.map(t => (
-                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5 }}>
-                      <span style={{ flex: 1, color: T.textMuted }}>
-                        {t.id}（{t.cars}両・{t.status === 'running' ? '運行中' : '車庫'}）
-                      </span>
-                      <button
-                        onClick={() => onAssignGroup(t.id, null)}
-                        style={button({ compact: true })}
-                        title="この路線から外す(運行表を引き継いで単独運用になります)"
-                      >
-                        外す
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {trains.filter(t => !t.groupId).length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 5 }}>
-                  {trains.filter(t => !t.groupId).map(t => (
-                    <button
-                      key={t.id}
-                      onClick={() => onAssignGroup(t.id, g.id)}
-                      style={button({ compact: true, accent: g.colour })}
-                      title="この路線に割り当てる"
-                    >
-                      ＋{t.id}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
             <div style={{ display: 'flex', gap: 5, marginTop: 9 }}>
               <button
-                onClick={() => onClearGroupSchedule(g.id)}
-                disabled={g.schedule.length === 0}
-                style={{ ...button({ compact: true, disabled: g.schedule.length === 0 }), flex: 1 }}
+                onClick={() => onClearLineStops(l.id)}
+                disabled={l.stops.length === 0}
+                style={{ ...button({ compact: true, disabled: l.stops.length === 0 }), flex: 1 }}
               >
                 運行表を消去
               </button>
               <button
-                onClick={() => onDeleteGroup(g.id)}
+                onClick={() => onDeleteLine(l.id)}
                 style={{ ...button({ compact: true, accent: T.danger }), flex: 1 }}
                 title="所属列車は運行表を引き継いで単独運用に戻ります"
               >
                 路線を削除
               </button>
+            </div>
+
+            <div style={{ marginTop: 11, borderTop: `1px solid ${T.line}`, paddingTop: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div style={{ fontSize: 11, color: T.textMuted, fontWeight: 700 }}>種別</div>
+                <button onClick={() => onCreateService(l.id)} style={button({ compact: true })}>
+                  ＋種別を追加
+                </button>
+              </div>
+              {lineServices.map(s => (
+                <ServiceCard
+                  key={s.id}
+                  line={l}
+                  service={s}
+                  trains={trains}
+                  stations={stations}
+                  canDelete={lineServices.length > 1}
+                  actualIntervalSeconds={actualIntervals.get(s.id) ?? null}
+                  onRenameService={onRenameService}
+                  onSetServiceHeadway={onSetServiceHeadway}
+                  onToggleServiceStop={onToggleServiceStop}
+                  onDeleteService={onDeleteService}
+                  onAssignService={onAssignService}
+                />
+              ))}
             </div>
           </div>
         );
@@ -1308,3 +1711,136 @@ const GroupPanel: React.FC<{
     )}
   </div>
 );
+
+// --- 種別カード(路線パネルの入れ子) ---
+const ServiceCard: React.FC<{
+  line: LineData;
+  service: ServiceData;
+  trains: TrainData[];
+  stations: Map<string, StationData>;
+  canDelete: boolean;
+  actualIntervalSeconds: number | null;
+  onRenameService: (serviceId: string, name: string) => void;
+  onSetServiceHeadway: (serviceId: string, headwaySeconds: number) => void;
+  onToggleServiceStop: (serviceId: string, stationId: string) => void;
+  onDeleteService: (serviceId: string) => void;
+  onAssignService: (trainId: string, serviceId: string | null) => void;
+}> = ({
+  line, service, trains, stations, canDelete, actualIntervalSeconds,
+  onRenameService, onSetServiceHeadway, onToggleServiceStop, onDeleteService, onAssignService,
+}) => {
+  const members = membersOf(trains, service.id);
+  const skipSet = new Set(service.skipStationIds);
+  const unassigned = trains.filter(t => !t.serviceId);
+
+  return (
+    <div style={{
+      border: `1px solid ${T.line}`, borderRadius: T.radiusSm,
+      padding: 8, marginBottom: 6, background: 'rgba(255,255,255,0.025)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input
+          value={service.name}
+          onChange={e => onRenameService(service.id, e.target.value)}
+          style={{
+            flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+            color: T.text, fontSize: 12, fontWeight: 700, fontFamily: T.font,
+            outline: 'none', padding: 0,
+          }}
+        />
+        <span style={{ fontSize: 10.5, color: T.textMuted, whiteSpace: 'nowrap' }}>{members.length}本</span>
+        <button
+          onClick={() => onDeleteService(service.id)}
+          disabled={!canDelete}
+          style={button({ compact: true, disabled: !canDelete, accent: T.danger })}
+          title={canDelete ? '種別を削除' : '路線に残る最後の種別は削除できません'}
+        >
+          種別を削除
+        </button>
+      </div>
+
+      <div style={{ marginTop: 6 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+          <span style={{ fontSize: 10.5, color: T.textMuted }}>発車間隔</span>
+          <span style={{ fontSize: 10.5, color: T.textFaint, fontVariantNumeric: 'tabular-nums' }}>
+            {actualIntervalSeconds !== null ? `実績 ${Math.round(actualIntervalSeconds)}秒` : '実績 計測中'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+          {HEADWAY_CHOICES.map(sec => (
+            <button
+              key={sec}
+              onClick={() => onSetServiceHeadway(service.id, sec)}
+              style={{ ...button({ active: service.headwaySeconds === sec, accent: line.colour, compact: true }), minWidth: 36 }}
+            >
+              {sec === 0 ? 'なし' : `${sec}秒`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {line.stops.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontSize: 10.5, color: T.textMuted, marginBottom: 3 }}>停車パターン(クリックで通過切替)</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+            {line.stops.map(sid => {
+              const skipped = skipSet.has(sid);
+              return (
+                <button
+                  key={sid}
+                  onClick={() => onToggleServiceStop(service.id, sid)}
+                  style={{
+                    ...button({ compact: true, accent: skipped ? undefined : line.colour }),
+                    opacity: skipped ? 0.5 : 1,
+                    textDecoration: skipped ? 'line-through' : 'none',
+                  }}
+                  title={skipped ? 'クリックで停車にする' : 'クリックで通過にする'}
+                >
+                  {stations.get(sid)?.name ?? sid}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 6 }}>
+        <div style={{ fontSize: 10.5, color: T.textMuted, marginBottom: 3 }}>所属列車</div>
+        {members.length === 0 ? (
+          <div style={{ fontSize: 11, color: T.textFaint }}>まだ割り当てられていません</div>
+        ) : (
+          <div style={{ display: 'grid', gap: 3 }}>
+            {members.map(t => (
+              <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                <span style={{ flex: 1, color: T.textMuted }}>
+                  {t.id}（{t.cars}両・{t.status === 'running' ? '運行中' : '車庫'}）
+                </span>
+                <button
+                  onClick={() => onAssignService(t.id, null)}
+                  style={button({ compact: true })}
+                  title="この種別から外す(運行表を引き継いで単独運用になります)"
+                >
+                  外す
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {unassigned.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 5 }}>
+            {unassigned.map(t => (
+              <button
+                key={t.id}
+                onClick={() => onAssignService(t.id, service.id)}
+                style={button({ compact: true, accent: line.colour })}
+                title="この種別に割り当てる"
+              >
+                ＋{t.id}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

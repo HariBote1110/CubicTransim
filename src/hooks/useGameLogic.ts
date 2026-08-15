@@ -1,27 +1,34 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { toKey } from '../utils';
-import type { CellData, CellType, TrainData, TrainGroupData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge } from '../types';
+import type { CellData, CellType, TrainData, LineData, ServiceData, StationData, PlatformDoorType, TownData, TrainPower, RailGauge, TrainProtection } from '../types';
+import type { TrainModelId } from '../sim/physics';
+import { DEFAULT_GAUGE } from '../types';
 import type { SimWorld, SimEvent } from '../sim/simulation';
+import { occupiedCellKeysFromRuntimes } from '../sim/simulation';
 import { serialiseWorld, deserialiseWorld, emptyLedger } from '../sim/persistence';
 import type { SaveData, RestoredWorld } from '../sim/persistence';
 import {
-  applyRailPath, applyStation, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
+  applyRailPathDetailed, applyStationPath, applyDepot, applySubstation, applySignal, applyElevatedPath, applyElevatedStation,
   applyUndergroundPath, applyUndergroundStation, applyRegaugePath,
   removePath, resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, isElevatedConnectPlanBuildable,
+  resolveGroundRailPlanWithAutoFill,
 } from '../sim/construction';
 import type { ConstructionState, StationAxis, BuildLevel, ElevatedLevel, UndergroundLevel, RailBuildOptions } from '../sim/construction';
 import {
-  STARTING_MONEY, TRAIN_COST, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
+  STARTING_MONEY, costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, ELEVATED_STATION_COST,
   costOfUndergroundPath, UNDERGROUND_STATION_COST,
   PLATFORM_DOOR_STANDARD_COST, PLATFORM_DOOR_FULLSCREEN_COST,
-  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge, trainCostFor,
+  calculateUpkeep, CAR_COST, CAR_REFUND, costOfTerrainEdit, costOfElectrification, costOfRegauge,
+  trainCostForProtected, costOfProtection, costMultiplierForRailWeight, trainSellRefund, trainTotalCost,
 } from '../sim/economy';
 import type { TerrainField } from '../sim/terrainField';
 import { createTerrainField, fieldFromMaps, DEFAULT_HALF_EXTENT, DEFAULT_TERRAIN_PROFILE } from '../sim/terrainField';
 import type { TerrainProfile } from '../sim/terrainField';
 import { DEFAULT_GAME_RULES } from '../sim/gameRules';
 import type { GameRules } from '../sim/gameRules';
+import { AXLE_LOAD_T_BY_POWER } from '../sim/physics';
 import { buildFeedingIndex } from '../sim/feeding';
+import { buildBlockIndex } from '../sim/blocks';
 import type { CornerDiffs, TerrainEditMode } from '../sim/terrainOverlay';
 import { createEditedTerrainField, applyCornerEdit, buildEditBlockers, cornerDiffsFromField } from '../sim/terrainOverlay';
 
@@ -33,13 +40,25 @@ import { LOAN_STEP, monthlyInterest, repayLoan, takeLoan } from '../sim/loans';
 import { generateRegionTowns } from '../sim/towns';
 import type { TownDensity } from '../sim/towns';
 import { TownTileCache } from '../sim/townTiles';
-import { effectiveSchedule, nextGroupName, nextGroupColour, findGroup, nextStop } from '../sim/groups';
-import type { LineMode } from '../sim/groups';
+import {
+  effectiveSchedule, resolveAssignment, findLine, findService, serviceStops,
+  nextLineName, nextLineColour, nextStop, createLineWithDefaultService,
+} from '../sim/lines';
+import type { LineMode } from '../sim/lines';
 import { relocateTrain } from '../sim/relocate';
 import { createDebugScenario } from '../sim/debugScenario';
 import type { DebugScenarioWorld } from '../sim/debugScenarios';
 
-const SAVE_KEY = 'cubictransim-save-v1';
+export const SAVE_KEY = 'cubictransim-save-v1';
+
+/** セーブ/ロード結果などをユーザーへ一時的に知らせる通知。 */
+export interface ToastNotice {
+  id: number;
+  message: string;
+  kind: 'success' | 'error';
+}
+
+const TOAST_DURATION_MS = 3000;
 
 // 台帳履歴として保持する直近ヶ月数。
 const LEDGER_HISTORY_LIMIT = 12;
@@ -50,6 +69,8 @@ const ACCIDENT_POLL_INTERVAL_MS = 500;
 export interface AccidentNotice {
   trainId: string;
   stationId: string;
+  /** S3の信号冒進(SPAD)通知か。省略時は従来どおりの駅の人身事故。 */
+  kind?: 'spad';
 }
 
 /** loadGameがReact stateへ反映するsetter群(useGameLogic.loadGame.test.tsから直接検証できるように分離)。 */
@@ -70,7 +91,8 @@ export interface RestoredWorldSetters {
   setCurrentLedger: (v: MonthlyLedger) => void;
   setLedgerHistory: (v: MonthlyLedger[]) => void;
   setStopLocation: (v: 'near' | 'middle' | 'far') => void;
-  setGroups: (v: TrainGroupData[]) => void;
+  setLines: (v: LineData[]) => void;
+  setServices: (v: ServiceData[]) => void;
 }
 
 /**
@@ -94,7 +116,8 @@ export function applyRestoredWorldState(restored: RestoredWorld, setters: Restor
   setters.setCurrentLedger(restored.currentLedger);
   setters.setLedgerHistory(restored.ledgerHistory);
   setters.setStopLocation(restored.stopLocation);
-  setters.setGroups(restored.groups);
+  setters.setLines(restored.lines);
+  setters.setServices(restored.services);
 }
 
 export const useGameLogic = () => {
@@ -140,6 +163,8 @@ export const useGameLogic = () => {
   );
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
+  // ★追加: 車庫選択(列車選択・駅選択とは排他)。toKey(x,z)形式のセルキー。
+  const [selectedDepotKey, setSelectedDepotKey] = useState<string | null>(null);
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
 
   // ★追加: 人身事故の通知(バナー表示用)。列車のhaltRemainingが尽きたら自動的に消える。
@@ -155,11 +180,23 @@ export const useGameLogic = () => {
   // 月末に残高に応じた利息を支払う(sim/loans.ts)。
   const [loan, setLoan] = useState<number>(0);
 
+  // ★追加: セーブ/ロードの成否をユーザーへ知らせる一時通知。TOAST_DURATION_MS後に自動で消える。
+  const [toast, setToast] = useState<ToastNotice | null>(null);
+  const showToast = (message: string, kind: ToastNotice['kind']) => {
+    setToast({ id: Date.now(), message, kind });
+  };
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), TOAST_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
   // ★追加: 駅停車位置設定(OpenTTD流のNear/Middle/Far)。ゲーム全体設定。既定値'middle'。
   const [stopLocation, setStopLocation] = useState<'near' | 'middle' | 'far'>('middle');
 
-  // ★追加: 運用グループ(共有運行表＋発車間隔)。所属列車はグループの運行表に従う。
-  const [groups, setGroups] = useState<TrainGroupData[]>([]);
+  // ★追加: 路線＋種別(共有運行表＋発車間隔)。所属列車は種別の有効運行表に従う。
+  const [lines, setLines] = useState<LineData[]>([]);
+  const [services, setServices] = useState<ServiceData[]>([]);
 
   // ★追加: 月次収支台帳。今月の途中経過(currentLedger)と、確定済み直近12ヶ月(ledgerHistory)。
   const [currentLedger, setCurrentLedger] = useState<MonthlyLedger>(emptyLedger());
@@ -179,8 +216,9 @@ export const useGameLogic = () => {
     terrainField: field,
     clock: { elapsed: 0 },
     stopLocation: 'middle',
-    groups: [],
-    groupDepartures: new Map(),
+    lines: [],
+    services: [],
+    serviceDepartures: new Map(),
   });
 
   useEffect(() => {
@@ -213,8 +251,12 @@ export const useGameLogic = () => {
   }, [stopLocation]);
 
   useEffect(() => {
-    worldRef.current.groups = groups;
-  }, [groups]);
+    worldRef.current.lines = lines;
+  }, [lines]);
+
+  useEffect(() => {
+    worldRef.current.services = services;
+  }, [services]);
 
   // PM2: プレイモードのルールフラグ集合をSimWorldへ鏡写しする(stepWorldの経路探索が
   // rules.gauge/electrificationを参照するため)。newGame/loadGameでも即座に上書きするが、
@@ -266,6 +308,15 @@ export const useGameLogic = () => {
     worldRef.current.feeding = feedingIndex;
   }, [feedingIndex]);
 
+  // S1: 固定閉塞のブロック索引。feedingIndexと同じ同期パターンで、railMapが
+  // 変わったときだけ再計算する。rules.signalling!=='s1'のときも常に計算はするが、
+  // stepWorld側が参照しないため無害(挙動変更ゼロ)。
+  const blockIndex = useMemo(() => buildBlockIndex(railMap), [railMap]);
+
+  useEffect(() => {
+    worldRef.current.blocks = blockIndex;
+  }, [blockIndex]);
+
   // --- Commit Path ---
   // railMap/stations の更新ロジックは sim/construction.ts の純粋関数に委譲する。
   // ここでは現在の state を渡し、結果をまとめて setRailMap/setStations するだけの薄いラッパー。
@@ -282,7 +333,11 @@ export const useGameLogic = () => {
     // ため、既存の建設挙動は変わらない。
     railOptions: RailBuildOptions = {},
     // PM2 Stage B: 改軌(buildMode==='regauge')専用の目的軌間。
-    regaugeTargetGauge?: RailGauge
+    regaugeTargetGauge?: RailGauge,
+    // S2: 信号(buildMode==='signal')専用の種別選択。rules.signalling!=='s2'のUIからは
+    // 常に'block'のまま渡ってくるため、applySignal側で新規設置時に'block'相当(undefined)
+    // へ丸め込む必要はなく、そのまま渡してよい(s2以外はblocksSegmentEntryが種別を見ない)。
+    signalKind?: CellData['signalKind']
   ) => {
     if (path.length === 0) return;
 
@@ -318,17 +373,18 @@ export const useGameLogic = () => {
       case 'signal':
         cost = costOfPath('signal', path.length);
         if (money < cost) return;
-        result = applySignal(state, path, field, townTileIndex);
+        result = applySignal(state, path, field, townTileIndex, signalKind);
         break;
       case 'station': {
         if (level === 0) {
           cost = costOfPath('station', path.length);
           if (money < cost) return;
-          const stationPos = path[path.length - 1];
+          // OpenTTD式のドラッグ駅建設: 経路全体(単発クリックならpath.length===1)を
+          // まとめて1つの駅として建設する。
           // 駅設置時点では町を湧かせない(近くに町が無くてもそのまま建てられる)。
           // 命名は既存の町名由来/A駅フォールバックのまま(applyStationのstationNameFor)。
           // 町は輸送力が育ってから日次チェック(resolveTownSpawnTick)で湧く。
-          result = applyStation(state, stationPos, field, towns, stationAxisHint, townTileIndex);
+          result = applyStationPath(state, path, field, towns, stationAxisHint, townTileIndex);
         } else if (level > 0) {
           // 高架駅タイル1枚(旧'elevated-station')。
           cost = ELEVATED_STATION_COST;
@@ -374,12 +430,30 @@ export const useGameLogic = () => {
             }
           }
           // 水域(橋)・山岳(トンネル)を通る区間はコストが割増になる
-          cost = groundRampFlags
+          cost = (groundRampFlags
             ? costOfGroundPathWithRamps(path, field, groundRampFlags)
-            : costOfPath('rail', path.length, path, field);
+            : costOfPath('rail', path.length, path, field)) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
+          // P-terraform: other-slopeで詰まった区間の自動整地(埋め立て)が必要かを
+          // resolveGroundRailPlanWithAutoFillへ事前に問い合わせ、コストへ上乗せする
+          // (buildPreview.tsと同じ判定を、実際の課金前にも一度使う)。デバッグ手組みの
+          // field(debugFieldOverride)を使っている間は編集経路が無いため試みない
+          // (raise/lowerの既存の割り切りと同じ)。
+          const terrainFillOptions = !debugFieldOverride
+            ? { base: baseField, blockers: buildEditBlockers({ halfExtent, railMap, townTileIndex, baseField }) }
+            : undefined;
+          if (terrainFillOptions) {
+            const autoFilled = resolveGroundRailPlanWithAutoFill(terrainFillOptions.base, editedField, path, terrainFillOptions.blockers);
+            if (autoFilled.terraformCorners > 0) cost += costOfTerrainEdit(autoFilled.terraformCorners);
+          }
           if (money < cost) return;
-          result = applyRailPath(state, path, field, townTileIndex, railOptions);
+          const detailed = applyRailPathDetailed(state, path, field, townTileIndex, railOptions, terrainFillOptions);
+          result = detailed;
+          // P-terraform: 実際に整地が起きていれば、手動raise/lowerと同じcornerDiffsの
+          // 経路(setCornerDiffs)で永続化する(セーブ/読込・描画チャンクの再構築を含めて
+          // 既存の地形編集と完全に同じ扱いになる)。
+          if (detailed.terrainEdit) setCornerDiffs(detailed.terrainEdit.diffs);
         } else if (level > 0) {
           // 自由な高架線(旧'elevated')。坂・橋桁の内訳はconstruction.ts側の判定
           // (resolveElevatedPathEnd/pickElevatedConnection/planElevatedPath)にそのまま
@@ -390,8 +464,9 @@ export const useGameLogic = () => {
           const plan = planElevatedPath(path.length, startEnd, endEnd, elevatedLevel);
           const rampCount = plan ? plan.roles.filter(r => r.kind === 'ramp').length : 0;
           const overpassCount = plan ? plan.roles.filter(r => r.kind === 'span').length : 0;
-          cost = costOfElevatedPath(rampCount, overpassCount);
+          cost = costOfElevatedPath(rampCount, overpassCount) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTileIndex, railOptions);
         } else {
@@ -399,8 +474,9 @@ export const useGameLogic = () => {
           // 経路の全セルへ一律のコスト倍率(UNDERGROUND_RAIL_COST_MULTIPLIER)を課す
           // (buildPreview.tsのcostOfUndergroundPathと同じ計算)。
           const undergroundLevel = level as UndergroundLevel;
-          cost = costOfUndergroundPath(path.length);
+          cost = costOfUndergroundPath(path.length) * costMultiplierForRailWeight(railOptions.railWeight);
           if (railOptions.electrified) cost += costOfElectrification(path.length);
+          if (railOptions.protection) cost += costOfProtection(path.length, railOptions.protection);
           if (money < cost) return;
           result = applyUndergroundPath(state, path, field, undergroundLevel, undefined, railOptions);
         }
@@ -411,7 +487,10 @@ export const useGameLogic = () => {
         // 経路は全体がno-op(construction.tsのapplyRegaugePathが判定)。課金対象は
         // 実際に軌間が変わったセル数のみ(buildPreview.tsと同じ規約)。
         if (!regaugeTargetGauge) return;
-        const occupiedCells = new Set(worldRef.current.trains.map(t => toKey(t.x, t.z)));
+        // H4: TrainData.x/zは車庫での初期位置のまま更新されないため、走行中の実位置
+        // (worldRef.current.runtimes)から在線セルを求める(sim/simulation.tsの
+        // occupiedCellKeysFromRuntimes)。
+        const occupiedCells = occupiedCellKeysFromRuntimes(worldRef.current.runtimes);
         const regauged = applyRegaugePath(state, path, regaugeTargetGauge, occupiedCells);
         if (regauged.railMap === state.railMap) return;
         const changedCellCount = path.filter(p => {
@@ -454,14 +533,16 @@ export const useGameLogic = () => {
   const handleTrainArrive = (trainId: string, currentIndex: number) => {
     setTrains(prev => prev.map(t => {
       if (t.id !== trainId) return t;
-      // グループ所属中は共有運行表を使う。路線の運行モード(環状/折返し)に従って次の駅へ。
-      const schedule = effectiveSchedule(t, worldRef.current.groups ?? []);
+      // 種別所属中は路線の有効運行表を使う。路線の運行モード(環状/折返し)に従って次の駅へ。
+      const lns = worldRef.current.lines ?? [];
+      const svcs = worldRef.current.services ?? [];
+      const schedule = effectiveSchedule(t, lns, svcs);
       if (schedule.length === 0) return t;
-      const line = findGroup(worldRef.current.groups ?? [], t.groupId);
+      const assignment = resolveAssignment(t, lns, svcs);
       const next = nextStop(
         { index: currentIndex, direction: t.scheduleDirection ?? 1 },
         schedule.length,
-        line?.mode ?? 'loop'
+        assignment?.line.mode ?? 'loop'
       );
       return { ...t, scheduleIndex: next.index, scheduleDirection: next.direction };
     }));
@@ -469,10 +550,15 @@ export const useGameLogic = () => {
 
   // PM2: powerは購入UIから選ぶ(省略時=気動車)。軌間は車庫セルの軌間を自動で継承する
   // (rules.gaugeが有効な場合のみ。無効時はgauge概念が無いためundefinedのまま=旧来どおり)。
-  const buyTrain = (x: number, z: number, power: TrainPower = 'diesel') => {
+  const buyTrain = (
+    x: number, z: number, power: TrainPower = 'diesel', protection?: TrainProtection, model?: TrainModelId
+  ) => {
     // PM3: 交流/交直流車は価格が異なる(economy.tsのtrainCostFor)。
     // rules.electrification==='none'ならpower自体を持たせないので常にdiesel価格になる。
-    const cost = gameRules.electrification !== 'none' ? trainCostFor(power) : TRAIN_COST;
+    // S3: 保安装置の車上装置分の倍率(trainCostForProtected)をさらに乗算合成する。
+    // rules.signalling!=='s3'ならprotection自体を渡さないUIになるので常に基準額のまま。
+    // 車種(TRAIN_MODELS): modelを渡すとさらにpriceMultiplierが乗算される(省略=通勤形=倍率1.0)。
+    const cost = trainCostForProtected(gameRules.electrification !== 'none' ? power : 'diesel', protection, model);
     if (money < cost) return;
     const depotCell = worldRef.current.railMap.get(toKey(x, z));
     const newTrain: TrainData = {
@@ -480,14 +566,76 @@ export const useGameLogic = () => {
         x, z,
         schedule: [], scheduleIndex: 0, status: 'stored',
         cars: 2,
-        ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? 1067 } : {}),
+        ...(gameRules.gauge ? { gauge: depotCell?.gauge ?? DEFAULT_GAUGE } : {}),
         ...(gameRules.electrification !== 'none' ? { power } : {}),
+        ...(gameRules.signalling === 's3' && protection ? { protection } : {}),
+        // 軌道(何キロレール): 動力方式から軸重を導出する(physics.tsのAXLE_LOAD_T_BY_POWER)。
+        // trackClasses=falseなら概念が無いため付与しない(従来どおりの挙動)。
+        ...(gameRules.trackClasses
+          ? { axleLoadT: AXLE_LOAD_T_BY_POWER[gameRules.electrification !== 'none' ? power : 'diesel'] }
+          : {}),
+        // 車種: 選択した車種をそのまま保持する(undefined=未選択=通勤形として読む規約。
+        // physics.tsのtrainModelOf参照)。
+        ...(model ? { model } : {}),
     };
     setTrains(prev => [...prev, newTrain]);
-    setSelectedTrainId(newTrain.id);
-    setIsEditingSchedule(false);
     setMoney(m => m - cost);
     setCurrentLedger(l => ({ ...l, construction: l.construction + cost }));
+  };
+
+  // ★追加: 車庫在籍中の列車を売却する。払い戻し(sim/economy.tsのtrainSellRefund)は
+  // CAR_REFUND/CAR_COSTと同じ50%比率を編成全体に適用したもの。運行中の列車は対象外。
+  const sellTrain = (trainId: string) => {
+    const target = trains.find(t => t.id === trainId);
+    if (!target || target.status !== 'stored') return;
+    const power = gameRules.electrification !== 'none' ? (target.power ?? 'diesel') : 'diesel';
+    const baseCost = trainCostForProtected(power, target.protection, target.model);
+    const refund = trainSellRefund(baseCost, target.cars);
+    setTrains(prev => prev.filter(t => t.id !== trainId));
+    setMoney(m => m + refund);
+    setCurrentLedger(l => ({ ...l, construction: l.construction - refund }));
+    if (selectedTrainId === trainId) setSelectedTrainId(null);
+  };
+
+  // ★追加: 車庫在籍中の列車を複製する(OpenTTD風の大量増備)。同じ編成(cars/gauge/power/
+  // protection/axleLoadT/serviceId/schedule)を同じ車庫に増やす。countぶん複製を試みるが、
+  // 資金が足りなくなった時点で打ち切る(部分複製OK)。Reactステート更新は1回のバッチにまとめる
+  // (setTrains/setMoneyをループ内で呼ばない)。
+  const cloneTrain = (trainId: string, count: number = 1) => {
+    const source = trains.find(t => t.id === trainId);
+    if (!source || source.status !== 'stored') return;
+    const power = gameRules.electrification !== 'none' ? (source.power ?? 'diesel') : 'diesel';
+    const baseCost = trainCostForProtected(power, source.protection, source.model);
+    const perCloneCost = trainTotalCost(baseCost, source.cars);
+    if (perCloneCost <= 0) return;
+
+    const clones: TrainData[] = [];
+    let remainingMoney = money;
+    for (let i = 0; i < count; i += 1) {
+      if (remainingMoney < perCloneCost) break;
+      remainingMoney -= perCloneCost;
+      clones.push({
+        ...source,
+        id: Math.random().toString(36).substr(0, 4),
+        status: 'stored',
+        scheduleIndex: 0,
+        schedule: [...source.schedule],
+      });
+    }
+    if (clones.length === 0) return;
+
+    const totalCost = perCloneCost * clones.length;
+    setTrains(prev => [...prev, ...clones]);
+    setMoney(m => m - totalCost);
+    setCurrentLedger(l => ({ ...l, construction: l.construction + totalCost }));
+  };
+
+  // ★追加: 車庫選択(列車選択・駅選択とは排他)。GameScene側から車庫セルクリックで呼ばれる。
+  const selectDepot = (x: number, z: number) => {
+    setSelectedDepotKey(toKey(x, z));
+    setSelectedTrainId(null);
+    setSelectedStationId(null);
+    setIsEditingSchedule(false);
   };
 
   // ★追加: 増結(車庫在籍中の列車のみ想定。running中はGameUI側でボタンを非表示にする)。
@@ -570,12 +718,13 @@ export const useGameLogic = () => {
 
   const addSchedule = (trainId: string, stationId: string) => {
     if (!isEditingSchedule) return;
-    // グループに所属している列車の運行表を編集する場合は、グループの共有運行表に足す
-    // (同じグループの列車すべてに反映される)。
+    // 種別に所属している列車の運行表を編集する場合は、路線の停車駅並びに足す
+    // (同じ路線の他種別・他列車にも反映される)。
     const target = trains.find(t => t.id === trainId);
-    const group = findGroup(groups, target?.groupId);
-    if (group) {
-      setGroups(prev => prev.map(g => (g.id === group.id ? { ...g, schedule: [...g.schedule, stationId] } : g)));
+    const assignment = target ? resolveAssignment(target, lines, services) : null;
+    if (assignment) {
+      const lineId = assignment.line.id;
+      setLines(prev => prev.map(l => (l.id === lineId ? { ...l, stops: [...l.stops, stationId] } : l)));
       return;
     }
     setTrains(prev => prev.map(t => (
@@ -583,69 +732,127 @@ export const useGameLogic = () => {
     )));
   };
 
-  // --- 運用グループ ---
+  // --- 路線＋種別 ---
 
-  /** 新しいグループを作る。列車を指定するとその運行表を引き継いで所属させる。 */
-  const createGroup = (seedTrainId?: string) => {
+  /** 新しい路線を作る(既定種別「各停」を自動生成)。列車を指定するとその運行表を引き継いで所属させる。 */
+  const createLine = (seedTrainId?: string) => {
     const seed = seedTrainId ? trains.find(t => t.id === seedTrainId) : undefined;
-    const group: TrainGroupData = {
-      id: `g${Math.random().toString(36).slice(2, 8)}`,
-      name: nextGroupName(groups),
-      schedule: seed ? [...seed.schedule] : [],
-      headwaySeconds: 0,
-      colour: nextGroupColour(groups),
-    };
-    setGroups(prev => [...prev, group]);
+    const id = `l${Math.random().toString(36).slice(2, 8)}`;
+    const { line, service } = createLineWithDefaultService(
+      id, nextLineName(lines), nextLineColour(lines), seed ? [...seed.schedule] : [], 'loop'
+    );
+    setLines(prev => [...prev, line]);
+    setServices(prev => [...prev, service]);
     if (seed) {
-      setTrains(prev => prev.map(t => (t.id === seed.id ? { ...t, groupId: group.id } : t)));
+      setTrains(prev => prev.map(t => (t.id === seed.id ? { ...t, serviceId: service.id, scheduleIndex: 0 } : t)));
     }
-    return group.id;
+    return line.id;
   };
 
-  /** 列車の所属グループを変える(nullで未所属に戻す)。 */
-  const assignTrainToGroup = (trainId: string, groupId: string | null) => {
-    setTrains(prev => prev.map(t => {
-      if (t.id !== trainId) return t;
-      // 巡回位置は共有運行表の長さを超えないように丸める
-      const next = groupId ? findGroup(groups, groupId) : undefined;
-      const len = next ? next.schedule.length : t.schedule.length;
-      const index = len > 0 ? t.scheduleIndex % len : 0;
-      return { ...t, groupId: groupId ?? undefined, scheduleIndex: index };
-    }));
+  /** 路線に停車駅を追加する(地図上の駅クリックからの編集フロー用)。 */
+  const addLineStop = (lineId: string, stationId: string) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, stops: [...l.stops, stationId] } : l)));
+  };
+
+  const clearLineStops = (lineId: string) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, stops: [] } : l)));
+  };
+
+  const renameLine = (lineId: string, name: string) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, name } : l)));
   };
 
   // ★追加: 路線の運行モード(環状/折返し)を切り替える。
-  const setGroupMode = (groupId: string, mode: LineMode) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, mode } : g)));
+  const setLineMode = (lineId: string, mode: LineMode) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? { ...l, mode } : l)));
   };
 
-  const setGroupHeadway = (groupId: string, headwaySeconds: number) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, headwaySeconds } : g)));
+  /** 路線を削除する。所属列車は現在の有効運行表を自前の運行表として引き継ぎ、単独運用に戻る。 */
+  const deleteLine = (lineId: string) => {
+    const lineServiceIds = new Set(services.filter(s => s.lineId === lineId).map(s => s.id));
+    setTrains(prev => prev.map(t => {
+      if (!t.serviceId || !lineServiceIds.has(t.serviceId)) return t;
+      const schedule = effectiveSchedule(t, lines, services);
+      const index = schedule.length > 0 ? t.scheduleIndex % schedule.length : 0;
+      return { ...t, serviceId: undefined, schedule, scheduleIndex: index };
+    }));
+    setServices(prev => prev.filter(s => s.lineId !== lineId));
+    setLines(prev => prev.filter(l => l.id !== lineId));
   };
 
-  const renameGroup = (groupId: string, name: string) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, name } : g)));
+  // 種別名の候補(未使用のものを先頭から選ぶ)。
+  const SERVICE_NAME_PRESETS = ['各停', '快速', '特快', '急行', '準急', '特急'];
+
+  /** 路線に新しい種別を追加する(既定: 通過駅なし・発車間隔なし)。 */
+  const createService = (lineId: string): string => {
+    const lineServices = services.filter(s => s.lineId === lineId);
+    const used = new Set(lineServices.map(s => s.name));
+    const name = SERVICE_NAME_PRESETS.find(n => !used.has(n)) ?? `種別${lineServices.length + 1}`;
+    const id = `s${Math.random().toString(36).slice(2, 8)}`;
+    const service: ServiceData = { id, lineId, name, skipStationIds: [], headwaySeconds: 0 };
+    setServices(prev => [...prev, service]);
+    return id;
   };
 
-  const clearGroupSchedule = (groupId: string) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, schedule: [] } : g)));
+  const renameService = (serviceId: string, name: string) => {
+    setServices(prev => prev.map(s => (s.id === serviceId ? { ...s, name } : s)));
   };
 
-  /** グループを削除し、所属列車はグループの運行表を自分の運行表として引き継ぐ。 */
-  const deleteGroup = (groupId: string) => {
-    const group = findGroup(groups, groupId);
-    setTrains(prev => prev.map(t => (
-      t.groupId === groupId
-        ? { ...t, groupId: undefined, schedule: group ? [...group.schedule] : t.schedule }
-        : t
-    )));
-    setGroups(prev => prev.filter(g => g.id !== groupId));
+  const setServiceHeadway = (serviceId: string, headwaySeconds: number) => {
+    setServices(prev => prev.map(s => (s.id === serviceId ? { ...s, headwaySeconds } : s)));
+  };
+
+  /** 駅の通過/停車を切り替える(skipStationIdsのトグル)。 */
+  const toggleServiceStop = (serviceId: string, stationId: string) => {
+    setServices(prev => prev.map(s => {
+      if (s.id !== serviceId) return s;
+      const skip = new Set(s.skipStationIds);
+      if (skip.has(stationId)) skip.delete(stationId); else skip.add(stationId);
+      return { ...s, skipStationIds: Array.from(skip) };
+    }));
+  };
+
+  /**
+   * 種別を削除する。路線の最後の1種別は削除できない(no-op)。
+   * 所属列車は同じ路線の先頭種別へ付け替え、巡回位置を新しい有効運行表の長さに丸める。
+   */
+  const deleteService = (serviceId: string) => {
+    const service = findService(services, serviceId);
+    if (!service) return;
+    const siblings = services.filter(s => s.lineId === service.lineId);
+    if (siblings.length <= 1) return;
+    const fallback = siblings.find(s => s.id !== serviceId);
+    if (!fallback) return;
+    const line = findLine(lines, service.lineId);
+    const fallbackStops = line ? serviceStops(line, fallback) : [];
+    setTrains(prev => prev.map(t => {
+      if (t.serviceId !== serviceId) return t;
+      const index = fallbackStops.length > 0 ? t.scheduleIndex % fallbackStops.length : 0;
+      return { ...t, serviceId: fallback.id, scheduleIndex: index };
+    }));
+    setServices(prev => prev.filter(s => s.id !== serviceId));
+  };
+
+  /** 列車の所属種別を変える(nullで単独運用に戻す)。 */
+  const assignTrainToService = (trainId: string, serviceId: string | null) => {
+    setTrains(prev => prev.map(t => {
+      if (t.id !== trainId) return t;
+      const nextServiceId = serviceId ?? undefined;
+      // 巡回位置は新しい有効運行表の長さを超えないように丸める
+      const nextSchedule = nextServiceId
+        ? effectiveSchedule({ ...t, serviceId: nextServiceId }, lines, services)
+        : t.schedule;
+      const len = nextSchedule.length;
+      const index = len > 0 ? t.scheduleIndex % len : 0;
+      return { ...t, serviceId: nextServiceId, scheduleIndex: index };
+    }));
   };
 
   const selectTrain = (id: string | null) => {
     setSelectedTrainId(id);
     setIsEditingSchedule(false);
     setSelectedStationId(null);
+    setSelectedDepotKey(null);
   };
 
   // ★追加: デッドロック救済用、列車のドラッグ置き直し(プラレールを掴んで動かす操作)。
@@ -661,6 +868,7 @@ export const useGameLogic = () => {
   const selectStation = (id: string | null) => {
     setSelectedStationId(id);
     setSelectedTrainId(null);
+    setSelectedDepotKey(null);
     setIsEditingSchedule(false);
   };
 
@@ -688,7 +896,15 @@ export const useGameLogic = () => {
   const handleAccident = (event: Extract<SimEvent, { type: 'accident' }>) => {
     setMoney(m => m - event.penalty);
     setCurrentLedger(l => ({ ...l, accidents: l.accidents + event.penalty }));
-    setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId }]);
+    setActiveAccidents(prev => [...prev, { trainId: event.trainId, stationId: event.stationId, kind: event.kind }]);
+  };
+
+  // PM3フォローアップ: デッドセクション失速からの救援コスト(1回だけ課金)。
+  // handleAccidentと同じ「イベント→setMoneyで即時減算」の最小構成にした。
+  // MonthlyLedgerには専用フィールドを増やさず(既存のaccidentsとは性質が違う一時費用
+  // のため流用しない)、progress/play-modes-plan.mdに設計判断として記録する。
+  const handleStallRescue = (event: Extract<SimEvent, { type: 'stallRescue' }>) => {
+    setMoney(m => m - event.penalty);
   };
 
   // ★追加: スケジュールコピー機能
@@ -715,30 +931,25 @@ export const useGameLogic = () => {
     const saveData = serialiseWorld(
       railMap, stations, trains, worldRef.current.runtimes, worldRef.current.waiting, money, towns, worldSeed,
       worldRef.current.clock ?? { elapsed: 0 }, currentLedger, ledgerHistory, stopLocation,
-      groups, worldRef.current.groupDepartures ?? new Map(), loan,
+      lines, services, worldRef.current.serviceDepartures ?? new Map(), loan,
       worldRef.current.demand ?? new Map(), halfExtent, cornerDiffs, townDensity, terrainProfile, gameRules
     );
-    localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
+      showToast('セーブしました', 'success');
+    } catch (err) {
+      console.warn('Failed to save game (localStorage quota or serialisation error).', err);
+      showToast('セーブに失敗しました（データが大きすぎます）', 'error');
+    }
   };
 
-  const loadGame = () => {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) {
-      console.warn('No save data found.');
-      return;
-    }
-    const saveData = JSON.parse(raw) as SaveData;
-    const restored = deserialiseWorld(saveData);
-    if (!restored) {
-      console.warn('Save data is incompatible with the current version and was discarded.');
-      return;
-    }
-
+  /** 復元済みワールドをReact stateとworldRefへ適用する(loadGame/loadFromSaveの共通処理)。 */
+  const applyRestoredWorld = (restored: NonNullable<ReturnType<typeof deserialiseWorld>>) => {
     applyRestoredWorldState(restored, {
       setRailMap, setStations, setTrains, setMoney, setLoan, setTowns,
       setTownDensity, setTerrainProfile, setGameRules, setWorldSeed, setHalfExtent,
       setCornerDiffs, setDebugFieldOverride, setCurrentLedger, setLedgerHistory,
-      setStopLocation, setGroups,
+      setStopLocation, setLines, setServices,
     });
 
     // runtimes/waiting は DynamicTrain/StationLabel が Map インスタンスを参照し続けているため、
@@ -749,11 +960,38 @@ export const useGameLogic = () => {
     restored.waiting.forEach((count, id) => worldRef.current.waiting.set(id, count));
     worldRef.current.clock = restored.clock;
     worldRef.current.stopLocation = restored.stopLocation;
-    worldRef.current.groups = restored.groups;
-    worldRef.current.groupDepartures = restored.groupDepartures;
+    worldRef.current.lines = restored.lines;
+    worldRef.current.services = restored.services;
+    worldRef.current.serviceDepartures = restored.serviceDepartures;
     worldRef.current.demand = restored.demand;
     // 経路キャッシュは列車・運行表が入れ替わったので捨てる(次のstepWorldで組み直される)。
     worldRef.current.serviceSignature = undefined;
+  };
+
+  const loadGame = () => {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) {
+      console.warn('No save data found.');
+      showToast('セーブデータが見つかりませんでした', 'error');
+      return;
+    }
+    let saveData: SaveData;
+    try {
+      saveData = JSON.parse(raw) as SaveData;
+    } catch (err) {
+      console.warn('Save data is not valid JSON.', err);
+      showToast('セーブデータが読み込めませんでした（旧バージョンまたは破損）', 'error');
+      return;
+    }
+    const restored = deserialiseWorld(saveData);
+    if (!restored) {
+      console.warn('Save data is incompatible with the current version and was discarded.');
+      showToast('セーブデータが読み込めませんでした（旧バージョンまたは破損）', 'error');
+      return;
+    }
+
+    applyRestoredWorld(restored);
+    showToast('セーブデータを読み込みました', 'success');
   };
 
   /**
@@ -778,7 +1016,8 @@ export const useGameLogic = () => {
       setCornerDiffs(cornerDiffsFromField(overrideField, halfExtent, scenario.fieldBounds));
     }
     setTowns(scenario.towns ?? []);
-    setGroups(scenario.groups ?? []);
+    setLines(scenario.lines ?? []);
+    setServices(scenario.services ?? []);
     if (scenario.money !== undefined) setMoney(scenario.money);
     setSelectedTrainId(null);
     setSelectedStationId(null);
@@ -815,7 +1054,8 @@ export const useGameLogic = () => {
     setTrains([]);
     setTownDensity(selectedDensity);
     setTowns(generateRegionTowns(seed + 1, selectedHalfExtent, newField, selectedDensity));
-    setGroups([]);
+    setLines([]);
+    setServices([]);
     setMoney(STARTING_MONEY);
     setLoan(0);
     setCurrentLedger(emptyLedger());
@@ -851,7 +1091,8 @@ export const useGameLogic = () => {
     isEditingSchedule, setIsEditingSchedule,
     commitPath, removeSignal,
     handleTrainArrive,
-    buyTrain, deployTrain,
+    buyTrain, deployTrain, sellTrain, cloneTrain,
+    selectedDepotKey, selectDepot,
     addCar, removeCar,
     addSchedule,
     worldRef,
@@ -863,6 +1104,7 @@ export const useGameLogic = () => {
     saveGame,
     loadGame,
     loadDebugScenario,
+    toast,
     // ★追加: 経済システム
     money,
     addIncome,
@@ -876,6 +1118,7 @@ export const useGameLogic = () => {
     upgradeStationDoors,
     activeAccidents,
     handleAccident,
+    handleStallRescue,
     // ★追加: 月次決算(収支台帳)
     currentLedger,
     ledgerHistory,
@@ -884,14 +1127,20 @@ export const useGameLogic = () => {
     // ★追加: 駅停車位置設定(Near/Middle/Far)
     stopLocation,
     setStopLocation,
-    // ★追加: 運用グループ(共有運行表＋発車間隔)
-    groups,
-    createGroup,
-    assignTrainToGroup,
-    setGroupHeadway,
-    setGroupMode,
-    renameGroup,
-    clearGroupSchedule,
-    deleteGroup,
+    // ★追加: 路線＋種別(共有運行表＋発車間隔)
+    lines,
+    services,
+    createLine,
+    addLineStop,
+    clearLineStops,
+    renameLine,
+    setLineMode,
+    deleteLine,
+    createService,
+    renameService,
+    setServiceHeadway,
+    toggleServiceStop,
+    deleteService,
+    assignTrainToService,
   };
 };

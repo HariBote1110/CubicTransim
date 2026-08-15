@@ -5,9 +5,17 @@ import {
   applyRailPath,
   applyRailPathDetailed,
   applyStation,
+  applyStationDetailed,
+  applyStationPath,
+  applyStationPathDetailed,
+  MAX_STATION_DRAG_CELLS,
+  stationAxisConflict,
   applyDepot,
+  applyDepotDetailed,
   applySubstation,
+  applySubstationDetailed,
   applySignal,
+  applySignalDetailed,
   applyBridge,
   applyElevatedPath,
   applyElevatedStation,
@@ -21,14 +29,19 @@ import {
   pickElevatedConnection,
   planHasStraightRamps,
   resolveGroundRailPlanDetailed,
+  resolveGroundRailPlanWithAutoFill,
   type ConstructionState,
   type ElevatedEndPlan,
   type ElevatedPathPlan,
   type BuildLevel,
+  type BuildFailureReason,
 } from './construction';
 import { fieldFromMaps } from './terrainField';
 import type { TerrainField } from './terrainField';
 import { computeElevation } from './testSupport/elevationFixture';
+import { createEditedTerrainField, buildEditBlockers } from './terrainOverlay';
+import type { EditBlockers } from './terrainOverlay';
+import { calculateRoute } from './pathfinding';
 
 const emptyState = (): ConstructionState => ({
   railMap: new Map<string, CellData>(),
@@ -128,28 +141,28 @@ describe('applyStation（特性テスト）', () => {
     expect(cell.connections! & DIR.N).toBe(0);
   });
 
-  // バグ報告: 既存の東西線路上でクリック設置したのに、ドラッグ方向の誤差(軸ヒント)が
-  // 直交方向として拾われ、実在しない南北connectionsが混入してホームが線路と直交してしまう。
-  // ヒントより実際のconnections/隣接セルの構造を優先すべき。
-  it('既存の東西線路セルに南北ヒント付きで設置しても、実際の東西connectionsが優先される', () => {
+  // OpenTTD式の方向指定: axisはプレイヤーの明示選択であり、権威的な値として扱う。
+  // 既存の東西線路に南北軸を指定するのは「側面から食い込む」矛盾した指定なので、
+  // 以前のような黙った補正(ヒントを無視して実際のconnectionsを使う)ではなく、
+  // 明確な失敗理由付きでno-opにする。
+  it('既存の東西線路セルへ南北軸を明示指定すると、軸の矛盾でno-opになる', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }]);
-    // ドラッグの微妙なブレでaxis='ns'ヒントが渡ってしまうケースを再現
+    const before = state;
+    const detailed = applyStationDetailed(state, { x: 0, z: 0 }, undefined, [], 'ns');
+    expect(detailed.failure).toBe('station-axis-mismatch');
     const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ns');
-    const cell = result.railMap.get(toKey(0, 0))!;
-    expect(cell.connections).toBe(DIR.E | DIR.W);
-    expect(cell.connections! & DIR.N).toBe(0);
-    expect(cell.connections! & DIR.S).toBe(0);
+    expect(result).toBe(before);
   });
 
-  it('既存の南北線路セルに東西ヒント付きで設置しても、実際の南北connectionsが優先される', () => {
+  it('既存の南北線路セルへ東西軸を明示指定すると、軸の矛盾でno-opになる', () => {
     let state = emptyState();
     state = applyRailPath(state, [{ x: 0, z: -1 }, { x: 0, z: 0 }, { x: 0, z: 1 }]);
+    const before = state;
+    const detailed = applyStationDetailed(state, { x: 0, z: 0 }, undefined, [], 'ew');
+    expect(detailed.failure).toBe('station-axis-mismatch');
     const result = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
-    const cell = result.railMap.get(toKey(0, 0))!;
-    expect(cell.connections).toBe(DIR.N | DIR.S);
-    expect(cell.connections! & DIR.E).toBe(0);
-    expect(cell.connections! & DIR.W).toBe(0);
+    expect(result).toBe(before);
   });
 
   // 十字乗換駅: 別々に建設された2つの駅が交差セルで1つに統合される
@@ -243,6 +256,87 @@ describe('applyStation（特性テスト）', () => {
   });
 });
 
+describe('stationAxisConflict（駅軸と隣接線路の矛盾判定・純関数）', () => {
+  it('空セル周りでは矛盾しない', () => {
+    const state = emptyState();
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ew')).toBe(false);
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ns')).toBe(false);
+  });
+
+  it('東西軸の直線をそのまま延長する分には矛盾しない', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }]);
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ew')).toBe(false);
+  });
+
+  it('東西軸のon-axis隣接セルが東西へ戻らずに他へ折れていると矛盾する', () => {
+    let state = emptyState();
+    // (1,0)を東西軸の駅セルにしたい。しかし東隣(2,0)は南へ折れており、
+    // (1,0)へ戻る西方向のビットを持たない(=東西の直進を延長していない)。
+    state = applyRailPath(state, [{ x: 2, z: 0 }, { x: 2, z: 1 }]);
+    expect(stationAxisConflict(state.railMap, { x: 1, z: 0 }, 'ew')).toBe(true);
+  });
+
+  it('東西軸の南北隣に、駅セル側へ直進してくる線路があると側面食い込みで矛盾する', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: -1 }, { x: 0, z: 0 }]);
+    expect(stationAxisConflict(state.railMap, { x: 0, z: 0 }, 'ew')).toBe(true);
+  });
+
+  it('隣接する駅セル(rail以外)は矛盾判定の対象外(通常の駅併合を妨げない)', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 0, z: 0 }, undefined, [], 'ew');
+    expect(stationAxisConflict(state.railMap, { x: 0, z: -1 }, 'ns')).toBe(false);
+  });
+});
+
+describe('applyStationPath（ドラッグによる複数セル駅建設）', () => {
+  it('軸方向に並んだ空セル3つのドラッグが1つの駅にまとまる', () => {
+    const state = emptyState();
+    const result = applyStationPath(
+      state,
+      [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }],
+      undefined, [], 'ew'
+    );
+    expect(result.stations.size).toBe(1);
+    const st = Array.from(result.stations.values())[0];
+    expect(st.cells).toHaveLength(3);
+    for (const p of [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]) {
+      const cell = result.railMap.get(toKey(p.x, p.z))!;
+      expect(cell.type).toBe('station');
+      expect(cell.stationId).toBe(st.id);
+      expect(cell.connections).toBe(DIR.E | DIR.W);
+    }
+  });
+
+  it('経路中に軸矛盾のセルがあると経路全体がno-opになる', () => {
+    let state = emptyState();
+    // (3,0)を通る南北の既存線路を用意し、そこへ東西軸のドラッグ経路を通す
+    state = applyRailPath(state, [{ x: 3, z: -1 }, { x: 3, z: 0 }, { x: 3, z: 1 }]);
+    const before = state;
+    const detailed = applyStationPathDetailed(
+      state,
+      [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }],
+      undefined, [], 'ew'
+    );
+    expect(detailed.failure).toBe('station-axis-mismatch');
+    const result = applyStationPath(
+      state,
+      [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }],
+      undefined, [], 'ew'
+    );
+    expect(result).toBe(before);
+  });
+
+  it('MAX_STATION_DRAG_CELLSを超える経路は上限までしか建設されない', () => {
+    const state = emptyState();
+    const longPath = Array.from({ length: MAX_STATION_DRAG_CELLS + 5 }, (_, i) => ({ x: i, z: 0 }));
+    const result = applyStationPath(state, longPath, undefined, [], 'ew');
+    const st = Array.from(result.stations.values())[0];
+    expect(st.cells).toHaveLength(MAX_STATION_DRAG_CELLS);
+  });
+});
+
 describe('applyStation（町名からの駅名採用）', () => {
   const minamimiya: TownData = { id: 'town-0', name: '南宮市', centre: { x: 0, z: 0 }, population: 1000 };
 
@@ -322,6 +416,55 @@ describe('applyDepot（特性テスト・バグ修正）', () => {
     expect(cell.type).toBe('station');
     expect(result.stations.size).toBe(stationCountBefore);
   });
+
+  // 車庫を既存の線路に隣接して置いたとき、線路側セルに車庫方向へ戻るビットが
+  // 立たないと、reciprocal-bitモデル(pathfinding.tsのresolveEntryLayer)では
+  // 車庫へ進入/車庫から発車できない(バグ報告: 「1マス離れた線路に隣接配置しても
+  // 自動接続しない」)。
+  it('既存の線路に隣接して車庫を設置すると、隣接する線路セル側にも車庫方向への接続ビットが立つ', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    // (1,0)の線路の東隣(2,0)に車庫を設置する: 車庫はその西(W)を向く。
+    state = applyDepot(state, { x: 2, z: 0 });
+
+    const railNeighbour = state.railMap.get(toKey(1, 0))!;
+    expect(railNeighbour.connections! & DIR.E).toBe(DIR.E);
+  });
+
+  it('既存の線路に隣接して設置した車庫からは、線路経由で駅まで経路探索できる', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [
+      { x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 },
+    ]);
+    state = applyStation(state, { x: 0, z: 0 });
+    // 線路(2,0)の東隣(3,0)に車庫を設置する: 車庫は線路から1マス離れているのではなく
+    // 隣接だが、バグ報告の「車庫を既存線路の隣に置いても繋がらない」ケースを再現する。
+    state = applyDepot(state, { x: 3, z: 0 });
+
+    const stationId = Array.from(state.stations.keys())[0];
+    const result = calculateRoute(state.railMap, state.stations, new Set(), new Set(), {
+      start: { x: 3, z: 0 },
+      prev: null,
+      targetStationId: stationId,
+      cars: 1,
+    });
+
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  // 逆方向(既存の車庫に向かって線路を敷く)は、applyRailPathDetailedの
+  // addConnectionToCellが経路の両端セルへ常にビットをORするため、以前から
+  // 自動接続していたはずの挙動を確認する回帰テスト。
+  it('既存の車庫へ向かって線路を敷設すると、車庫側にも線路側にも接続ビットが立つ', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 5, z: 0 });
+    state = applyRailPath(state, [{ x: 3, z: 0 }, { x: 4, z: 0 }, { x: 5, z: 0 }]);
+
+    const railCell = state.railMap.get(toKey(4, 0))!;
+    expect(railCell.connections! & DIR.E).toBe(DIR.E);
+    const depotCell = state.railMap.get(toKey(5, 0))!;
+    expect(depotCell.connections! & DIR.W).toBe(DIR.W);
+  });
 });
 
 describe('applySubstation（PM4・特性テスト）', () => {
@@ -362,6 +505,43 @@ describe('applySignal（特性テスト）', () => {
     const result = applySignal(state, [{ x: 0, z: 0 }]);
     const cell = result.railMap.get(toKey(0, 0))!;
     expect(cell.signalDir).toBe(DIR.E);
+  });
+
+  it('S2: kindを指定して新規設置すると、その種別で置かれる(未指定はblock扱い)', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const withoutKind = applySignal(state, [{ x: 0, z: 0 }]);
+    expect(withoutKind.railMap.get(toKey(0, 0))!.signalKind).toBeUndefined();
+
+    let state2 = emptyState();
+    state2 = applyRailPath(state2, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const withHome = applySignal(state2, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    expect(withHome.railMap.get(toKey(0, 0))!.signalKind).toBe('home');
+  });
+
+  it('S2: 既存信号に異なるkindを指定すると、向きは変えずkindだけ更新する', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    state = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    const before = state.railMap.get(toKey(0, 0))!;
+    expect(before.signalDir).toBe(DIR.E);
+    expect(before.signalKind).toBe('home');
+
+    const changed = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'departure');
+    const after = changed.railMap.get(toKey(0, 0))!;
+    expect(after.signalDir).toBe(DIR.E); // 向きは変わらない
+    expect(after.signalKind).toBe('departure');
+  });
+
+  it('S2: 既存信号へ同じkindを指定して呼ぶと、従来どおり向きを巡回する', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 0, z: -1 }]);
+    state = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    const before = state.railMap.get(toKey(0, 0))!.signalDir;
+    const cycled = applySignal(state, [{ x: 0, z: 0 }], undefined, undefined, 'home');
+    expect(cycled.railMap.get(toKey(0, 0))!.signalDir).not.toBe(before);
+    expect(cycled.railMap.get(toKey(0, 0))!.signalKind).toBe('home');
   });
 });
 
@@ -618,6 +798,121 @@ describe('P7d: resolveGroundRailPlanDetailed（建設不可の理由、UIフィ�
     const result = resolveGroundRailPlanDetailed(field, [{ x: -1, z: 0 }, { x: 0, z: 0 }]);
     expect(result.plan).toBeNull();
     expect(result.reason).toBe('direction-blocked');
+  });
+});
+
+describe('P-terraform: resolveGroundRailPlanWithAutoFill/applyRailPathDetailedの自動整地(埋め立て)', () => {
+  // コーナー座標を直接指定できる、実際のcornerHeightAt/cellCornerHeightsが整合した最小field。
+  // fallback=2で全面フラット、overridesだけ個別のコーナーを下げる(単一コーナーのくぼみ =
+  // ユーザーが「三角形の斜面」と呼ぶotherスロープを再現する)。
+  const cornerField = (overrides: Record<string, number>, fallback = 2): TerrainField => {
+    const cornerHeightAt = (x: number, z: number): number => overrides[`${x},${z}`] ?? fallback;
+    const cellCornerHeights = (x: number, z: number): [number, number, number, number] => [
+      cornerHeightAt(x, z), cornerHeightAt(x + 1, z), cornerHeightAt(x, z + 1), cornerHeightAt(x + 1, z + 1),
+    ];
+    return {
+      cornerHeightAt,
+      cellCornerHeights,
+      cellHeightAt: (x, z) => Math.min(...cellCornerHeights(x, z)),
+      terrainTypeAt: () => 'grass',
+    };
+  };
+
+  const openBlockers: EditBlockers = { isCellBlocked: () => false };
+
+  it('単一コーナーのくぼみで塞がれたセルを埋め立て、planを返す', () => {
+    // セル(0,0)は[nw,ne,sw,se]=[2,1,2,2](ne=corner(1,0)だけ1段低い、他は全部flatの2)。
+    // corner(1,0)は西隣セル(-1,0)には触れないので、(-1,0)は完全にflatのまま。
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+
+    const before = resolveGroundRailPlanDetailed(editedField, path);
+    expect(before.plan).toBeNull();
+    expect(before.reason).toBe('other-slope');
+
+    const result = resolveGroundRailPlanWithAutoFill(base, editedField, path, openBlockers);
+    expect(result.plan).not.toBeNull();
+    expect(result.reason).toBeUndefined();
+    expect(result.terraformCorners).toBe(1);
+    expect(result.field.cornerHeightAt(1, 0)).toBe(2);
+  });
+
+  it('埋め立てるコーナーがブロックされている場合はfillを諦め、元のother-slope失敗のままにする', () => {
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+    // corner(1,0)は cell(1,0)/(0,0)/(1,-1)/(0,-1) に接する。(1,-1)を既存構造でブロックする。
+    const blockers: EditBlockers = { isCellBlocked: (x, z) => x === 1 && z === -1 };
+
+    const result = resolveGroundRailPlanWithAutoFill(base, editedField, path, blockers);
+    expect(result.plan).toBeNull();
+    expect(result.reason).toBe('other-slope');
+    expect(result.terraformCorners).toBe(0);
+    expect(result.field).toBe(editedField);
+  });
+
+  it('地形がentryHeightより高く元々トンネル判定される経路は埋め立てを試みない(reasonが無いのでfillに入らない)', () => {
+    // 進入標高より高い山を貫く経路は、元々resolveGroundRailPlanDetailedがtunnelつきの
+    // planを返す(reasonが付かない)ため、resolveGroundRailPlanWithAutoFillもterraformCorners=0
+    // のまま元のplanをそのまま返す(山を掘り崩して埋め立てにすり替えない)。
+    // (0,0)はother形状(単一コーナーだけ高い、corner(1,0)=6)だが、最大コーナー(6)が
+    // entryHeight(西隣のflat=2)より十分高い山なので、resolveGroundRailPlanDetailedが
+    // 最初からtunnel役割つきのplanを返す(reasonが付かない)。
+    const base = cornerField({ '1,0': 6 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+
+    const result = resolveGroundRailPlanWithAutoFill(base, editedField, path, openBlockers);
+    expect(result.plan).not.toBeNull();
+    expect(result.plan?.some(r => r.kind === 'tunnel')).toBe(true);
+    expect(result.terraformCorners).toBe(0);
+    expect(result.field).toBe(editedField);
+  });
+});
+
+describe('P-terraform: applyRailPathDetailedのterrainFillOptions配線', () => {
+  const cornerField = (overrides: Record<string, number>, fallback = 2): TerrainField => {
+    const cornerHeightAt = (x: number, z: number): number => overrides[`${x},${z}`] ?? fallback;
+    const cellCornerHeights = (x: number, z: number): [number, number, number, number] => [
+      cornerHeightAt(x, z), cornerHeightAt(x + 1, z), cornerHeightAt(x, z + 1), cornerHeightAt(x + 1, z + 1),
+    ];
+    return {
+      cornerHeightAt,
+      cellCornerHeights,
+      cellHeightAt: (x, z) => Math.min(...cellCornerHeights(x, z)),
+      terrainTypeAt: () => 'grass',
+    };
+  };
+
+  it('terrainFillOptionsを渡すと自動整地して建設が成立し、terrainEditを返す', () => {
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const blockers = buildEditBlockers({
+      halfExtent: 100, railMap: new Map(), townTileIndex: new Map(), baseField: base,
+    });
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+    const state = emptyState();
+
+    const result = applyRailPathDetailed(state, path, editedField, undefined, {}, { base, blockers });
+
+    expect(result.railMap).not.toBe(state.railMap);
+    expect(result.failure).toBeUndefined();
+    expect(result.terrainEdit?.changedCorners).toBe(1);
+    expect(result.terrainEdit?.diffs.get('0,0')?.size).toBe(1);
+  });
+
+  it('terrainFillOptionsを渡さなければ従来どおりother-slopeでno-opのまま(挙動不変)', () => {
+    const base = cornerField({ '1,0': 1 });
+    const editedField = createEditedTerrainField(base);
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }];
+    const state = emptyState();
+
+    const result = applyRailPathDetailed(state, path, editedField);
+
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe('other-slope');
+    expect(result.terrainEdit).toBeUndefined();
   });
 });
 
@@ -1845,5 +2140,147 @@ describe('applyRegaugePath: PM2 Stage B 改軌ツール', () => {
     state = applyStation(state, { x: 1, z: 0 }, undefined, []);
     const result = applyRegaugePath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], 1435);
     expect(result).toBe(state);
+  });
+});
+
+describe('applyStationDetailed/applyDepotDetailed/applySubstationDetailed/applySignalDetailed: 失敗理由(BuildFailureReason)', () => {
+  it('水域には駅を建てられずfailure:waterが返る', () => {
+    const state = emptyState();
+    const field: TerrainField = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(0, 0), 'water']]), 45);
+    const result = applyStationDetailed(state, { x: 0, z: 0 }, field);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('water');
+  });
+
+  it('非flatな地形には駅を建てられずfailure:not-flatが返る', () => {
+    const state = emptyState();
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: () => [0, 0, 0, 1],
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const result = applyStationDetailed(state, { x: 0, z: 0 }, field);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('not-flat');
+  });
+
+  it('既に駅があるセルにはfailure:occupiedが返る', () => {
+    let state = emptyState();
+    state = applyStation(state, { x: 0, z: 0 });
+    const result = applyStationDetailed(state, { x: 0, z: 0 });
+    // 同一駅IDへの再設置は真のno-op（バグ1/2対策）なのでoccupied扱い
+    expect(result.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('車庫セルの上にはfailure:occupiedが返る', () => {
+    let state = emptyState();
+    state = applyDepot(state, { x: 0, z: 0 });
+    const result = applyStationDetailed(state, { x: 0, z: 0 });
+    expect(result.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('車庫は水域にはfailure:water、既存セルにはfailure:occupied', () => {
+    const state0 = emptyState();
+    const waterField: TerrainField = fieldFromMaps(new Map(), new Map<string, TerrainType>([[toKey(0, 0), 'water']]), 45);
+    const waterResult = applyDepotDetailed(state0, { x: 0, z: 0 }, waterField);
+    expect(waterResult.failure).toBe<BuildFailureReason>('water');
+
+    let state = emptyState();
+    state = applyDepot(state, { x: 1, z: 0 });
+    const occupiedResult = applyDepotDetailed(state, { x: 1, z: 0 });
+    expect(occupiedResult.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('変電所は電化railに隣接しない場所にfailure:needs-adjacent-electrified-rail', () => {
+    const state = emptyState();
+    const result = applySubstationDetailed(state, { x: 5, z: 5 });
+    expect(result.failure).toBe<BuildFailureReason>('needs-adjacent-electrified-rail');
+  });
+
+  it('変電所は既存セルの上にfailure:occupied', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }], undefined, undefined, { electrified: 'dc' });
+    state = applyStation(state, { x: 0, z: 1 });
+    const result = applySubstationDetailed(state, { x: 0, z: 1 });
+    expect(result.failure).toBe<BuildFailureReason>('occupied');
+  });
+
+  it('信号は線路・駅の無いセルにfailure:needs-rail', () => {
+    const state = emptyState();
+    const result = applySignalDetailed(state, [{ x: 0, z: 0 }]);
+    expect(result.failure).toBe<BuildFailureReason>('needs-rail');
+  });
+
+  it('信号は非flatなセルにfailure:not-flat', () => {
+    let state = emptyState();
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: () => [0, 0, 0, 1],
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const result = applySignalDetailed(state, [{ x: 0, z: 0 }], field);
+    expect(result.failure).toBe<BuildFailureReason>('not-flat');
+  });
+
+  it('建設できる場合はfailureが付かない', () => {
+    const state = emptyState();
+    const result = applyStationDetailed(state, { x: 0, z: 0 });
+    expect(result.failure).toBeUndefined();
+  });
+});
+
+describe('applyRailPathDetailed: 失敗理由(BuildFailureReason)', () => {
+  const townTiles = new Map([[toKey(0, 0), { townId: 't1', kind: 'house' as const }]]);
+
+  it('家タイルを通る地平線路はfailure:house-tile', () => {
+    const state = emptyState();
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+    const result = applyRailPathDetailed(state, path, undefined, townTiles);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('house-tile');
+  });
+
+  it('既存の坂セルと干渉する経路はfailure:ramp-conflict', () => {
+    // 高架接続(buildPreview.test.tsの「浮いた高架の端への自動接続」と同型)で
+    // (2,0)/(3,0)を坂セルにし、その坂と直交する接続を追加してramp-conflictを起こす。
+    let state = emptyState();
+    state = applyElevatedPath(
+      state,
+      Array.from({ length: 6 }, (_, i) => ({ x: i + 4, z: 0 })),
+      undefined, 1
+    );
+    state = applyRailPath(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }, { x: 4, z: 0 }]);
+    const rampCell = state.railMap.get(toKey(2, 0));
+    expect(rampCell?.ramp).toBeDefined();
+    const result = applyRailPathDetailed(state, [{ x: 2, z: -1 }, { x: 2, z: 0 }]);
+    expect(result.failure).toBe<BuildFailureReason>('ramp-conflict');
+  });
+
+  it('other-slopeなど地形都合の建設不可はGroundRailPlanFailureReasonがそのままfailureに入る', () => {
+    const state = emptyState();
+    const field: TerrainField = {
+      cornerHeightAt: () => 0,
+      cellCornerHeights: (x) => {
+        const ix = Math.round(x);
+        if (ix === -1) return [2, 2, 2, 2];
+        if (ix === 0) return [2, 2, 1, 2];
+        return [2, 2, 2, 2];
+      },
+      cellHeightAt: () => 0,
+      terrainTypeAt: () => 'grass',
+    };
+    const path = [{ x: -1, z: 0 }, { x: 0, z: 0 }, { x: 1, z: 0 }];
+    const result = applyRailPathDetailed(state, path, field);
+    expect(result.railMap).toBe(state.railMap);
+    expect(result.failure).toBe<BuildFailureReason>('other-slope');
+  });
+
+  it('建設できる場合はfailureが付かない', () => {
+    const state = emptyState();
+    const result = applyRailPathDetailed(state, [{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+    expect(result.failure).toBeUndefined();
   });
 });

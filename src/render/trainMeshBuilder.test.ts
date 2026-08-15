@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildTrainCarMesh, buildSelectionMarkerMesh, buildRouteDotMesh, PLACEHOLDER_CAR_DIMENSIONS } from './trainMeshBuilder';
+import {
+  buildTrainCarMesh, buildSelectionMarkerMesh, buildRouteDotMesh, PLACEHOLDER_CAR_DIMENSIONS,
+  buildCarMeshFromParts, MODEL_PARTS,
+} from './trainMeshBuilder';
+import { validateParts } from './trainPartsSpec';
 
 const alphaOf = (packed: number): number => (packed >>> 24) & 0xff;
 
@@ -37,6 +41,80 @@ describe('buildTrainCarMesh', () => {
     expect(alphas.has(0)).toBe(true);
     // 中間的なalphaは使っていない(このメッシュ生成器は0/255の二値しか出さない)
     expect([...alphas].every(a => a === 0 || a === 255)).toBe(true);
+  });
+});
+
+describe('buildTrainCarMesh（車種ごとの見た目)', () => {
+  const MODEL_IDS = ['commuter', 'suburban', 'express', 'local-express'] as const;
+
+  it('builds a non-null baked chunk for every model and both variants, within the dimension budget', () => {
+    for (const modelId of MODEL_IDS) {
+      for (const variant of ['head', 'mid'] as const) {
+        const mesh = buildTrainCarMesh(variant, modelId);
+        expect(mesh).not.toBeNull();
+        const [minX, minY, minZ, maxX, maxY, maxZ] = mesh!.aabb;
+        expect(maxX - minX).toBeLessThanOrEqual(0.50);
+        expect(maxZ - minZ).toBeLessThanOrEqual(0.92);
+        expect(minY).toBeGreaterThanOrEqual(-0.60);
+        expect(maxY).toBeLessThanOrEqual(0.60);
+      }
+    }
+  });
+
+  it('head and mid vertex counts differ for every model (cab-only features)', () => {
+    for (const modelId of MODEL_IDS) {
+      const head = buildTrainCarMesh('head', modelId)!;
+      const mid = buildTrainCarMesh('mid', modelId)!;
+      expect(head.positions.length).not.toBe(mid.positions.length);
+    }
+  });
+
+  it('the express (nose-long) head has more geometry than the commuter (flat-black) head', () => {
+    const commuterHead = buildTrainCarMesh('head', 'commuter')!;
+    const expressHead = buildTrainCarMesh('head', 'express')!;
+    expect(expressHead.positions.length).toBeGreaterThan(commuterHead.positions.length);
+  });
+
+  it('every model keeps the tint(alpha) convention: only line-colour vertices are alpha=255', () => {
+    for (const modelId of MODEL_IDS) {
+      const mesh = buildTrainCarMesh('mid', modelId)!;
+      const alphas = new Set(Array.from(mesh.colours, alphaOf));
+      expect(alphas.has(255)).toBe(true);
+      expect(alphas.has(0)).toBe(true);
+      expect([...alphas].every(a => a === 0 || a === 255)).toBe(true);
+    }
+  });
+});
+
+describe('MODEL_PARTS（宣言的パーツデータ）', () => {
+  const MODEL_IDS = ['commuter', 'suburban', 'express', 'local-express'] as const;
+
+  it('buildTrainCarMesh is a thin wrapper over MODEL_PARTS + buildCarMeshFromParts', () => {
+    for (const modelId of MODEL_IDS) {
+      for (const variant of ['head', 'mid'] as const) {
+        const direct = buildTrainCarMesh(variant, modelId)!;
+        const fromParts = buildCarMeshFromParts(MODEL_PARTS[modelId][variant])!;
+        expect(fromParts.positions).toEqual(direct.positions);
+        expect(fromParts.colours).toEqual(direct.colours);
+      }
+    }
+  });
+
+  it('round-trips through JSON without changing the built vertex data', () => {
+    const parts = MODEL_PARTS.express.head;
+    const roundTripped = JSON.parse(JSON.stringify(parts));
+    const direct = buildCarMeshFromParts(parts)!;
+    const fromRoundTrip = buildCarMeshFromParts(roundTripped)!;
+    expect(fromRoundTrip.positions).toEqual(direct.positions);
+    expect(fromRoundTrip.colours).toEqual(direct.colours);
+  });
+
+  it('every model/variant part set passes validateParts', () => {
+    for (const modelId of MODEL_IDS) {
+      for (const variant of ['head', 'mid'] as const) {
+        expect(validateParts(MODEL_PARTS[modelId][variant])).toEqual([]);
+      }
+    }
   });
 });
 

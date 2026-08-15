@@ -3,10 +3,12 @@ import { createTerrainField, fieldFromMaps, MOUNTAIN_HEIGHT_THRESHOLD, TERRAIN_H
 import type { TerrainField } from './terrainField';
 import {
   applyCornerEdit,
+  applyCornerFill,
   cornerDiffsFromField,
   buildEditBlockers,
   createEditedTerrainField,
   deserialiseCornerDiffs,
+  isEditedTerrainField,
   overlayChunkRefs,
   OVERLAY_CHUNK_SIZE,
   rectCells,
@@ -209,6 +211,63 @@ describe('applyCornerEdit', () => {
       field = result.field;
     }
     assertLipschitz(field, -30, 30, -30, 30);
+  });
+});
+
+describe('isEditedTerrainField', () => {
+  it('returns true for a field created by createEditedTerrainField', () => {
+    expect(isEditedTerrainField(createEditedTerrainField(flatField))).toBe(true);
+  });
+
+  it('returns false for a plain TerrainField without diffs', () => {
+    expect(isEditedTerrainField(flatField)).toBe(false);
+  });
+});
+
+describe('applyCornerFill', () => {
+  it('raises only the corners below the target height (single low corner of a cell)', () => {
+    // セル(0,0)=[nw,ne,sw,se]=[1,1,1,1]相当のところ、sw(0,1)だけ0(単一コーナーのくぼみ)。
+    // OVERLAY_CHUNK_SIZE=64・チャンク(0,0)内なので localIndex = x*64 + z。
+    const diffs: CornerDiffs = new Map([['0,0', new Map([
+      [0 * OVERLAY_CHUNK_SIZE + 0, 1],
+      [1 * OVERLAY_CHUNK_SIZE + 0, 1],
+      [0 * OVERLAY_CHUNK_SIZE + 1, 0],
+      [1 * OVERLAY_CHUNK_SIZE + 1, 1],
+    ])]]);
+    const editedField = createEditedTerrainField(flatField, diffs);
+    const result = applyCornerFill(flatField, editedField, [{ x: 0, z: 1, height: 1 }], openBlockers(100));
+    expect(result.changedCorners).toBe(1);
+    expect(result.field.cornerHeightAt(0, 1)).toBe(1);
+    // 他の3隅は元々1のまま変化しない。
+    expect(result.field.cornerHeightAt(0, 0)).toBe(1);
+    expect(result.field.cornerHeightAt(1, 0)).toBe(1);
+    expect(result.field.cornerHeightAt(1, 1)).toBe(1);
+  });
+
+  it('is a no-op when the target height is not higher than the current height', () => {
+    const editedField = createEditedTerrainField(flatField);
+    const result = applyCornerFill(flatField, editedField, [{ x: 0, z: 0, height: 0 }], openBlockers(100));
+    expect(result.field).toBe(editedField);
+    expect(result.changedCorners).toBe(0);
+  });
+
+  it('is a no-op(same reference) when the fill would touch a blocked cell', () => {
+    const editedField = createEditedTerrainField(flatField);
+    const blockers: EditBlockers = { isCellBlocked: (x, z) => x === 0 && z === 0 };
+    const result = applyCornerFill(flatField, editedField, [{ x: 0, z: 0, height: 1 }], blockers);
+    expect(result.field).toBe(editedField);
+    expect(result.changedCorners).toBe(0);
+  });
+
+  it('propagates the 1-Lipschitz constraint outward like raise mode', () => {
+    const editedField = createEditedTerrainField(flatField);
+    const result = applyCornerFill(flatField, editedField, [{ x: 0, z: 0, height: 2 }], openBlockers(100));
+    expect(result.field.cornerHeightAt(0, 0)).toBe(2);
+    // 隣接コーナーは段差1以下まで引き上げられる。
+    expect(result.field.cornerHeightAt(1, 0)).toBe(1);
+    expect(result.field.cornerHeightAt(-1, 0)).toBe(1);
+    expect(result.field.cornerHeightAt(0, 1)).toBe(1);
+    expect(result.field.cornerHeightAt(0, -1)).toBe(1);
   });
 });
 

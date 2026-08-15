@@ -682,12 +682,17 @@ export function buildUndergroundOpeningPart(dir: number, x = 0, z = 0): Undergro
 // 1本だけ立てる。電線は間引かず全セルの中心線に沿って敷く(ポールが疎でも
 // 線が途切れないように)。地下は呼び出し側(railGeometry.ts)が呼ばないことで
 // スコープ外にする(第三軌条の見た目は未実装、progress/play-modes-plan.md参照)。
+// マスト高さは車両屋根(クーラー天面がoriginY+0.713)を電線がクリアするよう、
+// マージンを見込んでoriginY+0.85に設定(0.55だと電線が0.5でクーラーへ食い込んでいた)。
+// 電線はアームの取付高さ(マスト頂部−アーム厚半分)から少し垂れ下がった位置に張ることで、
+// マスト・アーム・電線の高さ関係を常に一致させる(アームより上に電線が浮く矛盾を解消)。
 const CATENARY_POLE_SPACING = 3;
 const CATENARY_MAST_WIDTH = 0.05;
-const CATENARY_MAST_HEIGHT = 0.55;
+const CATENARY_MAST_HEIGHT = 0.85;
 const CATENARY_ARM_LENGTH = 0.22;
 const CATENARY_ARM_THICKNESS = 0.05;
-const CATENARY_WIRE_HEIGHT = 0.5;
+const CATENARY_WIRE_DROP = 0.025;
+const CATENARY_WIRE_HEIGHT = CATENARY_MAST_HEIGHT - CATENARY_ARM_THICKNESS / 2 - CATENARY_WIRE_DROP;
 const CATENARY_WIRE_THICKNESS = 0.03;
 const CATENARY_OFFSET = BALLAST_WIDTH / 2 + 0.12;
 
@@ -756,6 +761,50 @@ export function buildCatenaryParts(connections: number, x = 0, z = 0, originY = 
   }
 
   return { masts, wires };
+}
+
+// --- デッドセクション標識(PM3 follow-up) ---
+// 実物のデッドセクション標識(架線の死区間を示す白い矩形の標板)を模した、低頂点数の
+// 「短い柱+白い標板」の組。findDeadSectionMarkerEdges(deadSectionMarkers.ts)が返す
+// 辺(セル+方向)ごとに1組だけ生成する(catenaryのような間引きはしない。境界は元から疎)。
+const MARKER_OFFSET = BALLAST_WIDTH / 2 + 0.12;
+const MARKER_POLE_WIDTH = 0.04;
+const MARKER_POLE_HEIGHT = 0.4;
+const MARKER_BOARD_WIDTH = 0.22;
+const MARKER_BOARD_HEIGHT = 0.14;
+const MARKER_BOARD_THICKNESS = 0.02;
+
+export interface DeadSectionMarkerParts {
+  poles: THREE.BufferGeometry[];
+  boards: THREE.BufferGeometry[];
+}
+
+/**
+ * (x, z)セルからdir方向へ進んだ辺の位置に、線路脇へ寄せた標識(柱+標板)を1組生成する。
+ * originYを渡すと高架のぶん持ち上げられる(catenaryと同じ扱い)。
+ */
+export function buildDeadSectionMarkerPart(x: number, z: number, dir: number, originY = 0): DeadSectionMarkerParts {
+  const { x: dx, z: dz } = getVectorFromDir(dir);
+  const len = Math.hypot(dx, dz) || 1;
+  const ux = dx / len;
+  const uz = dz / len;
+  // 辺(2セルの中間点)から、軸に直交する向きへ線路脇まで逃がす。
+  const px = -uz;
+  const pz = ux;
+  const edgeX = x + ux * 0.5;
+  const edgeZ = z + uz * 0.5;
+  const mx = edgeX + px * MARKER_OFFSET;
+  const mz = edgeZ + pz * MARKER_OFFSET;
+  const rotY = angleFromVector(ux, uz);
+
+  const pole = new THREE.BoxGeometry(MARKER_POLE_WIDTH, MARKER_POLE_HEIGHT, MARKER_POLE_WIDTH);
+  pole.translate(mx, originY + MARKER_POLE_HEIGHT / 2, mz);
+
+  const board = new THREE.BoxGeometry(MARKER_BOARD_WIDTH, MARKER_BOARD_HEIGHT, MARKER_BOARD_THICKNESS);
+  board.rotateY(rotY);
+  board.translate(mx, originY + MARKER_POLE_HEIGHT - MARKER_BOARD_HEIGHT / 2, mz);
+
+  return { poles: [pole], boards: [board] };
 }
 
 /** 部品配列をマージして1つのジオメトリにする(空なら null)。 */

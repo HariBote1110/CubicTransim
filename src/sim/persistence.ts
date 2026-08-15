@@ -1,4 +1,18 @@
-import type { CellData, StationData, TrainData, TrainGroupData, TownData } from '../types';
+import type { CellData, StationData, TrainData, LineData, ServiceData, TownData } from '../types';
+import { defaultServiceFor } from './lines';
+
+/**
+ * v18以前のセーブに存在した「運用グループ」の形。型はv19で廃止された(types.tsからは
+ * 消えている)が、旧セーブのJSONを読んで移行するためだけにここへ残す。
+ */
+interface LegacyTrainGroupData {
+  id: string;
+  name: string;
+  schedule: string[];
+  headwaySeconds: number;
+  colour: string;
+  mode?: 'loop' | 'shuttle';
+}
 import type { TrainRuntime } from './simulation';
 import { type MonthlyLedger } from './economy';
 import type { PassengerCohort } from './passengers';
@@ -9,6 +23,8 @@ import type { TownDensity } from './towns';
 import type { TerrainProfile } from './terrainField';
 import type { GameRules } from './gameRules';
 import { DEFAULT_GAME_RULES } from './gameRules';
+import type { Level } from '../types';
+import { fromKey, toKey, getVectorFromDir, getOppositeDir } from '../utils';
 
 // v15: 地形の持ち方を「全セル実体化(terrain/heights Map)」から「決定的な純関数
 // (worldSeed)+疎な編集差分(cornerDiffs)」へ転換した(progress/16k-map-architecture.md
@@ -27,8 +43,22 @@ import { DEFAULT_GAME_RULES } from './gameRules';
 // v16以前のセーブにrulesは無いが、その時点では概念自体が存在しなかったことが確定しているため、
 // DEFAULT_GAME_RULES(ライト相当)として読み込む。PM1では読み込む以外に誰もrulesを参照しないため、
 // 挙動は一切変わらない。
-export interface SaveDataV17 {
-  version: 17 | 16 | 15;
+// v18(M5, progress/review-play-modes-branch.md): normaliseUndergroundRampDirsは
+// 91f5945以前のセーブ(地下ランプのdirが逆を向いたまま保存されている)を直すための
+// 移行処理だが、版数で区切らずに毎回実行すると、修正後に書かれた正しいセーブに対しても
+// 隣接セルの接続状態からの構造推定(坑口・分岐など、高い側の隣接セルが接続ビットを
+// 持たない形状)でdirを誤って反転しうる。v18以降のセーブは常に正しい形式で書かれる
+// ことが保証されるため、deserialiseWorldは version < 18 のときだけ正規化を適用する。
+// v19(progress/line-service-redesign.md): 「運用グループ」を「路線(LineData)＋種別
+// (ServiceData)」へ刷新した。旧 groups: TrainGroupData[] は廃止し、lines/servicesを
+// 保存する。旧セーブ(v15〜v18)は読込時に「1グループ→1路線+1つの各停種別」へ機械的に
+// 移行する: line.id = group.id を流用、service.id = `${group.id}:default`、
+// train.groupId → 対応する service.id、groupDepartures のキー
+// `${groupId}|${station}` → `${groupId}:default|${station}`(departureKeyの引数が
+// groupIdからserviceIdに変わっただけで、旧groupIdをそのままserviceIdの接頭辞に
+// 使っているので機械的に読み替えられる)。
+export interface SaveDataV19 {
+  version: 19 | 18 | 17 | 16 | 15;
   /** 地形の乱数シード(sim/terrainField.tsのcreateTerrainFieldへそのまま渡す)。 */
   seed: number;
   /** マップの生成半径(-halfExtent..halfExtentのセルを生成する)。 */
@@ -46,10 +76,19 @@ export interface SaveDataV17 {
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
   stopLocation: 'near' | 'middle' | 'far';
-  /** 運用グループ(共有運行表と発車間隔)。 */
-  groups: TrainGroupData[];
-  /** 「グループ×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。 */
-  groupDepartures: [string, number][];
+  /** 路線(物理経路)。 */
+  lines: LineData[];
+  /** 種別(路線に属する各停・快速など)。 */
+  services: ServiceData[];
+  /** 「種別×駅」ごとの最終発車時刻(clock.elapsed基準)。発車間隔の判定に使う。 */
+  serviceDepartures: [string, number][];
+  /**
+   * 旧セーブ(v18以前)の運用グループ。v19では書き出さない(読込専用、移行のためだけに
+   * 型として残す)。
+   */
+  groups?: LegacyTrainGroupData[];
+  /** 旧セーブ(v18以前)の「グループ×駅」最終発車時刻。v19では書き出さない。 */
+  groupDepartures?: [string, number][];
   /** 借入残高。 */
   loan: number;
   /** 駅ごとの行き先つき待ち客。waitingはこの合計なので、こちらが正。 */
@@ -80,7 +119,7 @@ export interface LegacySaveData {
   version: number;
 }
 
-export type SaveData = SaveDataV17 | LegacySaveData;
+export type SaveData = SaveDataV19 | LegacySaveData;
 
 // 新規ゲーム開始時の空台帳(1年1月)。v5以前からの移行時にも使う。
 export const emptyLedger = (): MonthlyLedger => ({ year: 1, month: 1, fares: 0, construction: 0, upkeep: 0, accidents: 0, interest: 0 });
@@ -98,8 +137,9 @@ export function serialiseWorld(
   currentLedger: MonthlyLedger,
   ledgerHistory: MonthlyLedger[],
   stopLocation: 'near' | 'middle' | 'far' = 'middle',
-  groups: TrainGroupData[] = [],
-  groupDepartures: Map<string, number> = new Map(),
+  lines: LineData[] = [],
+  services: ServiceData[] = [],
+  serviceDepartures: Map<string, number> = new Map(),
   loan = 0,
   demand: Map<string, PassengerCohort[]> = new Map(),
   halfExtent: number,
@@ -107,9 +147,9 @@ export function serialiseWorld(
   townDensity: TownDensity = 'normal',
   terrainProfile: TerrainProfile = 'normal',
   rules: GameRules = DEFAULT_GAME_RULES
-): SaveDataV17 {
+): SaveDataV19 {
   return {
-    version: 17,
+    version: 19,
     seed,
     halfExtent,
     cornerDiffs: serialiseCornerDiffs(cornerDiffs),
@@ -127,8 +167,9 @@ export function serialiseWorld(
     currentLedger,
     ledgerHistory,
     stopLocation,
-    groups,
-    groupDepartures: Array.from(groupDepartures.entries()),
+    lines,
+    services,
+    serviceDepartures: Array.from(serviceDepartures.entries()),
     loan,
     demand: Array.from(demand.entries()),
   };
@@ -152,8 +193,9 @@ export interface RestoredWorld {
   currentLedger: MonthlyLedger;
   ledgerHistory: MonthlyLedger[];
   stopLocation: 'near' | 'middle' | 'far';
-  groups: TrainGroupData[];
-  groupDepartures: Map<string, number>;
+  lines: LineData[];
+  services: ServiceData[];
+  serviceDepartures: Map<string, number>;
   loan: number;
   demand: Map<string, PassengerCohort[]>;
   /** 町密度(省略時=normal)。 */
@@ -165,17 +207,61 @@ export interface RestoredWorld {
 }
 
 /**
- * セーブデータの復元。v17と(rules欠落=ライト相当扱いの)v16・(terrainProfile欠落=normal扱いの)v15を受け付ける。
+ * 91f5945の修正前に作られたセーブは、地下(base<0)のランプのramp.dirが
+ * 高さの低い側(地下側)を向いたまま保存されている(修正後は高い側=地表側を向く)。
+ * セル単体では新旧どちらの形式か判別できないため、隣接セルの接続状態から
+ * 「dir/oppositeのどちらが実際に高い側(base+1レベル)へ連続しているか」を
+ * 構造的に判定し、oppositeだけが一致する場合(=dirが逆を向いている)にだけ
+ * dirを反転する。両方/どちらも一致しない曖昧なケースは判別不能なので変更しない。
+ * base>=0(高架側)のランプ・rampを持たないセルは対象外。
+ */
+export function normaliseUndergroundRampDirs(railMap: Map<string, CellData>): Map<string, CellData> {
+  const result = new Map(railMap);
+  for (const [key, cell] of railMap) {
+    const ramp = cell.ramp;
+    if (!ramp) continue;
+    const base = ramp.base ?? 0;
+    if (base >= 0) continue;
+    const higherLevel = base + 1;
+    const { x, z } = fromKey(key);
+
+    const continuesAtHigherLevel = (candidateDir: number): boolean => {
+      const v = getVectorFromDir(candidateDir);
+      const neighbour = railMap.get(toKey(x + v.x, z + v.z));
+      if (!neighbour) return false;
+      const backBit = getOppositeDir(candidateDir);
+      if (higherLevel === 0) {
+        return ((neighbour.connections ?? 0) & backBit) !== 0;
+      }
+      return (((neighbour.uppers?.[higherLevel as Level]?.connections) ?? 0) & backBit) !== 0;
+    };
+
+    const opp = getOppositeDir(ramp.dir);
+    const dirMatches = continuesAtHigherLevel(ramp.dir);
+    const oppMatches = continuesAtHigherLevel(opp);
+    if (!dirMatches && oppMatches) {
+      result.set(key, { ...cell, ramp: { ...ramp, dir: opp } });
+    }
+  }
+  return result;
+}
+
+/**
+ * セーブデータの復元。v19と(groups→lines/services移行が必要な)v18・v17・
+ * (rules欠落=ライト相当扱いの)v16・(terrainProfile欠落=normal扱いの)v15を受け付ける。
  * v14以前はterrain/heights Mapを全セル実体化していた旧形式であり、v15(worldSeed+halfExtent+cornerDiffs)とは
  * 互換性が無い。リリース前でセーブ互換は破壊してよい(ユーザー明言)ため、
  * 移行処理は書かずnullを返す(呼び出し側は壊れたセーブと同様に扱う)。
  */
 export function deserialiseWorld(input: SaveData): RestoredWorld | null {
-  if (input.version !== 17 && input.version !== 16 && input.version !== 15) return null;
+  if (
+    input.version !== 19 && input.version !== 18 && input.version !== 17 &&
+    input.version !== 16 && input.version !== 15
+  ) return null;
   // LegacySaveDataのversionは(旧バージョン識別のためだけに)number型なので、上のガードだけでは
-  // TypeScriptの判別共用体narrowingが効かない(number側が15/16/17を許容範囲として残るため)。
-  // ここまで来た時点でversionが15/16/17であることは実行時に確定しているので、明示的に絞り込む。
-  const data = input as SaveDataV17;
+  // TypeScriptの判別共用体narrowingが効かない(number側が15〜18を許容範囲として残るため)。
+  // ここまで来た時点でversionが15〜18であることは実行時に確定しているので、明示的に絞り込む。
+  const data = input as SaveDataV19;
 
   // v1データにはpassengers/lastStopStationIdが、v1/v2データにはhaltRemainingが、
   // v7以前のデータにはpathHistory(連結車両の滑らか描画用の走行履歴)が存在しないため、既定値で補う。
@@ -207,16 +293,54 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
   );
 
   const towns = data.towns.map((town, i) => (town.name ? town : { ...town, name: fallbackTownName(i) }));
-  const trains = data.trains.map(t => ({ ...t, cars: t.cars ?? 2 }));
+
+  // v19移行: 旧「運用グループ」(1グループ=共有運行表+発車間隔)を「路線+各停種別」へ
+  // 機械的に変換する。line.id = group.id をそのまま流用し、種別id は `${group.id}:default`。
+  // train.groupId → 対応する各停種別のserviceId、groupDepartures のキー
+  // `${groupId}|${station}` → `${groupId}:default|${station}` へ読み替える
+  // (departureKeyの引数がgroupIdからserviceIdに変わっただけなので、旧groupIdを
+  // そのままserviceIdの接頭辞として使えば機械的に変換できる)。
+  const legacyGroups = data.groups ?? [];
+  const migratedLines: LineData[] = legacyGroups.map(g => ({
+    id: g.id, name: g.name, colour: g.colour, stops: g.schedule, mode: g.mode,
+  }));
+  const migratedServices: ServiceData[] = legacyGroups.map(g => ({
+    ...defaultServiceFor(g.id),
+    headwaySeconds: g.headwaySeconds,
+  }));
+  const migratedServiceDepartures: [string, number][] = (data.groupDepartures ?? []).map(([key, value]) => {
+    const sep = key.indexOf('|');
+    const groupId = key.slice(0, sep);
+    const stationId = key.slice(sep + 1);
+    return [`${groupId}:default|${stationId}`, value];
+  });
+
+  const lines = data.version < 19 ? migratedLines : (data.lines ?? []);
+  const services = data.version < 19 ? migratedServices : (data.services ?? []);
+  const serviceDepartures = data.version < 19 ? migratedServiceDepartures : (data.serviceDepartures ?? []);
+
+  const trains = data.trains.map(t => {
+    // v18以前のTrainDataにはgroupIdフィールドがあった(型からは既に消えているため、
+    // 旧セーブのJSONに残る可能性のあるプロパティとしてキャストして読む)。
+    const legacyGroupId = (t as TrainData & { groupId?: string }).groupId;
+    return {
+      ...t,
+      cars: t.cars ?? 2,
+      serviceId: data.version < 19 ? (legacyGroupId ? `${legacyGroupId}:default` : undefined) : t.serviceId,
+    };
+  });
 
   // PM3: legacyのelectrified:true(v17前期〜PM2)は「直流」を意味するため、
   // 'dc'へ正規化して読み込む。'ac'/'dc'の文字列はそのまま、undefinedもそのまま。
-  const railMap = new Map(
+  const railMapRaw = new Map(
     data.railMap.map(([key, cell]) => [
       key,
       cell.electrified === true ? { ...cell, electrified: 'dc' as const } : cell,
     ])
   );
+  // M5: v18以降は既に正しい形式で書かれているため、正規化(構造推定によるヒューリスティック)
+  // を適用しない。version<18の旧セーブだけを対象にする。
+  const railMap = data.version < 18 ? normaliseUndergroundRampDirs(railMapRaw) : railMapRaw;
 
   return {
     railMap,
@@ -233,14 +357,18 @@ export function deserialiseWorld(input: SaveData): RestoredWorld | null {
     currentLedger: data.currentLedger,
     ledgerHistory: data.ledgerHistory,
     stopLocation: data.stopLocation,
-    groups: data.groups ?? [],
-    groupDepartures: new Map(data.groupDepartures ?? []),
+    lines,
+    services,
+    serviceDepartures: new Map(serviceDepartures),
     loan: data.loan,
     demand: new Map(data.demand),
     townDensity: data.townDensity ?? 'normal',
     terrainProfile: data.terrainProfile ?? 'normal',
     // PM2: extendedGaugesはv17後期(PM1)〜PM2直前のセーブに存在しない可能性があるため、
     // rulesオブジェクト自体はあってもフィールド単位でfalse(基本ラインナップ)を補う。
-    rules: data.rules ? { ...data.rules, extendedGauges: data.rules.extendedGauges ?? false } : DEFAULT_GAME_RULES,
+    // 軌道(trackClasses)も同様に、この機能追加より前のセーブには存在しないため補う。
+    rules: data.rules
+      ? { ...data.rules, extendedGauges: data.rules.extendedGauges ?? false, trackClasses: data.rules.trackClasses ?? false }
+      : DEFAULT_GAME_RULES,
   };
 }

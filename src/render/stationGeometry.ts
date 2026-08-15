@@ -31,20 +31,29 @@ const CARDINAL_AXIS_PAIRS = [
  *  優先してその軸を採る(カーブ・接合部や旧セーブの混在ビットで、単独の
  *  直交ビットに向きが引きずられないようにするため)。通り抜けが無ければ
  *  従来通りBOUNDARY_OFFSETS順で最初に見つかったビットの方向を返す。 */
-export const trackAngleFromConnections = (connections = 0): number => {
+/** 線路の接続方向からホーム/駅舎の軌道軸ベクトル(単位ベクトル、ローカル+Zに対応)を求める。
+ *  trackAngleFromConnectionsと同じ優先順位(通り抜けの直線 > 単独ビット > 既定=南向き)。
+ *  角度ではなくベクトルで返すぶん、駅舎の左右判定(stationLayers.ts)で
+ *  丸め誤差なく整数の隣接セルオフセットへ変換できる。 */
+export const trackAxisVectorFromConnections = (connections = 0): { x: number; z: number } => {
   for (const [a, b] of CARDINAL_AXIS_PAIRS) {
     if ((connections & a.bit) && (connections & b.bit)) {
       const len = Math.sqrt(a.x * a.x + a.z * a.z) || 1;
-      return angleFromVector(a.x / len, a.z / len);
+      return { x: a.x / len, z: a.z / len };
     }
   }
   for (const o of BOUNDARY_OFFSETS) {
     if (connections & o.bit) {
       const len = Math.sqrt(o.x * o.x + o.z * o.z) || 1;
-      return angleFromVector(o.x / len, o.z / len);
+      return { x: o.x / len, z: o.z / len };
     }
   }
-  return angleFromVector(0, 1);
+  return { x: 0, z: 1 };
+};
+
+export const trackAngleFromConnections = (connections = 0): number => {
+  const { x, z } = trackAxisVectorFromConnections(connections);
+  return angleFromVector(x, z);
 };
 
 export interface ShadedGeometryEntry {
@@ -139,25 +148,31 @@ export const STATION_GLASS_ALPHA = PLATFORM_DOOR_GLASS_ALPHA;
 const HOUSE_BODY_COLOUR = '#efe9df';
 const HOUSE_ENTRANCE_COLOUR = '#3a4a55';
 
-/** 駅の中心に置く小さな駅舎を、ワールド座標へ配置して生成する(StationHouseと同じ形)。 */
+/**
+ * 駅の中心に置く小さな駅舎を、ワールド座標へ配置して生成する(StationHouseと同じ形)。
+ * side(既定=1)はローカル+X方向へのオフセットを反転させる。既定側(+1)が線路や
+ * 別の駅セルで塞がっている場合に-1を渡すと、線路と重ならない反対側へ駅舎が建つ
+ * (side判定はstationLayers.tsのdecideStationHouseSide、progress参照)。
+ */
 export function buildStationHouseGeometries(
   position: readonly [number, number, number],
   angle: number,
+  side: 1 | -1 = 1,
 ): ShadedGeometryEntry[] {
   const [x, y, z] = position;
   const entries: ShadedGeometryEntry[] = [];
 
   const body = new THREE.BoxGeometry(0.7, 0.56, 0.9);
-  body.translate(0.95, 0.28, 0);
+  body.translate(side * 0.95, 0.28, 0);
   entries.push({ geometry: body, colour: HOUSE_BODY_COLOUR });
 
   const roof = new THREE.ConeGeometry(0.66, 0.24, 4);
   roof.rotateY(Math.PI / 4);
-  roof.translate(0.95, 0.66, 0);
+  roof.translate(side * 0.95, 0.66, 0);
   entries.push({ geometry: roof, colour: PALETTE.buildingRoof });
 
   const entrance = new THREE.BoxGeometry(0.02, 0.3, 0.3);
-  entrance.translate(0.95 + 0.355, 0.18, 0);
+  entrance.translate(side * (0.95 + 0.355), 0.18, 0);
   entries.push({ geometry: entrance, colour: HOUSE_ENTRANCE_COLOUR });
 
   for (const entry of entries) {

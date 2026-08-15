@@ -1,21 +1,21 @@
 // 旅客の経路検索。純粋関数のみ。React/THREE には依存しない。
 //
 // 考え方は Cities: Skylines に近い:
-//  - 旅客が歩く先は線路ではなく「実際に列車が走っている区間」。運行表(グループの共有運行表、
+//  - 旅客が歩く先は線路ではなく「実際に列車が走っている区間」。運行表(路線×種別の有効運行表、
 //    または列車自身の運行表)で隣り合う駅どうしを辺とみなしたサービス網の上を探索する。
 //    線路が繋がっていても列車が走っていない区間は移動できない。
 //  - 経路は1人ずつ引かない。出発駅→目的駅ごとに1回だけ探索し、その結果を
 //    同じ駅ペアの旅客全員(コホート)で使い回す(routeBetween のキャッシュ)。
 //  - 評価軸は「乗換の少なさ」が第一、次に「駅数の少なさ」。所要時間まで見ないのは、
 //    運転間隔や待ち時間を含めた実所要時間の推定が路線ダイヤの実装待ちのため。
-import type { StationData, TownData, TrainData, TrainGroupData } from '../types';
+import type { StationData, TownData, TrainData, LineData, ServiceData } from '../types';
 import { demandFactor } from './economy';
-import { effectiveSchedule } from './groups';
+import { effectiveSchedule } from './lines';
 
 /** 乗換の上限回数。これを超える経路は「乗らない」とみなす。 */
 export const MAX_TRANSFERS = 2;
 
-/** サービス網の辺。lineId は由来する系統(グループid、単独運用なら列車id)。 */
+/** サービス網の辺。lineId は由来する系統(種別id、単独運用なら列車id)。 */
 export interface ServiceEdge {
   to: string;
   lineId: string;
@@ -51,15 +51,15 @@ const addEdge = (graph: ServiceGraph, from: string, to: string, lineId: string) 
  * 走行中の列車の運行表から、旅客が移動できるサービス網を組み立てる。
  * 運行表で連続する駅どうしを双方向の辺にする(折り返し運転を前提とするため)。
  */
-export function buildServiceGraph(trains: TrainData[], groups: TrainGroupData[]): ServiceGraph {
+export function buildServiceGraph(trains: TrainData[], lines: LineData[], services: ServiceData[]): ServiceGraph {
   const graph: ServiceGraph = new Map();
 
   for (const train of trains) {
     // 車庫で待機中の列車は運行していないので、その運行表は移動手段にならない。
     if (train.status !== 'running') continue;
 
-    const schedule = effectiveSchedule(train, groups);
-    const lineId = train.groupId ?? train.id;
+    const schedule = effectiveSchedule(train, lines, services);
+    const lineId = train.serviceId ?? train.id;
 
     for (let i = 0; i + 1 < schedule.length; i++) {
       const a = schedule[i];

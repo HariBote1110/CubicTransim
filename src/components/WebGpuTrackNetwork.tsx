@@ -67,6 +67,8 @@ export const WebGpuTrackNetwork: React.FC<Props> = ({
         { geometry: geometry.catenary.wires, colour: PALETTE.catenaryWire },
         { geometry: geometry.catenaryAc.masts, colour: PALETTE.catenaryMastAc },
         { geometry: geometry.catenaryAc.wires, colour: PALETTE.catenaryWireAc },
+        { geometry: geometry.deadSectionMarkers.poles, colour: PALETTE.deadSectionMarkerPole },
+        { geometry: geometry.deadSectionMarkers.boards, colour: PALETTE.deadSectionMarkerBoard },
       ]);
     }
     if (key === UNDERGROUND_BRIGHT_KEY) {

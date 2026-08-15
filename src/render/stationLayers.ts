@@ -7,7 +7,7 @@ import type { CellData, Level, StationData } from '../types';
 import { fromKey, toKey } from '../utils';
 import type { TerrainField } from '../sim/terrainField';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
-import { trackAngleFromConnections } from './stationGeometry';
+import { trackAngleFromConnections, trackAxisVectorFromConnections } from './stationGeometry';
 
 const ELEVATED_LEVELS = Array.from({ length: MAX_ELEVATED_LEVEL }, (_, i) => (i + 1) as 1 | 2 | 3);
 // P8b: 地下の駅ホーム集計用(-1〜-MAX_ELEVATED_LEVEL)。
@@ -111,6 +111,29 @@ export interface StationHousePlacement {
    * ラベルごと完全に消えていた。
    */
   houseHidden: boolean;
+  /** buildStationHouseGeometriesへ渡すside。既定+X側が線路/他セルで塞がっていれば-1。 */
+  side: 1 | -1;
+}
+
+/**
+ * 駅舎をローカル+X側に置くか-X側に置くかを決める純粋関数(buildStationHouseGeometriesの
+ * side引数)。既定は+X側(1)。+X側の隣接セルが埋まっていて-X側が空いていれば-1へ逃がす。
+ * 両側とも埋まっている場合は回避不能なので既定の1のまま(建設側で本来ブロックされるべき
+ * ケースであり、描画側で無理に解決しない)。
+ * isOccupiedは呼び出し側が用意する占有判定(地平/高架/地下でrailMapの見る場所が違うため)。
+ */
+export function decideStationHouseSide(
+  centreX: number,
+  centreZ: number,
+  connections: number,
+  isOccupied: (x: number, z: number) => boolean,
+): 1 | -1 {
+  const axis = trackAxisVectorFromConnections(connections);
+  const dx = Math.round(axis.z);
+  const dz = -Math.round(axis.x);
+  const plusOccupied = isOccupied(centreX + dx, centreZ + dz);
+  const minusOccupied = isOccupied(centreX - dx, centreZ - dz);
+  return plusOccupied && !minusOccupied ? -1 : 1;
 }
 
 /**
@@ -153,7 +176,13 @@ export function computeStationHousePlacement(
   const houseHidden =
     houseIsUnderground && hasUndergroundCells && !ownGroundCells.length
     && !hasElevatedCells && !undergroundView;
-  return { position: [centreCell.x, houseY, centreCell.z], angle, labelY, houseHidden };
+  const isOccupied = (x: number, z: number): boolean => {
+    const data = railMap.get(toKey(x, z));
+    if (!data) return false;
+    return houseIsElevated ? !!data.uppers?.[houseLevel as Level] : true;
+  };
+  const side = decideStationHouseSide(centreCell.x, centreCell.z, centreConnections ?? 0, isOccupied);
+  return { position: [centreCell.x, houseY, centreCell.z], angle, labelY, houseHidden, side };
 }
 
 export function elevatedCellCandidateFromGroundClick(

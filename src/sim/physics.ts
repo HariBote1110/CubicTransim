@@ -12,15 +12,68 @@ export interface TrainSpec {
   maxTractiveEffort: number;
 }
 
-// 将来の車種差別化(express/commuter)を見据えた定数テーブル。TrainDataには持たせない。
-// enginePower/maxTractiveEffortは、既存の走行感(空車2両編成・最高100km/h、発進直後の
-// 加速度が旧ACCEL_KMH_S=15km/h/s相当)を概ね維持するように調整した値。
-export const TRAIN_SPECS: Record<'commuter' | 'express', TrainSpec> = {
-  commuter: { enginePower: 1200, carMassEmpty: 30, maxTractiveEffort: 260 },
-  express: { enginePower: 2000, carMassEmpty: 34, maxTractiveEffort: 320 },
+// 車種(TrainModelId)。TrainData.model(types.ts)に持たせる購入時の選択肢。
+// 'commuter'が既定かつ旧セーブ互換(model省略=通勤形として読む。trainModelOfを参照)。
+export type TrainModelId = 'commuter' | 'suburban' | 'express' | 'local-express';
+
+export interface TrainModel {
+  /** UI表示名(日本語)。 */
+  name: string;
+  /** 最高速度 (km/h)。レール種別capや他の速度上限とはmin合成で効く。 */
+  maxSpeedKmh: number;
+  /** 常用減速度 (km/h/s)。EMERGENCY_DECEL_KMH_S(非常制動)は車種によらず共通のまま。 */
+  serviceDecelKmhS: number;
+  /** 加速度計算(computeAcceleration)に渡すスペック。 */
+  spec: TrainSpec;
+  /** 新造価格の倍率。trainCostForProtectedの結果にさらに乗算する(sim/economy.ts)。 */
+  priceMultiplier: number;
+}
+
+// 3車種の値。commuter(通勤形)は最高速控えめ・加減速が速い、suburban(近郊形)は
+// バランス型、express(特急形)は最高速が高い代わりに加減速が緩やか、というOpenTTD
+// realisticモデル(F/m構造)上の描き分け。commuterのenginePower/maxTractiveEffortは
+// 旧TRAIN_SPECS.commuterの値(1200kW/260kN)から底上げした(旧値より加減速が速いのが
+// 意図した挙動で、既存の走行感の保存は狙っていない)。
+export const TRAIN_MODELS: Record<TrainModelId, TrainModel> = {
+  commuter: {
+    name: '通勤形',
+    maxSpeedKmh: 100,
+    serviceDecelKmhS: 24,
+    spec: { enginePower: 1400, carMassEmpty: 30, maxTractiveEffort: 300 },
+    priceMultiplier: 1.0,
+  },
+  suburban: {
+    name: '近郊形',
+    maxSpeedKmh: 120,
+    serviceDecelKmhS: 20,
+    spec: { enginePower: 1600, carMassEmpty: 32, maxTractiveEffort: 280 },
+    priceMultiplier: 1.3,
+  },
+  express: {
+    name: '特急形（幹線）',
+    maxSpeedKmh: 130,
+    serviceDecelKmhS: 18,
+    spec: { enginePower: 2000, carMassEmpty: 34, maxTractiveEffort: 320 },
+    priceMultiplier: 1.8,
+  },
+  // 通勤路網に混ざる幹線特急(express)に対し、こちらは50kgレール(上限110km/h)だけで
+  // 性能を出し切れる軽快なローカル線特急(E257転用イメージ)。60kgレール敷設が要らない分、
+  // 価格倍率はexpressより低い。
+  'local-express': {
+    name: '特急形（ローカル）',
+    maxSpeedKmh: 110,
+    serviceDecelKmhS: 20,
+    spec: { enginePower: 1700, carMassEmpty: 31, maxTractiveEffort: 300 },
+    priceMultiplier: 1.4,
+  },
 };
 
-export const DEFAULT_TRAIN_TYPE: keyof typeof TRAIN_SPECS = 'commuter';
+export const DEFAULT_TRAIN_MODEL: TrainModelId = 'commuter';
+
+/** TrainData.modelからTrainModelを解決する。undefined(旧セーブ・未選択)は通勤形扱い。 */
+export function trainModelOf(model: TrainModelId | undefined): TrainModel {
+  return TRAIN_MODELS[model ?? DEFAULT_TRAIN_MODEL];
+}
 
 /** 乗客1人あたりの質量 (t)。実測より丸めた概算値。 */
 export const PASSENGER_MASS_T = 0.08;
@@ -156,6 +209,35 @@ export function rampDecel(
   if (Math.abs(diff) <= maxStep) return desiredMs2;
   return currentMs2 + Math.sign(diff) * maxStep;
 }
+
+/**
+ * 軌道(何キロレール、progress/play-modes-plan.md「軌道」)のレール種別ごとの速度上限(km/h)。
+ * 制動曲線(permittedSpeedKmh/brakingDistanceM)がここを直接消費するため物理定数として
+ * physics.tsに置く(コスト・軸重はゲームルール寄りなのでeconomy.ts/gameRules.tsに分離)。
+ * 60kgレールは無制限(=線区の最高速度がそのまま上限になる)。
+ */
+export const RAIL_WEIGHT_SPEED_CAP_KMH: Record<37 | 50 | 60, number> = {
+  37: 70,
+  50: 110,
+  60: Infinity,
+};
+
+/** レール種別から速度上限を引く。省略(undefined)は50kgN扱い(呼び出し側の既定と揃える)。 */
+export function railWeightSpeedCapKmh(weight: 37 | 50 | 60 | undefined): number {
+  return RAIL_WEIGHT_SPEED_CAP_KMH[weight ?? 50];
+}
+
+/**
+ * 動力方式ごとの軸重(t、リアリスティックのみ)。購入時にTrainData.axleLoadTへ書き込む
+ * (economy.ts/useGameLogicの購入処理)。将来、機関車ごとに異なる軸重を持たせる余地がある
+ * ので定数テーブルはここで単純に動力方式にだけ紐づける。
+ */
+export const AXLE_LOAD_T_BY_POWER: Record<'diesel' | 'electric' | 'electric-ac' | 'electric-acdc', number> = {
+  diesel: 14,
+  electric: 12,
+  'electric-ac': 12,
+  'electric-acdc': 13,
+};
 
 // OpenTTD 1tick相当(約1/30秒)を単位に減衰を刻む。
 const OVERSPEED_TICK_S = 1 / 30;

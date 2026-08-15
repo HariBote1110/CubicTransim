@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  computeAcceleration, applyOverspeedDecay, TRAIN_SPECS,
+  computeAcceleration, applyOverspeedDecay, TRAIN_MODELS, DEFAULT_TRAIN_MODEL, trainModelOf,
   permittedSpeedKmh, brakingDistanceM, rampDecel, BRAKE_JERK_MS3,
+  railWeightSpeedCapKmh, RAIL_WEIGHT_SPEED_CAP_KMH, AXLE_LOAD_T_BY_POWER,
 } from './physics';
 
 describe('computeAcceleration', () => {
-  const spec = TRAIN_SPECS.commuter;
+  const spec = TRAIN_MODELS.commuter.spec;
 
   it('F/m構造: 満載時は空車より加速度が小さい(=同じ距離への到達時間が長い)', () => {
     const empty = computeAcceleration({ spec, cars: 2, passengers: 0, speedKmh: 0 }, 'accelerating', 20);
@@ -114,5 +115,76 @@ describe('permittedSpeedKmh / brakingDistanceM (ジャーク制限つき制動�
     expect(rampDecel(a - j * dt * 0.5, a, j, dt)).toBe(a);
     // 緩解方向も同じ上限
     expect(rampDecel(a, 0, j, dt)).toBeCloseTo(a - j * dt, 9);
+  });
+});
+
+describe('軌道(何キロレール): レール種別の速度上限・動力方式の軸重', () => {
+  it('37kg=70km/h・50kgN=110km/h・60kg=無制限', () => {
+    expect(RAIL_WEIGHT_SPEED_CAP_KMH[37]).toBe(70);
+    expect(RAIL_WEIGHT_SPEED_CAP_KMH[50]).toBe(110);
+    expect(RAIL_WEIGHT_SPEED_CAP_KMH[60]).toBe(Infinity);
+  });
+
+  it('railWeightSpeedCapKmhは省略時50kgN扱い', () => {
+    expect(railWeightSpeedCapKmh(undefined)).toBe(110);
+    expect(railWeightSpeedCapKmh(37)).toBe(70);
+    expect(railWeightSpeedCapKmh(60)).toBe(Infinity);
+  });
+
+  it('動力方式ごとの軸重: diesel=14t, electric/electric-ac=12t, electric-acdc=13t', () => {
+    expect(AXLE_LOAD_T_BY_POWER.diesel).toBe(14);
+    expect(AXLE_LOAD_T_BY_POWER.electric).toBe(12);
+    expect(AXLE_LOAD_T_BY_POWER['electric-ac']).toBe(12);
+    expect(AXLE_LOAD_T_BY_POWER['electric-acdc']).toBe(13);
+  });
+});
+
+describe('車種(TRAIN_MODELS): 通勤形/近郊形/特急形', () => {
+  it('既定は通勤形(commuter)', () => {
+    expect(DEFAULT_TRAIN_MODEL).toBe('commuter');
+  });
+
+  it('通勤形: 最高100km/h・常用減速24km/h/s', () => {
+    expect(TRAIN_MODELS.commuter.maxSpeedKmh).toBe(100);
+    expect(TRAIN_MODELS.commuter.serviceDecelKmhS).toBe(24);
+    expect(TRAIN_MODELS.commuter.priceMultiplier).toBe(1.0);
+  });
+
+  it('近郊形: 最高120km/h・常用減速20km/h/s', () => {
+    expect(TRAIN_MODELS.suburban.maxSpeedKmh).toBe(120);
+    expect(TRAIN_MODELS.suburban.serviceDecelKmhS).toBe(20);
+    expect(TRAIN_MODELS.suburban.priceMultiplier).toBe(1.3);
+  });
+
+  it('特急形: 最高130km/h・常用減速18km/h/s(3車種中もっとも減速が緩やか)', () => {
+    expect(TRAIN_MODELS.express.maxSpeedKmh).toBe(130);
+    expect(TRAIN_MODELS.express.serviceDecelKmhS).toBe(18);
+    expect(TRAIN_MODELS.express.priceMultiplier).toBe(1.8);
+    expect(TRAIN_MODELS.express.serviceDecelKmhS).toBeLessThan(TRAIN_MODELS.commuter.serviceDecelKmhS);
+    expect(TRAIN_MODELS.express.serviceDecelKmhS).toBeLessThan(TRAIN_MODELS.suburban.serviceDecelKmhS);
+  });
+
+  it('trainModelOfはundefinedを通勤形(既定・旧セーブ互換)として解決する', () => {
+    expect(trainModelOf(undefined)).toBe(TRAIN_MODELS.commuter);
+    expect(trainModelOf('express')).toBe(TRAIN_MODELS.express);
+  });
+
+  it('特急形(幹線)は「特急形（幹線）」の表示名を持つ', () => {
+    expect(TRAIN_MODELS.express.name).toBe('特急形（幹線）');
+  });
+
+  it('特急形(ローカル): 最高110km/h・常用減速20km/h/s・50kgレールで性能を出し切れる', () => {
+    expect(TRAIN_MODELS['local-express'].name).toBe('特急形（ローカル）');
+    expect(TRAIN_MODELS['local-express'].maxSpeedKmh).toBe(110);
+    expect(TRAIN_MODELS['local-express'].serviceDecelKmhS).toBe(20);
+    expect(TRAIN_MODELS['local-express'].spec).toEqual({ enginePower: 1700, carMassEmpty: 31, maxTractiveEffort: 300 });
+    expect(TRAIN_MODELS['local-express'].priceMultiplier).toBe(1.4);
+    expect(trainModelOf('local-express')).toBe(TRAIN_MODELS['local-express']);
+  });
+
+  it('TRAIN_MODELSは4車種を持つ', () => {
+    expect(Object.keys(TRAIN_MODELS).sort()).toEqual(
+      ['commuter', 'express', 'local-express', 'suburban'].sort(),
+    );
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toKey } from '../utils';
 import { DEBUG_SCENARIOS } from './debugScenarios';
-import { effectiveSchedule } from './groups';
+import { effectiveSchedule } from './lines';
 import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 import { buildTownTileIndex } from './townTiles';
@@ -39,7 +39,7 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
       for (const train of world.trains) {
         const cell = world.railMap.get(toKey(train.x, train.z));
         expect(cell, `${train.id} の初期位置にセルが無い`).toBeDefined();
-        const schedule = effectiveSchedule(train, world.groups ?? []);
+        const schedule = effectiveSchedule(train, world.lines ?? [], world.services ?? []);
         expect(schedule.length).toBeGreaterThanOrEqual(2);
         for (const stationId of schedule) {
           expect(world.stations.has(stationId), `${train.id} の運行表の駅 ${stationId} が実在しない`).toBe(true);
@@ -56,7 +56,8 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
           rng: () => 0.5,
           towns: world.towns ?? [],
           terrainField: world.field,
-          groups: world.groups,
+          lines: world.lines,
+          services: world.services,
         };
         expect(() => {
           for (let i = 0; i < 10; i++) stepWorld(sim, 0.1);
@@ -138,12 +139,13 @@ describe('DEBUG_SCENARIOS: 各シナリオの不変条件', () => {
     expect(world.trains.length).toBe(2);
   });
 
-  it('分岐と運用グループ: 運用グループがあり、所属列車の運行表はグループ経由で解決する', () => {
-    const world = scenario('junction-groups').build();
-    expect(world.groups?.length).toBe(1);
-    const grouped = world.trains.find(t => t.groupId);
-    expect(grouped).toBeDefined();
-    expect(effectiveSchedule(grouped!, world.groups!)).toEqual(world.groups![0].schedule);
+  it('分岐と路線/種別: 路線と種別があり、所属列車の運行表は種別経由で解決する', () => {
+    const world = scenario('junction-lines').build();
+    expect(world.lines?.length).toBe(1);
+    expect(world.services?.length).toBe(1);
+    const assigned = world.trains.find(t => t.serviceId);
+    expect(assigned).toBeDefined();
+    expect(effectiveSchedule(assigned!, world.lines!, world.services!)).toEqual(world.lines![0].stops);
   });
 
   it('大都市と踏切: 人口50000の町があり、線路が市街地の道路タイルを複数横切る(踏切)', () => {

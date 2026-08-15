@@ -1,5 +1,49 @@
 # プレイモード計画（ライト/ノーマル/アドバンスド/リアリスティック）
 
+## PM3 follow-up(0.5.0-Alpha-11a): デッドセクション失速(最低進入速度)
+
+PM3実装メモの残りfollow-up「最低進入速度・失速はPM3のスコープ外」を解消した。
+`electrification`が`'boundaries'`/`'feeding'`の電車限定(気動車は電化方式に関係なく
+走行できるため対象外。`!!train.power && train.power !== 'diesel'`で判定)で、
+惰行(coasting)中に速度が`STALL_SPEED_THRESHOLD_KMH=0.5km/h`未満まで落ちたら
+失速状態に入る(`simulation.ts`の惰行分岐、`TrainRuntime.stalledSeconds`に
+経過秒数を累積)。`debugStatus`は`` `失速 (${秒数}s)` ``(既存の`debugStatus`は
+英語表記だが、タスク定義でこの機能だけ日本語表示を明示指定されたためそれに従った)。
+
+- **物理定数の検証結果(チューニング不要だった)**: `physics.ts`の既存の転がり抵抗
+  (`ROLLING_RESISTANCE_COEF=0.0035`)・空気抵抗(`AIR_DRAG_COEF_PER_CAR=4`)だけで、
+  2両編成(60t)・標準的な2セル(60m)のデッドセクションを仮定すると、進入速度が
+  約7.3km/h未満なら惰行だけで停止距離(60m)以内に止まり、それ以上(最高速度100km/h
+  含む)なら余裕で通過する(100km/h進入時の停止距離は約2.8km、60mの約47倍)。
+  「歩く速さ(5km/h)で進入すると停止する・最高速度なら通過できる」という要件を
+  既存の抵抗モデルがそのまま満たしていたため、デッドセクション専用の追加抵抗係数は
+  導入していない(タスク定義の「弱すぎる場合のみ追加」を適用しなかった、という判断
+  の記録)。
+- **救援(recovery)**: `STALL_RECOVERY_SECONDS=15`秒間失速し続けると、
+  `SimEvent`に`{type:'stallRescue', trainId, penalty: STALL_RESCUE_COST=¥3,000}`を
+  1回だけpushする(`stalledSeconds`はここでリセット)。以降`TrainRuntime.stallRecovered`
+  フラグをtrueにし、先頭がそのデッドセクションを完全に抜ける(=現在セルと次セルの
+  電化方式差が無くなる)まで牽引力を持たせる(`coasting`ではなく`accelerating`扱い)。
+  抜けた時点で`stalledSeconds`/`stallRecovered`とも通常状態にリセットする。
+- **課金の配線**: `useGameLogic.ts`に`handleStallRescue`を新設し、既存の
+  `handleAccident`(事故の賠償金)と同じ「イベント受け取り→`setMoney`で即時減算」の
+  最小パターンを踏襲した。`MonthlyLedger`には専用フィールドを追加していない
+  (事故とは性質が異なる一時費用のため、既存の`accidents`バケットへは流用しなかった。
+  月次台帳としての集計が必要になったら別途フィールドを起こす)。`App.tsx`の
+  `onSimEvent`ディスパッチに`event.type==='stallRescue'`の分岐を1行追加しただけ。
+- TDD: `src/sim/deadSectionStall.test.ts`(新設)で、遅い進入(境界を先頭のすぐ隣に
+  置き静止発進させる決定的な構成)は失速してdebugStatusに「失速」が現れること、
+  15秒後に救援イベントが厳密に1回だけ発生し以降クロールで走り出すこと(2回目の
+  救援が発生しないこと)、速い進入(境界まで十分な助走距離を取る構成)は失速しない
+  こと、気動車は影響を受けないこと、`electrification:'modes'`(アドバンスド未満)
+  では失速機構自体が働かないことを固定した。
+- ブラウザ実機(アドバンスドモード、`window.__debugWorld`へdc→ac境界のシナリオを
+  直接注入、`window.__dbgStep`で手動tick)で、静止発進した交直流車が
+  `debugStatus:"失速 (2s)"`のように失速表示になること、20秒ぶんtickを進めると
+  `stallRecovered:true`・速度が35.8km/hまで回復して走り出すこと、所持金が
+  ¥50,000→¥47,000へ(STALL_RESCUE_COSTぶん)ちょうど1回だけ減っていることを確認した。
+  `npm run test`(1109件)・`npm run build`ともgreen。
+
 状態: **PM4 実装済み**（PM3の交直流電化(boundaries)に加え、'feeding'段階の
 変電所・き電区間・給電判定・容量超過ペナルティまで完了。リアリスティックモードの
 電化「全部盛り」計画は本PM4で最後の階層まで到達した）。
@@ -61,10 +105,79 @@
   無関係な既存の性能タイミングテストの単発flakeで再実行後green）・
   `npm run build`ともgreen。
 - **残るfollow-up**: 高架・地下のき電（本PM4は地平のみ、design decision通り
-  スコープ外として明示）、変電所の選択/検査UI（「コストがかかるならスキップ可」の
-  指示どおり未実装）、き電区間・給電範囲の可視化オーバーレイ（design decision 5で
-  明示的にスコープ外）。これでPM1〜PM4（電化の「全部盛り」計画）は完了し、
+  スコープ外として明示。→0.5.0-Alpha-10bで撤去、下記フォローアップ参照）、
+  変電所の選択/検査UI（「コストがかかるならスキップ可」の
+  指示どおり未実装）。これでPM1〜PM4（電化の「全部盛り」計画）は完了し、
   リアリスティックモード固有の目玉機能が出揃った。
+
+## PM4フォローアップ: 高架・地下のき電対応(0.5.0-Alpha-10b)
+
+- 上記「高架・地下（level!==0）は本PM4のスコープ外」の単純化を撤去した。
+  `src/sim/levelAdjacency.ts`（新設）が`pathfinding.ts`の`resolveEntryLayer`と
+  同じ「進入ビットで相手側の層を一意に決める」規則を`entryLayerCandidates`/
+  `neighboursAtLayer`として抽出し、`pathfinding.ts`・`feeding.ts`・`blocks.ts`の
+  3箇所がこれを共有する（三者三様の隣接判定に分岐しないための唯一の真実源）。
+  `feeding.ts`のセクション分割BFSと変電所の給電範囲BFSは、どちらもこの隣接関数で
+  地平・高架・地下をまたいで辿る。電化(`electrified`)はPM2の単純化どおり
+  `CellData`本体(セル全体)が持つ値なので、坂で登った先の高架・地下セルも
+  自動的に同じ電化方式を引き継ぐ(=坂の前後で系統が変わることはない)。
+  `isPowered`/`sectionLoadKey`のホップ数カウントもレベルをまたいで通しで続く。
+- **副産物のバグ修正**: 実装中に`construction.ts`の
+  `applyGroundPathWithElevatedConnect`(地平線路が既存の浮いた高架/地下の端タイルに
+  接したときに自動で坂を作る内部ヘルパー)が、呼び出し元`applyRailPathDetailed`から
+  `railOptions`(軌間・電化)を一切受け取っておらず、坂で自動接続する経路の
+  gauge/electrifiedが常に無視される既存バグを発見した。地平のDC電化線路を
+  高架・地下の端タイルへ引くと、自動生成された坂・桁側のセルにelectrifiedが
+  付かず、意図せず別のき電セクションへ分断されてしまう実害があったため、
+  このフォローアップの一部として修正した(railOptionsを引数に追加し、
+  span/anchor/ramp各ロールでgauge/electrifiedパッチを適用)。
+- `src/sim/blocks.ts`も同じ`levelAdjacency.ts`を使って同時に対応した(詳細は
+  signalling-plan.mdのS1フォローアップ参照)。
+- **ブラウザ実機確認**(リアリスティックモード、小マップ): UIから地平にDC電化の
+  線路を敷設(直流選択→ドラッグ)、建設レベルを「地下1」に切り替えて同じ端点から
+  さらにドラッグ(自動で坂が生成され地下へ接続)、地平に戻して変電所を地平区間の
+  隣接空きマスへ設置。`window.__debugWorld.feeding.isPowered(x,0,-1)`が地下側の
+  遠端(x=10)まで`true`を返すこと、`sectionLoadKey(0,0,0)`と
+  `sectionLoadKey(10,0,-1)`が同じキー(`"0,0"`)になることを確認した。
+  変電所ツールのオーバーレイ(`render/feedingOverlay.ts`)は地平の`isPowered(x,z,0)`
+  のみを塗り分ける実装のままで、今回は変更していない(地下ビューでの重ね描画は
+  高さ座標の扱いも含む描画側の別タスクになるため、意図的に見送った。
+  地下・高架セルの給電状態はデバッグAPI(`__debugWorld.feeding`)で確認できる)。
+
+## PM4フォローアップ: き電区間の可視化オーバーレイ(0.5.0-Alpha-9b)
+
+- `src/render/feedingOverlay.ts`（新設）: `buildFeedingOverlayCells(railMap, feeding,
+  feedingSectionCounts?)`が純粋関数として、地平の電化rail/stationセルと変電所セルを
+  `{x, z, colourKind}`（`'powered'|'unpowered'|'overload'|'substation'`）へ塗り分ける。
+  非電化railセルは結果に含めない。Vitestで先にRed→Green（`feedingOverlay.test.ts`）。
+- `src/components/WebGpuFeedingOverlay.tsx`（新設）: `WebGpuBuildPreview.tsx`と同じ
+  「署名が変わったときだけメッシュチャンクを焼き直す」パターンで、`buildMode==='substation'`
+  のときだけ半透明の板を`MESH_LAYER_CLASS.translucent`チャンクとして供給する
+  （`rules.electrification==='feeding'`のときしか変電所ツール自体が出ないので、
+  専用トグルは持たせずbuildModeの条件だけで足りる、という指示どおりの設計）。
+  `GameScene.tsx`に`WebGpuBuildPreview`と並べてマウントした。
+- **overload(容量超過)tintは実装した**（当初「アクセスが侵襲的ならフォローアップに
+  回してよい」という指示だったが、実際には`SimWorld.feedingSectionCounts`を
+  `stepWorld`が既に1tick分先に数えていた値をそのまま鏡写しするだけで済み、侵襲的では
+  なかったため実装した）。`simulation.ts`の`stepWorld`内、容量超過ペナルティ判定用に
+  ローカルで数えていた`feedingSectionCounts`を`world.feedingSectionCounts = ...`で
+  1行だけ鏡写しする（セーブ対象外、デバッグ・オーバーレイ用の副産物）。
+- **実機検証で踏んだ罠(重要)**: 板を「地表すれすれ」の絶対y座標（例: y=0.035）に
+  置くと、`render/trackGeometry.ts`のバラスト（`BALLAST_HEIGHT=0.06`）・レール頭頂
+  （`RAIL_TOP=0.13`）という不透明ジオメトリに埋もれて完全に見えなくなる。板のyは
+  `RAIL_TOP`より上（実装は`0.13 + height/2 + 0.01`）へ持ち上げる必要がある。
+  さらに、地形が平坦でない地平セル（丘・自動トンネル区間）では、絶対y=0基準の板は
+  地形の中に埋もれる。`render/townGeometry.ts`等と同じ変換式
+  `field.cellHeightAt(x,z) * OVERPASS_HEIGHT`を高さオフセットとして加算する必要がある
+  （`WebGpuFeedingOverlay`に`field: TerrainField`propを追加）。どちらも実機スクリーン
+  ショットで初回は「オーバーレイのデータは正しいのに何も描画されない」という形で
+  露見した——純粋関数のテストだけでは検出できない、wgpu側の描画専用の罠。
+- ブラウザ実機（リアリスティックモード、小マップ、平坦地形）で確認: DC電化線路
+  （61セル）+変電所1棟を建設し、変電所ツール選択中は近傍(48セル以内)が緑
+  （`powered`）、48セルを超えた先が赤（`unpowered`）に塗り分くこと、変電所セル
+  自体が青い強調板になること、`選択`ツールへ切り替えるとオーバーレイが消えること
+  をスクリーンショットで確認した。`npm run test`（1084件）・`npm run build`とも
+  green。
 
 ## 実装メモ（PM3、0.5.0-Alpha-7a）
 
@@ -346,6 +459,34 @@ interface GameRules {
 - 表現は「同一き電区間の容量ペナルティ」と同じく離散近似でよい。
   軌道破壊の連続シミュレーションはやらない
 
+### 実装メモ(0.5.0-Alpha-14a、実装済み)
+
+- `GameRules.trackClasses`(realisticプリセットのみtrue)を追加。`CellData.railWeight?: 37|50|60`
+  (gaugeと同じ「省略時は概念なし/50kgN扱い」規約)、`TrainData.axleLoadT?: number`(動力方式から
+  購入時に導出、`physics.ts`の`AXLE_LOAD_T_BY_POWER`: diesel14t/electric・electric-ac12t/electric-acdc13t)。
+- 速度上限は`physics.ts`の`RAIL_WEIGHT_SPEED_CAP_KMH`(37→70km/h・50→110km/h・60→無制限)。
+  **停止点向けの制動曲線(`permittedSpeedKmh`/`brakingDistanceM`)をそのまま「目標速度が0でない
+  停止問題」へ一般化して再利用**した: 距離d先で目標速度targetに減速し終える制約を、
+  「距離 d + brakingDistanceM(target) 先で停止し終える」問題に変換して既存の式へ渡す
+  (`brakingDistanceM`は`permittedSpeedKmh`の逆関数なので数式が厳密に整合する)。
+  `simulation.ts`の`railApproachCapKmh`(release envelopeの追加項)・hardEnvelopeの
+  レール上限ループ・`rt.braking`中のrequiredDecel計算の3箇所に同じ一般化式を適用し、
+  現在セル(距離0)と前方の`rt.route`セルの両方をカバーする。1tickの移動が制動曲線の
+  想定距離を追い越して境界直後にわずかに超過する離散化誤差を避けるため、
+  `RAIL_CAP_APPROACH_MARGIN_M=5`を接近距離から差し引く安全マージンとして設けた。
+- 軸重は`gameRules.ts`の`axleLoadAllowed`/`RAIL_WEIGHT_AXLE_LIMIT_T`(37→12t・50→16t・60→無制限)。
+  `cellAllowsTrain`に軸重超過チェックを追加(gauge/electrificationと同じ短絡規約)。
+  pathfinding.tsの`RouteQuery.trainAxleLoadT`経由でBFSが軸重超過セルを迂回不能として拒否する。
+  現行の機関車クラス(14t以下)では60kgレール以外を選んでも即詰みにはならないが、将来
+  重量機関車を導入する余地としての枠組み。
+- コストは`economy.ts`の`RAIL_WEIGHT_COST_MULTIPLIER`(37→×0.8・50→×1.0・60→×1.3)。
+  `buildPreview.ts`/`useGameLogic.ts`の両方でrail建設コスト本体にだけ乗算し、
+  electrification/protectionの加算費(架線設備費・保安装置費)は倍率の対象外。
+- UI: 線路ツールに「レール種別」行を追加(`GameUI.tsx`、`rules.trackClasses`のときのみ表示)。
+  改軌ツールのようなレール種別変換ツールは未実装(follow-up)。
+- 描画: レール種別による見た目の違いは無し(意図的、follow-up)。
+- 保線費(摩耗)は計画どおり未実装(離散近似すら導入せず、follow-up)。
+
 ## 遠い将来の夢（絵空事メモ）
 
 3D自前レンダラーであることを活かした長期候補。**当面のスコープ外**だが、
@@ -374,3 +515,35 @@ interface GameRules {
 - モード選択UIの置き場所（新規ゲームダイアログ内を想定）
 - リアリスティックの電化以外の候補（建築限界・勾配と粘着・保線など）は
   電化全部盛りの完成後に改めて優先順位を付ける
+
+## PM3 follow-up(0.5.0-Alpha-9a): デッドセクション標識の視覚表現
+
+PM3(0.5.0-Alpha-7a)で導入したdc/ac電化境界(`isDeadSectionBoundary`)は
+シミュレーション上は牽引力ゼロの惰行区間として機能していたが、視覚的な目印が
+無く境界の位置がプレイヤーから見えなかった(PM3実装メモの残りfollow-up)。
+
+配置ロジックを`render/deadSectionMarkers.ts`の`findDeadSectionMarkerEdges`として
+切り出した(sim/three.js非依存の純関数)。線路(connections)で実際に繋がっている
+dc/ac隣接セル境界だけを、E/SE/S/SWの4方向を正準として重複無く列挙する
+(反対向きの4方向は隣接セル側から検出されるため走査しない。catenaryの間引きと
+同じ「軸方向を正準化する」考え方)。
+
+ジオラマとしては実物のデッドセクション標識(架線の死区間を示す白い矩形標板)を
+模した、柱1本+標板1枚の低頂点数アセットを`trackGeometry.ts`の
+`buildDeadSectionMarkerPart`で生成し、`railGeometry.ts`の
+`buildRailNetworkGeometry`が地平の平坦区間(incline/坂は対象外、catenaryと同じ
+スコープ判断)の境界にだけ焼き込む。`WebGpuTrackNetwork.tsx`のsurfaceチャンクへ
+catenaryと同じ経路(色は`PALETTE.deadSectionMarkerPole`/`deadSectionMarkerBoard`)
+で載せた。境界が存在しないマップでは何も生成されない。
+
+架線の色分け(dc灰/ac青みがかったグレー、PM3実装済み)そのままで、境界の
+コントラクトワイヤーを中立色に置き換える案は`buildCatenaryParts`の改修が
+大掛かりになるためスコープ外にした(柱+標板だけで境界位置は十分視認できる)。
+
+高架・地下(uppers境界)のデッドセクションは対象外(地平のみ)。必要になれば
+`findDeadSectionMarkerEdges`をレベル別に拡張する形で追随できる。
+
+TDD: `deadSectionMarkers.test.ts`で配置ロジック(重複無し・connections必須・
+同一方式/非電化混在では検出しない・斜め方向も検出)を固定。ブラウザ実機
+(アドバンスドモード、セーブ注入でdc→ac接続線路を作成)で境界セルに柱+白い
+標板が描画されることを確認。

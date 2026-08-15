@@ -28,3 +28,6 @@ screenshots/
 # Rust レンダラーのビルド成果物(wasm-pack の出力先。コミットしない)
 renderer/target/
 public/renderer/
+
+# Stormworks 由来の元PLY(200MB超・非公開素材。renderer/tools/ply_to_train_glb.mjs の入力)
+Stormworks_train_model/

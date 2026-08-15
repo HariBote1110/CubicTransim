@@ -1,5 +1,6 @@
 import { toKey, getDirFromVector, getOppositeDir, getVectorFromDir, DIR } from '../utils';
-import type { CellData, StationData, TownData, Level, RailGauge } from '../types';
+import type { CellData, StationData, TownData, Level, RailGauge, SignalKind, TrainProtection, RailWeight } from '../types';
+import { DEFAULT_GAUGE } from '../types';
 import type { TerrainField } from './terrainField';
 import { fieldFromMaps } from './terrainField';
 import { nearestTownWithinRadius, stationNameForTown } from './towns';
@@ -14,6 +15,8 @@ import {
   slopeOf,
   undergroundEdgeContinuous,
 } from './slopes';
+import type { CornerDiffs, EditBlockers, EditedTerrainField } from './terrainOverlay';
+import { applyCornerFill, isEditedTerrainField } from './terrainOverlay';
 
 // 旧・固定長の橋(applyBridge)が使っていた上限値。自由な高架線(applyElevatedPath)には
 // 上下限を設けないため実質未使用だが、economy.ts側の後方互換のため定数だけ残す。
@@ -53,28 +56,52 @@ const inferStationAxis = (railMap: Map<string, CellData>, x: number, z: number):
   return 'ew';
 };
 
-// axisHint(ドラッグ方向のヒント)がそのセルの実状と矛盾しないかを検証する。
-// - 対象セルが既存の線路/駅として何の接続も持たない(真っさらな空セル)場合は、
-//   衝突しようがないのでヒントをそのまま信用する(駅スタブの初期方向を決めるのに必要)。
-// - 既に何らかの接続を持つセルの場合は、ヒントの軸方向に実在の隣接線路/駅セルが
-//   無ければヒントを信用しない。ヒントはポインタのドラッグ量(mousedown→mouseup)の
-//   差分から作る雑な推測値でしかなく、既存の直線区間を単にクリックしただけでも
-//   1セル分のブレで直交方向のヒントが立ってしまうことがある。それをそのまま
-//   connectionsへORすると、実在しない直交接続が混入し、ホームが線路と直交して
-//   描画される(ユーザー報告の不具合の根本原因)。一方、十字乗換駅のように実際に
-//   直交する線路へ向けて意図的にドラッグしたケースはヒント方向に本物の隣接セルが
-//   あるので、この検証を通過して従来通りcrossを形成できる。
-const axisHintIsSupported = (
+// OpenTTD式の駅方向指定: プレイヤーが明示したaxis('ns'/'ew')が、隣接する既存の
+// 「線路(rail)セルのみ」の接続と矛盾していないかを判定する純粋関数。
+// axisはもはやドラッグ方向からの推測ヒントではなく権威的な選択なので、矛盾する
+// 場所には黒く拒否する(以前のように黙って実際のconnectionsへ差し替えたりしない)。
+//
+// 判定対象を『rail』セルだけに絞るのは、隣接する既存『station』セルとの通常の
+// 併合(同軸拡張)・十字乗換駅の形成(直交する既存駅セルへ隣接するだけの延伸)を
+// 妨げないため(それらは別の分岐で正しく処理される)。
+//
+// - onAxisDirs(axisの方向、'ew'ならE/W): その方向の隣接セルが線路で、駅セルへ戻る
+//   方向のビットを持たず、かつ他のビットを持つ場合 → その線路は別の向きへ折れて
+//   いる(駅の軸を素直に延長していない)ので矛盾とみなす。
+// - perpDirs(axisと直交する方向、'ew'ならN/S): その方向の隣接セルが線路で、駅セルへ
+//   戻る方向のビットを持つ場合 → 通過線が駅の側面へ直接食い込んでいる(側面からの
+//   接続=OpenTTDでは許されない構図)ので矛盾とみなす。
+export const stationAxisConflict = (
   railMap: Map<string, CellData>,
-  x: number,
-  z: number,
-  ownConnections: number,
-  hint: StationAxis
+  pos: Pos,
+  axis: 'ns' | 'ew'
 ): boolean => {
-  if (ownConnections === 0) return true;
-  if (hint === 'ns') return hasRailOrStationCell(railMap, x, z - 1) || hasRailOrStationCell(railMap, x, z + 1);
-  if (hint === 'ew') return hasRailOrStationCell(railMap, x - 1, z) || hasRailOrStationCell(railMap, x + 1, z);
-  return true; // 'cross' を明示指定するのは稀な直接呼び出しのみなので無条件に許可する
+  const onAxisDirs = axis === 'ew' ? [DIR.E, DIR.W] : [DIR.N, DIR.S];
+  const perpDirs = axis === 'ew' ? [DIR.N, DIR.S] : [DIR.E, DIR.W];
+
+  const railNeighbour = (dir: number): CellData | undefined => {
+    const v = getVectorFromDir(dir);
+    const cell = railMap.get(toKey(pos.x + v.x, pos.z + v.z));
+    return cell && cell.type === 'rail' ? cell : undefined;
+  };
+
+  for (const dir of onAxisDirs) {
+    const cell = railNeighbour(dir);
+    if (!cell) continue;
+    const conns = cell.connections ?? 0;
+    const backDir = getOppositeDir(dir);
+    if (conns !== 0 && (conns & backDir) === 0) return true;
+  }
+
+  for (const dir of perpDirs) {
+    const cell = railNeighbour(dir);
+    if (!cell) continue;
+    const conns = cell.connections ?? 0;
+    const backDir = getOppositeDir(dir);
+    if ((conns & backDir) !== 0) return true;
+  }
+
+  return false;
 };
 
 // field省略時は空field(=すべて平地)扱いにする。既存呼び出し・既存テストとの互換のため。
@@ -92,10 +119,17 @@ const pathCrossesHouseTile = (townTiles: TownTileIndex, path: Pos[]): boolean =>
 // 「terrainTypeAt==='grass'」ではなく「コーナー標高がflat(4隅同値)かつ水域でない」で判定する。
 // mountain(標高1以上)というだけでは拒否しなくなった: 平坦な高原(4隅同値の高標高セル)には
 // 駅・車庫・信号を置ける(design doc 4.「mountain概念の廃止」)。水域は従来どおり常に不可。
-const isBuildableGround = (field: TerrainField, x: number, z: number): boolean => {
-  if (field.terrainTypeAt(x, z) === 'water') return false;
-  return canPlaceFlatStructure(slopeOf(field.cellCornerHeights(x, z)));
+// isBuildableGroundがfalseになる理由を区別して返す版。'water'/'not-flat'は
+// BuildFailureReason(下記)の値と揃える。UI向けの理由表示(GameUI.tsx)が
+// 「水面」と「坂・段差」を別文言で案内できるようにするため(P?タスク: 建設失敗理由の細分化)。
+const groundBlockReason = (field: TerrainField, x: number, z: number): 'water' | 'not-flat' | undefined => {
+  if (field.terrainTypeAt(x, z) === 'water') return 'water';
+  if (!canPlaceFlatStructure(slopeOf(field.cellCornerHeights(x, z)))) return 'not-flat';
+  return undefined;
 };
+
+const isBuildableGround = (field: TerrainField, x: number, z: number): boolean =>
+  groundBlockReason(field, x, z) === undefined;
 
 // 坂(ramp)セルは従来通り「標高0の地平」にしか置けない(高架/自由な高架線の坂は、
 // 地表からOVERPASS_HEIGHT単位で登る前提の描画・物理モデルなので、標高のある地面
@@ -106,22 +140,24 @@ const isFlatGroundLevelZero = (field: TerrainField, x: number, z: number): boole
   isBuildableGround(field, x, z) && field.cellHeightAt(x, z) === 0;
 
 // --- ヘルパー ---
+// 車庫が向きうる4方向。優先順位はN,E,S,Wの順(updateDepotRotation/
+// connectDepotToFacingNeighbourの両方でこの順序を共有する)。
+const DEPOT_FACING_NEIGHBOURS = [
+  { dx: 0, dz: -1, rot: 0, dir: DIR.N },
+  { dx: 1, dz: 0, rot: -Math.PI / 2, dir: DIR.E },
+  { dx: 0, dz: 1, rot: Math.PI, dir: DIR.S },
+  { dx: -1, dz: 0, rot: Math.PI / 2, dir: DIR.W },
+];
+
 const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) => {
   const key = toKey(x, z);
   const cell = map.get(key);
   if (!cell || cell.type !== 'depot') return;
 
-  const neighbours = [
-    { dx: 0, dz: -1, rot: 0 },
-    { dx: 1, dz: 0, rot: -Math.PI / 2 },
-    { dx: 0, dz: 1, rot: Math.PI },
-    { dx: -1, dz: 0, rot: Math.PI / 2 },
-  ];
-
   let bestRot = cell.rotation || 0;
   let found = false;
 
-  for (const n of neighbours) {
+  for (const n of DEPOT_FACING_NEIGHBOURS) {
     const targetKey = toKey(x + n.dx, z + n.dz);
     const targetCell = map.get(targetKey);
     if (targetCell && (targetCell.type === 'rail' || targetCell.type === 'station')) {
@@ -132,6 +168,38 @@ const updateDepotRotation = (map: Map<string, CellData>, x: number, z: number) =
   }
   if (found) {
     map.set(key, { ...cell, rotation: bestRot });
+  }
+};
+
+// 車庫を既存の線路/駅に隣接して設置したとき、pathfinding.ts(resolveEntryLayer)の
+// reciprocal-bitモデルが要求する「隣接セル側から車庫へ戻る接続ビット」を追加する。
+// 車庫は単一の出入口(updateDepotRotationが選ぶ、向いている1方向)しか持たない前提
+// なので、その1方向の隣接セルだけを接続する(4方向すべてを繋ぐと車庫がダイヤモンド
+// クロッシングのように振る舞ってしまい、単一出入口という前提が崩れる)。
+// 隣接が坂(incline)などallowedRailConnectionsで許されない向きだったり、既存の
+// ramp軸と交差する向きだったりする場合は、その接続だけ黙ってスキップする
+// (車庫自体の設置を失敗させない)。
+const connectDepotToFacingNeighbour = (
+  railMap: Map<string, CellData>,
+  x: number,
+  z: number,
+  field: TerrainField
+) => {
+  for (const n of DEPOT_FACING_NEIGHBOURS) {
+    const nx = x + n.dx;
+    const nz = z + n.dz;
+    const targetKey = toKey(nx, nz);
+    const targetCell = railMap.get(targetKey);
+    if (!targetCell || (targetCell.type !== 'rail' && targetCell.type !== 'station')) continue;
+
+    const backDir = getOppositeDir(n.dir);
+    if (targetCell.type === 'rail') {
+      const allowed = allowedRailConnections(slopeOf(field.cellCornerHeights(nx, nz)));
+      if ((allowed & backDir) === 0) break;
+      if (conflictsWithExistingRamp(targetCell, backDir)) break;
+    }
+    railMap.set(targetKey, { ...targetCell, connections: (targetCell.connections ?? 0) | backDir });
+    break;
   }
 };
 
@@ -277,6 +345,37 @@ export interface GroundRailPlanResult {
 }
 
 /**
+ * 建設が成立しなかった(apply系がno-opで同一参照を返した)ときの具体的な理由。
+ * 従来はBuildBlockReason:'no-effect'(buildPreview.ts)にすべて折り込まれ、UIは
+ * 一律「ここには建設できません」しか出せなかった。apply*Detailed系
+ * (applyStationDetailed/applyDepotDetailed/applySubstationDetailed/
+ * applySignalDetailed/applyRailPathDetailed)がこの理由を{state, failure}の形で
+ * 返すようにし、buildPreview.tsのBuildPreview.failureへそのまま伝える。
+ *
+ * - 'water'/'not-flat': groundBlockReasonが返す、駅・車庫・変電所・信号共通の
+ *   立地条件(水域/非flat)。旧来isBuildableGroundが一括でfalseにしていたものを分割した。
+ * - 'town-tile': 家・道路タイルへの設置(駅・車庫・変電所・信号共通)。
+ * - 'house-tile': 家タイルを通る地平の線路(applyRailPathDetailed)。町タイルの中でも
+ *   道路(踏切として通過可)とは区別する。
+ * - 'occupied': 既に何らかの構造物があるセルへの再設置(駅の重複設置・車庫上書き等)。
+ * - 'ramp-conflict': 既存の坂セルと異なる軸で交差する経路(pathConflictsWithExistingRamp)。
+ * - 'needs-adjacent-electrified-rail': 変電所が電化railに隣接していない。
+ * - 'needs-rail': 信号を線路・駅のないセルへ置こうとした。
+ * - GroundRailPlanFailureReasonの各値: 地上レールの地形都合(トンネル化不可等)。
+ */
+export type BuildFailureReason =
+  | 'water'
+  | 'not-flat'
+  | 'town-tile'
+  | 'house-tile'
+  | 'occupied'
+  | 'ramp-conflict'
+  | 'needs-adjacent-electrified-rail'
+  | 'needs-rail'
+  | 'station-axis-mismatch'
+  | GroundRailPlanFailureReason;
+
+/**
  * resolveGroundRailPlanの本体。UI向けに「なぜ建設できないか」も一緒に返す
  * (P7d)。resolveGroundRailPlan(既存のプレーンなAPI)はこの関数のplanだけを返す
  * 薄いラッパーにした(挙動は無改修)。
@@ -364,6 +463,100 @@ export function resolveGroundRailPlan(field: TerrainField, path: Pos[]): GroundR
   return resolveGroundRailPlanDetailed(field, path).plan;
 }
 
+/**
+ * P-terraform: 経路上のotherスロープ(単一/対角コーナーだけ低いいびつな形)のセルを、
+ * 「そのセルの最も低いコーナーを、そのセルの最も高いコーナーまで埋め立てる(fill、
+ * 常にraise方向)」ことでflatへ均す。OpenTTD式の自動整地の下地。
+ *
+ * セル単位で独立に処理する(経路の前のセルの埋め立てが後のセルのコーナーへ影響しうる
+ * ため、editedFieldを都度差し替えながら順番に適用する)。ブロック(既存のrail/町タイル/
+ * 水域/範囲外に触れる)で埋め立てできないセルはそのまま(other)にしておき、後続の
+ * resolveGroundRailPlanDetailedの判定に委ねる。
+ */
+function tryAutoFillOtherSlopes(
+  base: TerrainField,
+  editedField: EditedTerrainField,
+  path: Pos[],
+  blockers: EditBlockers
+): { field: EditedTerrainField; changedCorners: number } {
+  let current = editedField;
+  let changedCorners = 0;
+
+  for (const p of path) {
+    const corners = current.cellCornerHeights(p.x, p.z);
+    if (slopeOf(corners).kind !== 'other') continue;
+
+    const maxHeight = Math.max(...corners);
+    const cellCorners: Pos[] = [
+      { x: p.x, z: p.z },
+      { x: p.x + 1, z: p.z },
+      { x: p.x, z: p.z + 1 },
+      { x: p.x + 1, z: p.z + 1 },
+    ];
+    const targets = cellCorners
+      .filter(c => current.cornerHeightAt(c.x, c.z) < maxHeight)
+      .map(c => ({ ...c, height: maxHeight }));
+    if (targets.length === 0) continue;
+
+    const result = applyCornerFill(base, current, targets, blockers);
+    if (result.field === current) continue; // ブロックされていた: このセルはotherのまま残す
+    current = result.field;
+    changedCorners += result.changedCorners;
+  }
+
+  return { field: current, changedCorners };
+}
+
+/** resolveGroundRailPlanWithAutoFillの戻り値。field/terraformCornersは埋め立てが実際に
+ * 起きたときだけ意味を持つ(起きなければ引数のeditedFieldそのまま・terraformCorners=0)。 */
+export interface GroundRailPlanWithAutoFillResult {
+  plan: GroundRailCellRole[] | null;
+  reason?: GroundRailPlanFailureReason;
+  field: EditedTerrainField;
+  terraformCorners: number;
+}
+
+/**
+ * P-terraform: resolveGroundRailPlanDetailedのラッパー。素の地形で建設不可
+ * (reason:'other-slope')になった経路だけ、tryAutoFillOtherSlopesで低いコーナーを
+ * 埋め立ててから再判定する。
+ *
+ * 埋め立てを試みるのは reason:'other-slope' のときだけ — 'direction-blocked'/
+ * 'edge-discontinuous'/'tunnel-exit-mismatch' はコーナーの高低差の問題ではないため
+ * 埋め立てても解決しない。また、地形が十分高くトンネルで貫ける区間は
+ * resolveGroundRailPlanDetailed が最初からtunnel役割つきのplanを返す(reasonがつかない)
+ * ため、そもそもこの埋め立て経路には入らない(=トンネルで通せる山を掘り崩して
+ * 埋め立てにすり替えることはない)。
+ *
+ * 埋め立て後に再判定してもなお建設不可なら、埋め立てを破棄して元の理由をそのまま返す
+ * (部分的な地形改変を残さない no-op 規約)。
+ */
+export function resolveGroundRailPlanWithAutoFill(
+  base: TerrainField,
+  editedField: EditedTerrainField,
+  path: Pos[],
+  blockers: EditBlockers
+): GroundRailPlanWithAutoFillResult {
+  const original = resolveGroundRailPlanDetailed(editedField, path);
+  if (original.plan) return { plan: original.plan, field: editedField, terraformCorners: 0 };
+  if (original.reason !== 'other-slope') {
+    return { plan: null, reason: original.reason, field: editedField, terraformCorners: 0 };
+  }
+
+  const filled = tryAutoFillOtherSlopes(base, editedField, path, blockers);
+  if (filled.changedCorners === 0) {
+    return { plan: null, reason: 'other-slope', field: editedField, terraformCorners: 0 };
+  }
+
+  const retried = resolveGroundRailPlanDetailed(filled.field, path);
+  if (!retried.plan) {
+    // 埋め立てても解決しなかった: 地形改変を破棄し、元の理由のまま失敗させる。
+    return { plan: null, reason: original.reason, field: editedField, terraformCorners: 0 };
+  }
+
+  return { plan: retried.plan, field: filled.field, terraformCorners: filled.changedCorners };
+}
+
 // resolveGroundRailPlanの結果から、そのセルに付けるCellDataの地形フラグ(bridge/tunnel)を返す。
 const cellFlagsForRole = (field: TerrainField, role: GroundRailCellRole, x: number, z: number): Pick<CellData, 'bridge' | 'tunnel'> => {
   if (role.kind === 'tunnel') return { bridge: undefined, tunnel: { height: role.height } };
@@ -377,7 +570,24 @@ export interface RailBuildOptions {
   gauge?: RailGauge;
   /** PM3: 'modes'段階のUIは常に'dc'を書く。'ac'は'boundaries'以上でのみ選べる。 */
   electrified?: 'dc' | 'ac' | boolean;
+  /** S3: 保安装置。省略時は既存セルの値を保つ(gauge/electrifiedと同じ規約)。 */
+  protection?: TrainProtection;
+  /** 軌道(何キロレール)。省略時は既存セルの値を保つ(gauge/electrifiedと同じ規約)。 */
+  railWeight?: RailWeight;
 }
+
+// M6: 「railOptionsのうち指定されているフィールドだけをCellDataへのパッチにする」処理が
+// addConnectionToCell/applyRailPathDetailed(地平の直進/anchor)/applyElevatedPath/
+// applyUndergroundPathの計5箇所に同一のスプレッド式でコピーされていた
+// (protection/railWeightを追加したとき、実際に5箇所の修正漏れが起きた)。1箇所に括る。
+const gaugeElectrifiedPatchOf = (
+  options: RailBuildOptions
+): Pick<CellData, 'gauge' | 'electrified' | 'protection' | 'railWeight'> => ({
+  ...(options.gauge !== undefined ? { gauge: options.gauge } : {}),
+  ...(options.electrified !== undefined ? { electrified: options.electrified } : {}),
+  ...(options.protection !== undefined ? { protection: options.protection } : {}),
+  ...(options.railWeight !== undefined ? { railWeight: options.railWeight } : {}),
+});
 
 const addConnectionToCell = (
   railMap: Map<string, CellData>,
@@ -392,14 +602,11 @@ const addConnectionToCell = (
   // 軌間概念に触れていない)なら、常に「既存セルの軌間」同士の比較(実質つねに一致)になり、
   // 挙動は変わらない。
   if (existing && existing.type === 'rail') {
-    const existingGauge = existing.gauge ?? 1067;
+    const existingGauge = existing.gauge ?? DEFAULT_GAUGE;
     const newGauge = options.gauge ?? existingGauge;
     if (existingGauge !== newGauge) return;
   }
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
-    ...(options.gauge !== undefined ? { gauge: options.gauge } : {}),
-    ...(options.electrified !== undefined ? { electrified: options.electrified } : {}),
-  };
+  const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(options);
   if (!existing) {
     railMap.set(key, { type: 'rail', connections: dir, ...flags, ...gaugeElectrifiedPatch });
   } else if (existing.type !== 'rail') {
@@ -417,6 +624,24 @@ export interface RailPathApplyResult extends ConstructionState {
    * (evaluateBuild側でbridge専用に計算する)。
    */
   overpassCells: Set<string>;
+  /** no-op(railMapが元の参照のまま)になったときだけ設定される具体的な理由。 */
+  failure?: BuildFailureReason;
+  /**
+   * P-terraform: 自動整地(埋め立て)が実際に行われたときだけ設定される。呼び出し側
+   * (useGameLogic.ts)はこのdiffsをcornerDiffsへ反映して永続化する(手動のraise/lowerと
+   * 同じ経路)。埋め立てが起きなければundefined。
+   */
+  terrainEdit?: { diffs: CornerDiffs; changedCorners: number };
+}
+
+/**
+ * P-terraform: applyRailPathDetailedが自動整地(埋め立て)を試みるために必要な引数。
+ * fieldが実際のEditedTerrainField(diffsを持つ)でなければ(=デバッグ手組みfieldなど)
+ * 埋め立ては行わない(既存挙動のまま)。
+ */
+export interface RailTerrainFillOptions {
+  base: TerrainField;
+  blockers: EditBlockers;
 }
 
 // applyRailPathの詳細版。overpassCellsは自動高架の廃止により常に空集合。
@@ -434,11 +659,15 @@ export function applyRailPathDetailed(
   // 家タイルを通る経路はno-op(道路タイルは踏切として通過できる)。
   townTiles: TownTileIndex = EMPTY_TOWN_TILES,
   // PM2: 軌間/電化。省略時は既存挙動と完全に同一(gaugeElectrifiedPatchが空になる)。
-  railOptions: RailBuildOptions = {}
+  railOptions: RailBuildOptions = {},
+  // P-terraform: 指定された場合のみ、地上レール(下のresolveGroundRailPlanDetailed経路)が
+  // other-slopeで建設不可になったセルの自動整地(埋め立て)を試みる。省略時は既存挙動と
+  // 完全に同一。
+  terrainFillOptions?: RailTerrainFillOptions
 ): RailPathApplyResult {
   // 家タイルの上には地平の線路を敷けない(高架のみ通過可)。経路のどこか1セルでも
   // 家に抵触すれば建設全体をno-opにする(部分建設で町を壊さないため)。
-  if (pathCrossesHouseTile(townTiles, path)) return { ...state, overpassCells: new Set() };
+  if (pathCrossesHouseTile(townTiles, path)) return { ...state, overpassCells: new Set(), failure: 'house-tile' };
 
   if (path.length >= 2) {
     const startEnd = pickElevatedConnection(resolveElevatedPathEnd(state.railMap, path[0]), 0);
@@ -446,7 +675,7 @@ export function applyRailPathDetailed(
     if (startEnd.kind === 'connect' || endEnd.kind === 'connect') {
       const plan = planElevatedPath(path.length, startEnd, endEnd, 0);
       if (plan) {
-        const result = applyGroundPathWithElevatedConnect(state, path, field, plan);
+        const result = applyGroundPathWithElevatedConnect(state, path, field, plan, railOptions);
         if (result) return result;
       }
       // planがnull、または坂条件(車庫・地形)を満たせない場合は、接続を諦めて
@@ -456,14 +685,37 @@ export function applyRailPathDetailed(
 
   // 既存の坂セルへ、その軸と異なる方向の接続を追加してしまう経路はno-opにする
   // (坂セルを壊さないため。詳細はconflictsWithExistingRampのdocコメント参照)。
-  if (pathConflictsWithExistingRamp(state.railMap, path)) return { ...state, overpassCells: new Set() };
+  if (pathConflictsWithExistingRamp(state.railMap, path)) {
+    return { ...state, overpassCells: new Set(), failure: 'ramp-conflict' };
+  }
 
   // P7b: 勾配追従(flat/incline)で建設できないセルを、必要なら定高さのtunnelとして
   // 建設する計画を立てる。runの高さがterrain以下だったり坑口の標高が繋がらない場合は
   // nullになり、経路全体をno-opにする(部分建設で破綻した見た目を残さないため)。
-  const plan = resolveGroundRailPlan(field, path);
+  //
+  // P-terraform: terrainFillOptionsが渡され、かつfieldが実際のEditedTerrainFieldなら、
+  // other-slopeで詰まったセルの自動整地(埋め立て)を試みるresolveGroundRailPlanWithAutoFill
+  // を経由する。それ以外(デバッグ手組みfieldなど)は従来どおりresolveGroundRailPlanDetailed
+  // を直接呼ぶ(挙動を一切変えない)。
+  let effectiveField: TerrainField = field;
+  let plan: GroundRailCellRole[] | null;
+  let groundPlanFailure: GroundRailPlanFailureReason | undefined;
+  let terrainEdit: RailPathApplyResult['terrainEdit'];
+  if (terrainFillOptions && isEditedTerrainField(field)) {
+    const autoFilled = resolveGroundRailPlanWithAutoFill(terrainFillOptions.base, field, path, terrainFillOptions.blockers);
+    plan = autoFilled.plan;
+    groundPlanFailure = autoFilled.reason;
+    effectiveField = autoFilled.field;
+    if (autoFilled.plan && autoFilled.terraformCorners > 0) {
+      terrainEdit = { diffs: autoFilled.field.diffs, changedCorners: autoFilled.terraformCorners };
+    }
+  } else {
+    const detailed = resolveGroundRailPlanDetailed(field, path);
+    plan = detailed.plan;
+    groundPlanFailure = detailed.reason;
+  }
   if (!plan) {
-    return { ...state, overpassCells: new Set() };
+    return { ...state, overpassCells: new Set(), failure: groundPlanFailure };
   }
 
   const railMap = new Map(state.railMap);
@@ -479,10 +731,10 @@ export function applyRailPathDetailed(
     const dir = getDirFromVector(dx, dz);
     const oppDir = getOppositeDir(dir);
 
-    addConnectionToCell(railMap, currKey, dir, cellFlagsForRole(field, plan[i], curr.x, curr.z), railOptions);
+    addConnectionToCell(railMap, currKey, dir, cellFlagsForRole(effectiveField, plan[i], curr.x, curr.z), railOptions);
     if (railMap.get(currKey)?.type === 'depot') updateDepotRotation(railMap, curr.x, curr.z);
 
-    addConnectionToCell(railMap, nextKey, oppDir, cellFlagsForRole(field, plan[i + 1], next.x, next.z), railOptions);
+    addConnectionToCell(railMap, nextKey, oppDir, cellFlagsForRole(effectiveField, plan[i + 1], next.x, next.z), railOptions);
     if (railMap.get(nextKey)?.type === 'depot') updateDepotRotation(railMap, next.x, next.z);
 
     const checkDepotNeighbours = (px: number, pz: number) => {
@@ -493,7 +745,7 @@ export function applyRailPathDetailed(
     checkDepotNeighbours(next.x, next.z);
   }
 
-  return { railMap, stations: state.stations, overpassCells };
+  return { railMap, stations: state.stations, overpassCells, terrainEdit };
 }
 
 export function applyRailPath(
@@ -501,9 +753,10 @@ export function applyRailPath(
   path: Pos[],
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES,
-  railOptions: RailBuildOptions = {}
+  railOptions: RailBuildOptions = {},
+  terrainFillOptions?: RailTerrainFillOptions
 ): ConstructionState {
-  return applyRailPathDetailed(state, path, field, townTiles, railOptions);
+  return applyRailPathDetailed(state, path, field, townTiles, railOptions, terrainFillOptions);
 }
 
 /**
@@ -582,7 +835,9 @@ function applyGroundPathWithElevatedConnect(
   state: ConstructionState,
   path: Pos[],
   field: TerrainField,
-  plan: ElevatedPathPlan
+  plan: ElevatedPathPlan,
+  // PM2: 軌間/電化。省略時は既存挙動と完全に同一(gaugeElectrifiedPatchが空になる)。
+  railOptions: RailBuildOptions = {}
 ): RailPathApplyResult | null {
   if (!isElevatedConnectPlanBuildable(state.railMap, path, field, plan)) return null;
 
@@ -599,7 +854,7 @@ function applyGroundPathWithElevatedConnect(
     const axisBits = prevDir | nextDir;
 
     if (role.kind === 'span') {
-      addConnectionToCell(railMap, key, axisBits, terrainFlags(field, path[i].x, path[i].z));
+      addConnectionToCell(railMap, key, axisBits, terrainFlags(field, path[i].x, path[i].z), railOptions);
       if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
       continue;
     }
@@ -607,16 +862,19 @@ function applyGroundPathWithElevatedConnect(
     if (role.kind === 'anchor') {
       // 既存の高架レベルconnectLevelの端タイルそのもの。既存データ(桁の内部接続等)は
       // 一切書き換えず、uppers[connectLevel].connectionsへ新しい方向ビットをORするだけに
-      // 留める(rampは付与しない。桁+坂の二重描画を避けるため)。
+      // 留める(rampは付与しない。桁+坂の二重描画を避けるため)。地平側のgauge/electrified
+      // だけはCellData本体(セル共有)へ上書きする(spanと同じPM2の単純化)。
       const dir = role.side === 'start' ? nextDir : prevDir;
       const existing = railMap.get(key);
       const upperAtLevel = existing?.uppers?.[role.connectLevel as Level];
+      const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
       railMap.set(key, {
         ...(existing ?? { type: 'rail' }),
         uppers: {
           ...(existing?.uppers ?? {}),
           [role.connectLevel]: { connections: (upperAtLevel?.connections ?? 0) | dir, stationId: upperAtLevel?.stationId },
         },
+        ...gaugeElectrifiedPatch,
       });
       continue;
     }
@@ -631,11 +889,13 @@ function applyGroundPathWithElevatedConnect(
     const rampDir = role.base < 0 ? getOppositeDir(rampDirRaw) : rampDirRaw;
     const existing = railMap.get(key);
     const merged = orIntoBaseLevel(existing, role.base, axisBits);
+    const rampGaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
     railMap.set(key, {
       ...merged,
       type: merged.type ?? 'rail',
       ...terrainFlags(field, path[i].x, path[i].z),
       ramp: { dir: rampDir, level: role.level, base: role.base },
+      ...rampGaugeElectrifiedPatch,
     });
     if (railMap.get(key)?.type === 'depot') updateDepotRotation(railMap, path[i].x, path[i].z);
   }
@@ -643,31 +903,41 @@ function applyGroundPathWithElevatedConnect(
   return { railMap, stations: state.stations, overpassCells: new Set() };
 }
 
-export function applyStation(
+export interface ApplyDetailedResult extends ConstructionState {
+  /** no-op(railMap/stationsが元の参照のまま)になったときだけ設定される具体的な理由。 */
+  failure?: BuildFailureReason;
+}
+
+/**
+ * applyStationの詳細版。UI向けに「なぜ建設できないか」も一緒に返す(既存のapplyStationは
+ * これのfailureを捨てる薄いラッパー)。
+ */
+export function applyStationDetailed(
   state: ConstructionState,
   pos: Pos,
   field: TerrainField = EMPTY_FIELD,
   towns: TownData[] = [],
   axis?: StationAxis,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
-): ConstructionState {
+): ApplyDetailedResult {
   const key = toKey(pos.x, pos.z);
   const existingBeforeUpdate = state.railMap.get(key);
 
   // 駅は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
-  if (!isBuildableGround(field, pos.x, pos.z)) {
-    return state;
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) {
+    return { ...state, failure: groundFailure };
   }
 
   // 町タイル(家・道路のどちらも)への設置は no-op。家は当然として、道路タイルに
   // 駅を建てると町の道路網が視覚上寸断されるため許可しない。
   if (townTileAt(townTiles, pos.x, pos.z)) {
-    return state;
+    return { ...state, failure: 'town-tile' };
   }
 
   // 車庫があるセルへの設置は従来通り no-op(車庫が消えないように)
   if (existingBeforeUpdate && existingBeforeUpdate.type === 'depot') {
-    return state;
+    return { ...state, failure: 'occupied' };
   }
 
   // 坂(ramp)セルへの設置も no-op。坂セルは直線の斜面専用
@@ -675,7 +945,15 @@ export function applyStation(
   // 「斜面+直交する平坦な接続」という描画できない壊れた状態になるため。
   // 同一参照を返すことで、buildPreview側は「効果なし=建設不可」と判定できる。
   if (existingBeforeUpdate?.ramp) {
-    return state;
+    return { ...state, failure: 'ramp-conflict' };
+  }
+
+  // axisはプレイヤーの明示選択(権威的)。'ns'/'ew'を指定した場合は、隣接する
+  // 既存の線路との矛盾(側面食い込み・折れた線路への直結)を厳格にチェックする
+  // (stationAxisConflictのdocコメント参照)。'cross'を直接渡す稀な呼び出しや、
+  // axis省略(従来通り隣接構造から推測する呼び出し)はこのチェックの対象外。
+  if (axis && axis !== 'cross' && stationAxisConflict(state.railMap, pos, axis)) {
+    return { ...state, failure: 'station-axis-mismatch' };
   }
 
   const neighbours = [
@@ -701,14 +979,10 @@ export function applyStation(
     if (cell && cell.type === 'station') pushId(cell.stationId ?? null);
   }
 
-  // 軸(axis)は明示的に渡されればそれを使い、省略時は隣接する既存の線路・駅から推測する
-  // (何も無ければ東西を既定にする)。ただし既存の接続を持つセルに対しては、
-  // ヒントの軸方向に実在の隣接構造が無い限りヒントを採用しない(axisHintIsSupported)。
-  const ownConnections = existingBeforeUpdate && (existingBeforeUpdate.type === 'rail' || existingBeforeUpdate.type === 'station')
-    ? (existingBeforeUpdate.connections ?? 0)
-    : 0;
-  const trustedAxis = axis && axisHintIsSupported(state.railMap, pos.x, pos.z, ownConnections, axis) ? axis : undefined;
-  const resolvedAxis: StationAxis = trustedAxis ?? inferStationAxis(state.railMap, pos.x, pos.z);
+  // 軸(axis)はプレイヤーの明示選択を権威的にそのまま使う(上のstationAxisConflictで
+  // 矛盾は既に排除済み)。省略時のみ、従来通り隣接する既存の線路・駅から推測する
+  // (何も無ければ東西を既定にする)。
+  const resolvedAxis: StationAxis = axis ?? inferStationAxis(state.railMap, pos.x, pos.z);
   const newBits = axisBitsFor(resolvedAxis);
 
   // 既に駅セルで、統合すべき別の駅IDが周囲に無い場合:
@@ -718,7 +992,7 @@ export function applyStation(
   if (crossingStationId && involvedIds.length <= 1) {
     const existingBits = existingBeforeUpdate!.connections ?? 0;
     if ((existingBits & newBits) === newBits) {
-      return state;
+      return { ...state, failure: 'occupied' };
     }
     const railMap = new Map(state.railMap);
     railMap.set(key, { ...existingBeforeUpdate!, connections: existingBits | newBits });
@@ -787,35 +1061,124 @@ export function applyStation(
   return { railMap, stations };
 }
 
+// 既存呼び出し側(construction.test.ts等)は「no-opならstate自身の参照が返る」ことに
+// 依存しているため、失敗理由付きの新しいオブジェクトではなく元のstateをそのまま返す
+// (failureが付いたかどうかで判定し、参照の同一性を壊さない)。
+export function applyStation(
+  state: ConstructionState,
+  pos: Pos,
+  field: TerrainField = EMPTY_FIELD,
+  towns: TownData[] = [],
+  axis?: StationAxis,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ConstructionState {
+  const result = applyStationDetailed(state, pos, field, towns, axis, townTiles);
+  return result.failure ? state : result;
+}
+
+// OpenTTD式のドラッグ駅建設: 1回のドラッグ操作で軸方向に並んだ複数セルを
+// まとめて建設できる上限セル数。線路(rail)のような自由な長さは許さず、
+// ホーム長として妥当な範囲に留める(既存の類似定数が無かったため新設)。
+export const MAX_STATION_DRAG_CELLS = 8;
+
+/**
+ * ドラッグで軸方向に並んだ複数セルへ、1つの駅としてまとめて設置する詳細版。
+ * セルごとにapplyStationDetailedを順番に適用するだけで、直前に設置したセルは
+ * 次のセルから見て「隣接する既存駅セル」になるため、applyStationDetailed既存の
+ * 併合ロジック(involvedIds)が自然に全セルを同一駅IDへ寄せる(専用のID共有機構は
+ * 不要)。
+ *
+ * - 'occupied'(既にそのセルが同軸で設置済み)はドラッグの重ね塗りとして無視して続行する。
+ * - それ以外の失敗(水域・軸矛盾など)は「その場所には建設できない」という強い理由
+ *   なので、経路全体をno-opにして呼び出し側へそのまま伝える(部分的に成立した
+ *   見た目を残さないため。applyRailPathDetailedの経路全体no-op方針と揃える)。
+ */
+export function applyStationPathDetailed(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  towns: TownData[] = [],
+  axis?: StationAxis,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ApplyDetailedResult {
+  if (path.length === 0) return { ...state };
+  const clampedPath = path.slice(0, MAX_STATION_DRAG_CELLS);
+
+  let current: ConstructionState = state;
+  let anyEffective = false;
+  let hardFailure: BuildFailureReason | undefined;
+
+  for (const pos of clampedPath) {
+    const detailed = applyStationDetailed(current, pos, field, towns, axis, townTiles);
+    if (detailed.failure) {
+      if (detailed.failure !== 'occupied') {
+        hardFailure = detailed.failure;
+        break;
+      }
+      continue;
+    }
+    current = detailed;
+    anyEffective = true;
+  }
+
+  if (hardFailure) return { ...state, failure: hardFailure };
+  if (!anyEffective) return { ...state, failure: 'occupied' };
+  return current;
+}
+
+export function applyStationPath(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  towns: TownData[] = [],
+  axis?: StationAxis,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ConstructionState {
+  const result = applyStationPathDetailed(state, path, field, towns, axis, townTiles);
+  return result.failure ? state : result;
+}
+
+export function applyDepotDetailed(
+  state: ConstructionState,
+  pos: Pos,
+  field: TerrainField = EMPTY_FIELD,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES
+): ApplyDetailedResult {
+  const key = toKey(pos.x, pos.z);
+  const existing = state.railMap.get(key);
+
+  // 車庫は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) {
+    return { ...state, failure: groundFailure };
+  }
+
+  // 町タイル(家・道路)への設置は no-op(applyStationと同じ理由)。
+  if (townTileAt(townTiles, pos.x, pos.z)) {
+    return { ...state, failure: 'town-tile' };
+  }
+
+  // バグ1対策: 空セル以外への設置は no-op（駅の上に車庫を置いて駅を消してしまわないように）
+  if (existing) {
+    return { ...state, failure: 'occupied' };
+  }
+
+  const railMap = new Map(state.railMap);
+  railMap.set(key, { type: 'depot', connections: DIR.N | DIR.E | DIR.S | DIR.W, rotation: 0 });
+  updateDepotRotation(railMap, pos.x, pos.z);
+  connectDepotToFacingNeighbour(railMap, pos.x, pos.z, field);
+
+  return { railMap, stations: state.stations };
+}
+
 export function applyDepot(
   state: ConstructionState,
   pos: Pos,
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
 ): ConstructionState {
-  const key = toKey(pos.x, pos.z);
-  const existing = state.railMap.get(key);
-
-  // 車庫は平地にしか置けない: 水域・山岳セルへの設置は no-op(課金もされない)
-  if (!isBuildableGround(field, pos.x, pos.z)) {
-    return state;
-  }
-
-  // 町タイル(家・道路)への設置は no-op(applyStationと同じ理由)。
-  if (townTileAt(townTiles, pos.x, pos.z)) {
-    return state;
-  }
-
-  // バグ1対策: 空セル以外への設置は no-op（駅の上に車庫を置いて駅を消してしまわないように）
-  if (existing) {
-    return state;
-  }
-
-  const railMap = new Map(state.railMap);
-  railMap.set(key, { type: 'depot', connections: DIR.N | DIR.E | DIR.S | DIR.W, rotation: 0 });
-  updateDepotRotation(railMap, pos.x, pos.z);
-
-  return { railMap, stations: state.stations };
+  const result = applyDepotDetailed(state, pos, field, townTiles);
+  return result.failure ? state : result;
 }
 
 const NEIGHBOUR_OFFSETS: Pos[] = [
@@ -823,10 +1186,11 @@ const NEIGHBOUR_OFFSETS: Pos[] = [
   { x: 0, z: 1 }, { x: -1, z: 1 }, { x: -1, z: 0 }, { x: -1, z: -1 },
 ];
 
-/** posの8近傍(または本セル)に電化railセルが1つでもあるか(PM4: 変電所の設置条件)。 */
+// L1: 呼び出し元(applySubstation)は必ず`if (existing) return state;`のあとに呼ぶため、
+// pos自身のセルは常にundefined(=既存セルが無いこと確定済み)。よってposの8近傍だけを
+// 見ればよく、自セルの電化判定は不要。
+/** posの8近傍に電化railセルが1つでもあるか(PM4: 変電所の設置条件)。 */
 const hasAdjacentElectrifiedRail = (railMap: Map<string, CellData>, pos: Pos): boolean => {
-  const self = railMap.get(toKey(pos.x, pos.z));
-  if (self && (self.type === 'rail' || self.type === 'station') && self.electrified) return true;
   return NEIGHBOUR_OFFSETS.some(d => {
     const cell = railMap.get(toKey(pos.x + d.x, pos.z + d.z));
     return !!cell && (cell.type === 'rail' || cell.type === 'station') && !!cell.electrified;
@@ -838,19 +1202,22 @@ const hasAdjacentElectrifiedRail = (railMap: Map<string, CellData>, pos: Pos): b
  * (平地・空セル・町タイルでないこと)に加え、電化railセルへ8近傍で隣接する
  * (またはそのセル自身が電化railである)ことを要求する(design decision 1)。
  */
-export function applySubstation(
+export function applySubstationDetailed(
   state: ConstructionState,
   pos: Pos,
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
-): ConstructionState {
+): ApplyDetailedResult {
   const key = toKey(pos.x, pos.z);
   const existing = state.railMap.get(key);
 
-  if (!isBuildableGround(field, pos.x, pos.z)) return state;
-  if (townTileAt(townTiles, pos.x, pos.z)) return state;
-  if (existing) return state;
-  if (!hasAdjacentElectrifiedRail(state.railMap, pos)) return state;
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) return { ...state, failure: groundFailure };
+  if (townTileAt(townTiles, pos.x, pos.z)) return { ...state, failure: 'town-tile' };
+  if (existing) return { ...state, failure: 'occupied' };
+  if (!hasAdjacentElectrifiedRail(state.railMap, pos)) {
+    return { ...state, failure: 'needs-adjacent-electrified-rail' };
+  }
 
   const railMap = new Map(state.railMap);
   railMap.set(key, { type: 'substation' });
@@ -858,20 +1225,34 @@ export function applySubstation(
   return { railMap, stations: state.stations };
 }
 
-export function applySignal(
+export function applySubstation(
   state: ConstructionState,
-  path: Pos[],
+  pos: Pos,
   field: TerrainField = EMPTY_FIELD,
   townTiles: TownTileIndex = EMPTY_TOWN_TILES
 ): ConstructionState {
+  const result = applySubstationDetailed(state, pos, field, townTiles);
+  return result.failure ? state : result;
+}
+
+export function applySignalDetailed(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  kind?: SignalKind
+): ApplyDetailedResult {
   const pos = path[0];
   const key = toKey(pos.x, pos.z);
   const cell = state.railMap.get(key);
-  if (!cell || (cell.type !== 'rail' && cell.type !== 'station')) return state;
+  if (!cell || (cell.type !== 'rail' && cell.type !== 'station')) {
+    return { ...state, failure: 'needs-rail' };
+  }
   // 信号は平地にしか置けない: 橋・トンネル区間(水域・山岳)への設置は no-op
-  if (!isBuildableGround(field, pos.x, pos.z)) return state;
+  const groundFailure = groundBlockReason(field, pos.x, pos.z);
+  if (groundFailure) return { ...state, failure: groundFailure };
   // 町タイル(家・道路=踏切)への設置も no-op(踏切セルには信号機を建てない)。
-  if (townTileAt(townTiles, pos.x, pos.z)) return state;
+  if (townTileAt(townTiles, pos.x, pos.z)) return { ...state, failure: 'town-tile' };
 
   const railMap = new Map(state.railMap);
   const conns = cell.connections || 0;
@@ -885,7 +1266,10 @@ export function applySignal(
         break;
       }
     }
-    railMap.set(key, { ...cell, signalDir: firstDir });
+    railMap.set(key, { ...cell, signalDir: firstDir, signalKind: kind });
+  } else if (kind && kind !== (cell.signalKind ?? 'block')) {
+    // S2: 種別選択ツールで既存信号の種別だけを変更する(向きは維持、巡回しない)。
+    railMap.set(key, { ...cell, signalKind: kind });
   } else {
     const currentDir = cell.signalDir;
     let nextDir = currentDir;
@@ -902,6 +1286,17 @@ export function applySignal(
   }
 
   return { railMap, stations: state.stations };
+}
+
+export function applySignal(
+  state: ConstructionState,
+  path: Pos[],
+  field: TerrainField = EMPTY_FIELD,
+  townTiles: TownTileIndex = EMPTY_TOWN_TILES,
+  kind?: SignalKind
+): ConstructionState {
+  const result = applySignalDetailed(state, path, field, townTiles, kind);
+  return result.failure ? state : result;
 }
 
 // --- 自由に敷ける高架線(applyElevatedPath) ---
@@ -1200,10 +1595,7 @@ export function applyElevatedPath(
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
   // PM2: セル単位で軌間/電化を共有するため、CellData本体(uppersの外側)へ付ける。
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
-    ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
-    ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
-  };
+  const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -1335,10 +1727,7 @@ export function applyUndergroundPath(
   const dirBetween = (a: number, b: number): number =>
     getDirFromVector(path[b].x - path[a].x, path[b].z - path[a].z);
   const rampDirFor = rampDirResolver(plan, path.length);
-  const gaugeElectrifiedPatch: Pick<CellData, 'gauge' | 'electrified'> = {
-    ...(railOptions.gauge !== undefined ? { gauge: railOptions.gauge } : {}),
-    ...(railOptions.electrified !== undefined ? { electrified: railOptions.electrified } : {}),
-  };
+  const gaugeElectrifiedPatch = gaugeElectrifiedPatchOf(railOptions);
 
   for (let i = 0; i < path.length; i++) {
     const role = plan.roles[i];
@@ -1765,7 +2154,7 @@ export function applyRegaugePath(
   for (const p of path) {
     const key = toKey(p.x, p.z);
     const cell = railMap.get(key)!;
-    const currentGauge = cell.gauge ?? 1067;
+    const currentGauge = cell.gauge ?? DEFAULT_GAUGE;
     if (currentGauge === targetGauge) continue;
     railMap.set(key, { ...cell, gauge: targetGauge });
     changed = true;

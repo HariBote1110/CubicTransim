@@ -1,42 +1,80 @@
 import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir } from '../utils';
-import type { CellData, StationData, TrainData, TrainGroupData } from '../types';
+import type { CellData, StationData, TrainData, LineData, ServiceData } from '../types';
 import { stepWorld } from './simulation';
 import type { SimWorld } from './simulation';
 import {
-  effectiveSchedule, headwayHoldSeconds, nextGroupName, nextGroupColour,
-  departureKey, membersOf, GROUP_COLOURS,
+  effectiveSchedule, headwayHoldSeconds, nextLineName, nextLineColour,
+  departureKey, membersOf, LINE_COLOURS,
+  findLine, findService, resolveAssignment, serviceStops, defaultServiceFor,
   nextStop,
   stopsOnCurrentRun,
   recordInterval,
   averageInterval,
   INTERVAL_SAMPLE_LIMIT,
   suggestsShuttle,
-} from './groups';
+} from './lines';
 
-const makeGroup = (over: Partial<TrainGroupData> = {}): TrainGroupData => ({
-  id: 'g1', name: '1系統', schedule: ['stA', 'stB'], headwaySeconds: 0, colour: GROUP_COLOURS[0], ...over,
+const makeLine = (over: Partial<LineData> = {}): LineData => ({
+  id: 'l1', name: '1系統', stops: ['stA', 'stB'], colour: LINE_COLOURS[0], ...over,
+});
+
+const makeService = (over: Partial<ServiceData> = {}): ServiceData => ({
+  id: 's1', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 0, ...over,
 });
 
 const makeTrain = (over: Partial<TrainData> = {}): TrainData => ({
   id: 't1', x: 0, z: 0, schedule: [], scheduleIndex: 0, status: 'running', cars: 2, ...over,
 });
 
-describe('運用グループの純粋関数', () => {
-  it('グループに所属していればグループの運行表に従う', () => {
-    const group = makeGroup();
-    const train = makeTrain({ schedule: ['stZ'], groupId: 'g1' });
-    expect(effectiveSchedule(train, [group])).toEqual(['stA', 'stB']);
+describe('路線/種別の純粋関数', () => {
+  it('種別に所属していれば路線の運行表に従う', () => {
+    const line = makeLine();
+    const service = makeService();
+    const train = makeTrain({ schedule: ['stZ'], serviceId: 's1' });
+    expect(effectiveSchedule(train, [line], [service])).toEqual(['stA', 'stB']);
   });
 
   it('未所属なら列車自身の運行表に従う', () => {
     const train = makeTrain({ schedule: ['stZ'] });
-    expect(effectiveSchedule(train, [makeGroup()])).toEqual(['stZ']);
+    expect(effectiveSchedule(train, [makeLine()], [makeService()])).toEqual(['stZ']);
   });
 
-  it('存在しないグループidを指していたら列車自身の運行表に落ちる', () => {
-    const train = makeTrain({ schedule: ['stZ'], groupId: 'missing' });
-    expect(effectiveSchedule(train, [makeGroup()])).toEqual(['stZ']);
+  it('存在しない種別idを指していたら列車自身の運行表に落ちる', () => {
+    const train = makeTrain({ schedule: ['stZ'], serviceId: 'missing' });
+    expect(effectiveSchedule(train, [makeLine()], [makeService()])).toEqual(['stZ']);
+  });
+
+  it('種別が指す路線が存在しなければ列車自身の運行表に落ちる', () => {
+    const train = makeTrain({ schedule: ['stZ'], serviceId: 's1' });
+    const service = makeService({ lineId: 'missing-line' });
+    expect(effectiveSchedule(train, [makeLine()], [service])).toEqual(['stZ']);
+  });
+
+  it('種別がskipStationIdsを持つと、通過駅を除いた運行表になる(快速)', () => {
+    const line = makeLine({ id: 'l1', stops: ['stA', 'stB', 'stC'] });
+    const rapid = makeService({ id: 'rapid', lineId: 'l1', name: '快速', skipStationIds: ['stB'] });
+    const train = makeTrain({ serviceId: 'rapid' });
+    expect(effectiveSchedule(train, [line], [rapid])).toEqual(['stA', 'stC']);
+  });
+
+  it('serviceStopsは種別のskipStationIdsを路線のstopsから除いたもの', () => {
+    const line = makeLine({ stops: ['stA', 'stB', 'stC'] });
+    const rapid = makeService({ skipStationIds: ['stB'] });
+    expect(serviceStops(line, rapid)).toEqual(['stA', 'stC']);
+  });
+
+  it('resolveAssignmentは(路線,種別)の組を返す。未所属・不整合ならnull', () => {
+    const line = makeLine();
+    const service = makeService();
+    const train = makeTrain({ serviceId: 's1' });
+    expect(resolveAssignment(train, [line], [service])).toEqual({ line, service });
+    expect(resolveAssignment(makeTrain(), [line], [service])).toBeNull();
+  });
+
+  it('defaultServiceForは各停・通過駅なし・発車間隔0の種別を作る', () => {
+    const service = defaultServiceFor('l1');
+    expect(service).toEqual({ id: 'l1:default', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 0 });
   });
 
   it('発車間隔0なら待たない', () => {
@@ -53,20 +91,29 @@ describe('運用グループの純粋関数', () => {
     expect(headwayHoldSeconds(60, 100, 200)).toBe(0);
   });
 
-  it('名前と色は既存グループと重複しないものが選ばれる', () => {
-    const groups = [makeGroup({ id: 'a', name: '1系統', colour: GROUP_COLOURS[0] })];
-    expect(nextGroupName(groups)).toBe('2系統');
-    expect(nextGroupColour(groups)).toBe(GROUP_COLOURS[1]);
+  it('名前と色は既存路線と重複しないものが選ばれる', () => {
+    const lines = [makeLine({ id: 'a', name: '1系統', colour: LINE_COLOURS[0] })];
+    expect(nextLineName(lines)).toBe('2系統');
+    expect(nextLineColour(lines)).toBe(LINE_COLOURS[1]);
   });
 
-  it('departureKeyはグループと駅の組で一意', () => {
-    expect(departureKey('g1', 'stA')).not.toBe(departureKey('g1', 'stB'));
-    expect(departureKey('g1', 'stA')).not.toBe(departureKey('g2', 'stA'));
+  it('departureKeyは種別と駅の組で一意', () => {
+    expect(departureKey('s1', 'stA')).not.toBe(departureKey('s1', 'stB'));
+    expect(departureKey('s1', 'stA')).not.toBe(departureKey('s2', 'stA'));
   });
 
   it('membersOfは所属列車だけを返す', () => {
-    const trains = [makeTrain({ id: 'a', groupId: 'g1' }), makeTrain({ id: 'b' }), makeTrain({ id: 'c', groupId: 'g1' })];
-    expect(membersOf(trains, 'g1').map(t => t.id)).toEqual(['a', 'c']);
+    const trains = [makeTrain({ id: 'a', serviceId: 's1' }), makeTrain({ id: 'b' }), makeTrain({ id: 'c', serviceId: 's1' })];
+    expect(membersOf(trains, 's1').map(t => t.id)).toEqual(['a', 'c']);
+  });
+
+  it('findLine/findServiceはidで検索し、無ければundefined', () => {
+    const line = makeLine();
+    const service = makeService();
+    expect(findLine([line], 'l1')).toBe(line);
+    expect(findLine([line], 'missing')).toBeUndefined();
+    expect(findService([service], 's1')).toBe(service);
+    expect(findService([service], undefined)).toBeUndefined();
   });
 });
 
@@ -104,15 +151,16 @@ const buildLine = (len: number) => {
   return { railMap, stations };
 };
 
-describe('stepWorld: 運用グループ', () => {
-  it('グループの運行表が列車自身の運行表より優先される(共有運行表)', () => {
+describe('stepWorld: 路線/種別', () => {
+  it('種別の運行表が列車自身の運行表より優先される(共有運行表)', () => {
     const { railMap, stations } = buildLine(8);
-    // 列車自身の運行表は空だが、グループの運行表でB駅を目指す
-    const train = makeTrain({ x: 0, z: 0, schedule: [], groupId: 'g1' });
-    const group = makeGroup({ id: 'g1', schedule: ['stB'] });
+    // 列車自身の運行表は空だが、路線の運行表でB駅を目指す
+    const train = makeTrain({ x: 0, z: 0, schedule: [], serviceId: 's1' });
+    const line = makeLine({ id: 'l1', stops: ['stB'] });
+    const service = makeService({ id: 's1', lineId: 'l1' });
     const world: SimWorld = {
       railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
-      rng: () => 1, towns: [], groups: [group], groupDepartures: new Map(),
+      rng: () => 1, towns: [], lines: [line], services: [service], serviceDepartures: new Map(),
     };
 
     let rt = world.runtimes.get('t1');
@@ -124,20 +172,32 @@ describe('stepWorld: 運用グループ', () => {
     expect(rt!.lastStopStationId).toBe('stB');
   });
 
+  it('快速種別が通過駅を目的地に含めない(通過駅では乗降も発生しない)', () => {
+    const { railMap, stations } = buildLine(8);
+    // 路線はstA→stB→stCを想定したいところだがこの盤面はstA/stBの2駅のみなので、
+    // ここではeffectiveScheduleの計算のみ(stepWorld統合はsimulation.test.tsで確認)を検証する。
+    const line = makeLine({ id: 'l1', stops: ['stA', 'stB'] });
+    const rapid = makeService({ id: 'rapid', lineId: 'l1', skipStationIds: ['stB'] });
+    const train = makeTrain({ serviceId: 'rapid' });
+    expect(effectiveSchedule(train, [line], [rapid])).toEqual(['stA']);
+    void railMap; void stations;
+  });
+
   it('発車間隔を設定すると、前続列車の発車から間隔が空くまで駅で待つ', () => {
     const { railMap, stations } = buildLine(8);
-    const group = makeGroup({ id: 'g1', schedule: ['stB', 'stA'], headwaySeconds: 30 });
-    const train = makeTrain({ x: 0, z: 0, schedule: [], groupId: 'g1' });
+    const line = makeLine({ id: 'l1', stops: ['stB', 'stA'] });
+    const service = makeService({ id: 's1', lineId: 'l1', headwaySeconds: 30 });
+    const train = makeTrain({ x: 0, z: 0, schedule: [], serviceId: 's1' });
     const world: SimWorld = {
       railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
-      rng: () => 1, towns: [], groups: [group], groupDepartures: new Map(),
+      rng: () => 1, towns: [], lines: [line], services: [service], serviceDepartures: new Map(),
       clock: { elapsed: 100 },
     };
     // 別の列車が「たった今」A駅を発車したことにする
-    world.groupDepartures!.set(departureKey('g1', 'stA'), 100);
+    world.serviceDepartures!.set(departureKey('s1', 'stA'), 100);
 
     // まずA駅に停車させる(初期状態は走行中なので、A駅を目的地にして到着させる)
-    world.groups![0].schedule = ['stA'];
+    world.lines![0].stops = ['stA'];
     let rt = world.runtimes.get('t1');
     for (let i = 0; i < 3000; i++) {
       stepWorld(world, 1 / 60);
@@ -147,7 +207,7 @@ describe('stepWorld: 運用グループ', () => {
     expect(rt!.lastStopStationId).toBe('stA');
 
     // 次の目的地をB駅にして、停車時間を消化させたあとの挙動を見る
-    world.groups![0].schedule = ['stA', 'stB'];
+    world.lines![0].stops = ['stA', 'stB'];
     train.scheduleIndex = 1;
 
     const startElapsed = world.clock!.elapsed;
@@ -168,16 +228,17 @@ describe('stepWorld: 運用グループ', () => {
     expect(startElapsed).toBeLessThan(130);
   });
 
-  it('発車間隔0のグループでは待たされない', () => {
+  it('発車間隔0の種別では待たされない', () => {
     const { railMap, stations } = buildLine(8);
-    const group = makeGroup({ id: 'g1', schedule: ['stA', 'stB'], headwaySeconds: 0 });
-    const train = makeTrain({ x: 0, z: 0, schedule: [], groupId: 'g1' });
+    const line = makeLine({ id: 'l1', stops: ['stA', 'stB'] });
+    const service = makeService({ id: 's1', lineId: 'l1', headwaySeconds: 0 });
+    const train = makeTrain({ x: 0, z: 0, schedule: [], serviceId: 's1' });
     const world: SimWorld = {
       railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
-      rng: () => 1, towns: [], groups: [group], groupDepartures: new Map(),
+      rng: () => 1, towns: [], lines: [line], services: [service], serviceDepartures: new Map(),
       clock: { elapsed: 100 },
     };
-    world.groupDepartures!.set(departureKey('g1', 'stA'), 100);
+    world.serviceDepartures!.set(departureKey('s1', 'stA'), 100);
 
     let held = false;
     for (let i = 0; i < 4000; i++) {
@@ -189,24 +250,35 @@ describe('stepWorld: 運用グループ', () => {
     expect(held).toBe(false);
   });
 
-  it('発車すると「グループ×駅」の最終発車時刻が記録される', () => {
+  it('発車すると「種別×駅」の最終発車時刻が記録される', () => {
     const { railMap, stations } = buildLine(8);
-    const group = makeGroup({ id: 'g1', schedule: ['stA', 'stB'], headwaySeconds: 30 });
-    const train = makeTrain({ x: 0, z: 0, schedule: [], groupId: 'g1' });
+    const line = makeLine({ id: 'l1', stops: ['stA', 'stB'] });
+    const service = makeService({ id: 's1', lineId: 'l1', headwaySeconds: 30 });
+    const train = makeTrain({ x: 0, z: 0, schedule: [], serviceId: 's1' });
     const world: SimWorld = {
       railMap, stations, trains: [train], runtimes: new Map(), waiting: new Map(),
-      rng: () => 1, towns: [], groups: [group], groupDepartures: new Map(),
+      rng: () => 1, towns: [], lines: [line], services: [service], serviceDepartures: new Map(),
     };
 
     // A駅へ到着 → 発車 の流れを回す
     for (let i = 0; i < 6000; i++) {
       const evs = stepWorld(world, 1 / 60);
       for (const e of evs) {
-        if (e.type === 'arrive') train.scheduleIndex = (e.scheduleIndex + 1) % group.schedule.length;
+        if (e.type === 'arrive') train.scheduleIndex = (e.scheduleIndex + 1) % line.stops.length;
       }
-      if (world.groupDepartures!.has(departureKey('g1', 'stA'))) break;
+      if (world.serviceDepartures!.has(departureKey('s1', 'stA'))) break;
     }
-    expect(world.groupDepartures!.has(departureKey('g1', 'stA'))).toBe(true);
+    expect(world.serviceDepartures!.has(departureKey('s1', 'stA'))).toBe(true);
+  });
+
+  it('同じ路線の異なる種別は、発車間隔を独立に記録する', () => {
+    const rapid = departureKey('rapid', 'stA');
+    const local = departureKey('local', 'stA');
+    const intervals = new Map<string, number[]>();
+    recordInterval(intervals, 'rapid', 'stA', 100, 160);
+    recordInterval(intervals, 'local', 'stA', 100, 130);
+    expect(intervals.get(rapid)).toEqual([60]);
+    expect(intervals.get(local)).toEqual([30]);
   });
 });
 
@@ -259,32 +331,32 @@ describe('この先(今の片道)の停車駅', () => {
 describe('実績の運転間隔', () => {
   it('同じ駅を続けて発車した間隔を記録する', () => {
     const intervals = new Map<string, number[]>();
-    recordInterval(intervals, 'g1', 'stA', 100, 160);
-    expect(intervals.get(departureKey('g1', 'stA'))).toEqual([60]);
+    recordInterval(intervals, 's1', 'stA', 100, 160);
+    expect(intervals.get(departureKey('s1', 'stA'))).toEqual([60]);
   });
 
   it('初回の発車(前回の記録が無い)は間隔にならない', () => {
     const intervals = new Map<string, number[]>();
-    recordInterval(intervals, 'g1', 'stA', undefined, 160);
-    expect(intervals.get(departureKey('g1', 'stA'))).toBeUndefined();
+    recordInterval(intervals, 's1', 'stA', undefined, 160);
+    expect(intervals.get(departureKey('s1', 'stA'))).toBeUndefined();
   });
 
   it('直近の数回ぶんだけを残す', () => {
     const intervals = new Map<string, number[]>();
     for (let i = 1; i <= INTERVAL_SAMPLE_LIMIT + 3; i++) {
-      recordInterval(intervals, 'g1', 'stA', i * 10, i * 10 + 10);
+      recordInterval(intervals, 's1', 'stA', i * 10, i * 10 + 10);
     }
-    expect(intervals.get(departureKey('g1', 'stA'))!.length).toBe(INTERVAL_SAMPLE_LIMIT);
+    expect(intervals.get(departureKey('s1', 'stA'))!.length).toBe(INTERVAL_SAMPLE_LIMIT);
   });
 
-  it('路線全体の平均運転間隔を出す(記録が無ければnull)', () => {
+  it('種別全体の平均運転間隔を出す(記録が無ければnull)', () => {
     const intervals = new Map<string, number[]>([
-      [departureKey('g1', 'stA'), [60, 80]],
-      [departureKey('g1', 'stB'), [100]],
-      [departureKey('g2', 'stA'), [10]],
+      [departureKey('s1', 'stA'), [60, 80]],
+      [departureKey('s1', 'stB'), [100]],
+      [departureKey('s2', 'stA'), [10]],
     ]);
-    expect(averageInterval(intervals, 'g1')).toBeCloseTo(80, 5);
-    expect(averageInterval(intervals, 'g3')).toBeNull();
+    expect(averageInterval(intervals, 's1')).toBeCloseTo(80, 5);
+    expect(averageInterval(intervals, 's3')).toBeNull();
   });
 });
 

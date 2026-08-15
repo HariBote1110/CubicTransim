@@ -9,16 +9,20 @@ import {
   cellAllowsTrain,
   electrificationOf,
   isDeadSectionBoundary,
+  effectiveRailWeight,
+  axleLoadAllowed,
+  effectiveRailOptions,
   type GameRules,
 } from './gameRules';
 import type { CellData } from '../types';
+import type { RailBuildOptions } from './construction';
 
 describe('gameRules: プレイモードのプリセットと逆引き', () => {
   it('4モードのプリセットがplay-modes-plan.mdの定義どおり', () => {
-    expect(PLAY_MODE_PRESETS.light).toEqual({ gauge: false, extendedGauges: false, electrification: 'none', signalling: 's0' });
-    expect(PLAY_MODE_PRESETS.normal).toEqual({ gauge: true, extendedGauges: false, electrification: 'modes', signalling: 's0' });
-    expect(PLAY_MODE_PRESETS.advanced).toEqual({ gauge: true, extendedGauges: false, electrification: 'boundaries', signalling: 's0' });
-    expect(PLAY_MODE_PRESETS.realistic).toEqual({ gauge: true, extendedGauges: true, electrification: 'feeding', signalling: 's0' });
+    expect(PLAY_MODE_PRESETS.light).toEqual({ gauge: false, extendedGauges: false, electrification: 'none', signalling: 's0', trackClasses: false });
+    expect(PLAY_MODE_PRESETS.normal).toEqual({ gauge: true, extendedGauges: false, electrification: 'modes', signalling: 's0', trackClasses: false });
+    expect(PLAY_MODE_PRESETS.advanced).toEqual({ gauge: true, extendedGauges: false, electrification: 'boundaries', signalling: 's0', trackClasses: false });
+    expect(PLAY_MODE_PRESETS.realistic).toEqual({ gauge: true, extendedGauges: true, electrification: 'feeding', signalling: 's0', trackClasses: true });
   });
 
   it('DEFAULT_GAME_RULESはライトプリセットと一致する', () => {
@@ -45,7 +49,7 @@ describe('gameRules: プレイモードのプリセットと逆引き', () => {
   });
 
   it('playModeOfはどのプリセットとも一致しないフラグ組み合わせをcustomと判定する', () => {
-    const custom: GameRules = { gauge: true, extendedGauges: false, electrification: 'none', signalling: 's0' };
+    const custom: GameRules = { gauge: true, extendedGauges: false, electrification: 'none', signalling: 's0', trackClasses: false };
     expect(playModeOf(custom)).toBe('custom');
   });
 
@@ -144,5 +148,97 @@ describe('gameRules: PM3 交直流電化', () => {
     expect(isDeadSectionBoundary(dcCell, dcCell)).toBe(false);
     expect(isDeadSectionBoundary(dcCell, bareCell)).toBe(false);
     expect(isDeadSectionBoundary(bareCell, bareCell)).toBe(false);
+  });
+});
+
+describe('gameRules: 軌道(何キロレール・対荷重)', () => {
+  const realisticRules: GameRules = {
+    gauge: true, extendedGauges: true, electrification: 'feeding', signalling: 's0', trackClasses: true,
+  };
+  const offRules: GameRules = {
+    gauge: true, extendedGauges: false, electrification: 'feeding', signalling: 's0', trackClasses: false,
+  };
+
+  it('effectiveRailWeightはtrackClasses=falseなら常に50kgN(DEFAULT_RAIL_WEIGHT)扱い', () => {
+    const cell37: CellData = { type: 'rail', railWeight: 37 };
+    expect(effectiveRailWeight(cell37, offRules)).toBe(50);
+    expect(effectiveRailWeight(undefined, offRules)).toBe(50);
+  });
+
+  it('effectiveRailWeightはtrackClasses=trueならセルの値、省略時は50kgN', () => {
+    const cell37: CellData = { type: 'rail', railWeight: 37 };
+    const bare: CellData = { type: 'rail' };
+    expect(effectiveRailWeight(cell37, realisticRules)).toBe(37);
+    expect(effectiveRailWeight(bare, realisticRules)).toBe(50);
+  });
+
+  it('axleLoadAllowedはtrackClasses=falseなら常にtrue', () => {
+    const cell37: CellData = { type: 'rail', railWeight: 37 };
+    expect(axleLoadAllowed(cell37, offRules, 20)).toBe(true);
+  });
+
+  it('axleLoadAllowedは37kgレール(上限12t)を超える軸重を拒否する', () => {
+    const cell37: CellData = { type: 'rail', railWeight: 37 };
+    expect(axleLoadAllowed(cell37, realisticRules, 12)).toBe(true);
+    expect(axleLoadAllowed(cell37, realisticRules, 12.01)).toBe(false);
+  });
+
+  it('axleLoadAllowedは50kgNレール(上限16t)・60kgレール(無制限)を正しく判定する', () => {
+    const cell50: CellData = { type: 'rail', railWeight: 50 };
+    const cell60: CellData = { type: 'rail', railWeight: 60 };
+    expect(axleLoadAllowed(cell50, realisticRules, 16)).toBe(true);
+    expect(axleLoadAllowed(cell50, realisticRules, 16.01)).toBe(false);
+    expect(axleLoadAllowed(cell60, realisticRules, 999)).toBe(true);
+  });
+
+  it('axleLoadAllowedは列車側にaxleLoadTが無ければ常にtrue', () => {
+    const cell37: CellData = { type: 'rail', railWeight: 37 };
+    expect(axleLoadAllowed(cell37, realisticRules, undefined)).toBe(true);
+  });
+
+  it('cellAllowsTrainは軸重超過セルを拒否する(gauge/electrificationが許可していても)', () => {
+    const cell37: CellData = { type: 'rail', railWeight: 37 };
+    expect(cellAllowsTrain(cell37, realisticRules, 1067, 'diesel', 14)).toBe(false);
+    expect(cellAllowsTrain(cell37, realisticRules, 1067, 'diesel', 12)).toBe(true);
+  });
+
+  it('cellAllowsTrainはtrackClasses=falseなら軸重を無視する', () => {
+    const cell37: CellData = { type: 'rail', railWeight: 37 };
+    expect(cellAllowsTrain(cell37, offRules, 1067, 'diesel', 999)).toBe(true);
+  });
+});
+
+describe('gameRules: effectiveRailOptions(H2 UI→construction境界での概念ストリップ)', () => {
+  const full: RailBuildOptions = { gauge: 1435, electrified: 'ac', protection: 'cbtc', railWeight: 60 };
+  // signallingはモード非依存の別軸(gameRules.ts冒頭コメント)なので、realisticプリセットに
+  // s3を明示的に足したものを「全概念あり」の基準ルールとする。
+  const realisticS3: GameRules = { ...PLAY_MODE_PRESETS.realistic, signalling: 's3' };
+
+  it('全概念ありのルールではそのまま通す', () => {
+    expect(effectiveRailOptions(realisticS3, full)).toEqual(full);
+  });
+
+  it('ライト(gauge無し・electrification無し・s0・trackClasses無し)はすべて剥がす', () => {
+    expect(effectiveRailOptions(PLAY_MODE_PRESETS.light, full)).toEqual({});
+  });
+
+  it('gauge概念が無ければgaugeだけ剥がす', () => {
+    const rules: GameRules = { ...realisticS3, gauge: false };
+    expect(effectiveRailOptions(rules, full)).toEqual({ electrified: 'ac', protection: 'cbtc', railWeight: 60 });
+  });
+
+  it("electrification==='none'ならelectrifiedだけ剥がす", () => {
+    const rules: GameRules = { ...realisticS3, electrification: 'none' };
+    expect(effectiveRailOptions(rules, full)).toEqual({ gauge: 1435, protection: 'cbtc', railWeight: 60 });
+  });
+
+  it("signalling!=='s3'ならprotectionだけ剥がす", () => {
+    const rules: GameRules = { ...realisticS3, signalling: 's2' };
+    expect(effectiveRailOptions(rules, full)).toEqual({ gauge: 1435, electrified: 'ac', railWeight: 60 });
+  });
+
+  it('trackClasses=falseならrailWeightだけ剥がす', () => {
+    const rules: GameRules = { ...realisticS3, trackClasses: false };
+    expect(effectiveRailOptions(rules, full)).toEqual({ gauge: 1435, electrified: 'ac', protection: 'cbtc' });
   });
 });

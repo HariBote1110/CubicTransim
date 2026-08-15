@@ -10,13 +10,13 @@
 // applyRailPath/applyStationと完全に同一の判定になる(回帰させないための最重要制約)。
 import type { CellData, StationData, RailGauge } from '../types';
 import { toKey } from '../utils';
-import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel } from './construction';
+import type { ConstructionState, BuildLevel, ElevatedLevel, UndergroundLevel, StationAxis } from './construction';
 import {
   applyRailPathDetailed,
-  applyStation,
-  applyDepot,
-  applySubstation,
-  applySignal,
+  applyStationPathDetailed,
+  applyDepotDetailed,
+  applySubstationDetailed,
+  applySignalDetailed,
   applyElevatedPath,
   applyElevatedStation,
   applyUndergroundPath,
@@ -29,10 +29,12 @@ import {
   isElevatedConnectPlanBuildable,
   resolveGroundRailPlan,
   resolveGroundRailPlanDetailed,
+  resolveGroundRailPlanWithAutoFill,
   LAYERED_RAIL_MIN_PATH_CELLS,
   type GroundRailPlanFailureReason,
+  type BuildFailureReason,
 } from './construction';
-import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, costOfRegauge, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
+import { costOfPath, costOfElevatedPath, costOfGroundPathWithRamps, costOfGroundRailPlan, costOfTerrainEdit, costOfUndergroundPath, costOfElectrification, costOfProtection, costOfRegauge, costMultiplierForRailWeight, ELEVATED_STATION_COST, UNDERGROUND_STATION_COST, type ConstructionMode } from './economy';
 import type { RailBuildOptions } from './construction';
 import type { TerrainField } from './terrainField';
 import type { EditedTerrainField } from './terrainOverlay';
@@ -83,6 +85,21 @@ export interface BuildPreview {
    * より具体的にするために使う。
    */
   slopeIssue?: GroundRailPlanFailureReason;
+  /**
+   * reason==='no-effect'の具体的な理由(construction.tsのBuildFailureReason)。
+   * apply*Detailed系(applyStationDetailed/applyDepotDetailed/applySubstationDetailed/
+   * applySignalDetailed/applyRailPathDetailed)がno-opの際に返すfailureをそのまま
+   * 伝える。地上レールのslopeIssueもこの値に含まれる(値としては同一)。
+   * GameUI.tsxのBuildFeedbackが理由別の文言を出すために使う。
+   */
+  failure?: BuildFailureReason;
+  /**
+   * P-terraform: 地上レール(mode:'rail', level 0)の建設に伴って自動整地(埋め立て)が
+   * 行われた場合の変化コーナー数。埋め立てが起きなければ0(または未指定)。
+   */
+  terraformCorners?: number;
+  /** terraformCornersに対応する追加コスト(costOfTerrainEdit)。costには既に加算済み。 */
+  terraformCost?: number;
 }
 
 export function evaluateBuild(
@@ -109,7 +126,11 @@ export function evaluateBuild(
   railOptions: RailBuildOptions = {},
   // PM2 Stage B: 改軌ツール('regauge'モードのときのみ参照)。targetGauge省略時は
   // 改軌不能(no-effect)。occupiedCellsは列車が在線中のセル(toKey形式)の集合。
-  regauge?: { targetGauge: RailGauge; occupiedCells?: Set<string> }
+  regauge?: { targetGauge: RailGauge; occupiedCells?: Set<string> },
+  // OpenTTD式の駅方向指定: プレイヤーが明示選択した軸。地平駅(mode:'station', level 0)
+  // でのみ参照する(高架/地下駅は別の軸機構のまま。GameScene側の注記参照)。
+  // 省略時はapplyStationDetailedが隣接構造から推測する(既存呼び出し互換)。
+  stationAxis?: StationAxis
 ): BuildPreview {
   const empty: BuildPreview = {
     mode, cellCount: 0, cost: 0, reason: 'no-effect', bridgeCells: 0, tunnelCells: 0, overpassCells: 0, rampCells: 0, level,
@@ -179,10 +200,21 @@ export function evaluateBuild(
   let tunnelCells = 0;
   let groundPlan: ReturnType<typeof resolveGroundRailPlan> = null;
   let groundSlopeIssue: GroundRailPlanFailureReason | undefined;
+  let terraformCorners = 0;
   if (mode === 'rail' && !elevated && !underground) {
-    const detailed = resolveGroundRailPlanDetailed(field, path);
-    groundPlan = detailed.plan;
-    groundSlopeIssue = detailed.reason;
+    // P-terraform: terrainEdit(base/editedField/blockers)が渡されていれば、実際の建設
+    // (applyRailPathDetailed)と同じくresolveGroundRailPlanWithAutoFillへ問い合わせ、
+    // other-slopeで詰まった区間の自動整地込みの内訳(トンネル/整地コーナー数)を出す。
+    if (terrainEdit) {
+      const detailed = resolveGroundRailPlanWithAutoFill(terrainEdit.base, terrainEdit.editedField, path, terrainEdit.blockers);
+      groundPlan = detailed.plan;
+      groundSlopeIssue = detailed.reason;
+      terraformCorners = detailed.terraformCorners;
+    } else {
+      const detailed = resolveGroundRailPlanDetailed(field, path);
+      groundPlan = detailed.plan;
+      groundSlopeIssue = detailed.reason;
+    }
     if (groundPlan) {
       for (let i = 0; i < path.length; i++) {
         const role = groundPlan[i];
@@ -247,28 +279,67 @@ export function evaluateBuild(
         mode === 'rail' ? field : undefined,
         mode === 'rail' ? railMap : undefined
       );
+  // 軌道(何キロレール): rail建設の線路本体コストにレール種別の倍率を掛ける
+  // (electrificationより先に、baseCostにだけ乗算する。架線設備費は倍率の対象外)。
+  const railWeightAdjustedCost = mode === 'rail'
+    ? baseCost * costMultiplierForRailWeight(railOptions.railWeight)
+    : baseCost;
   // PM2: 電化を選んだrail建設には、線路本体のコストに架線設備費を上乗せする
   // (地平/高架/地下いずれも同じ単価。costOfElectrificationのdocコメント参照)。
-  const cost = mode === 'rail' && railOptions.electrified
-    ? baseCost + costOfElectrification(path.length)
-    : baseCost;
+  const electrificationAdjustedCost = mode === 'rail' && railOptions.electrified
+    ? railWeightAdjustedCost + costOfElectrification(path.length)
+    : railWeightAdjustedCost;
+  // PM3/S3: 保安装置を選んだrail建設には地上設備費を上乗せする
+  // (useGameLogic.commitPathの3経路(地平・高架・地下)と同じ加算)。
+  const protectionAdjustedCost = mode === 'rail' && railOptions.protection
+    ? electrificationAdjustedCost + costOfProtection(path.length, railOptions.protection)
+    : electrificationAdjustedCost;
+  // P-terraform: 自動整地(埋め立て)が起きた分だけ、地形編集と同じ単価を線路本体コストに上乗せする。
+  const terraformCost = costOfTerrainEdit(terraformCorners);
+  const cost = mode === 'rail' && !elevated && !underground && terraformCorners > 0
+    ? protectionAdjustedCost + terraformCost
+    : protectionAdjustedCost;
 
   // 実際に適用してみて、変化が生じるか(=建設が成立するか)を確かめる。
   const state: ConstructionState = { railMap, stations };
   let result: ConstructionState;
   let overpassCells = 0;
+  // apply*Detailed系がno-opの際に返す具体的な理由。UIへの表示用(下のfailure算出で使う)。
+  let applyFailure: BuildFailureReason | undefined;
   switch (mode) {
     case 'remove': result = removePath(state, path); break;
-    case 'signal': result = applySignal(state, path, field, townTiles); break;
-    case 'station':
-      result = elevated
-        ? applyElevatedStation(state, path[path.length - 1], [], elevatedLevel)
-        : underground
-        ? applyUndergroundStation(state, path[path.length - 1], [], undergroundLevel)
-        : applyStation(state, path[path.length - 1], field, [], undefined, townTiles);
+    case 'signal': {
+      const detailed = applySignalDetailed(state, path, field, townTiles);
+      result = detailed;
+      applyFailure = detailed.failure;
       break;
-    case 'depot': result = applyDepot(state, path[path.length - 1], field, townTiles); break;
-    case 'substation': result = applySubstation(state, path[path.length - 1], field, townTiles); break;
+    }
+    case 'station': {
+      if (elevated) {
+        result = applyElevatedStation(state, path[path.length - 1], [], elevatedLevel);
+      } else if (underground) {
+        result = applyUndergroundStation(state, path[path.length - 1], [], undergroundLevel);
+      } else {
+        // OpenTTD式のドラッグ駅建設: 地平駅は経路全体(複数セル)をまとめて評価する
+        // (単発クリックはpath.length===1なので従来通り1セルの評価と同じ結果になる)。
+        const detailed = applyStationPathDetailed(state, path, field, [], stationAxis, townTiles);
+        result = detailed;
+        applyFailure = detailed.failure;
+      }
+      break;
+    }
+    case 'depot': {
+      const detailed = applyDepotDetailed(state, path[path.length - 1], field, townTiles);
+      result = detailed;
+      applyFailure = detailed.failure;
+      break;
+    }
+    case 'substation': {
+      const detailed = applySubstationDetailed(state, path[path.length - 1], field, townTiles);
+      result = detailed;
+      applyFailure = detailed.failure;
+      break;
+    }
     case 'rail': {
       if (elevated) {
         result = applyElevatedPath(state, path, field, elevatedLevel, undefined, townTiles, railOptions);
@@ -276,9 +347,13 @@ export function evaluateBuild(
       } else if (underground) {
         result = applyUndergroundPath(state, path, field, undergroundLevel, undefined, railOptions);
       } else {
-        const detailed = applyRailPathDetailed(state, path, field, townTiles, railOptions);
+        const detailed = applyRailPathDetailed(
+          state, path, field, townTiles, railOptions,
+          terrainEdit ? { base: terrainEdit.base, blockers: terrainEdit.blockers } : undefined
+        );
         result = detailed;
         overpassCells = detailed.overpassCells.size;
+        applyFailure = detailed.failure;
       }
       break;
     }
@@ -293,7 +368,12 @@ export function evaluateBuild(
     ? path.some(c => railMap.has(`${c.x},${c.z}`))
     : (result.railMap !== state.railMap || result.stations !== state.stations);
 
-  const cellCount = mode === 'rail' || mode === 'remove' || mode === 'bridge' ? path.length : 1;
+  // OpenTTD式のドラッグ駅建設: 地平駅(mode:'station', !elevated && !underground)は
+  // rail/remove/bridgeと同じく経路全体のセル数を対象にする(高架/地下駅は常に単一セル)。
+  const cellCount =
+    mode === 'rail' || mode === 'remove' || mode === 'bridge' || (mode === 'station' && !elevated && !underground)
+      ? path.length
+      : 1;
 
   let reason: BuildBlockReason = 'ok';
   if (!effective) reason = 'no-effect';
@@ -301,9 +381,12 @@ export function evaluateBuild(
 
   const slopeIssue =
     mode === 'rail' && !elevated && !underground && !effective ? groundSlopeIssue : undefined;
+  const failure = !effective ? (applyFailure ?? slopeIssue) : undefined;
 
   return {
     mode, cellCount, cost, reason, bridgeCells, tunnelCells, overpassCells,
-    rampCells: elevatedRampCount || groundRampCount, level, slopeIssue,
+    rampCells: elevatedRampCount || groundRampCount, level, slopeIssue, failure,
+    terraformCorners: terraformCorners > 0 ? terraformCorners : undefined,
+    terraformCost: terraformCorners > 0 ? terraformCost : undefined,
   };
 }

@@ -1,19 +1,25 @@
-// 運用グループ(軽量なグループダイヤ)。
+// 路線(Line)＋種別(Service)。
 //
-// 考え方はOpenTTDの「共有オーダー + separation」に近い:
-//  - 複数の列車を1つのグループにまとめ、運行表(停車駅の並び)をグループで共有する。
-//    運行表を直すときに1本ずつ組み直さなくてよくなる。
-//  - グループに「発車間隔(headway)」を設定すると、駅を発車するときに
-//    「同じグループの列車が同じ駅を発車してから headway 秒経っているか」を見て、
-//    足りなければその場で待つ。これだけで団子運転が自然にほどけ、等間隔運転になる。
+// 考え方はOpenTTDの「共有オーダー + separation」に近いが、種別(各停/快速…)の
+// 概念を路線から切り離して持つ:
+//  - 路線(LineData)は「停車駅の全リスト(物理経路)」と「走らせ方(loop/shuttle)」を持つ、
+//    第一級の存在。
+//  - 種別(ServiceData)は路線に属し、「どの駅を通過するか(skipStationIds)」と
+//    「発車間隔(headwaySeconds)」を持つ。同じ路線に各停・快速など複数の種別を作れる。
+//  - 列車は種別(serviceId)に所属する。有効運行表は「路線の停車駅並び」から
+//    「種別が通過する駅」を除いたもの。
+//
+// 発車間隔(headway)は種別ごとに効く: 駅を発車するときに「同じ種別の列車が同じ駅を
+// 発車してから headway 秒経っているか」を見て、足りなければその場で待つ。これだけで
+// 団子運転が自然にほどけ、等間隔運転になる。
 //
 // ゲーム内時計の絶対時刻に停車時刻を割り付ける「時刻表」方式ではないので、
 // 遅延の伝播や時刻の再計算を扱う必要がなく、実装も運用も軽い。
-import type { CellData, StationData, TrainData, TrainGroupData } from '../types';
+import type { CellData, LineData, ServiceData, StationData, TrainData } from '../types';
 import { calculateRoute } from './pathfinding';
 
-/** グループに割り当てるラインカラーの候補(描画の帯とUIのバッジに使う)。 */
-export const GROUP_COLOURS = [
+/** 路線に割り当てるラインカラーの候補(描画の帯とUIのバッジに使う)。 */
+export const LINE_COLOURS = [
   '#1f8fd6', // 青
   '#e2571f', // 橙
   '#34a853', // 緑
@@ -25,45 +31,71 @@ export const GROUP_COLOURS = [
 /** 発車間隔として選べる値(シミュレーション秒)。0は等間隔化なし。 */
 export const HEADWAY_CHOICES = [0, 15, 30, 45, 60, 90, 120] as const;
 
-/** 新しいグループに割り当てる色(既存グループとなるべく重複しないように選ぶ)。 */
-export function nextGroupColour(groups: TrainGroupData[]): string {
-  const used = new Set(groups.map(g => g.colour));
-  return GROUP_COLOURS.find(c => !used.has(c)) ?? GROUP_COLOURS[groups.length % GROUP_COLOURS.length];
+/** 新しい路線に割り当てる色(既存路線となるべく重複しないように選ぶ)。 */
+export function nextLineColour(lines: LineData[]): string {
+  const used = new Set(lines.map(l => l.colour));
+  return LINE_COLOURS.find(c => !used.has(c)) ?? LINE_COLOURS[lines.length % LINE_COLOURS.length];
 }
 
-/** 新しいグループ名(「1系統」「2系統」…のうち未使用の最小番号)。 */
-export function nextGroupName(groups: TrainGroupData[]): string {
-  const used = new Set(groups.map(g => g.name));
+/** 新しい路線名(「1系統」「2系統」…のうち未使用の最小番号)。 */
+export function nextLineName(lines: LineData[]): string {
+  const used = new Set(lines.map(l => l.name));
   for (let i = 1; ; i++) {
     const name = `${i}系統`;
     if (!used.has(name)) return name;
   }
 }
 
-export function findGroup(groups: TrainGroupData[], groupId: string | undefined | null): TrainGroupData | undefined {
-  if (!groupId) return undefined;
-  return groups.find(g => g.id === groupId);
+export function findLine(lines: LineData[], lineId: string | undefined | null): LineData | undefined {
+  if (!lineId) return undefined;
+  return lines.find(l => l.id === lineId);
+}
+
+export function findService(services: ServiceData[], serviceId: string | undefined | null): ServiceData | undefined {
+  if (!serviceId) return undefined;
+  return services.find(s => s.id === serviceId);
+}
+
+/** 列車の種別idから(路線, 種別)の組を解決する。所属していなければnull。 */
+export function resolveAssignment(
+  train: TrainData,
+  lines: LineData[],
+  services: ServiceData[]
+): { line: LineData; service: ServiceData } | null {
+  const service = findService(services, train.serviceId);
+  if (!service) return null;
+  const line = findLine(lines, service.lineId);
+  if (!line) return null;
+  return { line, service };
+}
+
+/** 路線の停車駅並びから、種別が通過する駅を除いたもの。 */
+export function serviceStops(line: LineData, service: ServiceData): string[] {
+  if (service.skipStationIds.length === 0) return line.stops;
+  const skip = new Set(service.skipStationIds);
+  return line.stops.filter(s => !skip.has(s));
 }
 
 /**
  * その列車が実際に従う運行表。
- * グループに所属していればグループの運行表、していなければ列車自身の運行表。
+ * 種別に所属していれば(路線の運行表から通過駅を除いた)有効運行表、
+ * していなければ列車自身の運行表。
  */
-export function effectiveSchedule(train: TrainData, groups: TrainGroupData[]): string[] {
-  const group = findGroup(groups, train.groupId);
-  return group ? group.schedule : train.schedule;
+export function effectiveSchedule(train: TrainData, lines: LineData[], services: ServiceData[]): string[] {
+  const assignment = resolveAssignment(train, lines, services);
+  return assignment ? serviceStops(assignment.line, assignment.service) : train.schedule;
 }
 
-/** 発車時刻を記録するキー(グループ×駅)。 */
-export function departureKey(groupId: string, stationId: string): string {
-  return `${groupId}|${stationId}`;
+/** 発車時刻を記録するキー(種別×駅)。 */
+export function departureKey(serviceId: string, stationId: string): string {
+  return `${serviceId}|${stationId}`;
 }
 
 /**
  * 発車間隔を満たすまであと何秒待つ必要があるか。0なら発車してよい。
  *
- * @param headwaySeconds       グループの発車間隔。0以下なら常に0を返す(等間隔化なし)
- * @param lastDepartureElapsed 同じグループが同じ駅を最後に発車した時刻(未記録ならundefined)
+ * @param headwaySeconds       種別の発車間隔。0以下なら常に0を返す(等間隔化なし)
+ * @param lastDepartureElapsed 同じ種別が同じ駅を最後に発車した時刻(未記録ならundefined)
  * @param nowElapsed           現在のシミュレーション累積秒
  */
 export function headwayHoldSeconds(
@@ -77,9 +109,26 @@ export function headwayHoldSeconds(
   return Math.max(0, headwaySeconds - elapsedSince);
 }
 
-/** グループに所属する列車の一覧。 */
-export function membersOf(trains: TrainData[], groupId: string): TrainData[] {
-  return trains.filter(t => t.groupId === groupId);
+/** 種別に所属する列車の一覧。 */
+export function membersOf(trains: TrainData[], serviceId: string): TrainData[] {
+  return trains.filter(t => t.serviceId === serviceId);
+}
+
+/** 路線作成時に自動生成する既定種別(「各停」、通過駅なし、発車間隔0)。 */
+export function defaultServiceFor(lineId: string, id: string = `${lineId}:default`): ServiceData {
+  return { id, lineId, name: '各停', skipStationIds: [], headwaySeconds: 0 };
+}
+
+/** 路線とその既定種別(各停)を一緒に作る便宜関数。 */
+export function createLineWithDefaultService(
+  id: string,
+  name: string,
+  colour: string,
+  stops: string[],
+  mode?: LineMode
+): { line: LineData; service: ServiceData } {
+  const line: LineData = { id, name, colour, stops, mode };
+  return { line, service: defaultServiceFor(id) };
 }
 
 // --- 運行モード(路線の走らせ方) ---
@@ -142,10 +191,10 @@ export function stopsOnCurrentRun(schedule: string[], cursor: StopCursor, mode: 
 
 // --- 実績の運転間隔 ---
 
-/** 1つの「路線×駅」について保持する実測サンプル数。 */
+/** 1つの「種別×駅」について保持する実測サンプル数。 */
 export const INTERVAL_SAMPLE_LIMIT = 5;
 
-/** 「路線×駅」ごとの、実際に測れた発車間隔(秒)の直近サンプル。 */
+/** 「種別×駅」ごとの、実際に測れた発車間隔(秒)の直近サンプル。 */
 export type IntervalSamples = Map<string, number[]>;
 
 /**
@@ -155,7 +204,7 @@ export type IntervalSamples = Map<string, number[]>;
  */
 export function recordInterval(
   intervals: IntervalSamples,
-  groupId: string,
+  serviceId: string,
   stationId: string,
   lastDepartureElapsed: number | undefined,
   nowElapsed: number
@@ -164,15 +213,15 @@ export function recordInterval(
   const gap = nowElapsed - lastDepartureElapsed;
   if (!(gap > 0)) return;
 
-  const key = departureKey(groupId, stationId);
+  const key = departureKey(serviceId, stationId);
   const samples = intervals.get(key) ?? [];
   samples.push(gap);
   intervals.set(key, samples.slice(-INTERVAL_SAMPLE_LIMIT));
 }
 
-/** その路線の平均運転間隔(秒)。サンプルが1つも無ければ null。 */
-export function averageInterval(intervals: IntervalSamples, groupId: string): number | null {
-  const prefix = `${groupId}|`;
+/** その種別の平均運転間隔(秒)。サンプルが1つも無ければ null。 */
+export function averageInterval(intervals: IntervalSamples, serviceId: string): number | null {
+  const prefix = `${serviceId}|`;
   let sum = 0;
   let count = 0;
   for (const [key, samples] of intervals) {
@@ -211,29 +260,29 @@ const legLength = (
 };
 
 /**
- * この停車駅の並びは折返し運転にすべきか。
+ * この停車駅の並びは折返し運転にすべきか。物理経路(路線のstops)に対して評価する。
  *
  * 環状運転では最後の駅の次に先頭の駅へ向かうため、行き止まりの路線だと
  * 終端から始発まで来た道をまるごと回送することになる。その回送距離が
  * 路線を一通り走る距離に匹敵するなら折返しを勧める。
  */
 export function suggestsShuttle(
-  schedule: string[],
+  stops: string[],
   railMap: Map<string, CellData>,
   stations: Map<string, StationData>
 ): boolean {
   // 停車駅が2つ以下なら環状も折返しも同じ動きになる。
-  if (schedule.length <= 2) return false;
+  if (stops.length <= 2) return false;
 
   let forward = 0;
-  for (let i = 0; i + 1 < schedule.length; i++) {
-    const leg = legLength(railMap, stations, schedule[i], schedule[i + 1]);
+  for (let i = 0; i + 1 < stops.length; i++) {
+    const leg = legLength(railMap, stations, stops[i], stops[i + 1]);
     if (leg === null) return false; // 経路が繋がっていない路線は判断しない
     forward += leg;
   }
   if (forward <= 0) return false;
 
-  const closing = legLength(railMap, stations, schedule[schedule.length - 1], schedule[0]);
+  const closing = legLength(railMap, stations, stops[stops.length - 1], stops[0]);
   // 戻る経路が無いなら環状運転は成立しない。
   if (closing === null) return true;
 

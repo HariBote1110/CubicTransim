@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { toKey, getDirFromVector, getOppositeDir, DIR } from '../utils';
 import { fieldFromMaps } from './terrainField';
 import type { CellData, StationData, TrainData, TownData } from '../types';
-import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH } from './simulation';
+import { stepWorld, STOP_DURATION, DECEL_KMH_S, MAX_SPEED_KMH, occupiedCellKeysFromRuntimes } from './simulation';
 import type { SimWorld, SimEvent } from './simulation';
 import { carPositions } from './consist';
-import { computeAcceleration, TRAIN_SPECS, DEFAULT_TRAIN_TYPE } from './physics';
-import { applyBridge, type ConstructionState } from './construction';
+import { computeAcceleration, TRAIN_MODELS, DEFAULT_TRAIN_MODEL, brakingDistanceM, BRAKE_JERK_MS3 } from './physics';
+import { applyBridge, applyRegaugePath, type ConstructionState } from './construction';
 import { OVERPASS_HEIGHT, rampHeightAtPos, RAMP_POS_LEVEL1, RAMP_POS_LEVEL2 } from './trackPath';
 import {
   PASSENGER_SPAWN_RATE,
@@ -144,7 +144,7 @@ describe('stepWorld', () => {
     const rt = world.runtimes.get('t1')!;
     // 発進直後(低速域)は牽引力(粘着限界)がほぼ一定なため、加速度もほぼ一定になる。
     const accelMs2 = computeAcceleration(
-      { spec: TRAIN_SPECS[DEFAULT_TRAIN_TYPE], cars: train.cars, passengers: 0, speedKmh: 0 },
+      { spec: TRAIN_MODELS[DEFAULT_TRAIN_MODEL].spec, cars: train.cars, passengers: 0, speedKmh: 0 },
       'accelerating',
       DECEL_KMH_S
     );
@@ -631,6 +631,66 @@ describe('stepWorld: 減速カーブ(距離ベースの許容速度)', () => {
 
     expect(rt!.speedKmh).toBeGreaterThanOrEqual(MAX_SPEED_KMH - 0.01);
   });
+
+  it('車種(TRAIN_MODELS): 近郊形はMAX_SPEED_KMH(=通勤形の100km/h)を超えてTRAIN_MODELS.suburban.maxSpeedKmh(120km/h)まで加速する', () => {
+    // 十分長い直線(250セル=7500m)の途中経過(まだ終点駅に到達しない時間帯)で最高到達速度を
+    // 観測する。終点まで到達させてしまうと停車後にrt.speedKmhが0へ戻り「頭打ち速度」を
+    // 読み取れなくなるため、走行中である200秒(2000tick)だけ進める。
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    const commuterTrain = makeTrain({ id: 't1', schedule: ['stA'] });
+    const commuterWorld = makeWorld(railMap, stations, [commuterTrain]);
+
+    const suburbanRailMap = buildStraightLine(250, 'stA', 2).railMap;
+    const suburbanTrain = makeTrain({ id: 't1', schedule: ['stA'], model: 'suburban' });
+    const suburbanWorld = makeWorld(suburbanRailMap, stations, [suburbanTrain]);
+
+    const dt = 0.1;
+    let commuterMaxKmh = 0;
+    let suburbanMaxKmh = 0;
+    for (let i = 0; i < 2000; i++) {
+      stepWorld(commuterWorld, dt);
+      stepWorld(suburbanWorld, dt);
+      const commuterRt = commuterWorld.runtimes.get('t1')!;
+      const suburbanRt = suburbanWorld.runtimes.get('t1')!;
+      commuterMaxKmh = Math.max(commuterMaxKmh, commuterRt.speedKmh);
+      suburbanMaxKmh = Math.max(suburbanMaxKmh, suburbanRt.speedKmh);
+      expect(commuterRt.speedKmh).toBeLessThanOrEqual(MAX_SPEED_KMH + 1e-6);
+      expect(suburbanRt.speedKmh).toBeLessThanOrEqual(TRAIN_MODELS.suburban.maxSpeedKmh + 1e-6);
+    }
+
+    expect(commuterMaxKmh).toBeGreaterThanOrEqual(MAX_SPEED_KMH - 0.01);
+    expect(suburbanMaxKmh).toBeGreaterThan(MAX_SPEED_KMH);
+  });
+
+  it('車種(TRAIN_MODELS): 特急形(ローカル)はTRAIN_MODELS[\'local-express\'].maxSpeedKmh(110km/h)で頭打ちになる', () => {
+    // 幹線特急(130km/h)と違い、無制限のレール(cap無し)を敷いても110km/hで頭打ちになることを確認する。
+    // 近郊形の頭打ちテスト(120km/h)と同じ手法(200秒だけ進めて走行中の最高速度を観測)を流用する。
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    const localExpressTrain = makeTrain({ id: 't1', schedule: ['stA'], model: 'local-express' });
+    const world = makeWorld(railMap, stations, [localExpressTrain]);
+
+    const dt = 0.1;
+    let maxKmh = 0;
+    for (let i = 0; i < 2000; i++) {
+      stepWorld(world, dt);
+      const rt = world.runtimes.get('t1')!;
+      maxKmh = Math.max(maxKmh, rt.speedKmh);
+      expect(rt.speedKmh).toBeLessThanOrEqual(TRAIN_MODELS['local-express'].maxSpeedKmh + 1e-6);
+    }
+
+    expect(maxKmh).toBeGreaterThan(MAX_SPEED_KMH);
+  });
+
+  it('車種(TRAIN_MODELS): 特急形は常用減速度(18km/h/s)が通勤形(24km/h/s)より緩やかなぶん、同じ初速からの制動距離が長い', () => {
+    // 制動距離の式(brakingDistanceM)はpermittedSpeedKmhの逆関数であり、simulation.tsの
+    // 速度制御(releaseEnvelopeKmh)と予約延長判定(ensureReservation)が共通で使う式そのもの
+    // なので、ここでの比較がそのままシミュレーション中の制動距離の違いを表す。
+    const commuterBraking = brakingDistanceM(100, TRAIN_MODELS.commuter.serviceDecelKmhS / 3.6, BRAKE_JERK_MS3);
+    const suburbanBraking = brakingDistanceM(100, TRAIN_MODELS.suburban.serviceDecelKmhS / 3.6, BRAKE_JERK_MS3);
+    const expressBraking = brakingDistanceM(100, TRAIN_MODELS.express.serviceDecelKmhS / 3.6, BRAKE_JERK_MS3);
+    expect(expressBraking).toBeGreaterThan(suburbanBraking);
+    expect(suburbanBraking).toBeGreaterThan(commuterBraking);
+  });
 });
 
 describe('stepWorld: 停車位置(ホーム全体基準)', () => {
@@ -826,12 +886,16 @@ describe('stepWorld: 旅客の行き先と経路検索', () => {
   it('乗換が必要な行き先の客は、乗換駅で降りてその駅の待ち客になる', () => {
     const { railMap, stations } = buildThreeStationLine();
     // g1は stA-stB、g2は stB-stC。stA→stCはstBで乗換が要る。
-    const t1 = makeTrain({ id: 't1', x: 2, z: 0, schedule: [], groupId: 'g1' });
-    const t2 = makeTrain({ id: 't2', x: 7, z: 0, schedule: [], groupId: 'g2' });
+    const t1 = makeTrain({ id: 't1', x: 2, z: 0, schedule: [], serviceId: 's1' });
+    const t2 = makeTrain({ id: 't2', x: 7, z: 0, schedule: [], serviceId: 's2' });
     const world = makeWorld(railMap, stations, [t1, t2], () => 1, []);
-    world.groups = [
-      { id: 'g1', name: 'g1', schedule: ['stA', 'stB'], headwaySeconds: 0, colour: '#fff' },
-      { id: 'g2', name: 'g2', schedule: ['stB', 'stC'], headwaySeconds: 0, colour: '#fff' },
+    world.lines = [
+      { id: 'l1', name: 'l1', stops: ['stA', 'stB'], colour: '#fff' },
+      { id: 'l2', name: 'l2', stops: ['stB', 'stC'], colour: '#fff' },
+    ];
+    world.services = [
+      { id: 's1', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 0 },
+      { id: 's2', lineId: 'l2', name: '各停', skipStationIds: [], headwaySeconds: 0 },
     ];
     seedWaiting(world, 'stA', 'stC', 10);
 
@@ -840,7 +904,8 @@ describe('stepWorld: 旅客の行き先と経路検索', () => {
       evs.forEach(e => {
         if (e.type === 'arrive') {
           const train = world.trains.find(t => t.id === e.trainId)!;
-          const schedule = world.groups!.find(g => g.id === train.groupId)!.schedule;
+          const service = world.services!.find(s => s.id === train.serviceId)!;
+          const schedule = world.lines!.find(l => l.id === service.lineId)!.stops;
           train.scheduleIndex = (train.scheduleIndex + 1) % schedule.length;
         }
       });
@@ -948,12 +1013,13 @@ describe('stepWorld: 折返し運転と乗車の向き', () => {
 
   const shuttleWorld = () => {
     const { railMap, stations } = buildShuttleLine();
-    const train = makeTrain({ x: 5, z: 0, schedule: [], groupId: 'g1', scheduleIndex: 1 });
+    const train = makeTrain({ x: 5, z: 0, schedule: [], serviceId: 's1', scheduleIndex: 1 });
     const world = makeWorld(railMap, stations, [train], () => 1, []);
-    world.groups = [{
-      id: 'g1', name: '1系統', schedule: ['stA', 'stB', 'stC'],
-      headwaySeconds: 0, colour: '#fff', mode: 'shuttle',
+    world.lines = [{
+      id: 'l1', name: '1系統', stops: ['stA', 'stB', 'stC'],
+      colour: '#fff', mode: 'shuttle',
     }];
+    world.services = [{ id: 's1', lineId: 'l1', name: '各停', skipStationIds: [], headwaySeconds: 0 }];
     return { world, train };
   };
 
@@ -987,6 +1053,61 @@ describe('stepWorld: 折返し運転と乗車の向き', () => {
 
     const rt = world.runtimes.get('t1')!;
     expect(rt.load?.map(c => [c.destinationId, c.count])).toEqual([['stC', 10]]);
+  });
+});
+
+// stA(0) --- stB(5) --- stC(10) の3駅一直線(快速の通過駅検証用)。
+const buildShuttleLineABC = () => {
+  const cells = Array.from({ length: 11 }, (_, i) => ({ x: i, z: 0 }));
+  const railMap = buildRailMap(cells);
+  const stations = new Map<string, StationData>();
+  const place = (id: string, x: number) => {
+    railMap.set(toKey(x, 0), { ...railMap.get(toKey(x, 0))!, type: 'station', stationId: id });
+    stations.set(id, { id, name: id, cells: [{ x, z: 0 }], center: { x, z: 0 }, platformDoors: 'none' });
+  };
+  place('stA', 0); place('stB', 5); place('stC', 10);
+  return { railMap, stations };
+};
+
+describe('stepWorld: 通過駅を持つ種別(快速)', () => {
+  it('快速種別に所属する列車は、通過駅(stB)を目的地の並びに含めない', () => {
+    const { railMap, stations } = buildShuttleLineABC();
+    const train = makeTrain({ x: 0, z: 0, schedule: [], serviceId: 'rapid' });
+    const world = makeWorld(railMap, stations, [train], () => 1, []);
+    world.lines = [{ id: 'l1', name: '1系統', stops: ['stA', 'stB', 'stC'], colour: '#fff' }];
+    world.services = [{ id: 'rapid', lineId: 'l1', name: '快速', skipStationIds: ['stB'], headwaySeconds: 0 }];
+
+    let arrivedAt: string[] = [];
+    for (let i = 0; i < 10000 && arrivedAt.length < 2; i++) {
+      const evs = stepWorld(world, 0.1);
+      for (const e of evs) {
+        if (e.type === 'arrive') {
+          const rt = world.runtimes.get(train.id)!;
+          if (rt.lastStopStationId) arrivedAt.push(rt.lastStopStationId);
+          train.scheduleIndex = (train.scheduleIndex + 1) % 2;
+        }
+      }
+    }
+
+    // 有効運行表からstBが除かれているため、快速は一度もstBに停まらずstA/stCだけを往復する。
+    expect(arrivedAt).not.toContain('stB');
+    expect(arrivedAt.length).toBeGreaterThan(0);
+    expect(arrivedAt.every(id => id === 'stA' || id === 'stC')).toBe(true);
+  });
+
+  it('通過駅で待つ客は快速には乗れない(乗車判定もskipStationIdsに従う)', () => {
+    const { railMap, stations } = buildShuttleLineABC();
+    const train = makeTrain({ x: 5, z: 0, schedule: [], serviceId: 'rapid', scheduleIndex: 1 });
+    const world = makeWorld(railMap, stations, [train], () => 1, []);
+    world.lines = [{ id: 'l1', name: '1系統', stops: ['stA', 'stB', 'stC'], colour: '#fff', mode: 'shuttle' }];
+    world.services = [{ id: 'rapid', lineId: 'l1', name: '快速', skipStationIds: ['stB'], headwaySeconds: 0 }];
+    // stBは有効運行表に無いので、その駅を発着地とする経路はサービス網に乗らず、
+    // 待ち客は乗せられずに残る。
+    seedWaiting(world, 'stB', 'stC', 10);
+
+    for (let i = 0; i < 3000; i++) stepWorld(world, 0.1);
+
+    expect(world.waiting.get('stB')).toBe(10);
   });
 });
 
@@ -1400,8 +1521,8 @@ describe('stepWorld: 立体交差の十字乗換駅(統合) 地平×高架の同
 });
 
 describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () => {
-  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
-  const ELECTRIFICATION_ONLY_RULES = { gauge: false, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const };
+  const NORMAL_RULES = { gauge: true, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
+  const ELECTRIFICATION_ONLY_RULES = { gauge: false, extendedGauges: false, electrification: 'modes' as const, signalling: 's0' as const, trackClasses: false };
 
   it('電車は非電化区間では経路が見つからず停止したままになる', () => {
     const { railMap, stations } = buildStraightLine(6, 'stA');
@@ -1462,7 +1583,7 @@ describe('stepWorld: PM2 軌間・電化の本番経路探索への配線', () =
 });
 
 describe('stepWorld: PM3 交直流デッドセクション', () => {
-  const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const };
+  const BOUNDARIES_RULES = { gauge: true, extendedGauges: false, electrification: 'boundaries' as const, signalling: 's0' as const, trackClasses: false };
 
   it('dc専用車はac区間を含む経路には進入できず停止したままになる', () => {
     const { railMap, stations } = buildStraightLine(6, 'stA');
@@ -1512,7 +1633,7 @@ describe('stepWorld: PM3 交直流デッドセクション', () => {
 });
 
 describe('stepWorld: PM4 き電区間の容量超過ペナルティ', () => {
-  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const };
+  const REALISTIC_RULES = { gauge: true, extendedGauges: true, electrification: 'feeding' as const, signalling: 's0' as const, trackClasses: false };
 
   it('セクションの在線数が容量を超えると電車の加速が鈍る(OVERLOAD_ACCEL_FACTOR)', () => {
     const dt = 0.1;
@@ -1563,5 +1684,183 @@ describe('stepWorld: PM4 き電区間の容量超過ペナルティ', () => {
     const baselineRt = baselineWorld.runtimes.get('tBaseline')!;
 
     expect(dieselRt.speedKmh).toBeCloseTo(baselineRt.speedKmh, 5);
+  });
+});
+
+describe('stepWorld: 軌道(何キロレール) — 前方のレール速度上限に間に合うよう制動する', () => {
+  const TRACK_CLASS_RULES = {
+    gauge: true, extendedGauges: true, electrification: 'none' as const, signalling: 's0' as const, trackClasses: true,
+  };
+
+  it('60kg区間からMAX_SPEED_KMHまで加速した列車は、37kg区間(cap=70km/h)に入る前に70km/h以下へ減速し、以後も超過しない', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 150) railMap.set(key, { ...cell, railWeight: 37 });
+      else railMap.set(key, { ...cell, railWeight: 60 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = TRACK_CLASS_RULES;
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    let reachedCappedSection = false;
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x >= 150) {
+        // 制動が間に合っていること(70km/hを大きく超えて突入していない)。
+        expect(rt.speedKmh).toBeLessThanOrEqual(70 + 1e-6);
+        reachedCappedSection = true;
+      }
+      if (rt.stopRemaining > 0) break;
+    }
+
+    expect(reachedCappedSection).toBe(true);
+  });
+
+  it('37kg区間全体で常に70km/hを超えない(区間内に入ってからの巡航速度も上限どおり)', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 100 && x < 200) railMap.set(key, { ...cell, railWeight: 37 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    world.rules = TRACK_CLASS_RULES;
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.grid.x >= 100 && rt.grid.x < 200) {
+        expect(rt.speedKmh).toBeLessThanOrEqual(70 + 1e-6);
+      }
+      if (rt.stopRemaining > 0) break;
+    }
+  });
+
+  it('trackClasses=falseなら37kgのrailWeightがあっても速度上限を無視する(概念なし)', () => {
+    const { railMap, stations } = buildStraightLine(250, 'stA', 2);
+    for (const [key, cell] of railMap) {
+      const [x] = key.split(',').map(Number);
+      if (x >= 100) railMap.set(key, { ...cell, railWeight: 37 });
+    }
+    const train = makeTrain({ schedule: ['stA'] });
+    const world = makeWorld(railMap, stations, [train]);
+    // world.rules未設定(旧セーブ相当) = DEFAULT_GAME_RULES(trackClasses:false)
+
+    const dt = 0.1;
+    let rt = world.runtimes.get('t1');
+    let sawAbove70 = false;
+    for (let i = 0; i < 4000; i++) {
+      stepWorld(world, dt);
+      rt = world.runtimes.get('t1')!;
+      if (rt.speedKmh > 70 + 1e-6) sawAbove70 = true;
+      if (rt.stopRemaining > 0) break;
+    }
+    // MAX_SPEED_KMH(100)まで加速できる=軌道の概念が一切効いていない。
+    expect(sawAbove70).toBe(true);
+  });
+});
+
+describe('M1: 非常制動分岐(hardEnvelopeKmh超過)はrules.trackClassesで囲われているべき', () => {
+  it('trackClasses=false(ライト等)でも、予約末端手前で速度超過ならbrakeDecelMs2が瞬時に常用最大へ飛ばず、ジャーク制限で立ち上げる', () => {
+    const railMap = buildRailMap(Array.from({ length: 4 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(3, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 3, z: 0 }], center: { x: 3, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+    // rules未設定 = DEFAULT_GAME_RULES(trackClasses:false)。
+
+    // 予約末端が目前(30m先)まで縮んでいるのに速度90km/hのまま、というhardEnvelope
+    // 超過状態を直接作る(距離的にhardEnvelopeKmhは約65km/hになり、90km/hはこれを超える)。
+    // 予約末端の先(route[1]=(2,0))を他列車'ghost'が予約済みにして、ensureReservationが
+    // このtickで先へ延長してしまわないようにする(=予約末端が縮んだまま、という状況の再現)。
+    world.runtimes.set('t1', {
+      id: 't1', grid: { x: 0, z: 0 }, prevGrid: null, progress: 0, speedKmh: 90,
+      route: [{ x: 1, z: 0 }, { x: 2, z: 0 }, { x: 3, z: 0 }], reservedEndIndex: 0,
+      trail: [{ x: 0, z: 0 }], pathHistory: [{ x: 0, z: 0 }],
+      stopRemaining: 0, waitTimer: 0, debugStatus: '',
+      renderPos: { x: 0, y: 0.5, z: 0 }, renderTarget: null,
+      passengers: 0, lastStopStationId: null, haltRemaining: 0,
+      stopProgress: 1, brakeDecelMs2: 0, braking: false,
+    });
+    world.reservations = new Map([[toKey(2, 0), 'ghost']]);
+
+    stepWorld(world, 0.1);
+    const rt = world.runtimes.get('t1')!;
+    const serviceDecelMs2 = DECEL_KMH_S / 3.6;
+    // 修正前(M1のバグ)はbrakeDecelMs2がserviceDecelMs2へ瞬時に飛ぶ。
+    // 修正後はrampDecel(ジャーク制限)で立ち上げるため、1tick目はそれより小さい。
+    expect(rt.brakeDecelMs2!).toBeLessThan(serviceDecelMs2 - 1e-9);
+  });
+});
+
+describe('H4: occupiedCellKeysFromRuntimes(改軌のno-op判定に使う在線セル集合)', () => {
+  it('TrainData.x/zではなく、走行中の実位置(rt.grid/rt.route)を含む', () => {
+    const railMap = buildRailMap(Array.from({ length: 20 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(19, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 19, z: 0 }], center: { x: 19, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.1;
+    for (let i = 0; i < 300; i++) stepWorld(world, dt);
+
+    const rt = world.runtimes.get('t1')!;
+    // 車庫での初期位置(0,0)からは走り出しているはず(でなければテスト自体が無意味)。
+    expect(rt.grid.x).toBeGreaterThan(0);
+    // TrainData.x/zは初期位置のまま更新されない(現行の既知の制約)。
+    expect(train.x).toBe(0);
+
+    const occupied = occupiedCellKeysFromRuntimes(world.runtimes);
+    // 走行中の実位置(rt.grid)を含む。train.x/zだけを見ていた旧実装ならここが漏れる。
+    expect(occupied.has(toKey(rt.grid.x, rt.grid.z))).toBe(true);
+    // 旧実装が使っていた車庫での初期位置は、もう列車がいないので含まれない。
+    expect(occupied.has(toKey(0, 0))).toBe(false);
+  });
+
+  it('走行中の実位置を含む在線集合を渡すと、その区間を含む改軌はno-opになる(旧実装のtrain.x/zベースでは通ってしまっていた)', () => {
+    // 車種(TRAIN_MODELS)導入で最高速・加減速が車種ごとに変わったため、20セル(=600m)だと
+    // 速い車種が30秒(300tick×0.1s)以内に終点駅へ到達してしまい「まだ走行中」という
+    // このテストの前提が崩れる。60セル(=1800m)に伸ばし、どの車種でも余裕を持って
+    // 走行中に留まるようにする。
+    const railMap = buildRailMap(Array.from({ length: 60 }, (_, i) => ({ x: i, z: 0 })));
+    const stKey = toKey(59, 0);
+    railMap.set(stKey, { ...railMap.get(stKey)!, type: 'station', stationId: 'stA' });
+    const stations = new Map<string, StationData>([
+      ['stA', { id: 'stA', name: 'A', cells: [{ x: 59, z: 0 }], center: { x: 59, z: 0 }, platformDoors: 'none' }],
+    ]);
+    const train = makeTrain({ id: 't1', x: 0, z: 0, schedule: ['stA'], scheduleIndex: 0 });
+    const world = makeWorld(railMap, stations, [train]);
+
+    const dt = 0.1;
+    for (let i = 0; i < 300; i++) stepWorld(world, dt);
+    const rt = world.runtimes.get('t1')!;
+    expect(rt.grid.x).toBeGreaterThan(0); // 走行中であることの前提確認
+
+    const state: ConstructionState = { railMap: world.railMap, stations: world.stations };
+    const path = [{ x: rt.grid.x, z: rt.grid.z }];
+
+    // 旧実装相当: train.x/zだけを在線集合にする(車庫での初期位置しか入らない)と、
+    // 走行中の実セルへの改軌がno-opガードに引っかからず通ってしまう。
+    const staleOccupied = new Set([toKey(train.x, train.z)]);
+    const staleResult = applyRegaugePath(state, path, 1435, staleOccupied);
+    expect(staleResult.railMap).not.toBe(state.railMap); // 通ってしまう(バグの再現)
+
+    // H4修正後: occupiedCellKeysFromRuntimesを使えば、走行中の実セルが正しく
+    // 在線集合に入り、改軌はno-opになる。
+    const liveOccupied = occupiedCellKeysFromRuntimes(world.runtimes);
+    const liveResult = applyRegaugePath(state, path, 1435, liveOccupied);
+    expect(liveResult.railMap).toBe(state.railMap); // no-op
   });
 });

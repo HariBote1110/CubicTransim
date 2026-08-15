@@ -18,6 +18,7 @@ import {
 import { GameLabels } from './GameLabels';
 import { WebGpuTrains } from './WebGpuTrains';
 import { WebGpuBuildPreview, type PreviewGhostCell } from './WebGpuBuildPreview';
+import { WebGpuFeedingOverlay } from './WebGpuFeedingOverlay';
 import { WebGpuTownMarkers } from './WebGpuTownMarkers';
 import { pickTrainAtScreenPoint, type TrainScreenCandidate } from '../render/trainPicking';
 import { carGroupPosition } from '../render/trainInstanceMath';
@@ -38,12 +39,12 @@ import { WebGpuTrackNetwork } from './WebGpuTrackNetwork';
 import { WebGpuStations } from './WebGpuStations';
 import { WebGpuTrackExtras } from './WebGpuTrackExtras';
 import { STATION_COLOUR, DEPOT_COLOUR, SIGNAL_COLOUR } from '../types';
-import type { CellData, TrainData, TrainGroupData, StationData, TownData } from '../types';
+import type { CellData, TrainData, LineData, ServiceData, StationData, TownData } from '../types';
 import { carPositions } from '../sim/consist';
 import { toKey, getConstrainedPath } from '../utils';
 import type { SimWorld, SimEvent } from '../sim/simulation';
 import type { StationAxis, BuildLevel } from '../sim/construction';
-import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath } from '../sim/construction';
+import { resolveElevatedPathEnd, pickElevatedConnection, planElevatedPath, MAX_STATION_DRAG_CELLS } from '../sim/construction';
 import { isUndergroundView, isLevelDimmed } from '../render/viewMode';
 import { canPlaceTrainAt, trainAtCell } from '../sim/relocate';
 import { tunnelPortals, elevatedTunnelPortals, buildElevatedTunnelIndex } from '../sim/tunnel';
@@ -52,6 +53,10 @@ import { rectCells } from '../sim/terrainOverlay';
 import type { TownTileCache } from '../sim/townTiles';
 import { townIntersectsCellRange } from '../sim/townTiles';
 import { WebGpuRenderDriver, WEBGPU_UNDERGROUND_DIM_FACTOR, type WebGpuLayerRef } from './WebGpuTerrainLayer';
+import {
+  riderState, computeRiderCamera, PASSENGER_CHUNK_VIEW_RADIUS_CELLS, type RiderMode,
+} from '../render/passengerView';
+import { CabHud } from './CabHud';
 import { T } from '../ui/theme';
 import type { BuildMode } from './GameUI';
 import { OVERPASS_HEIGHT, MAX_ELEVATED_LEVEL } from '../sim/trackPath';
@@ -62,6 +67,28 @@ import {
 } from '../render/stationLayers';
 
 const REMOVE_COLOUR = '#ff3b47';
+
+// OpenTTD式のドラッグ駅建設: ドラッグの直交成分は無視し、プレイヤーが選んだ軸方向の
+// 成分だけを使って直線のセル列を作る(rail用のgetConstrainedPathとは別の、駅専用の
+// 単純な直線クランプ)。MAX_STATION_DRAG_CELLSで長さを上限に丸める(construction.tsの
+// applyStationPathDetailedと同じ定数を共有し、UIのプレビューと実際の建設が一致するようにする)。
+const stationDragPath = (
+  start: { x: number; z: number },
+  end: { x: number; z: number },
+  axis: StationAxis
+): { x: number; z: number }[] => {
+  if (axis === 'cross') return [start];
+  const delta = axis === 'ew' ? end.x - start.x : end.z - start.z;
+  const step = delta === 0 ? 0 : delta > 0 ? 1 : -1;
+  const length = Math.min(Math.abs(delta) + 1, MAX_STATION_DRAG_CELLS);
+  const cells: { x: number; z: number }[] = [];
+  for (let i = 0; i < length; i++) {
+    cells.push(
+      axis === 'ew' ? { x: start.x + step * i, z: start.z } : { x: start.x, z: start.z + step * i }
+    );
+  }
+  return cells;
+};
 
 /** 可視チャンク(注視セル・可視半径)の再計算の最短間隔。旧 CameraChunkTracker と同じ。 */
 const CHUNK_VIEW_INTERVAL_MS = 150;
@@ -89,10 +116,18 @@ interface GameSceneProps {
   world: React.RefObject<SimWorld>;
   buildMode: BuildMode;
   buildLevel: BuildLevel;
+  /** OpenTTD式の駅方向指定: 駅(station)ツールでプレイヤーが選んだ軸。地平駅の建設で権威的に使う。 */
+  stationAxis: StationAxis;
   selectedTrainId: string | null;
   isEditingSchedule: boolean;
   simSpeed: number;
   money: number;
+  /** D2: 乗車中の列車id(null=乗車していない)。App.tsxのridingTrainIdをそのまま鏡写しする。 */
+  ridingTrainId?: string | null;
+  /** D3: 乗車モード(客席/運転台)。運転台のときだけCabHudを出す。 */
+  ridingMode?: RiderMode;
+  /** D2: 降車(Escキー・降車ボタン共通)。 */
+  onAlightTrain?: () => void;
 
   onCommitPath: (
     path: { x: number; z: number }[],
@@ -103,20 +138,21 @@ interface GameSceneProps {
   removeSignal: (x: number, z: number) => void;
   onSimEvent: (event: SimEvent) => void;
   onSelectTrain: (id: string | null) => void;
-  onBuyTrain: (x: number, z: number) => void;
+  onSelectDepot: (x: number, z: number) => void;
   onAddSchedule: (trainId: string, stationId: string) => void;
   onSelectStation: (id: string | null) => void;
   onPreviewChange?: (path: { x: number; z: number }[]) => void;
-  groups?: TrainGroupData[];
+  lines?: LineData[];
+  services?: ServiceData[];
   onRelocateTrain?: (trainId: string, x: number, z: number) => void;
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({
   railMap, stations, trains, towns, townTiles, field, halfExtent, webGpuLayer,
-  cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, selectedTrainId,
-  isEditingSchedule, simSpeed,
-  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onBuyTrain, onAddSchedule, onSelectStation,
-  onPreviewChange, groups = [], onRelocateTrain,
+  cameraRef, viewportRef, webGpuCameraStateRef, world, buildMode, buildLevel, stationAxis, selectedTrainId,
+  isEditingSchedule, simSpeed, ridingTrainId = null, ridingMode = 'passenger', onAlightTrain,
+  onCommitPath, removeSignal, onSimEvent, onSelectTrain, onSelectDepot, onAddSchedule, onSelectStation,
+  onPreviewChange, lines = [], services = [], onRelocateTrain,
 }) => {
   const inputRef = useRef<HTMLDivElement>(null);
   const [chunkView, setChunkView] = useState<ChunkView>({ targetCell: { x: 0, z: 0 }, viewRadiusCells: 24 });
@@ -151,13 +187,18 @@ export const GameScene: React.FC<GameSceneProps> = ({
   const previewPath = useMemo(() => {
     if (buildMode === 'none' || !cursorPos) return [];
     if (!dragStartPos) return [cursorPos];
+    // OpenTTD式のドラッグ駅建設: 地平駅(buildLevel===0)はドラッグの直交成分を無視し、
+    // プレイヤーが選んだ軸方向だけの直線プレビューにする(高架/地下駅は従来通り単一セル)。
+    if (buildMode === 'station' && buildLevel === 0) {
+      return stationDragPath(dragStartPos, cursorPos, stationAxis);
+    }
     if (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal') {
       return [cursorPos];
     }
     // 地形編集は8方向の直線ではなく矩形範囲を選択する(OpenTTD流)。
     if (terrainEditActive) return rectCells(dragStartPos, cursorPos);
     return getConstrainedPath(dragStartPos, cursorPos);
-  }, [dragStartPos, cursorPos, buildMode, terrainEditActive]);
+  }, [dragStartPos, cursorPos, buildMode, buildLevel, stationAxis, terrainEditActive]);
 
   // 高架/地下の線路プレビューの各セルの役割(坂/そのまま)。construction.ts へ問い合わせる
   // (UIにルールを書き写さない)。
@@ -196,9 +237,36 @@ export const GameScene: React.FC<GameSceneProps> = ({
 
   // 可視チャンクの追跡。カメラが動いたフレームだけ、最短 CHUNK_VIEW_INTERVAL_MS 間隔で
   // 再計算する(旧 CameraChunkTracker のスロットルと同じ意味)。
+  //
+  // D2: 乗車中(riderState.trainId)はクォータービューのカメラ(cameraRef)が凍結される
+  // (WebGpuRenderDriverが供給を止めるため)ので、可視チャンクもカメラ由来ではなく
+  // ライダーの視点位置から求める(既存のChunkView仕組みをそのまま再利用する「最小限の
+  // 正しいアプローチ」)。半径はD1の透視地形メッシュ半径と同じPASSENGER_CHUNK_VIEW_RADIUS_CELLS。
   const lastChunkRunRef = useRef(0);
   const lastCameraSigRef = useRef('');
   useFrameLoop(FRAME_ORDER.camera, () => {
+    const ridingId = riderState.trainId;
+    if (ridingId) {
+      const cam = world.current ? computeRiderCamera(world.current, ridingId, riderState.mode) : null;
+      if (cam) {
+        const now = performance.now();
+        if (now - lastChunkRunRef.current < CHUNK_VIEW_INTERVAL_MS) return;
+        lastChunkRunRef.current = now;
+        lastCameraSigRef.current = ''; // 降車後にクォータービュー側の再計算を強制する
+        const next: ChunkView = {
+          targetCell: { x: Math.round(cam.eye[0]), z: Math.round(cam.eye[2]) },
+          viewRadiusCells: PASSENGER_CHUNK_VIEW_RADIUS_CELLS,
+        };
+        setChunkView(prev => (
+          prev.targetCell.x === next.targetCell.x
+          && prev.targetCell.z === next.targetCell.z
+          && prev.viewRadiusCells === next.viewRadiusCells
+            ? prev
+            : next
+        ));
+        return;
+      }
+    }
     const camera = cameraRef.current;
     const viewport = viewportRef.current;
     const signature = `${camera.centreX},${camera.centreZ},${camera.zoom},${viewport.cssWidth},${viewport.cssHeight}`;
@@ -358,18 +426,19 @@ export const GameScene: React.FC<GameSceneProps> = ({
     const start = dragStartRef.current;
     if (!start) return;
     const pos = cellFromEvent(event);
-    const path = (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal')
+    // OpenTTD式のドラッグ駅建設: 地平駅(buildLevel===0)はドラッグの直交成分を無視し、
+    // プレイヤーが選んだ軸方向だけの直線経路にする(previewPathと同じstationDragPath)。
+    // 高架/地下駅は従来通り単一セル。
+    const path = (buildMode === 'station' && buildLevel === 0)
+      ? stationDragPath(start, pos, stationAxis)
+      : (buildMode === 'station' || buildMode === 'depot' || buildMode === 'substation' || buildMode === 'signal')
       ? [pos]
       : terrainEditActive
       ? rectCells(start, pos)
       : getConstrainedPath(start, pos);
-    // 駅設置(station)は常に単一セルを置くが、ドラッグした向きを軸のヒントとして渡す。
-    let stationAxisHint: StationAxis | undefined;
-    if (buildMode === 'station') {
-      const dx = Math.abs(pos.x - start.x);
-      const dz = Math.abs(pos.z - start.z);
-      if (dx > 0 || dz > 0) stationAxisHint = dx >= dz ? 'ew' : 'ns';
-    }
+    // axisはもはやドラッグ方向からの推測ヒントではなく、プレイヤーがツールバーで
+    // 選んだ権威的な値(GameUIのstationAxis)をそのまま渡す。
+    const stationAxisHint: StationAxis | undefined = buildMode === 'station' ? stationAxis : undefined;
     const level = (buildMode === 'rail' || buildMode === 'station') ? buildLevel : undefined;
     onCommitPath(path, buildMode, stationAxisHint, level);
     dragStartRef.current = null;
@@ -407,7 +476,7 @@ export const GameScene: React.FC<GameSceneProps> = ({
       return;
     }
     if (cell && cell.type === 'depot') {
-      onBuyTrain(pos.x, pos.z);
+      onSelectDepot(pos.x, pos.z);
       return;
     }
     if (undergroundView) {
@@ -543,7 +612,13 @@ export const GameScene: React.FC<GameSceneProps> = ({
       <div
         ref={inputRef}
         data-testid="game-input-layer"
-        style={{ position: 'absolute', inset: 0, touchAction: 'none', cursor: buildMode === 'none' ? 'default' : 'crosshair' }}
+        style={{
+          position: 'absolute', inset: 0, touchAction: 'none',
+          cursor: buildMode === 'none' ? 'default' : 'crosshair',
+          // D2: 乗車中は建設・選択などの入力を一切受け付けない(乗車は「眺めるだけ」の
+          // ビューモード)。ポインタイベントごと無効化するのが最小の実装。
+          pointerEvents: ridingTrainId ? 'none' : 'auto',
+        }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -553,12 +628,44 @@ export const GameScene: React.FC<GameSceneProps> = ({
         onContextMenu={(event) => event.preventDefault()}
       />
 
+      {ridingTrainId && (
+        <div
+          data-testid="passenger-view-overlay"
+          style={{
+            position: 'absolute', top: 16, right: 16, zIndex: 20,
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '8px 12px', borderRadius: T.radius,
+            background: 'rgba(15,20,26,0.72)', border: `1px solid ${T.line}`,
+            color: T.text, fontSize: 12.5,
+          }}
+        >
+          <span>乗車中({ridingMode === 'cab' ? '運転台' : '客席'}): 列車 {ridingTrainId}</span>
+          <button
+            onClick={onAlightTrain}
+            style={{
+              padding: '4px 10px', borderRadius: T.radiusPill, border: `1px solid ${T.line}`,
+              background: T.accent, color: '#0b0f14', fontWeight: 700, fontSize: 12, cursor: 'pointer',
+            }}
+            title="降車してクォータービューへ戻る(Escキーでも可)"
+          >
+            降車
+          </button>
+        </div>
+      )}
+
+      {/* D3: 運転台視点のときだけHUDを出す。 */}
+      {ridingTrainId && ridingMode === 'cab' && (
+        <CabHud world={world} trainId={ridingTrainId} />
+      )}
+
       <WebGpuRenderDriver
         layerRef={webGpuLayer}
         cameraRef={cameraRef}
         viewportRef={viewportRef}
         dim={isLevelDimmed(0, undergroundView, buildLevel) ? WEBGPU_UNDERGROUND_DIM_FACTOR : 1}
         stateRef={webGpuCameraStateRef}
+        field={field}
+        world={world}
       />
 
       <SimulationDriver world={world} onSimEvent={onSimEvent} speed={simSpeed} />
@@ -568,6 +675,14 @@ export const GameScene: React.FC<GameSceneProps> = ({
         cells={previewGhostCells}
         dragCell={dragGhost}
         gridCentre={buildMode === 'none' ? null : chunkView.targetCell}
+      />
+
+      <WebGpuFeedingOverlay
+        layerRef={webGpuLayer}
+        railMap={railMap}
+        world={world}
+        field={field}
+        active={buildMode === 'substation'}
       />
 
       <WebGpuScenery
@@ -641,7 +756,10 @@ export const GameScene: React.FC<GameSceneProps> = ({
         world={world}
         field={field}
         housePlacements={housePlacements}
-        hidden={farViewHidden}
+        // D3: 乗車中(客席/運転台どちらも)はラベルオーバーレイを隠す。凍結されたiso
+        // カメラ(webGpuCameraStateRef)を経由して投影しているため、透視カメラ中は
+        // 位置が合わない(follow-up: 透視投影でのラベル再計算はD3スコープ外)。
+        hidden={farViewHidden || !!ridingTrainId}
       />
 
       <WebGpuTrains
@@ -652,7 +770,8 @@ export const GameScene: React.FC<GameSceneProps> = ({
         elevatedTunnelIndex={elevatedTunnelIndex}
         world={world}
         selectedTrainId={selectedTrainId}
-        groups={groups}
+        lines={lines}
+        services={services}
         undergroundView={undergroundView}
         selectedLevel={buildLevel}
         draggingTrainId={draggingTrainId}
