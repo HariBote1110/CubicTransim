@@ -180,6 +180,34 @@ impl CanvasRenderer {
         let surface_bytes = surface_count * INSTANCE_STRIDE_BYTES;
         let underground_bytes = underground_count * INSTANCE_STRIDE_BYTES;
 
+        // 全インスタンスが同じクラスなら振り分けは恒等変換になる(入力の stride は
+        // GPU バッファの stride と同じで、詰め替えは起きない)。列車が地上だけ、
+        // という常態ではここでステージングへの1コピーが丸ごと消える。
+        if underground_count == 0 || surface_count == 0 {
+            let src: &[u8] = bytemuck::cast_slice(&data[..(surface_count + underground_count)
+                * INSTANCE_STRIDE_FLOATS]);
+            let (surface_src, underground_src) = if underground_count == 0 {
+                (src, &src[src.len()..])
+            } else {
+                (&src[src.len()..], src)
+            };
+            upload_instance_buffer(
+                &self.device,
+                &self.queue,
+                &mut mesh.surface,
+                surface_count,
+                surface_src,
+            );
+            upload_instance_buffer(
+                &self.device,
+                &self.queue,
+                &mut mesh.underground,
+                underground_count,
+                underground_src,
+            );
+            return;
+        }
+
         if self.instance_staging.len() < surface_bytes + underground_bytes {
             self.instance_staging
                 .resize(surface_bytes + underground_bytes, 0);
